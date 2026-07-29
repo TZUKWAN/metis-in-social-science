@@ -16,34 +16,63 @@ permissions:
   contents: read
 
 jobs:
-  windows:
-    name: Windows build and test
+  quality:
+    name: Audit, type-check, and lint
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
-      - name: Check out source
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-
-      - name: Install locked dependencies
-        run: npm ci
-
+      - run: npm ci
       - name: Audit production dependencies
         run: npm audit --omit=dev
-
       - name: Type-check
         run: npm run typecheck
-
       - name: Lint
         run: npm run lint
 
-      - name: Test
-        run: npm test
+  tests:
+    name: Tests (${{ matrix.group }})
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: engine-library
+            paths: engine
+          - group: engine-integration
+            paths: tests/engine tests/evals tests/lib tests/utils
+          - group: frontend
+            paths: tests/frontend
+          - group: electron-and-e2e
+            paths: tests/electron tests/e2e tests/scripts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Rebuild SQLite for Node.js
+        run: npm run rebuild:node
+      - name: Run test group
+        run: npx vitest run ${{ matrix.paths }}
 
-      - name: Build Electron application
+  build:
+    name: Electron production build
+    needs: quality
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build
         run: npm run build
