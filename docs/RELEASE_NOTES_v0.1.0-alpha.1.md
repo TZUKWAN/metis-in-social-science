@@ -43,8 +43,8 @@ code-signed release.
 ### SHA-256 checksums
 
 ```text
-3d450ef0b9b442c78ab001e73e8d636440b44e0c1720f59e9c41e3e185e935a3  Metis-Research-Workbench-Setup-0.1.0-alpha.1-x64.exe
-c0f03ed3b6eadc262f4617f164e4e590b48efae5c31630995e1b11d2cb57445d  Metis-Research-Workbench-0.1.0-alpha.1-x64.msi
+6d42848cb1ad830003e502b0b68a30d87f6d0170aba2d0b94df0dec81cd4009b  Metis-Research-Workbench-Setup-0.1.0-alpha.1-x64.exe
+8b775409775db0cca60f4b434bc888cad144e8f2aec459ffa7cd265a2eef897e  Metis-Research-Workbench-0.1.0-alpha.1-x64.msi
 ```
 
 These values are also published as the release asset
@@ -89,7 +89,7 @@ These values are also published as the release asset
 
 | Check | Result |
 |-------|--------|
-| Automated tests | 3,271 passing in 741 suites; zero failures, skips, or todos |
+| Automated tests | 3,271 passing across 186 test files; zero failures, skips, or todos |
 | TypeScript type-check | Clean (app, engine, node, electron) |
 | ESLint | Clean (flat config) |
 | Cold start (development) | PersistenceStore initializes, no fatal errors |

@@ -280,7 +280,7 @@ npx vitest run tests/e2e/baseline.test.ts
 npx vitest run --coverage
 ```
 
-**Verified release baseline (2026-07-30): 3,271 tests passed in 741 suites, with zero
+**Verified release baseline (2026-07-30): 3,271 tests passed across 186 test files, with zero
 failures, skips, or todos.** The baseline covers the engine, tools, persistence,
 security boundaries, memory, goals, MCP, renderer components, Electron contracts, and
 end-to-end workflows. The packaged Windows application also passed a nine-step desktop
