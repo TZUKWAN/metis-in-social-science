@@ -1,0 +1,484 @@
+/**
+ * Research Dashboard — Academic Instrument Visual System
+ *
+ * Design principles:
+ * - Data-first: metrics lead, chrome recedes
+ * - Restrained hierarchy: thin borders, minimal strokes
+ * - Academic palette: muted blues/grays/slate, no rainbow
+ * - No capsules (border-radius ≤ 4px), no gradient cards, no generic AI copy
+ */
+
+/* ─── Layout ─────────────────────────────────────── */
+
+.dash-page {
+  padding: 20px 24px 32px;
+  max-width: 1200px;
+  overflow-y: auto;
+  height: 100%;
+}
+
+.dash-page-header {
+  margin-bottom: 20px;
+}
+
+.dash-page-header h2 {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+  letter-spacing: -0.1px;
+}
+
+.dash-page-header p {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin: 4px 0 0;
+}
+
+/* ─── Core Metrics Row ───────────────────────────── */
+
+.dash-metrics-primary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.dash-metric {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  position: relative;
+  overflow: hidden;
+}
+
+.dash-metric--clickable {
+  cursor: pointer;
+}
+
+.dash-metric--clickable:hover {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary-soft, rgba(44,82,130,0.12));
+}
+
+.dash-metric--clickable:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.dash-metric__accent {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 3px;
+  height: 100%;
+  border-radius: 0;
+}
+
+.dash-metric__label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.dash-metric__value {
+  font-size: 28px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.1;
+  letter-spacing: -0.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.dash-metric__sub {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.dash-metric__progress {
+  margin-top: 8px;
+  height: 3px;
+  background: var(--bg-hover, #edf2f7);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.dash-metric__progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+/* ─── Secondary Data Grid ────────────────────────── */
+
+.dash-metrics-secondary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.dash-stat {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dash-stat__label {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.dash-stat__value {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.dash-stat--clickable {
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.dash-stat--clickable:hover {
+  border-color: var(--primary);
+}
+
+.dash-stat--clickable:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* ─── Section Cards ───────────────────────────────── */
+
+.dash-section {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+
+.dash-section__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-hover, #f7f8fa);
+}
+
+.dash-section__header h3 {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.dash-section__body {
+  padding: 12px 14px;
+}
+
+/* ─── Charts Row ─────────────────────────────────── */
+
+.dash-charts-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.dash-chart {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 14px;
+}
+
+.dash-chart h3 {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 0 0 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* ─── Content Lists ───────────────────────────────── */
+
+.dash-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.dash-list-item {
+  border-bottom: 1px solid var(--border);
+}
+
+.dash-list-item:last-child {
+  border-bottom: none;
+}
+
+.dash-list-item__trigger {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  font-size: 13px;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: color 0.12s;
+  width: 100%;
+}
+
+.dash-list-item__trigger:hover {
+  color: var(--primary);
+}
+
+.dash-list-item__trigger:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+  border-radius: 2px;
+}
+
+.dash-list-item__marker {
+  width: 6px;
+  height: 6px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.dash-list-item__text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dash-list-item__meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+/* ─── Tag Cloud ───────────────────────────────────── */
+
+.dash-tag-cloud {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.dash-tag {
+  font-size: 12px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color 0.12s, color 0.12s;
+  font-family: inherit;
+  line-height: 1.4;
+}
+
+.dash-tag:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.dash-tag:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
+/* ─── Random Pick ─────────────────────────────────── */
+
+.dash-random-pick {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.dash-random-pick p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.dash-empty-text {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+/* ─── Reading Calendar ───────────────────────────── */
+
+.dash-calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(15, 1fr);
+  gap: 3px;
+}
+
+.dash-calendar-cell {
+  aspect-ratio: 1;
+  border-radius: 2px;
+  border: 1px solid var(--border);
+}
+
+/* ─── Quick Actions ───────────────────────────────── */
+
+.dash-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+/* ─── Empty State ────────────────────────────────── */
+
+.dash-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 24px;
+  text-align: center;
+  gap: 12px;
+}
+
+.dash-empty__icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 4px;
+  background: var(--bg-hover, #edf2f7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+}
+
+.dash-empty h3 {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.dash-empty p {
+  font-size: 13px;
+  color: var(--text-secondary);
+  max-width: 360px;
+  line-height: 1.6;
+  margin: 0;
+}
+
+/* ─── Dark Mode ───────────────────────────────────── */
+
+[data-theme="dark"] .dash-metric {
+  background: var(--bg-card);
+}
+
+[data-theme="dark"] .dash-metric__accent {
+  opacity: 0.8;
+}
+
+[data-theme="dark"] .dash-list-item:hover {
+  background: var(--bg-hover, rgba(255,255,255,0.04));
+}
+
+/* ─── Responsive ──────────────────────────────────── */
+
+@media (max-width: 900px) {
+  .dash-page {
+    padding: 12px 12px 24px;
+  }
+
+  .dash-metrics-primary {
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 8px;
+  }
+
+  .dash-metrics-secondary {
+    grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+  }
+
+  .dash-charts-row {
+    grid-template-columns: 1fr;
+  }
+
+  .dash-metric__value {
+    font-size: 22px;
+  }
+}
+
+/* ─── Reduced Motion ──────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .dash-metric,
+  .dash-stat,
+  .dash-tag {
+    transition: none;
+  }
+
+  .dash-metric__progress-fill {
+    transition: none;
+  }
+}
+
+/* ─── Forced Colors (A11y) ────────────────────────── */
+
+@media (forced-colors: active) {
+  .dash-metric,
+  .dash-stat,
+  .dash-section,
+  .dash-chart {
+    border-color: CanvasText;
+  }
+
+  .dash-metric__accent {
+    background: Highlight;
+  }
+
+  .dash-metric--clickable:focus-visible,
+  .dash-stat--clickable:focus-visible,
+  .dash-list-item:focus-visible,
+  .dash-tag:focus-visible {
+    outline-color: Highlight;
+  }
+}
+
+/* ─── RTL ─────────────────────────────────────────── */
+
+[dir="rtl"] .dash-metric__accent {
+  left: auto;
+  right: 0;
+}
+
+[dir="rtl"] .dash-list-item__meta {
+  text-align: left;
+}

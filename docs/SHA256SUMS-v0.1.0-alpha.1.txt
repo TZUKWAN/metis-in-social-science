@@ -1,0 +1,2 @@
+3d450ef0b9b442c78ab001e73e8d636440b44e0c1720f59e9c41e3e185e935a3  Metis-Research-Workbench-Setup-0.1.0-alpha.1-x64.exe
+c0f03ed3b6eadc262f4617f164e4e590b48efae5c31630995e1b11d2cb57445d  Metis-Research-Workbench-0.1.0-alpha.1-x64.msi

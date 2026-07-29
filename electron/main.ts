@@ -1,0 +1,3395 @@
+/**
+ * Electron main process — Metis Research Workbench.
+ *
+ * Responsibilities:
+ *  - Create BrowserWindow with preload
+ *  - Initialize PersistenceStore (SQLite)
+ *  - Initialize OpenAICompatProvider + AgentLoop from engine
+ *  - Handle IPC from renderer (agent run, streaming chat, settings, session CRUD)
+ *  - Encrypt/decrypt provider config via SecureStorage
+ */
+
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  dialog,
+  safeStorage,
+  screen,
+  shell,
+  type IpcMainInvokeEvent,
+} from 'electron';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import fs from 'node:fs';
+import { spawnSync, exec } from 'node:child_process';
+import { promisify } from 'node:util';
+import os from 'node:os';
+import { randomBytes, randomUUID } from 'node:crypto';
+import {
+  createLayoutAcceptanceMetadata,
+  extractLayoutAcceptanceToken,
+  isExpectedLayoutAcceptanceFrame,
+  nextLayoutAcceptanceContentSize,
+  parseLayoutAcceptanceWindowRequest,
+  requireLayoutAcceptanceRequest,
+} from './LayoutAcceptance.js';
+
+// ESM-compatible __dirname (not available by default in ES modules)
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+import * as pty from 'node-pty';
+import { PersistenceStore, setSharedStore } from '../engine/persistence/PersistenceStore.js';
+import { ResearchRepository } from '../engine/persistence/ResearchRepository.js';
+import { OpenAICompatProvider } from '../engine/providers/OpenAICompatProvider.js';
+import { AgentLoop } from '../engine/core/AgentLoop.js';
+import { ToolRegistry } from '../engine/tools/ToolRegistry.js';
+import { ToolDispatcher } from '../engine/tools/ToolDispatcher.js';
+import { HookBus } from '../engine/core/HookBus.js';
+import { ContextEngine } from '../engine/context/ContextEngine.js';
+import { EvidenceLedger } from '../engine/evidence/EvidenceLedger.js';
+import { ApprovalStore } from '../engine/hitl/HITLCore.js';
+import { BehaviorRegistry } from '../engine/behavior/BehaviorRegistry.js';
+import {
+  decryptProviderConfig,
+  initSecureStorage,
+} from '../engine/core/SecureStorage.js';
+import type { ProviderConfig } from '../engine/core/types.js';
+import { MemoryManager } from '../engine/memory/MemoryManager.js';
+import { WorkspaceAgentsManager } from '../engine/memory/WorkspaceAgentsManager.js';
+import {
+  decodeWorkspaceAgentsWriteRequest,
+  decodeWorkspaceAgentsGetRequest,
+} from '../engine/runtime/WorkspaceAgentsContract.js';
+import { GoalEngine } from '../engine/goal/GoalEngine.js';
+import { parseLatexLog } from '../engine/latex/LatexLogParser.js';
+import type { WorkflowDefinition, WorkflowHooks } from '../engine/workflow/types.js';
+import { MCPManager } from '../engine/mcp/MCPManager.js';
+import { SkillRegistry, registerDefaultSkills } from '../engine/skills/SkillRegistry.js';
+import { EvalRunner, suiteSummary } from '../engine/evals/EvalRunner.js';
+import { evaluateGate } from '../engine/evals/GateEvaluator.js';
+import type { EvalTaskSpec } from '../engine/evals/types.js';
+import {
+  createChatTurnErrorResponse,
+  runPersistedChatTurn,
+} from './ChatTurnService.js';
+import { isAuthorizedRendererMainFrame } from './RendererAuthorization.js';
+import { createSecureExternalOpenHandler } from './SecureExternalOpenHandler.js';
+import {
+  AgentChatRequestSchema,
+  CHAT_RUNTIME_CONTRACT_VERSION,
+  decodeGoalLiveEvent,
+  decodeStoredHistoryEntry,
+  decodeStoredHistory,
+  RuntimeIdSchema,
+} from '../engine/runtime/ChatRuntimeContract.js';
+import {
+  decodeGoalCreateResponse,
+  decodeGoalListResponse,
+  decodeGoalPlanResponse,
+  decodeGoalSummaryResponse,
+  GOAL_PLAN_LABEL,
+  GOAL_PLAN_STEP_LABEL,
+  GoalCreateRequestSchema,
+  GoalIdRequestSchema,
+  GoalRefineRequestSchema,
+} from '../engine/runtime/GoalRuntimeContract.js';
+import {
+  decodeArtifactCreateRequest,
+  decodeArtifactCreatedNotification,
+  decodeArtifactListResponse,
+  decodeArtifactMutationResult,
+} from '../engine/runtime/ArtifactRuntimeContract.js';
+import {
+  createSessionListRecovery,
+  decodeLegacySessionList,
+  decodeSessionCreateRequest,
+  decodeSessionDeleteRequest,
+  decodeSessionListRequest,
+  decodeSessionMutationResult,
+  decodeSessionUpdateRequest,
+} from '../engine/runtime/SessionRuntimeContract.js';
+import {
+  createFileCapabilityFailure,
+  decodeFileCapabilityImportRequest,
+  decodeFileCapabilitySelectionRequest,
+  decodeFileCapabilitySelectionResult,
+} from '../engine/runtime/FileCapabilityContract.js';
+import {
+  createLatexCompileRecovery,
+  decodeLatexCompileRequest,
+  decodeLatexCompileResponse,
+  type LatexCompileResponse,
+} from '../engine/runtime/LatexRuntimeContract.js';
+import {
+  createPaperAttachmentFailure,
+  createPaperDownloadFailure,
+  createPaperMutationFailure,
+  decodePaperAttachmentResult,
+  decodePaperDownloadResult,
+  decodePaperIdRequest,
+  decodePaperMutationResult,
+} from '../engine/runtime/PaperRuntimeContract.js';
+import {
+  ApprovalRequestViewSchema,
+  createApprovalMutationFailure,
+  decodeApprovalMutationResult,
+  decodeApprovalResponseRequest,
+  decodeApprovalRuleToggleRequest,
+  decodeApprovalRuleViews,
+  presentApprovalAction,
+} from '../engine/runtime/ApprovalRuntimeContract.js';
+import { FileCapabilityRegistry } from './FileCapabilityRegistry.js';
+import { createFileCapabilityUseHandler } from './FileCapabilityHandler.js';
+import {
+  ExecutionCapabilityRegistry,
+  type ExecutionOwnerIdentity,
+} from './ExecutionCapabilityRegistry.js';
+import { createSecureIpcHandler, decoded, rejected } from './SecureIpc.js';
+import { SecureDownloadService } from './SecureDownloadService.js';
+import { SecureExportService } from './SecureExportService.js';
+import { buildResearchExport, type SecureExportPlan } from '../engine/export/ResearchExportBuilder.js';
+import {
+  buildExportSnapshot,
+  resolveTrustedArtifactExportBinding,
+} from './ResearchExportAdapter.js';
+import {
+  createExportFailure,
+  decodeExportRequest,
+  decodeExportResult,
+  type ExportRequest,
+} from '../engine/runtime/ExportRuntimeContract.js';
+import {
+  CA_RUNTIME_CONTRACT_VERSION,
+  CurrentAffairsResearchRequestSchema,
+  CurrentAffairsApproveRequestSchema,
+  CurrentAffairsExportRequestSchema,
+  CurrentAffairsCancelRequestSchema,
+  CurrentAffairsListSourcesRequestSchema,
+  SourceReviewRequestSchema,
+  decodeCurrentAffairsResearchResponse,
+  decodeCurrentAffairsApproveResponse,
+  decodeCurrentAffairsExportResponse,
+  decodeCurrentAffairsCancelResponse,
+  decodeCurrentAffairsListSourcesResponse,
+  decodeSourceReviewResponse,
+} from '../engine/runtime/CurrentAffairsRuntimeContract.js';
+import { loadOrCreateCurrentAffairsReceiptSecret } from './CurrentAffairsReceiptKeyStore.js';
+import { CurrentAffairsApprovalStore } from '../engine/writing/CurrentAffairsApprovalStore.js';
+import { CurrentAffairsArtifactService } from '../engine/writing/CurrentAffairsArtifactService.js';
+import { CurrentAffairsSessionState } from '../engine/writing/CurrentAffairsSessionState.js';
+import { CurrentAffairsRepositoryService } from '../engine/writing/CurrentAffairsRepositoryService.js';
+import { adaptSource } from '../engine/writing/CurrentAffairsSourceAdapter.js';
+import { ResearchRuntimeService } from './ResearchRuntimeService.js';
+import { ResearchMediaService } from './ResearchMediaService.js';
+import { CitationTruthReceiptService } from './CitationTruthReceiptService.js';
+import { loadOrCreateCitationTruthSecret } from './CitationTruthKeyStore.js';
+import {
+  verifyArtifactForExport,
+  verifyArtifactForPersistence,
+} from './ResearchArtifactTrust.js';
+import { ArtifactManifestSchema } from '../engine/artifacts/ArtifactManifest.js';
+import {
+  createResearchMediaAttachFailure,
+  createResearchMediaPurgeFailure,
+  decodeResearchMediaAttachRequest,
+  decodeResearchMediaAttachResult,
+  decodeResearchMediaPurgeRequest,
+  decodeResearchMediaPurgeResult,
+} from '../engine/runtime/ResearchMediaRuntimeContract.js';
+import {
+  TERMINAL_RUNTIME_LIMITS,
+  TerminalCreateRequestSchema,
+  TerminalDataEventSchema,
+  TerminalExitEventSchema,
+  TerminalKillRequestSchema,
+  TerminalResizeRequestSchema,
+  TerminalWriteRequestSchema,
+  createTerminalFailure,
+  decodeTerminalCreateResult,
+  decodeTerminalGrantResult,
+  decodeTerminalOperationResult,
+} from '../engine/runtime/TerminalRuntimeContract.js';
+import {
+  FirstRunSetupService,
+  createFirstRunSecureStorage,
+  type PreparedSetupRuntime,
+  type SetupRuntimeBuildContext,
+} from './FirstRunSetupService.js';
+import { OpenAISetupProbeTransport } from './OpenAISetupProbeTransport.js';
+import {
+  SETUP_RUNTIME_CONTRACT_VERSION,
+  decodeSetupAbortRequest,
+  decodeSetupProbeResponse,
+  type SetupProbeResponse,
+  decodeSetupRestoreRequest,
+  decodeSetupRestoreResponse,
+  decodeSetupSaveRequest,
+  decodeSetupSaveResponse,
+  decodeSettingsProviderProbeRequest,
+  createSetupRecovery,
+} from '../engine/runtime/SetupRuntimeContract.js';
+import {
+  createResearchMutationRecovery,
+  createResearchSnapshotRecovery,
+  decodeResearchArtifactVersionRequest,
+  decodeResearchCheckpointRequest,
+  decodeResearchCrudRequest,
+  decodeResearchDecisionRequest,
+  decodeResearchLinkRequest,
+  decodeResearchRestoreRequest,
+  decodeResearchReviewRequest,
+  decodeResearchSnapshotRequest,
+} from '../engine/runtime/ResearchRuntimeContract.js';
+import {
+  createLibraryMutationFailure,
+  decodeLibraryCollection,
+  decodeLibraryCollectionList,
+  decodeLibraryDeleteRequest,
+  decodeLibraryMutationResult,
+  decodeLibraryNote,
+  decodeLibraryNoteList,
+  decodeLibraryPaperList,
+  decodeLibraryPaperSaveRequest,
+} from '../engine/runtime/LibraryRuntimeContract.js';
+import {
+  createProjectMemoryMutationFailure,
+  decodeProjectMemoryContent,
+  decodeProjectMemoryMutationResult,
+  decodeProjectMemoryWriteRequest,
+} from '../engine/runtime/MemoryRuntimeContract.js';
+import {
+  createSettingsMutationFailure,
+  createSettingsViewRecovery,
+  decodeSettingsMutationResult,
+  decodeSettingsUpdateRequest,
+  decodeSettingsView,
+} from '../engine/runtime/SettingsRuntimeContract.js';
+import {
+  createEvalRunFailure,
+  decodeEvalRunRequest,
+  decodeEvalRunResult,
+} from '../engine/runtime/EvalRuntimeContract.js';
+import { createExperimentScriptAdapter, type ExperimentScriptAdapter } from './ExperimentScriptAdapter.js';
+import {
+  decodeExperimentDelete,
+  decodeExperimentList,
+  decodeExperimentListResult,
+  decodeExperimentMutationResult,
+  decodeExperimentSave,
+} from '../engine/runtime/ExperimentMetadataContract.js';
+import {
+  decodeExperimentRunRequest,
+  decodeExperimentRunResult,
+} from '../engine/runtime/ExperimentRuntimeContract.js';
+
+// ─── Globals ──────────────────────────────────────────────────
+
+let mainWindow: BrowserWindow | null = null;
+let store: PersistenceStore | null = null;
+let researchRepository: ResearchRepository | null = null;
+let researchRuntime: ResearchRuntimeService | null = null;
+let researchMedia: ResearchMediaService | null = null;
+let firstRunSetup: FirstRunSetupService | null = null;
+let runtimeGeneration = 0;
+let agentLoop: AgentLoop | null = null;
+let provider: OpenAICompatProvider | null = null;
+let memoryManager: MemoryManager | null = null;
+let goalEngine: GoalEngine | null = null;
+let mcpManager: MCPManager | null = null;
+let skillRegistry: SkillRegistry | null = null;
+let approvalStore: ApprovalStore | null = null;
+let experimentScriptAdapter: ExperimentScriptAdapter | null = null;
+let caReceiptSecret: Buffer | null = null; // Current Affairs HMAC signing key
+let caRuntime: import('./CurrentAffairsRuntimeService.js').CurrentAffairsRuntimeService | null = null;
+/** Maps ownerSessionId (webContentsId) → invoking BrowserWindow for native approval dialog targeting. */
+const caOwnerWindows = new Map<string, BrowserWindow>();
+const EXPERIMENT_SESSION_SECRET = randomBytes(32).toString('base64url');
+let citationTruthReceipts: CitationTruthReceiptService | null = null;
+let currentConfig: ProviderConfig | null = null;
+let currentTheme: string = 'light';
+let layoutAcceptanceWindowControlEnabled = false;
+const fileCapabilities = new FileCapabilityRegistry();
+let executionCapabilities: ExecutionCapabilityRegistry | null = null;
+const secureDownloads = new SecureDownloadService({
+  sourceResolver: async (paperId) => {
+    const paper = store?.getPapers().find((item) => item.id === paperId);
+    return paper?.pdfUrl ? { url: paper.pdfUrl } : null;
+  },
+});
+const secureExports = new SecureExportService();
+const exportPreviews = new Map<string, {
+  request: ExportRequest;
+  plan: SecureExportPlan;
+  expiresAt: number;
+}>();
+
+// ─── PTY (Terminal) ────────────────────────────────────────
+interface ActiveTerminalSession {
+  terminal: pty.IPty;
+  grantId: string;
+  owner: ExecutionOwnerIdentity;
+  sequence: number;
+  killed: boolean;
+}
+const activeTerminals = new Map<string, ActiveTerminalSession>();
+
+let requestCounter = 0;
+
+const DATA_DIR = path.join(app.getPath('userData'), 'metis-data');
+process.env.METIS_DATA_DIR = DATA_DIR;
+
+const PAPERS_DIR = path.join(DATA_DIR, 'papers');
+const IMPORTS_DIR = path.join(DATA_DIR, 'imports');
+const RESEARCH_MEDIA_DIR = path.join(DATA_DIR, 'research-media');
+const TERMINAL_WORKSPACE_DIR = path.join(DATA_DIR, 'terminal-workspace');
+const DB_PATH = path.join(DATA_DIR, 'metis.db');
+const CONFIG_PATH = path.join(DATA_DIR, 'provider-config.json');
+const SETUP_CONFIG_PATH = path.join(DATA_DIR, 'provider-setup.json');
+const THEME_PATH = path.join(DATA_DIR, 'theme.txt');
+const layoutAcceptanceToken = extractLayoutAcceptanceToken(process.argv);
+export const layoutAcceptanceEntryPath = path.resolve(__dirname, '../../dist/index.html');
+const rendererEntryUrl = process.env.VITE_DEV_SERVER_URL
+  ?? pathToFileURL(layoutAcceptanceEntryPath).toString();
+
+export function getRendererEntryUrl(): string {
+  return rendererEntryUrl;
+}
+
+export function getMainWindow(): BrowserWindow | null {
+  return mainWindow;
+}
+
+function mimeForLocalFile(filePath: string): string {
+  const extension = path.extname(filePath).toLowerCase();
+  const known: Record<string, string> = {
+    '.pdf': 'application/pdf',
+    '.txt': 'text/plain',
+    '.md': 'text/markdown',
+    '.markdown': 'text/markdown',
+    '.csv': 'text/csv',
+    '.json': 'application/json',
+    '.jsonl': 'application/x-ndjson',
+    '.tex': 'application/x-tex',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.webp': 'image/webp',
+    '.mp3': 'audio/mpeg',
+    '.wav': 'audio/wav',
+  };
+  return known[extension] ?? 'application/octet-stream';
+}
+
+// Per-WebContents generation counter for SetupOwner revocation.
+// Incremented on main-frame navigation/reload; cleared on destroy.
+const webContentsGenerations = new Map<number, number>();
+
+function setupOwnerFor(event: IpcMainInvokeEvent) {
+  const frame = event.senderFrame;
+  if (!frame?.processId || !frame?.routingId) {
+    throw new Error("Setup owner requires a valid sender frame");
+  }
+  const wcId = event.sender.id;
+  const generation = webContentsGenerations.get(wcId) ?? 0;
+  return { webContentsId: wcId, processId: frame.processId, routingId: frame.routingId, generation };
+}
+
+function bumpWebContentsGeneration(wcId: number) {
+  webContentsGenerations.set(wcId, (webContentsGenerations.get(wcId) ?? 0) + 1);
+}
+
+function cleanupWebContentsOwner(wcId: number) {
+  webContentsGenerations.delete(wcId);
+  firstRunSetup?.revokeWebContents(wcId);
+  caRuntime?.clearOwner(String(wcId));
+  caOwnerWindows.delete(String(wcId));
+}
+
+
+function sanitizeListUrl(url: string | null): string | null {
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') return url;
+    return null; // reject file://, local paths, etc.
+  } catch { return null; }
+}
+
+function getLayoutAcceptanceMetadata() {
+  return createLayoutAcceptanceMetadata(
+    layoutAcceptanceToken,
+    app.getPath('userData'),
+    layoutAcceptanceEntryPath,
+  );
+}
+
+function requireLayoutAcceptanceMainFrame(event: IpcMainInvokeEvent): BrowserWindow {
+  const liveMainWindow = getMainWindow();
+  const window = BrowserWindow.fromWebContents(event.sender);
+  const senderFrame = event.senderFrame;
+  const senderWindowMatches = Boolean(
+    window && window === liveMainWindow && !window.isDestroyed(),
+  );
+  requireLayoutAcceptanceRequest({
+    token: layoutAcceptanceToken,
+    controlEnabled: layoutAcceptanceWindowControlEnabled,
+    senderWindowMatches,
+    senderFrameMatches: Boolean(
+      senderWindowMatches && senderFrame === window?.webContents.mainFrame,
+    ),
+    senderFrameUrl: senderFrame?.url ?? '',
+    expectedEntryPath: layoutAcceptanceEntryPath,
+  });
+  return window!;
+}
+
+export function requireRendererMainFrame(event: IpcMainInvokeEvent): BrowserWindow {
+  const liveMainWindow = getMainWindow();
+  const liveEntryUrl = getRendererEntryUrl();
+  const window = BrowserWindow.fromWebContents(event.sender);
+  const senderFrame = event.senderFrame;
+  const senderWindowMatches = Boolean(
+    window && window === liveMainWindow && !window.isDestroyed(),
+  );
+  const authorized = isAuthorizedRendererMainFrame({
+    senderWindowMatches,
+    senderFrameMatches: Boolean(
+      senderWindowMatches && senderFrame === window?.webContents.mainFrame,
+    ),
+    senderFrameUrl: senderFrame?.url ?? '',
+    expectedEntryUrl: liveEntryUrl,
+  });
+  if (!authorized) throw new Error('Unauthorized IPC sender');
+  return window!;
+}
+
+export function executionOwnerFor(event: IpcMainInvokeEvent): ExecutionOwnerIdentity {
+  const frame = event.senderFrame;
+  if (!frame) throw new Error('Execution owner is unavailable');
+  return {
+    webContentsId: event.sender.id,
+    mainFrameProcessId: frame.processId,
+    mainFrameRoutingId: frame.routingId,
+  };
+}
+
+function nextTerminalId(): string {
+  return `ts_${randomBytes(32).toString('base64url')}`;
+}
+
+function presentGoalPlan(goalId: string, workflow: WorkflowDefinition) {
+  return decodeGoalPlanResponse({
+    success: true,
+    goalId,
+    label: GOAL_PLAN_LABEL,
+    steps: workflow.steps.map((step, index) => ({
+      stepId: step.id,
+      label: GOAL_PLAN_STEP_LABEL,
+      ordinal: index + 1,
+    })),
+  });
+}
+
+function presentGoalSummary(goal: { id: string; status: unknown; createdAt: number }) {
+  return {
+    goalId: goal.id,
+    label: 'Research goal',
+    status: goal.status,
+    createdAt: goal.createdAt,
+  };
+}
+
+function presentPaper(
+  paper: ReturnType<PersistenceStore['getPapers']>[number],
+  owner: ExecutionOwnerIdentity,
+): Omit<ReturnType<PersistenceStore['getPapers']>[number], 'pdfPath'> & {
+  pdfCapability?: import('../engine/runtime/FileCapabilityContract.js').FileCapabilityDescriptor;
+} {
+  const { pdfPath, ...safePaper } = paper;
+  if (!pdfPath) return safePaper;
+  const issued = fileCapabilities.issue({
+    path: pdfPath,
+    kind: 'file',
+    mime: 'application/pdf',
+    displayName: path.basename(pdfPath),
+    operations: ['file', 'read', 'extract'],
+  }, owner);
+  return issued.success
+    ? { ...safePaper, pdfCapability: issued.capability }
+    : safePaper;
+}
+
+async function isPdfFile(filePath: string): Promise<boolean> {
+  try {
+    const stat = await fs.promises.stat(filePath);
+    if (!stat.isFile() || stat.size < 5) return false;
+    const handle = await fs.promises.open(filePath, 'r');
+    try {
+      const header = Buffer.alloc(5);
+      await handle.read(header, 0, header.length, 0);
+      return header.toString('ascii') === '%PDF-';
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return false;
+  }
+}
+
+async function waitForNativeWindowResize(
+  window: BrowserWindow,
+  applySize: () => void,
+): Promise<void> {
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      window.off('resize', onResize);
+      setImmediate(resolve);
+    };
+    const onResize = () => finish();
+    const deadline = setTimeout(finish, 2_000);
+    window.once('resize', onResize);
+    applySize();
+  });
+}
+
+async function getAcceptanceRendererSize(
+  window: BrowserWindow,
+): Promise<{ width: number; height: number }> {
+  return window.webContents.executeJavaScript(`
+    new Promise((resolve) => requestAnimationFrame(() =>
+      requestAnimationFrame(() => resolve({
+        width: window.innerWidth,
+        height: window.innerHeight,
+      }))
+    ))
+  `);
+}
+
+async function setAcceptanceContentSize(
+  window: BrowserWindow,
+  width: number,
+  height: number,
+): Promise<void> {
+  let applied = { width, height };
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    await waitForNativeWindowResize(window, () => {
+      window.setContentSize(applied.width, applied.height, false);
+    });
+
+    const measuredContent = window.getContentBounds();
+    const measuredRenderer = await getAcceptanceRendererSize(window);
+    const next = nextLayoutAcceptanceContentSize(
+      { width, height },
+      applied,
+      measuredContent,
+      measuredRenderer,
+    );
+    if (!next) return;
+    applied = next;
+  }
+
+  const measuredContent = window.getContentBounds();
+  const measuredRenderer = await getAcceptanceRendererSize(window);
+  throw new Error(
+    'Native content size did not converge: ' +
+    `requested=${width}x${height}, ` +
+    `content=${measuredContent.width}x${measuredContent.height}, ` +
+    `renderer=${measuredRenderer.width}x${measuredRenderer.height}`,
+  );
+}
+
+// ─── Provider & Agent Creation ────────────────────────────────
+
+function createProvider(config: ProviderConfig): OpenAICompatProvider {
+  return new OpenAICompatProvider({
+    baseUrl: config.baseUrl,
+    apiKey: config.apiKey,
+    model: config.model,
+    timeout: config.timeout,
+    maxRetries: config.maxRetries,
+    retryBackoffSeconds: config.retryBackoffSeconds,
+  });
+}
+
+function createAgentLoop(
+  prov: OpenAICompatProvider,
+  registry?: ToolRegistry,
+  sharedApprovalStore?: ApprovalStore,
+): { agentLoop: AgentLoop; approvalStore: ApprovalStore } {
+  const toolRegistry = registry ?? new ToolRegistry();
+  const hooks = new HookBus();
+  const dispatcher = new ToolDispatcher(toolRegistry, hooks);
+  const evidenceLedger = new EvidenceLedger();
+  const approvalStore = sharedApprovalStore ?? new ApprovalStore();
+  const behaviorRegistry = new BehaviorRegistry();
+
+  const caps = prov.capabilities();
+
+  const contextEngine = new ContextEngine({
+    budget: {
+      modelContextTokens: caps.maxContextTokens,
+      modelOutputTokens: caps.maxOutputTokens,
+      contextThreshold: 0.8,
+      perToolChars: 2000,
+      maxToolResultChars: 8000,
+      maxTurns: 12,
+    },
+    overrideMaxContextTokens: caps.maxContextTokens > 0 ? caps.maxContextTokens : undefined,
+  });
+
+  const agentLoop = new AgentLoop({
+    provider: prov,
+    registry: toolRegistry,
+    dispatcher,
+    hooks,
+    contextEngine,
+    evidenceLedger,
+    approvalStore,
+    behaviorRegistry,
+  });
+
+  return { agentLoop, approvalStore };
+}
+
+function buildRuntimeRegistry(): ToolRegistry {
+  const registry = new ToolRegistry();
+  for (const tool of mcpManager?.getAllTools() ?? []) {
+    registry.register({
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.inputSchema,
+    });
+  }
+  return registry;
+}
+
+function prepareProviderRuntime(context: SetupRuntimeBuildContext): PreparedSetupRuntime {
+  if (!store) throw new Error('Persistence is unavailable');
+  const runtimeMemoryManager = memoryManager ?? new MemoryManager(store, DATA_DIR);
+  memoryManager = runtimeMemoryManager;
+  // WorkspaceAgentsManager now requires explicit projectId per request
+  const candidateProvider = createProvider(context.config as ProviderConfig);
+  const candidateLoop = createAgentLoop(
+    candidateProvider,
+    buildRuntimeRegistry(),
+    approvalStore ?? undefined,
+  );
+  const candidateGoalEngine = new GoalEngine(candidateLoop.agentLoop, runtimeMemoryManager);
+  let state: 'prepared' | 'committed' | 'discarded' = 'prepared';
+
+  return {
+    async commitAndAbortPrevious(): Promise<void> {
+      if (state !== 'prepared' || context.signal.aborted) {
+        throw new Error('Candidate runtime is unavailable');
+      }
+      runtimeGeneration = context.nextConfigVersion;
+      currentConfig = { ...context.config } as ProviderConfig;
+      provider = candidateProvider;
+      agentLoop = candidateLoop.agentLoop;
+      approvalStore = candidateLoop.approvalStore;
+      goalEngine = candidateGoalEngine;
+      state = 'committed';
+    },
+    async discard(): Promise<void> {
+      if (state === 'prepared') state = 'discarded';
+    },
+  };
+}
+
+// ─── Config Persistence ───────────────────────────────────────
+
+function loadConfig(): ProviderConfig | null {
+  try {
+    if (!fs.existsSync(CONFIG_PATH)) {
+      console.log('[Main] loadConfig: Config file not found at', CONFIG_PATH);
+      return null;
+    }
+    const raw = fs.readFileSync(CONFIG_PATH, 'utf-8');
+    const encrypted = JSON.parse(raw);
+
+    // Detect InMemorySecureStorage format: base64 decodes to "metis:v1:key_N_TS"
+    // This happens when config was saved while safeStorage was unavailable.
+    // In that case, we cannot recover the original API key from the in-memory reference.
+    if (encrypted.encryptedApiKey && typeof encrypted.encryptedApiKey === 'string') {
+      try {
+        const decoded = Buffer.from(encrypted.encryptedApiKey, 'base64').toString('utf-8');
+        if (decoded.startsWith('metis:v1:key_')) {
+          console.warn('[Main] loadConfig: Config was saved with InMemorySecureStorage (safeStorage was unavailable).');
+          console.warn('[Main] loadConfig: The API key cannot be recovered. User must re-enter it in Settings.');
+          console.warn('[Main] loadConfig: Returning config with empty apiKey so user sees their baseUrl/model.');
+          return {
+            baseUrl: encrypted.baseUrl ?? '',
+            apiKey: '',
+            model: encrypted.model ?? '',
+            timeout: encrypted.timeout ?? 30000,
+            maxRetries: encrypted.maxRetries ?? 2,
+            retryBackoffSeconds: encrypted.retryBackoffSeconds ?? 1,
+          };
+        }
+      } catch {
+        // Not base64 decodable — proceed with normal decryption
+      }
+    }
+
+    const config = decryptProviderConfig(encrypted);
+    console.log('[Main] loadConfig: Successfully loaded config — baseUrl:', config.baseUrl, 'model:', config.model);
+    return config;
+  } catch (err) {
+    console.error('[Main] loadConfig: Failed to load config:', (err as Error)?.message);
+    return null;
+  }
+}
+
+const SETTINGS_PATH = path.join(DATA_DIR, 'settings.json');
+
+interface PersistedSettings { theme: string; weeklyReadingGoal: number; }
+
+function loadPersistedSettings(): PersistedSettings {
+  try {
+    if (fs.existsSync(SETTINGS_PATH)) {
+      const raw = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf-8'));
+      return { theme: raw.theme || 'light', weeklyReadingGoal: Number(raw.weeklyReadingGoal) || 5 };
+    }
+  } catch { /* ignore */ }
+  // Backward compat: read old theme.txt
+  try {
+    if (fs.existsSync(THEME_PATH)) {
+      return { theme: fs.readFileSync(THEME_PATH, 'utf-8').trim() || 'light', weeklyReadingGoal: 5 };
+    }
+  } catch { /* ignore */ }
+  return { theme: 'light', weeklyReadingGoal: 5 };
+}
+
+function loadTheme(): string { return loadPersistedSettings().theme; }
+function loadWeeklyReadingGoal(): number { return loadPersistedSettings().weeklyReadingGoal; }
+
+function saveSettings(theme: string, weeklyReadingGoal: number): boolean {
+  try {
+    fs.writeFileSync(SETTINGS_PATH, JSON.stringify({ theme, weeklyReadingGoal }), 'utf-8');
+    return true;
+  } catch (err) {
+    console.warn('Failed to save settings:', err);
+    return false;
+  }
+}
+
+function initProviderAndAgent(): void {
+  const config = loadConfig();
+  if (!config) {
+    console.log('[Main] initProviderAndAgent: No saved config found.');
+    return;
+  }
+  if (!config.apiKey) {
+    console.warn('[Main] initProviderAndAgent: Config loaded but apiKey is empty — user must re-enter API key in Settings.');
+    currentConfig = config;
+    currentTheme = loadTheme();
+    return;
+  }
+  currentConfig = config;
+  provider = createProvider(config);
+  currentTheme = loadTheme();
+  console.log('[Main] initProviderAndAgent: Config loaded — baseUrl:', config.baseUrl, 'model:', config.model, 'store:', !!store);
+  if (store) {
+    memoryManager = new MemoryManager(store, DATA_DIR);
+    // Initialize MCP manager. Stored executables are never auto-started;
+    // activation requires a separately consented execution capability.
+    mcpManager = new MCPManager(store, new ToolRegistry());
+    // Create agent loop with MCP-registered tools
+    const registry = new ToolRegistry();
+    if (mcpManager) {
+      const mcpTools = mcpManager.getAllTools();
+      for (const tool of mcpTools) {
+        registry.register({
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.inputSchema,
+        });
+      }
+    }
+    const loopResult = createAgentLoop(provider, registry, approvalStore ?? undefined);
+    agentLoop = loopResult.agentLoop;
+    approvalStore = loopResult.approvalStore;
+    console.log('[Main] initProviderAndAgent: agentLoop created:', !!agentLoop);
+    if (agentLoop) {
+      goalEngine = new GoalEngine(agentLoop, memoryManager);
+    }
+  } else {
+    console.warn('[Main] initProviderAndAgent: store is null, skipping agentLoop creation');
+  }
+}
+
+// ─── Window Creation ──────────────────────────────────────────
+
+function createWindow(): void {
+  mainWindow = new BrowserWindow({
+    width: 1400,
+    height: 900,
+    minWidth: 1000,
+    minHeight: 700,
+    title: 'Metis Research Workbench',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false, // needed for better-sqlite3
+    },
+    titleBarStyle: 'hiddenInset', // macOS unified title bar
+  });
+
+  // Renderer content never receives ambient navigation authority. Clean HTTPS
+  // links may leave the app only through the validated IPC handler below.
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  mainWindow.webContents.on('will-navigate', (event) => event.preventDefault());
+  mainWindow.webContents.on('will-frame-navigate', (event) => event.preventDefault());
+  const fileCapabilityWebContentsId = mainWindow.webContents.id;
+  const mainWcId = mainWindow.webContents.id;
+  mainWindow.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+    if (!isMainFrame || isInPlace) return; // Only main-frame navigation (not subframe) invalidates
+    bumpWebContentsGeneration(mainWcId);
+    firstRunSetup?.revokeWebContents(mainWcId);
+    caRuntime?.clearOwner(String(mainWcId));
+    caOwnerWindows.delete(String(mainWcId));
+  });
+  mainWindow.webContents.on('render-process-gone', () => {
+    cleanupWebContentsOwner(mainWcId);
+  });
+  mainWindow.webContents.once('destroyed', () => {
+    fileCapabilities.clearWebContents(fileCapabilityWebContentsId);
+    cleanupWebContentsOwner(mainWcId);
+  });
+
+  // Always clear the renderer cache before loading to ensure the latest
+  // dist files are used after rebuilds (Electron caches file:// URLs).
+  mainWindow.webContents.session.clearCache().catch(() => {});
+
+  // In dev, load from Vite dev server; in prod, load built files
+  if (process.env.VITE_DEV_SERVER_URL) {
+    mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
+    mainWindow.webContents.openDevTools();
+  } else {
+    mainWindow.loadFile(path.join(__dirname, '../../dist/index.html'));
+  }
+
+  mainWindow.on('closed', () => {
+    fileCapabilities.clear();
+    exportPreviews.clear();
+    for (const session of activeTerminals.values()) {
+      session.killed = true;
+      session.terminal.kill();
+    }
+    activeTerminals.clear();
+    executionCapabilities?.clear();
+    mainWindow = null;
+  });
+}
+
+// ─── LaTeX Compilation Helpers ─────────────────────────────────
+
+
+const execAsync = promisify(exec);
+
+/** Compile LaTeX source using local pdflatex. */
+async function compileLatexLocal(source: string, bib?: string): Promise<{
+  status: string; pdfPath?: string; errors?: Array<{ line: number; message: string; severity: 'error' | 'warning' }>; error?: string;
+}> {
+  const pdflatexCheck = spawnSync('pdflatex', ['--version'], { encoding: 'utf8' });
+  if (pdflatexCheck.error || pdflatexCheck.status !== 0) {
+    return {
+      status: 'noCompiler',
+      error: 'pdflatex not found. Install TeX Live (or MiKTeX) and ensure pdflatex is in PATH.',
+    };
+  }
+
+  const needsBib = /\\(bibliography|addbibresource)\{[^}]*\}/.test(source);
+  const tmpDir = path.join(os.tmpdir(), `metis-latex-${Date.now()}`);
+  fs.mkdirSync(tmpDir, { recursive: true });
+  const texPath = path.join(tmpDir, 'document.tex');
+  fs.writeFileSync(texPath, source, 'utf8');
+  if (needsBib && bib) {
+    fs.writeFileSync(path.join(tmpDir, 'references.bib'), bib, 'utf8');
+  }
+
+  const runCommand = async (command: string): Promise<{ stdout: string; stderr: string }> => {
+    const { stdout, stderr } = await execAsync(command, { cwd: tmpDir, timeout: 30000 });
+    return { stdout, stderr };
+  };
+
+  let stdout = '';
+  try {
+    const r1 = await runCommand('pdflatex -interaction=nonstopmode -halt-on-error document.tex');
+    stdout += r1.stdout;
+    if (needsBib && bib) {
+      try {
+        const rb = await runCommand('bibtex document');
+        stdout += rb.stdout;
+      } catch (err) {
+        stdout += err instanceof Error ? err.message : String(err);
+      }
+    }
+    const r2 = await runCommand('pdflatex -interaction=nonstopmode -halt-on-error document.tex');
+    stdout += r2.stdout;
+  } catch (err) {
+    stdout += err instanceof Error ? err.message : String(err);
+  }
+
+  const pdfPath = path.join(tmpDir, 'document.pdf');
+  const pdfExists = fs.existsSync(pdfPath);
+
+  const errors = parseLatexLog(stdout);
+
+  if (pdfExists) {
+    const outDir = path.join(DATA_DIR, 'latex-output');
+    fs.mkdirSync(outDir, { recursive: true });
+    const outPdf = path.join(outDir, `document-${Date.now()}.pdf`);
+    fs.copyFileSync(pdfPath, outPdf);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    return { status: 'success', pdfPath: outPdf, errors };
+  }
+
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+  return {
+    status: 'error',
+    errors,
+    error: errors.length > 0 ? errors[0].message : 'Compilation failed — no PDF generated',
+  };
+}
+
+// ─── IPC Handlers ─────────────────────────────────────────────
+
+function setupIPC(): void {
+  let evalSuiteRunning = false;
+
+  // ── Store ───────────────────────────────────────────────
+  ipcMain.handle('store:ready', () => store !== null);
+
+  ipcMain.handle('setup:probe', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const decoded = decodeSettingsProviderProbeRequest(rawRequest);
+      if (!decoded.ok) return decodeSetupProbeResponse(null);
+      const req = decoded.value;
+
+      // Build legacy SetupInput by resolving the key per keyMode
+      let resolvedApiKey: string;
+      if (req.keyMode === 'saved') {
+        if (!currentConfig?.apiKey) {
+          return { version: SETUP_RUNTIME_CONTRACT_VERSION, operationId: req.operationId, success: false, recovery: createSetupRecovery('setup_secure_storage_unavailable') } satisfies SetupProbeResponse;
+        }
+        resolvedApiKey = currentConfig.apiKey;
+      } else {
+        resolvedApiKey = req.newApiKey!;
+      }
+
+      const legacyRequest = {
+        version: req.version,
+        operationId: req.operationId,
+        input: { baseUrl: req.baseUrl, apiKey: resolvedApiKey, model: req.model },
+      };
+
+      if (!firstRunSetup) return decodeSetupProbeResponse(null);
+      return await firstRunSetup.probe(legacyRequest, { owner: setupOwnerFor(event) }, (progress) => {
+        if (!event.sender.isDestroyed()) event.sender.send('setup:progress', progress);
+      });
+    } catch {
+      return decodeSetupProbeResponse(null);
+    }
+  });
+
+  ipcMain.handle('setup:save', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = decodeSetupSaveRequest(rawRequest);
+      if (!request.ok || !firstRunSetup) return decodeSetupSaveResponse(null);
+      return await firstRunSetup.save(request.value, { owner: setupOwnerFor(event) }, (progress) => {
+        if (!event.sender.isDestroyed()) event.sender.send('setup:progress', progress);
+      });
+    } catch {
+      return decodeSetupSaveResponse(null);
+    }
+  });
+
+  ipcMain.handle('setup:restore', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = decodeSetupRestoreRequest(rawRequest);
+      if (!request.ok || !firstRunSetup) return decodeSetupRestoreResponse(null);
+      return await firstRunSetup.restore(request.value);
+    } catch {
+      return decodeSetupRestoreResponse(null);
+    }
+  });
+
+  ipcMain.handle('setup:abort', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = decodeSetupAbortRequest(rawRequest);
+      if (!request.ok || !firstRunSetup) {
+        return {
+          version: SETUP_RUNTIME_CONTRACT_VERSION,
+          operationId: 'setup-recovery',
+          success: false,
+          code: 'setup_operation_not_found',
+        };
+      }
+      return firstRunSetup.abort(request.value);
+    } catch {
+      return {
+        version: SETUP_RUNTIME_CONTRACT_VERSION,
+        operationId: 'setup-recovery',
+        success: false,
+        code: 'setup_operation_not_found',
+      };
+    }
+  });
+
+  // Persistent six-object research workspace. Every channel authorizes the
+  // current main frame, decodes one bounded request and returns presentation
+  // DTOs only; persistence records never cross IPC.
+  ipcMain.handle('research:crud', createSecureIpcHandler({
+    authorize: requireRendererMainFrame,
+    decode: ([rawRequest]) => {
+      const result = decodeResearchCrudRequest(rawRequest);
+      return result.ok ? decoded(result.value) : rejected();
+    },
+    execute: (request) => researchRuntime?.handleCrud(request) ?? createResearchMutationRecovery(),
+    present: (result) => result,
+    recover: createResearchMutationRecovery,
+  }));
+
+  ipcMain.handle('research:link', createSecureIpcHandler({
+    authorize: requireRendererMainFrame,
+    decode: ([rawRequest]) => {
+      const result = decodeResearchLinkRequest(rawRequest);
+      return result.ok ? decoded(result.value) : rejected();
+    },
+    execute: (request) => researchRuntime?.handleLink(request) ?? createResearchMutationRecovery(),
+    present: (result) => result,
+    recover: createResearchMutationRecovery,
+  }));
+
+  ipcMain.handle('research:review', createSecureIpcHandler({
+    authorize: requireRendererMainFrame,
+    decode: ([rawRequest]) => {
+      const result = decodeResearchReviewRequest(rawRequest);
+      return result.ok ? decoded(result.value) : rejected();
+    },
+    execute: (request) => researchRuntime?.handleReview(request) ?? createResearchMutationRecovery(),
+    present: (result) => result,
+    recover: createResearchMutationRecovery,
+  }));
+
+  ipcMain.handle('research:restore', createSecureIpcHandler({
+    authorize: requireRendererMainFrame,
+    decode: ([rawRequest]) => {
+      const result = decodeResearchRestoreRequest(rawRequest);
+      return result.ok ? decoded(result.value) : rejected();
+    },
+    execute: (request) => researchRuntime?.handleRestore(request) ?? createResearchMutationRecovery(),
+    present: (result) => result,
+    recover: createResearchMutationRecovery,
+  }));
+
+  ipcMain.handle('research:version', createSecureIpcHandler({
+    authorize: requireRendererMainFrame,
+    decode: ([rawRequest]) => {
+      const result = decodeResearchArtifactVersionRequest(rawRequest);
+      return result.ok ? decoded(result.value) : rejected();
+    },
+    execute: (request) => researchRuntime?.handleVersion(request) ?? createResearchMutationRecovery(),
+    present: (result) => result,
+    recover: createResearchMutationRecovery,
+  }));
+
+  ipcMain.handle('research:checkpoint', createSecureIpcHandler({
+    authorize: requireRendererMainFrame,
+    decode: ([rawRequest]) => {
+      const result = decodeResearchCheckpointRequest(rawRequest);
+      return result.ok ? decoded(result.value) : rejected();
+    },
+    execute: (request) => researchRuntime?.handleCheckpoint(request) ?? createResearchMutationRecovery(),
+    present: (result) => result,
+    recover: createResearchMutationRecovery,
+  }));
+
+  ipcMain.handle('research:decision', createSecureIpcHandler({
+    authorize: requireRendererMainFrame,
+    decode: ([rawRequest]) => {
+      const result = decodeResearchDecisionRequest(rawRequest);
+      return result.ok ? decoded(result.value) : rejected();
+    },
+    execute: (request) => researchRuntime?.handleDecision(request) ?? createResearchMutationRecovery(),
+    present: (result) => result,
+    recover: createResearchMutationRecovery,
+  }));
+
+  ipcMain.handle('research:snapshot', createSecureIpcHandler({
+    authorize: requireRendererMainFrame,
+    decode: ([rawRequest]) => {
+      const result = decodeResearchSnapshotRequest(rawRequest);
+      return result.ok ? decoded(result.value) : rejected();
+    },
+    execute: (request) => researchRuntime?.getSnapshot(request.projectId) ?? createResearchSnapshotRecovery(),
+    present: (result) => result,
+    recover: createResearchSnapshotRecovery,
+  }));
+
+  ipcMain.handle('research:mediaAttach', createSecureIpcHandler({
+    authorize: requireRendererMainFrame,
+    decode: ([rawRequest]) => {
+      const request = decodeResearchMediaAttachRequest(rawRequest);
+      return request ? decoded(request) : rejected();
+    },
+    execute: (request, event) => researchMedia?.attach(request, executionOwnerFor(event))
+      ?? createResearchMediaAttachFailure(),
+    present: decodeResearchMediaAttachResult,
+    recover: createResearchMediaAttachFailure,
+  }));
+
+  ipcMain.handle('research:mediaPurge', createSecureIpcHandler({
+    authorize: requireRendererMainFrame,
+    decode: ([rawRequest]) => {
+      const request = decodeResearchMediaPurgeRequest(rawRequest);
+      return request ? decoded(request) : rejected();
+    },
+    execute: (request) => researchMedia?.purge(request) ?? createResearchMediaPurgeFailure(),
+    present: decodeResearchMediaPurgeResult,
+    recover: createResearchMediaPurgeFailure,
+  }));
+
+  // ── Current Affairs Export ─────────────────────────────────
+  ipcMain.handle('ca:research', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const req = CurrentAffairsResearchRequestSchema.safeParse(rawRequest);
+      if (!req.success || !caRuntime) return decodeCurrentAffairsResearchResponse(null);
+      const { version: _v, operationId, ...rest } = req.data;
+      void _v;
+      const owner = String(event.sender.id);
+      const result = await caRuntime.research(owner, rest);
+      return decodeCurrentAffairsResearchResponse({ ...result, version: CA_RUNTIME_CONTRACT_VERSION, operationId });
+    } catch { return decodeCurrentAffairsResearchResponse(null); }
+  });
+
+  ipcMain.handle('ca:approve', async (event, rawRequest: unknown) => {
+    try {
+      const invokingWindow = requireRendererMainFrame(event);
+      const req = CurrentAffairsApproveRequestSchema.safeParse(rawRequest);
+      if (!req.success || !caRuntime) return decodeCurrentAffairsApproveResponse(null);
+      const { version: _v, operationId, ...rest } = req.data;
+      void _v;
+      const owner = String(event.sender.id);
+      caOwnerWindows.set(owner, invokingWindow);
+      const result = await caRuntime.approve(owner, rest);
+      return decodeCurrentAffairsApproveResponse({ ...result, version: CA_RUNTIME_CONTRACT_VERSION, operationId });
+    } catch { return decodeCurrentAffairsApproveResponse(null); }
+  });
+
+  ipcMain.handle('ca:export', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const req = CurrentAffairsExportRequestSchema.safeParse(rawRequest);
+      if (!req.success || !caRuntime) return decodeCurrentAffairsExportResponse(null);
+      const { version: _v, operationId, ...rest } = req.data;
+      void _v;
+      const owner = String(event.sender.id);
+      const result = await caRuntime.export(owner, rest);
+      return decodeCurrentAffairsExportResponse({ ...result, version: CA_RUNTIME_CONTRACT_VERSION, operationId });
+    } catch { return decodeCurrentAffairsExportResponse(null); }
+  });
+
+  ipcMain.handle('ca:cancel', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const req = CurrentAffairsCancelRequestSchema.safeParse(rawRequest);
+      if (!req.success || !caRuntime) return decodeCurrentAffairsCancelResponse(null);
+      const { version: _v, operationId } = req.data;
+      void _v;
+      const owner = String(event.sender.id);
+      let result: ReturnType<typeof caRuntime.cancel>;
+      if (req.data.action === 'revoke_approval') {
+        result = caRuntime.cancel(owner, {
+          action: 'revoke_approval', projectId: req.data.projectId, workflowId: req.data.workflowId,
+          receiptId: req.data.receiptId, receiptNonce: req.data.receiptNonce,
+          contentDigest: req.data.contentDigest, sourceSnapshotDigest: req.data.sourceSnapshotDigest,
+          profileId: req.data.profileId, manifestVersion: req.data.manifestVersion,
+        });
+      } else {
+        result = caRuntime.cancel(owner, { action: 'discard_draft', projectId: req.data.projectId, workflowId: req.data.workflowId });
+      }
+      return decodeCurrentAffairsCancelResponse({ ...result, version: CA_RUNTIME_CONTRACT_VERSION, operationId });
+    } catch { return decodeCurrentAffairsCancelResponse(null); }
+  });
+
+  ipcMain.handle('ca:list-sources', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const req = CurrentAffairsListSourcesRequestSchema.safeParse(rawRequest);
+      if (!req.success || !researchRepository) return decodeCurrentAffairsListSourcesResponse(null);
+      const { projectId } = req.data;
+      const now = Date.now();
+      const maxSourceAgeDays = 365;
+      const srcList = researchRepository.listSources?.(projectId) ?? [];
+      const sources = srcList
+        .filter(s => s.deletedAt === null) // strict null check, not truthiness
+        .filter(s => (s.projectId ?? '') === projectId)
+        .map(s => {
+          try {
+            const adapted = adaptSource(s);
+            const base = {
+              sourceId: s.id, projectId: s.projectId ?? '', title: s.title,
+              kind: adapted?.kind ?? null,
+              authors: s.authors ?? [],
+              url: sanitizeListUrl(s.externalUrl ?? adapted?.url ?? null),
+              contentDigest: s.sourceVersionHash ?? null,
+              correctionState: adapted?.correctionState ?? null,
+              updatedAt: s.updatedAt,
+              publishedAt: adapted?.publishedAt ?? null,
+              fetchedAt: adapted?.fetchedAt ?? s.createdAt,
+              deleted: false,
+            };
+            // Main-derived authoritative eligibility (renderer must not recreate)
+            const hasHash = !!(base.contentDigest && /^[a-f0-9]{64}$/i.test(base.contentDigest));
+            const validKind = adapted !== null && base.kind !== null;
+            const cleanCorrection = base.correctionState === 'clean' || base.correctionState === 'corrected';
+            const notRetracted = base.correctionState !== 'retracted';
+            const fresh = base.fetchedAt !== null && (now - base.fetchedAt) / 86400000 <= maxSourceAgeDays;
+            const eligible = hasHash && validKind && cleanCorrection && notRetracted && fresh;
+
+            let reviewStatus: string;
+            let reason: string;
+            if (!adapted) { reviewStatus = 'untagged'; reason = '缺少 current-affairs:* 标签'; }
+            else if (!hasHash) { reviewStatus = 'no_digest'; reason = '缺少 contentDigest'; }
+            else if (base.correctionState === 'retracted') { reviewStatus = 'retracted'; reason = '已 retracted'; }
+            else if (!cleanCorrection) { reviewStatus = `pending_${base.correctionState}`; reason = `待审核 (${base.correctionState})`; }
+            else if (!fresh) { reviewStatus = 'stale'; reason = `来源超过 ${maxSourceAgeDays} 天`; }
+            else { reviewStatus = base.correctionState ?? 'clean'; reason = ''; }
+
+            return { ...base, eligible, reviewStatus, reason };
+          } catch {
+            return null;
+          }
+        })
+        .filter((s): s is NonNullable<typeof s> => s !== null);
+      return { ok: true as const, version: CA_RUNTIME_CONTRACT_VERSION, operationId: req.data.operationId, sources };
+    } catch { return decodeCurrentAffairsListSourcesResponse(null); }
+  });
+
+  ipcMain.handle('ca:review-source', async (event, rawRequest: unknown) => {
+    const invokingWindow = requireRendererMainFrame(event);
+    const req = SourceReviewRequestSchema.safeParse(rawRequest);
+    if (!req.success || !researchRepository) return decodeSourceReviewResponse(null);
+    try {
+      // Verify hash is valid (no magic wildcard)
+      if (!/^[a-f0-9]{64}$/i.test(req.data.expectedSourceVersionHash)) {
+        return { ok: false as const, version: CA_RUNTIME_CONTRACT_VERSION, operationId: req.data.operationId, sourceId: req.data.sourceId, code: 'hash_mismatch' as const };
+      }
+      const reviewedBy = String(event.sender.id);
+
+      // Native confirmation with canonical repo fields — must have invoking window
+      if (!invokingWindow || invokingWindow.isDestroyed()) {
+        return { ok: false as const, version: CA_RUNTIME_CONTRACT_VERSION, operationId: req.data.operationId, sourceId: req.data.sourceId, code: 'review_failed' as const };
+      }
+      const src = researchRepository.getSource(req.data.sourceId);
+      if (!src || src.deletedAt !== null) {
+        return { ok: false as const, version: CA_RUNTIME_CONTRACT_VERSION, operationId: req.data.operationId, sourceId: req.data.sourceId, code: src ? 'deleted' as const : 'source_not_found' as const };
+      }
+      try {
+        const canonicalTitle = src.title;
+        const canonicalHash = src.sourceVersionHash ?? '(none)';
+        const canonicalTime = new Date(src.updatedAt).toISOString();
+        const { response } = await dialog.showMessageBox(invokingWindow, {
+          type: 'question', title: 'Review Source',
+          message: `Review "${canonicalTitle}" as ${req.data.caKind}?`,
+          detail: `Canonical hash: ${canonicalHash}\nUpdated: ${canonicalTime}\nCorrection state: ${req.data.correctionState}`,
+          buttons: ['Confirm Review', 'Cancel'], defaultId: 1,
+        });
+        if (response !== 0) {
+          return { ok: false as const, version: CA_RUNTIME_CONTRACT_VERSION, operationId: req.data.operationId, sourceId: req.data.sourceId, code: 'review_failed' as const };
+        }
+      } catch {
+        return { ok: false as const, version: CA_RUNTIME_CONTRACT_VERSION, operationId: req.data.operationId, sourceId: req.data.sourceId, code: 'review_failed' as const };
+      }
+
+      const result = researchRepository.reviewCurrentAffairsSource(
+        req.data.sourceId,
+        {
+          projectId: req.data.projectId,
+          sourceVersionHash: req.data.expectedSourceVersionHash,
+          updatedAt: req.data.expectedUpdatedAt,
+        },
+        {
+          caKind: req.data.caKind,
+          correctionState: req.data.correctionState,
+          reviewedBy,
+          note: req.data.note ?? '',
+        },
+      );
+      if (!result.ok) {
+        const codeMap: Record<string, 'source_not_found' | 'cross_project' | 'deleted' | 'hash_mismatch' | 'timestamp_mismatch' | 'review_failed'> = {
+          not_found: 'source_not_found',
+          source_deleted: 'deleted',
+          project_mismatch: 'cross_project',
+          hash_mismatch: 'hash_mismatch',
+          stale: 'timestamp_mismatch',
+        };
+        return { ok: false as const, version: CA_RUNTIME_CONTRACT_VERSION, operationId: req.data.operationId, sourceId: req.data.sourceId, code: codeMap[result.code] ?? 'review_failed' };
+      }
+      // Re-read to get metadata.caReviewDigest (FIX498 authoritative) — NEVER fallback
+      const reread = researchRepository.getSource(req.data.sourceId);
+      const metadata = (reread?.metadata ?? {}) as Record<string, unknown>;
+      if (typeof metadata.caReviewDigest !== 'string' || !/^[a-f0-9]{64}$/i.test(metadata.caReviewDigest)) {
+        return { ok: false as const, version: CA_RUNTIME_CONTRACT_VERSION, operationId: req.data.operationId, sourceId: req.data.sourceId, code: 'review_failed' as const };
+      }
+      return { ok: true as const, version: CA_RUNTIME_CONTRACT_VERSION, operationId: req.data.operationId, sourceId: req.data.sourceId, reviewed: true as const, correctionState: req.data.correctionState, reviewDigest: metadata.caReviewDigest };
+    } catch { return { ok: false as const, version: CA_RUNTIME_CONTRACT_VERSION, operationId: req.data.operationId, sourceId: req.data.sourceId, code: 'review_failed' as const }; }
+  });
+
+  // ── Session ─────────────────────────────────────────────
+  ipcMain.handle('session:create', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const decoded = decodeSessionCreateRequest(rawRequest);
+      if (!decoded.ok || !store) return decodeSessionMutationResult(null);
+      store.createSession(decoded.value.sessionId);
+      return decodeSessionMutationResult({ success: true, code: 'created' });
+    } catch {
+      return decodeSessionMutationResult(null);
+    }
+  });
+
+  ipcMain.handle('session:list', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const decoded = decodeSessionListRequest(rawRequest);
+      if (!decoded.ok || !store) return createSessionListRecovery();
+      return decodeLegacySessionList(store.listSessions());
+    } catch {
+      return createSessionListRecovery();
+    }
+  });
+
+  ipcMain.handle('session:delete', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const decoded = decodeSessionDeleteRequest(rawRequest);
+      if (!decoded.ok || !store) return decodeSessionMutationResult(null);
+      if (!store.getSession(decoded.value.sessionId)) {
+        return decodeSessionMutationResult({ success: false, code: 'not_found' });
+      }
+      store.deleteSession(decoded.value.sessionId);
+      return decodeSessionMutationResult({ success: true, code: 'deleted' });
+    } catch {
+      return decodeSessionMutationResult(null);
+    }
+  });
+
+  ipcMain.handle('session:update', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const decoded = decodeSessionUpdateRequest(rawRequest);
+      if (!decoded.ok || !store) return decodeSessionMutationResult(null);
+      if (!store.getSession(decoded.value.sessionId)) {
+        return decodeSessionMutationResult({ success: false, code: 'not_found' });
+      }
+      store.updateSession(decoded.value.sessionId, {
+        metadata: decoded.value.patch,
+      });
+      return decodeSessionMutationResult({ success: true, code: 'updated' });
+    } catch {
+      return decodeSessionMutationResult(null);
+    }
+  });
+
+  // ── Artifacts ───────────────────────────────────────────
+  ipcMain.handle('artifact:create', (event, rawRecord: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const owner = executionOwnerFor(event);
+      const decoded = decodeArtifactCreateRequest(rawRecord);
+      if (!decoded.ok || !store) return decodeArtifactMutationResult(null);
+      const source = decoded.value.sourceCapabilityId
+        ? fileCapabilities.resolve({
+            capabilityId: decoded.value.sourceCapabilityId,
+            operation: 'read',
+            maxBytes: 1,
+          }, owner)
+        : undefined;
+      if (source && !source.ok) return decodeArtifactMutationResult({ success: false, code: 'rejected' });
+      const createdAt = Date.now();
+      store.createArtifact({
+        id: decoded.value.id,
+        sessionId: decoded.value.sessionId,
+        name: decoded.value.name,
+        type: decoded.value.type,
+        path: source?.ok ? source.resolvedPath : undefined,
+        size: decoded.value.size,
+        metadata: {},
+      });
+      const notification = decodeArtifactCreatedNotification({
+        artifactId: decoded.value.id,
+        sessionId: decoded.value.sessionId,
+        name: decoded.value.name,
+        type: decoded.value.type,
+        size: decoded.value.size,
+        sourceCapability: source?.ok ? source.capability : undefined,
+        createdAt,
+      });
+      if (notification.ok) event.sender.send('artifact:created', notification.value);
+      return decodeArtifactMutationResult({ success: true, code: 'created' });
+    } catch {
+      return decodeArtifactMutationResult(null);
+    }
+  });
+  ipcMain.handle('artifact:list', (event, rawSessionId: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const owner = executionOwnerFor(event);
+      const sessionId = RuntimeIdSchema.parse(rawSessionId);
+      const items = (store?.listArtifacts(sessionId) ?? []).map((item) => {
+        const issued = item.path
+          ? fileCapabilities.issue({
+              path: item.path,
+              kind: 'file',
+              mime: mimeForLocalFile(item.path),
+              displayName: item.name,
+              operations: ['file', 'folder', 'read', 'extract'],
+            }, owner)
+          : undefined;
+        return {
+          id: item.id,
+          sessionId: item.sessionId,
+          name: item.name,
+          type: item.type,
+          size: item.size,
+          sourceCapability: issued?.success ? issued.capability : undefined,
+          createdAt: item.createdAt,
+        };
+      });
+      return decodeArtifactListResponse({ success: true, items });
+    } catch {
+      return decodeArtifactListResponse(null);
+    }
+  });
+  ipcMain.handle('artifact:delete', (event, rawId: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const id = RuntimeIdSchema.parse(rawId);
+      if (!store) return decodeArtifactMutationResult(null);
+      store.deleteArtifact(id);
+      return decodeArtifactMutationResult({ success: true, code: 'deleted' });
+    } catch {
+      return decodeArtifactMutationResult(null);
+    }
+  });
+
+  // ── Messages ────────────────────────────────────────────
+  ipcMain.handle('messages:get', (event, rawSessionId: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const sessionId = RuntimeIdSchema.parse(rawSessionId);
+      const rows = (store?.getMessages(sessionId) ?? []).map(({ role, content }) => ({
+        role,
+        content,
+      }));
+      return decodeStoredHistory(rows);
+    } catch {
+      return decodeStoredHistory(null);
+    }
+  });
+
+  ipcMain.handle('messages:append', (event, rawSessionId: unknown, rawRole: unknown, rawContent: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const sessionId = RuntimeIdSchema.parse(rawSessionId);
+      const decoded = decodeStoredHistoryEntry({ role: rawRole, content: rawContent });
+      if (decoded.kind === 'recovery' || !store) return -1;
+      return store.appendMessage(sessionId, rawRole as string, rawContent as string);
+    } catch {
+      return -1;
+    }
+  });
+
+  // ── Eval Suite Execution (real) ─────────────────────────
+  ipcMain.handle('eval:runSuite', async (event, rawRequest: unknown) => {
+    let window: BrowserWindow;
+    try {
+      window = requireRendererMainFrame(event);
+    } catch {
+      return createEvalRunFailure();
+    }
+    const request = decodeEvalRunRequest(rawRequest);
+    if (!request || !agentLoop) return createEvalRunFailure();
+    if (evalSuiteRunning) return createEvalRunFailure('eval_already_running');
+
+    const consent = await dialog.showMessageBox(window, {
+      type: 'warning',
+      title: 'Run diagnostic evaluation',
+      message: 'This diagnostic suite will call the configured model and may use controlled research tools.',
+      detail: 'It can consume provider quota. Results are diagnostic evidence, not a product release approval.',
+      buttons: ['Run evaluation', 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    });
+    if (consent.response !== 0) {
+      return decodeEvalRunResult({ status: 'cancelled', code: 'eval_user_cancelled' });
+    }
+    evalSuiteRunning = true;
+
+    // Pre-defined eval tasks that exercise core engine capabilities
+    const tasks: EvalTaskSpec[] = [
+      {
+        id: 'basic-completion',
+        prompt: 'Respond with exactly the word "hello" and nothing else.',
+        maxTurns: 3,
+        requirements: ['hello'],
+      },
+      {
+        id: 'tool-use-reasoning',
+        prompt: 'Use the read_file tool to read a file, then summarize what you found.',
+        maxTurns: 5,
+        allowedTools: ['read_file'],
+      },
+      {
+        id: 'constraint-check',
+        prompt: 'Say "done" without using any tools.',
+        maxTurns: 3,
+        forbiddenTools: ['read_file', 'write_file', 'execute_command'],
+        requirements: ['done'],
+      },
+    ];
+
+    try {
+      const runner = new EvalRunner(agentLoop);
+      const suiteResult = await runner.runSuite(tasks, { suite: 'metis-core', model: provider?.capabilities().model ?? 'unknown', profile: request.profile });
+      const summary = suiteSummary(suiteResult);
+      const gate = evaluateGate(suiteResult, request.profile);
+
+      // Persist the run
+      store?.saveEvalRun({
+        id: `eval-${Date.now()}`,
+        suiteName: suiteResult.metadata.suite,
+        status: gate.passed ? 'passed' : 'failed',
+        successRate: summary.successRate,
+        taskCount: summary.taskCount,
+        passedCount: summary.passed,
+        resultsJson: JSON.stringify(suiteResult.results),
+        createdAt: suiteResult.metadata.timestamp,
+      });
+
+      return decodeEvalRunResult({
+        status: 'completed',
+        summary: {
+          taskCount: summary.taskCount,
+          passed: summary.passed,
+          failed: summary.failed,
+          successRate: summary.successRate,
+        },
+        gate: {
+          passed: gate.passed,
+          profile: request.profile,
+          failureCount: gate.failures.length,
+          failedTaskIds: gate.failedTasks,
+        },
+        results: suiteResult.results.map((r) => ({
+          taskId: r.taskId,
+          success: r.success,
+          status: r.success ? 'passed' : r.status === 'cancelled' ? 'cancelled' : 'failed',
+          turnsUsed: r.turnsUsed,
+          toolCalls: r.toolCalls,
+          latencyMs: r.latencyMs,
+          toolFailures: r.toolFailures,
+          qualityFailures: r.qualityFailures,
+          issueCount: r.errors.length,
+        })),
+      });
+    } catch {
+      return createEvalRunFailure('eval_execution_failed');
+    } finally {
+      evalSuiteRunning = false;
+    }
+  });
+
+  // ── LaTeX Compile ───────────────────────────────────────
+  ipcMain.handle('latex:compile', createSecureIpcHandler({
+    authorize: requireRendererMainFrame,
+    decode: (rawArgs) => {
+      const request = decodeLatexCompileRequest({
+        source: rawArgs[0],
+        bibliography: rawArgs[1],
+      });
+      return request.ok ? decoded(request.value) : rejected();
+    },
+    execute: async (request, event): Promise<LatexCompileResponse> => {
+      const result = await compileLatexLocal(request.source, request.bibliography);
+      const issues = (result.errors ?? []).slice(0, 500).map((issue) => ({
+        line: Number.isInteger(issue.line) && issue.line >= 0 ? issue.line : 0,
+        severity: issue.severity,
+        code: issue.severity === 'error'
+          ? 'latex_compile_error' as const
+          : 'latex_compile_warning' as const,
+      }));
+      if (result.status === 'success' && result.pdfPath) {
+        const issued = fileCapabilities.issue({
+          path: result.pdfPath,
+          kind: 'file',
+          mime: 'application/pdf',
+          operations: ['file', 'folder', 'read', 'extract'],
+        }, executionOwnerFor(event));
+        if (issued.success) {
+          return decodeLatexCompileResponse({ status: 'success', pdf: issued.capability, issues });
+        }
+      }
+      if (result.status === 'noCompiler') {
+        return decodeLatexCompileResponse({
+          status: 'noCompiler',
+          code: 'latex_compiler_unavailable',
+          issues,
+        });
+      }
+      return decodeLatexCompileResponse({
+        status: 'error',
+        code: 'latex_compile_unavailable',
+        issues,
+      });
+    },
+    present: (result) => result,
+    recover: createLatexCompileRecovery,
+  }));
+
+  ipcMain.handle('fileCapability:use', createFileCapabilityUseHandler({
+    getMainWindow,
+    getRendererEntryUrl,
+    registry: fileCapabilities,
+  }));
+
+  // ── Shell ───────────────────────────────────────────────
+  ipcMain.handle('fileCapability:select', createSecureIpcHandler({
+    authorize: requireRendererMainFrame,
+    decode: ([rawRequest]) => {
+      const request = decodeFileCapabilitySelectionRequest(rawRequest);
+      return request ? decoded(request) : rejected();
+    },
+    execute: async (request, event) => {
+      const window = BrowserWindow.fromWebContents(event.sender);
+      if (!window || window.isDestroyed()) return createFileCapabilityFailure();
+      const filters = request.purpose === 'analysis-dataset'
+        ? [
+            { name: 'Research data', extensions: ['csv', 'tsv', 'json', 'jsonl', 'xlsx', 'xls', 'sav', 'dta'] },
+            { name: 'All files', extensions: ['*'] },
+          ]
+        : [
+            { name: 'Research files', extensions: ['pdf', 'docx', 'txt', 'md', 'tex', 'csv', 'json', 'xlsx', 'pptx', 'png', 'jpg', 'jpeg', 'webp', 'mp3', 'wav'] },
+            { name: 'All files', extensions: ['*'] },
+          ];
+      const selected = await dialog.showOpenDialog(window, {
+        properties: ['openFile'],
+        filters,
+      });
+      const selectedPath = selected.canceled ? undefined : selected.filePaths[0];
+      if (!selectedPath) return createFileCapabilityFailure();
+      const issued = fileCapabilities.issue({
+        path: selectedPath,
+        kind: 'file',
+        mime: mimeForLocalFile(selectedPath),
+        operations: ['file', 'folder', 'read', 'extract'],
+      }, executionOwnerFor(event));
+      return issued.success ? issued : createFileCapabilityFailure();
+    },
+    present: decodeFileCapabilitySelectionResult,
+    recover: createFileCapabilityFailure,
+  }));
+
+  ipcMain.handle('fileCapability:import', createSecureIpcHandler({
+    authorize: requireRendererMainFrame,
+    decode: ([rawRequest]) => {
+      const request = decodeFileCapabilityImportRequest(rawRequest);
+      return request ? decoded(request) : rejected();
+    },
+    execute: async (request, event) => {
+      await fs.promises.mkdir(IMPORTS_DIR, { recursive: true });
+      const token = randomUUID();
+      const finalPath = path.join(IMPORTS_DIR, `${token}-${request.displayName}`);
+      const temporaryPath = `${finalPath}.partial`;
+      try {
+        if (
+          path.extname(request.displayName).toLowerCase() === '.pdf'
+          && Buffer.from(request.data.subarray(0, 5)).toString('ascii') !== '%PDF-'
+        ) {
+          return createFileCapabilityFailure();
+        }
+        await fs.promises.writeFile(temporaryPath, request.data, { flag: 'wx', mode: 0o600 });
+        await fs.promises.rename(temporaryPath, finalPath);
+        const issued = fileCapabilities.issue({
+          path: finalPath,
+          kind: 'file',
+          mime: mimeForLocalFile(finalPath),
+          displayName: request.displayName,
+          operations: ['file', 'folder', 'read', 'extract'],
+        }, executionOwnerFor(event));
+        if (issued.success) return issued;
+        await fs.promises.rm(finalPath, { force: true });
+        return createFileCapabilityFailure();
+      } catch {
+        await fs.promises.rm(temporaryPath, { force: true }).catch(() => {});
+        return createFileCapabilityFailure();
+      }
+    },
+    present: decodeFileCapabilitySelectionResult,
+    recover: createFileCapabilityFailure,
+  }));
+
+  ipcMain.handle('export:selectDestination', async (event) => {
+    try {
+      const window = requireRendererMainFrame(event);
+      const selected = await dialog.showOpenDialog(window, {
+        properties: ['openDirectory', 'createDirectory'],
+      });
+      const directory = selected.canceled ? undefined : selected.filePaths[0];
+      if (!directory) return createFileCapabilityFailure();
+      const issued = fileCapabilities.issue({
+        path: directory,
+        kind: 'folder',
+        mime: 'inode/directory',
+        operations: ['folder'],
+        displayName: path.basename(directory) || 'Export destination',
+      }, executionOwnerFor(event));
+      return issued.success ? issued : createFileCapabilityFailure();
+    } catch {
+      return createFileCapabilityFailure();
+    }
+  });
+
+  ipcMain.handle('export:preview', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const owner = executionOwnerFor(event);
+      const decodedRequest = decodeExportRequest(rawRequest);
+      const repository = researchRepository;
+      const media = researchMedia;
+      const receipts = citationTruthReceipts;
+      if (!decodedRequest.ok || !repository || !media || !receipts) return createExportFailure();
+      const request = decodedRequest.value;
+      const destination = fileCapabilities.resolve({
+        capabilityId: request.destinationCapabilityId,
+        operation: 'folder',
+      }, owner);
+      if (!destination.ok) {
+        return createExportFailure({ code: 'export_destination_unavailable', severity: 'error' });
+      }
+      const snapshot = repository.snapshotProject(request.projectId);
+      if (!snapshot) {
+        return createExportFailure({ code: 'export_snapshot_unavailable', severity: 'error' });
+      }
+      const binding = resolveTrustedArtifactExportBinding(
+        snapshot,
+        request.artifactId,
+        request.artifactVersion,
+      );
+      if (!binding) {
+        return createExportFailure({
+          code: 'export_artifact_binding_mismatch',
+          severity: 'error',
+        });
+      }
+      const artifactImages = await media.loadArtifactMedia(snapshot, binding);
+      if (!artifactImages) {
+        return createExportFailure({
+          code: 'export_artifact_binding_mismatch',
+          severity: 'error',
+        });
+      }
+      const selectedVersion = snapshot.artifactVersions.find((candidate) => (
+        candidate.artifactId === binding.artifactId
+        && candidate.version === binding.artifactVersion
+      ));
+      const selectedManifest = selectedVersion
+        ? ArtifactManifestSchema.safeParse(selectedVersion.manifest)
+        : null;
+      const releaseTrust = selectedVersion && selectedManifest?.success
+        ? await verifyArtifactForExport(
+            repository,
+            receipts,
+            selectedManifest.data,
+            selectedVersion.content,
+          )
+        : null;
+      if (!releaseTrust) {
+        return createExportFailure({ code: 'export_gate_blocked', severity: 'error' });
+      }
+      const trustedRequest = {
+        ...request,
+        artifactManifestDigest: binding.artifactManifestDigest,
+      };
+      const built = buildResearchExport(
+        trustedRequest,
+        buildExportSnapshot(snapshot, binding, artifactImages, releaseTrust),
+      );
+      if (!built.ok) return built.failure;
+      const preview = secureExports.preview(built.plan);
+      if (!preview.success) return preview;
+      const now = Date.now();
+      for (const [id, item] of exportPreviews) {
+        if (item.expiresAt <= now) exportPreviews.delete(id);
+      }
+      if (exportPreviews.size >= 32) {
+        const oldest = exportPreviews.keys().next().value as string | undefined;
+        if (oldest) exportPreviews.delete(oldest);
+      }
+      exportPreviews.set(request.exportId, {
+        request,
+        plan: built.plan,
+        expiresAt: now + 5 * 60_000,
+      });
+      return decodeExportResult(preview);
+    } catch {
+      return createExportFailure();
+    }
+  });
+
+  ipcMain.handle('export:execute', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const owner = executionOwnerFor(event);
+      const decodedRequest = decodeExportRequest(rawRequest);
+      if (!decodedRequest.ok) return createExportFailure();
+      const request = decodedRequest.value;
+      const preview = exportPreviews.get(request.exportId);
+      exportPreviews.delete(request.exportId);
+      if (
+        !preview
+        || preview.expiresAt <= Date.now()
+        || JSON.stringify(preview.request) !== JSON.stringify(request)
+      ) {
+        return createExportFailure({ code: 'export_invalid_request', severity: 'error' });
+      }
+      const repository = researchRepository;
+      const media = researchMedia;
+      const receipts = citationTruthReceipts;
+      if (!repository || !media || !receipts) {
+        return createExportFailure({ code: 'export_snapshot_unavailable', severity: 'error' });
+      }
+      const currentSnapshot = repository.snapshotProject(request.projectId);
+      if (!currentSnapshot) {
+        return createExportFailure({ code: 'export_snapshot_unavailable', severity: 'error' });
+      }
+      const currentBinding = resolveTrustedArtifactExportBinding(
+        currentSnapshot,
+        request.artifactId,
+        request.artifactVersion,
+      );
+      if (
+        !currentBinding
+        || currentBinding.artifactManifestDigest !== preview.plan.artifactManifestDigest
+      ) {
+        return createExportFailure({
+          code: 'export_artifact_binding_mismatch',
+          severity: 'error',
+        });
+      }
+      const currentImages = await media.loadArtifactMedia(currentSnapshot, currentBinding);
+      if (!currentImages) {
+        return createExportFailure({
+          code: 'export_artifact_binding_mismatch',
+          severity: 'error',
+        });
+      }
+      const currentVersion = currentSnapshot.artifactVersions.find((candidate) => (
+        candidate.artifactId === currentBinding.artifactId
+        && candidate.version === currentBinding.artifactVersion
+      ));
+      const currentManifest = currentVersion
+        ? ArtifactManifestSchema.safeParse(currentVersion.manifest)
+        : null;
+      const currentTrust = currentVersion && currentManifest?.success
+        ? await verifyArtifactForExport(
+            repository,
+            receipts,
+            currentManifest.data,
+            currentVersion.content,
+          )
+        : null;
+      if (!currentTrust) {
+        return createExportFailure({ code: 'export_gate_blocked', severity: 'error' });
+      }
+      const currentBuild = buildResearchExport({
+        ...request,
+        artifactManifestDigest: currentBinding.artifactManifestDigest,
+      }, buildExportSnapshot(currentSnapshot, currentBinding, currentImages, currentTrust));
+      if (!currentBuild.ok) return currentBuild.failure;
+      const destination = fileCapabilities.resolve({
+        capabilityId: request.destinationCapabilityId,
+        operation: 'folder',
+      }, owner);
+      if (!destination.ok) {
+        return createExportFailure({ code: 'export_destination_unavailable', severity: 'error' });
+      }
+      const result = await secureExports.write(currentBuild.plan, {
+        resolvedDirectory: destination.resolvedPath,
+      });
+      return decodeExportResult(result.publicResult);
+    } catch {
+      return createExportFailure({ code: 'export_write_failed', severity: 'error' });
+    }
+  });
+
+  ipcMain.handle('shell:openExternal', createSecureExternalOpenHandler({
+    authorize: requireRendererMainFrame,
+    openExternal: (url) => shell.openExternal(url),
+  }));
+
+  // ── Settings ────────────────────────────────────────────
+  ipcMain.handle('settings:get', (event) => {
+    try {
+      requireRendererMainFrame(event);
+    } catch {
+      return createSettingsViewRecovery();
+    }
+    if (!currentConfig && layoutAcceptanceToken) {
+      // Layout acceptance runs against a disposable credential-free profile.
+      // It needs the normal project shell, but it must not mint a provider or
+      // read a real API key. This fixed view is reachable only when the main
+      // process was explicitly launched with the acceptance token.
+      return decodeSettingsView({
+        configured: true,
+        baseUrl: 'http://127.0.0.1:9/v1',
+        model: 'layout-acceptance-model',
+        hasApiKey: true,
+        needsReauth: false,
+        theme: currentTheme,
+        weeklyReadingGoal: loadWeeklyReadingGoal(),
+      });
+    }
+    if (!currentConfig) {
+      return decodeSettingsView({
+        configured: false,
+        hasApiKey: false,
+        needsReauth: false,
+        theme: currentTheme,
+        weeklyReadingGoal: loadWeeklyReadingGoal(),
+      });
+    }
+    return decodeSettingsView({
+      configured: true,
+      baseUrl: currentConfig.baseUrl,
+      model: currentConfig.model,
+      hasApiKey: !!currentConfig.apiKey,
+      needsReauth: !currentConfig.apiKey,
+      theme: currentTheme,
+      weeklyReadingGoal: loadWeeklyReadingGoal(),
+    });
+  });
+
+  ipcMain.handle('settings:set', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = decodeSettingsUpdateRequest(rawRequest);
+      if (!request) return createSettingsMutationFailure('secure_setup_required');
+      const goal = request.weeklyReadingGoal ?? loadWeeklyReadingGoal();
+      const ok = saveSettings(request.theme, goal);
+      if (!ok) return createSettingsMutationFailure('settings_update_unavailable');
+      currentTheme = request.theme;
+      return decodeSettingsMutationResult({ success: true, code: 'settings_saved' });
+    } catch {
+      return createSettingsMutationFailure();
+    }
+  });
+
+  // ── Agent Chat (streaming mode) ─────────────────────────
+  ipcMain.handle('agent:chat', async (
+    event,
+    rawSessionId: unknown,
+    rawMessages: unknown,
+    rawSkillId?: unknown,
+    rawOptions?: unknown,
+  ) => {
+    const requestId = `chat_${++requestCounter}`;
+    try {
+      requireRendererMainFrame(event);
+    } catch {
+      return createChatTurnErrorResponse(requestId, 'error', 'unauthorized_renderer');
+    }
+    if (!agentLoop || !store) {
+      console.error('[Main] agent chat is unavailable');
+      return createChatTurnErrorResponse(requestId, 'error', 'agent_not_initialized');
+    }
+    const requestRuntimeGeneration = runtimeGeneration;
+    const requestAgentLoop = agentLoop;
+
+    const request = AgentChatRequestSchema.safeParse({
+      version: CHAT_RUNTIME_CONTRACT_VERSION,
+      turnId: requestId,
+      sessionId: rawSessionId,
+      messages: rawMessages,
+      skillId: rawSkillId,
+      mode: typeof rawOptions === 'object' && rawOptions !== null
+        ? (rawOptions as { mode?: unknown }).mode
+        : undefined,
+    });
+    if (!request.success) {
+      return createChatTurnErrorResponse(requestId, 'error', 'invalid_chat_request');
+    }
+    const { sessionId, messages, skillId, mode } = request.data;
+
+    // Resolve skill prompt if skillId provided
+    let skillPrompt: string | undefined;
+    if (skillId && skillRegistry) {
+      const skill = skillRegistry.get(skillId);
+      if (skill) {
+        skillPrompt = skill.systemPrompt;
+      }
+    }
+
+    try {
+      const response = await runPersistedChatTurn({
+        agentLoop: requestAgentLoop,
+        store,
+        sessionId,
+        messages,
+        requestId,
+        skillPrompt,
+        options: { mode },
+        isCurrentRuntime: () => runtimeGeneration === requestRuntimeGeneration,
+      });
+
+      return response;
+    } catch {
+      console.error('[Main] agent chat failed');
+      return createChatTurnErrorResponse(requestId, 'error', 'agent_chat_failed');
+    }
+  });
+
+  // ── Acceptance ───────────────────────────────────────────
+  ipcMain.handle('acceptance:environment', (event) => {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (!window || window !== mainWindow || window.isDestroyed()) {
+      throw new Error('Layout acceptance environment request did not originate from the main window');
+    }
+    if (!event.senderFrame || event.senderFrame !== window.webContents.mainFrame) {
+      throw new Error('Layout acceptance environment request did not originate from the main frame');
+    }
+    if (
+      layoutAcceptanceToken &&
+      !isExpectedLayoutAcceptanceFrame(event.senderFrame.url, layoutAcceptanceEntryPath)
+    ) {
+      throw new Error('Layout acceptance environment request did not originate from the current dist entry');
+    }
+    return getLayoutAcceptanceMetadata();
+  });
+
+  if (layoutAcceptanceToken) {
+    layoutAcceptanceWindowControlEnabled = true;
+    ipcMain.handle('acceptance:window:setSize', async (event, rawRequest: unknown) => {
+      const window = requireLayoutAcceptanceMainFrame(event);
+      const request = parseLayoutAcceptanceWindowRequest(rawRequest);
+
+      if (window.isMaximized() || window.isFullScreen()) {
+        window.restore();
+      }
+      if (request.mode === 'content') {
+        await setAcceptanceContentSize(
+          window,
+          request.width,
+          request.height,
+        );
+      } else {
+        await waitForNativeWindowResize(window, () => {
+          window.setSize(request.width, request.height, false);
+        });
+      }
+
+      const outerBounds = window.getBounds();
+      const contentBounds = window.getContentBounds();
+      const display = screen.getDisplayMatching(outerBounds);
+      return {
+        mode: request.mode,
+        requested: {
+          width: request.width,
+          height: request.height,
+        },
+        outerBounds,
+        contentBounds,
+        zoomFactor: window.webContents.getZoomFactor(),
+        display: {
+          id: String(display.id),
+          scaleFactor: display.scaleFactor,
+          bounds: display.bounds,
+          workArea: display.workArea,
+        },
+        maximized: window.isMaximized(),
+        fullScreen: window.isFullScreen(),
+      };
+    });
+    ipcMain.handle('acceptance:window:release', (event) => {
+      requireLayoutAcceptanceMainFrame(event);
+      layoutAcceptanceWindowControlEnabled = false;
+      ipcMain.removeHandler('acceptance:window:setSize');
+      ipcMain.removeHandler('acceptance:window:release');
+      return { released: true };
+    });
+  }
+
+  // ── Agent Status ────────────────────────────────────────
+  ipcMain.handle('agent:status', () => {
+    if (!provider) {
+      return { provider: 'not_configured' };
+    }
+    const caps = provider.capabilities();
+    return {
+      provider: 'ready',
+      model: caps.model,
+      streaming: caps.streaming,
+      nativeToolCalling: caps.nativeToolCalling,
+      maxContextTokens: caps.maxContextTokens,
+      maxOutputTokens: caps.maxOutputTokens,
+      agentLoopReady: agentLoop !== null,
+    };
+  });
+
+  // ── Papers ──────────────────────────────────────────────
+  ipcMain.handle('paper:list', (event) => {
+    try {
+      requireRendererMainFrame(event);
+      const owner = executionOwnerFor(event);
+      return decodeLibraryPaperList((store?.getPapers() ?? []).map((paper) => presentPaper(paper, owner)));
+    } catch {
+      return [];
+    }
+  });
+  ipcMain.handle('paper:attachPdf', async (event, rawRequest: unknown) => {
+    try {
+      const window = requireRendererMainFrame(event);
+      const owner = executionOwnerFor(event);
+      const request = decodePaperIdRequest(rawRequest);
+      if (!request.ok || !store) return createPaperAttachmentFailure();
+      const paper = store.getPapers().find((item) => item.id === request.value.paperId);
+      if (!paper) return createPaperAttachmentFailure();
+      const selected = await dialog.showOpenDialog(window, {
+        properties: ['openFile'],
+        filters: [{ name: 'PDF', extensions: ['pdf'] }],
+      });
+      const filePath = selected.canceled ? undefined : selected.filePaths[0];
+      if (!filePath || !(await isPdfFile(filePath))) return createPaperAttachmentFailure();
+      store.savePaper({ ...paper, pdfPath: filePath, pdfText: '' });
+      const issued = fileCapabilities.issue({
+        path: filePath,
+        kind: 'file',
+        mime: 'application/pdf',
+        operations: ['file', 'read', 'extract'],
+      }, owner);
+      return issued.success
+        ? decodePaperAttachmentResult({ success: true, pdfCapability: issued.capability })
+        : createPaperAttachmentFailure();
+    } catch {
+      return createPaperAttachmentFailure();
+    }
+  });
+  ipcMain.handle('paper:detachPdf', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = decodePaperIdRequest(rawRequest);
+      if (!request.ok || !store) return createPaperMutationFailure();
+      const paper = store.getPapers().find((item) => item.id === request.value.paperId);
+      if (!paper) return createPaperMutationFailure();
+      store.savePaper({ ...paper, pdfPath: undefined, pdfText: '' });
+      return decodePaperMutationResult({ success: true, code: 'detached' });
+    } catch {
+      return createPaperMutationFailure();
+    }
+  });
+  ipcMain.handle('paper:save', (event, rawPaper: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const paper = decodeLibraryPaperSaveRequest(rawPaper);
+      if (!store || !paper) return createLibraryMutationFailure();
+      const existing = store.getPapers().find((item) => item.id === paper.id);
+      store.savePaper({
+        id: paper.id,
+        title: paper.title,
+        authors: paper.authors,
+        year: paper.year,
+        venue: paper.venue,
+        abstract: paper.abstract,
+        ...(paper.doi === undefined ? {} : { doi: paper.doi }),
+        ...(paper.arxivId === undefined ? {} : { arxivId: paper.arxivId }),
+        ...(existing?.pdfPath === undefined ? {} : { pdfPath: existing.pdfPath }),
+        ...(paper.pdfUrl === undefined ? {} : { pdfUrl: paper.pdfUrl }),
+        ...(paper.pdfText === undefined ? {} : { pdfText: paper.pdfText }),
+        ...(paper.citationCount === undefined ? {} : { citationCount: paper.citationCount }),
+        tags: paper.tags,
+        notes: paper.notes,
+        readStatus: paper.readStatus,
+        rating: paper.rating,
+        addedAt: paper.addedAt,
+      });
+      return decodeLibraryMutationResult({ success: true, code: 'saved' });
+    } catch {
+      return createLibraryMutationFailure();
+    }
+  });
+  ipcMain.handle('paper:delete', (event, rawId: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = decodeLibraryDeleteRequest({ id: rawId });
+      if (!request || !store) return createLibraryMutationFailure();
+      store.deletePaper(request.id);
+      return decodeLibraryMutationResult({ success: true, code: 'deleted' });
+    } catch {
+      return createLibraryMutationFailure();
+    }
+  });
+  ipcMain.handle('paper:downloadPdf', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const owner = executionOwnerFor(event);
+      const request = decodePaperIdRequest(rawRequest);
+      if (!request.ok || !store) return createPaperDownloadFailure();
+      const paper = store.getPapers().find((item) => item.id === request.value.paperId);
+      if (!paper?.pdfUrl) return createPaperDownloadFailure();
+      const title = paper.title
+        // eslint-disable-next-line no-control-regex -- filesystem display names must reject control characters
+        .replace(/[\\/:*?"<>|\u0000-\u001f\u007f]/gu, ' ')
+        .replace(/\s+/gu, ' ')
+        .trim()
+        .slice(0, 180) || 'paper';
+      const downloaded = await secureDownloads.download({
+        mode: 'controlled-source',
+        resource: 'pdf',
+        sourceId: paper.id,
+        maxBytes: 128 * 1024 * 1024,
+        timeoutMs: 60_000,
+        maxRedirects: 4,
+      }, {
+        directory: PAPERS_DIR,
+        displayName: `${title}.pdf`,
+      });
+      if (!downloaded.ok) return createPaperDownloadFailure();
+      store.savePaper({ ...paper, pdfPath: downloaded.resolvedPath, pdfText: '' });
+      const issued = fileCapabilities.issue({
+        path: downloaded.resolvedPath,
+        kind: 'file',
+        mime: 'application/pdf',
+        displayName: downloaded.publicResult.displayName,
+        operations: ['file', 'read', 'extract'],
+      }, owner);
+      if (!issued.success) return createPaperDownloadFailure();
+      return decodePaperDownloadResult({
+        success: true,
+        code: 'paper_download_complete',
+        pdfCapability: issued.capability,
+        displayName: downloaded.publicResult.displayName,
+        byteLength: downloaded.publicResult.byteLength,
+        sha256: downloaded.publicResult.sha256,
+      });
+    } catch {
+      return createPaperDownloadFailure();
+    }
+  });
+
+  // ── Collections ─────────────────────────────────────────
+  ipcMain.handle('collection:list', (event) => {
+    try {
+      requireRendererMainFrame(event);
+      return decodeLibraryCollectionList(store?.getCollections() ?? []);
+    } catch {
+      return [];
+    }
+  });
+  ipcMain.handle('collection:save', (event, rawCollection: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const collection = decodeLibraryCollection(rawCollection);
+      if (!collection || !store) return createLibraryMutationFailure();
+      store.saveCollection(collection);
+      return decodeLibraryMutationResult({ success: true, code: 'saved' });
+    } catch {
+      return createLibraryMutationFailure();
+    }
+  });
+  ipcMain.handle('collection:delete', (event, rawId: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = decodeLibraryDeleteRequest({ id: rawId });
+      if (!request || !store) return createLibraryMutationFailure();
+      store.deleteCollection(request.id);
+      return decodeLibraryMutationResult({ success: true, code: 'deleted' });
+    } catch {
+      return createLibraryMutationFailure();
+    }
+  });
+
+  // ── Notes ───────────────────────────────────────────────
+  ipcMain.handle('note:list', (event) => {
+    try {
+      requireRendererMainFrame(event);
+      return decodeLibraryNoteList(store?.getNotes() ?? []);
+    } catch {
+      return [];
+    }
+  });
+  ipcMain.handle('note:save', (event, rawNote: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const note = decodeLibraryNote(rawNote);
+      if (!note || !store) return createLibraryMutationFailure();
+      store.saveNote({
+        id: note.id,
+        title: note.title,
+        content: note.content,
+        tags: note.tags,
+        linkedPaperIds: note.linkedPaperIds,
+        linkedNoteIds: note.linkedNoteIds,
+        updatedAt: note.updatedAt,
+      });
+      return decodeLibraryMutationResult({ success: true, code: 'saved' });
+    } catch {
+      return createLibraryMutationFailure();
+    }
+  });
+  ipcMain.handle('note:delete', (event, rawId: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = decodeLibraryDeleteRequest({ id: rawId });
+      if (!request || !store) return createLibraryMutationFailure();
+      store.deleteNote(request.id);
+      return decodeLibraryMutationResult({ success: true, code: 'deleted' });
+    } catch {
+      return createLibraryMutationFailure();
+    }
+  });
+
+  // ── Experiments metadata CRUD (GLM-102: safe DTO, no path leak) ──
+  ipcMain.handle('experiment:list', (event) => {
+    try {
+      requireRendererMainFrame(event);
+      if (!store) return decodeExperimentListResult(undefined);
+      return decodeExperimentListResult({
+        success: true,
+        experiments: decodeExperimentList(store.getExperimentMetadata()),
+      });
+    } catch {
+      return decodeExperimentListResult(undefined);
+    }
+  });
+  ipcMain.handle('experiment:save', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const req = decodeExperimentSave(raw);
+      if (!req) return decodeExperimentMutationResult({
+        success: false,
+        code: 'experiment_metadata_invalid',
+      });
+      if (!store) return decodeExperimentMutationResult(undefined);
+      store.saveExperimentMetadata(req);
+      return decodeExperimentMutationResult({ success: true, code: 'saved' });
+    } catch {
+      return decodeExperimentMutationResult(undefined);
+    }
+  });
+  ipcMain.handle('experiment:delete', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const id = decodeExperimentDelete(raw);
+      if (!id) return decodeExperimentMutationResult({
+        success: false,
+        code: 'experiment_metadata_invalid',
+      });
+      if (!store) return decodeExperimentMutationResult(undefined);
+      store.deleteExperimentMetadata(id);
+      return decodeExperimentMutationResult({ success: true, code: 'deleted' });
+    } catch {
+      return decodeExperimentMutationResult(undefined);
+    }
+  });
+
+  // ── Experiments secure execution (GLM-102: service-backed IPC) ──
+  ipcMain.handle('experiment:attachScript', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const owner = executionOwnerFor(event);
+      if (!experimentScriptAdapter) return { status: 'rejected', code: 'experiment_script_unavailable' };
+      return experimentScriptAdapter.ipc.attachScript(owner, rawRequest);
+    } catch {
+      return { status: 'rejected', code: 'experiment_script_unavailable' };
+    }
+  });
+
+  ipcMain.handle('experiment:requestRunGrant', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const owner = executionOwnerFor(event);
+      if (!experimentScriptAdapter) return { status: 'rejected', code: 'experiment_grant_unavailable' };
+      return experimentScriptAdapter.ipc.requestRunGrant(owner, rawRequest);
+    } catch {
+      return { status: 'rejected', code: 'experiment_grant_unavailable' };
+    }
+  });
+
+  ipcMain.handle('experiment:run', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const owner = executionOwnerFor(event);
+      if (!experimentScriptAdapter) return { status: 'rejected', exitCode: null, metrics: {} };
+      const request = decodeExperimentRunRequest(rawRequest);
+      if (!request) return { status: 'rejected', exitCode: null, metrics: {} };
+      const result = decodeExperimentRunResult(
+        await experimentScriptAdapter.ipc.run(owner, request),
+      );
+      if (store && !['rejected', 'runtime_unavailable'].includes(result.status)) {
+        const status = result.status === 'completed'
+          ? 'completed'
+          : result.status === 'cancelled'
+            ? 'cancelled'
+            : 'failed';
+        store.updateExperimentRunState(request.experimentId, status, result.metrics);
+      }
+      return result;
+    } catch {
+      return { status: 'rejected', exitCode: null, metrics: {} };
+    }
+  });
+
+  ipcMain.handle('experiment:cancel', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const owner = executionOwnerFor(event);
+      if (!experimentScriptAdapter) return false;
+      return experimentScriptAdapter.ipc.cancel(owner, rawRequest);
+    } catch {
+      return false;
+    }
+  });
+
+  // ── Bulk Load ───────────────────────────────────────────
+  ipcMain.handle('data:loadAll', (event) => {
+    try {
+      requireRendererMainFrame(event);
+      const owner = executionOwnerFor(event);
+      const data = store?.getAllData() ?? { papers: [], notes: [], experiments: [], collections: [] };
+      return {
+        papers: data.papers.map((paper) => presentPaper(paper, owner)),
+        notes: data.notes,
+        experiments: decodeExperimentList(store?.getExperimentMetadata() ?? []),
+        collections: data.collections,
+      };
+    } catch {
+      return { papers: [], notes: [], experiments: [], collections: [] };
+    }
+  });
+
+  // ── Memory ──────────────────────────────────────────────
+  ipcMain.handle('memory:getProject', (event) => {
+    try {
+      requireRendererMainFrame(event);
+      return decodeProjectMemoryContent(memoryManager?.loadProjectMemory() ?? '');
+    } catch {
+      return '';
+    }
+  });
+  ipcMain.handle('memory:setProject', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = decodeProjectMemoryWriteRequest(rawRequest);
+      if (!request || !memoryManager) return createProjectMemoryMutationFailure();
+      memoryManager.saveProjectMemory(request.content);
+      return decodeProjectMemoryMutationResult({ success: true, code: 'saved' });
+    } catch {
+      return createProjectMemoryMutationFailure();
+    }
+  });
+
+  // ──   // ── Workspace Agents (AGENTS.md CAS-protected) ──────────
+  // Manager registry keyed by strictly-validated projectId.
+  // On startup: scan existing projects from DATA_DIR/projects/.
+  const workspaceAgentsByProject = new Map<string, WorkspaceAgentsManager>();
+  function ensureWorkspaceManager(projectId: string): WorkspaceAgentsManager | null {
+    // Always re-validate against the repository on every call.
+    // Projects can be deleted between get/set invocations — cached managers
+    // for deleted or missing projects must be evicted immediately.
+    if (!researchRepository) return null;
+    const entity = researchRepository.getProject(projectId);
+    if (!entity || entity.deletedAt) {
+      workspaceAgentsByProject.delete(projectId);
+      return null;
+    }
+    const existing = workspaceAgentsByProject.get(projectId);
+    if (existing) return existing;
+    const mgr = new WorkspaceAgentsManager(DATA_DIR, projectId);
+    workspaceAgentsByProject.set(projectId, mgr);
+    return mgr;
+  }
+  // Scan for existing projects at startup
+  try {
+    const projectsRoot = path.join(DATA_DIR, 'projects');
+    if (fs.existsSync(projectsRoot)) {
+      for (const entry of fs.readdirSync(projectsRoot, { withFileTypes: true })) {
+        if (entry.isDirectory() && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(entry.name)) {
+          ensureWorkspaceManager(entry.name);
+        }
+      }
+    }
+  } catch { /* non-critical — will discover projects on first access */ }
+
+  ipcMain.handle('workspace:agents:get', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const decoded = decodeWorkspaceAgentsGetRequest(rawRequest);
+      if (!decoded) return { exists: false, content: '', version: 0, contentHash: '', projectId: '' };
+      // Always re-validate through ensureWorkspaceManager — must not
+      // bypass the repository check via a stale cache hit.
+      const mgr = ensureWorkspaceManager(decoded.projectId);
+      if (!mgr) return { exists: false, content: '', version: 0, contentHash: '', projectId: decoded.projectId };
+      return { ...mgr.read(), projectId: decoded.projectId };
+    } catch {
+      return { exists: false, content: '', version: 0, contentHash: '', projectId: '' };
+    }
+  });
+  ipcMain.handle('workspace:agents:set', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const decoded = decodeWorkspaceAgentsWriteRequest(rawRequest);
+      if (!decoded) return { success: false, code: 'content_invalid' };
+      const mgr = ensureWorkspaceManager(decoded.projectId);
+      if (!mgr) return { success: false, code: 'project_not_found' as const };
+      return mgr.write(decoded.content, decoded.expectedVersion);
+    } catch {
+      return { success: false, code: 'io_error' };
+    }
+  });
+  // ── Goal Engine ─────────────────────────────────────────
+  ipcMain.handle('goal:create', (event, rawDescription: unknown, rawContext?: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      if (!goalEngine) return decodeGoalCreateResponse(null);
+      const request = GoalCreateRequestSchema.parse({
+        description: rawDescription,
+        context: rawContext,
+      });
+      const goal = goalEngine.createGoal(request.description, request.context);
+      return decodeGoalCreateResponse({
+        success: true,
+        goalId: goal.id,
+        status: goal.status,
+      });
+    } catch {
+      return decodeGoalCreateResponse(null);
+    }
+  });
+  ipcMain.handle('goal:get', (event, rawGoalId: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      if (!goalEngine) return decodeGoalSummaryResponse(null);
+      const { goalId } = GoalIdRequestSchema.parse({ goalId: rawGoalId });
+      const goal = goalEngine.getGoal(goalId);
+      return goal
+        ? decodeGoalSummaryResponse({ success: true, goal: presentGoalSummary(goal) })
+        : decodeGoalSummaryResponse(null);
+    } catch {
+      return decodeGoalSummaryResponse(null);
+    }
+  });
+  ipcMain.handle('goal:list', (event) => {
+    try {
+      requireRendererMainFrame(event);
+      if (!goalEngine) return decodeGoalListResponse(null);
+      return decodeGoalListResponse({
+        success: true,
+        goals: goalEngine.listGoals().map(presentGoalSummary),
+      });
+    } catch {
+      return decodeGoalListResponse(null);
+    }
+  });
+  ipcMain.handle('goal:generatePlan', async (event, rawGoalId: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      if (!goalEngine) return decodeGoalPlanResponse(null);
+      const { goalId } = GoalIdRequestSchema.parse({ goalId: rawGoalId });
+      const result = await goalEngine.generatePlan(goalId);
+      return presentGoalPlan(goalId, result.workflow);
+    } catch {
+      return decodeGoalPlanResponse(null);
+    }
+  });
+  ipcMain.handle('goal:refinePlan', async (event, rawGoalId: unknown, rawFeedback: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      if (!goalEngine) return decodeGoalPlanResponse(null);
+      const request = GoalRefineRequestSchema.parse({
+        goalId: rawGoalId,
+        feedback: rawFeedback,
+      });
+      const result = await goalEngine.refinePlan(request.goalId, request.feedback);
+      return presentGoalPlan(request.goalId, result.workflow);
+    } catch {
+      return decodeGoalPlanResponse(null);
+    }
+  });
+  ipcMain.handle('goal:updatePlan', (event) => {
+    try {
+      requireRendererMainFrame(event);
+    } catch {
+      // Fixed response below.
+    }
+    return { valid: false, errors: ['goal_plan_update_unavailable'], warnings: [] };
+  });
+  ipcMain.handle('goal:execute', async (event, rawGoalId: unknown) => {
+    let goalId: string;
+    try {
+      requireRendererMainFrame(event);
+      goalId = RuntimeIdSchema.parse(rawGoalId);
+    } catch {
+      return { success: false, code: 'goal_execution_unavailable' };
+    }
+    if (!goalEngine) return { success: false, code: 'goal_execution_unavailable' };
+    let sequence = 0;
+    const sendGoalEvent = (channel: string, payload: unknown) => {
+      const decoded = decodeGoalLiveEvent(payload);
+      if (decoded.ok) event.sender.send(channel, decoded.value);
+    };
+    const hooks: WorkflowHooks = {
+      onStepStart: (step) => {
+        sendGoalEvent('goal:step:start', {
+          version: CHAT_RUNTIME_CONTRACT_VERSION,
+          type: 'step-start',
+          goalId,
+          sequence: sequence++,
+          stepId: step.id,
+          stepName: 'Research step',
+        });
+      },
+      onStepComplete: (step) => {
+        sendGoalEvent('goal:step:complete', {
+          version: CHAT_RUNTIME_CONTRACT_VERSION,
+          type: 'step-complete',
+          goalId,
+          sequence: sequence++,
+          stepId: step.id,
+          stepName: 'Research step',
+          output: '',
+        });
+      },
+      onStepFailed: (step) => {
+        sendGoalEvent('goal:step:failed', {
+          version: CHAT_RUNTIME_CONTRACT_VERSION,
+          type: 'step-failed',
+          goalId,
+          sequence: sequence++,
+          stepId: step.id,
+          stepName: 'Research step',
+          error: 'goal_step_failed',
+        });
+      },
+      onProgress: (completed, total) => {
+        sendGoalEvent('goal:progress', {
+          version: CHAT_RUNTIME_CONTRACT_VERSION,
+          type: 'progress',
+          goalId,
+          sequence: sequence++,
+          completed,
+          total,
+          currentStep: 'Research step',
+        });
+      },
+    };
+    try {
+      await goalEngine.executeGoal(goalId, hooks);
+      return { success: true };
+    } catch {
+      return { success: false, code: 'goal_execution_unavailable' };
+    }
+  });
+  ipcMain.handle('goal:pause', (event, rawGoalId: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const { goalId } = GoalIdRequestSchema.parse({ goalId: rawGoalId });
+      if (!goalEngine) return { success: false };
+      goalEngine.cancelGoal(goalId);
+      return { success: true };
+    } catch {
+      return { success: false };
+    }
+  });
+  ipcMain.handle('goal:resume', async (event, rawGoalId: unknown, rawFromStepId?: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const { goalId } = GoalIdRequestSchema.parse({ goalId: rawGoalId });
+      const fromStepId = rawFromStepId === undefined
+        ? undefined
+        : RuntimeIdSchema.parse(rawFromStepId);
+      if (!goalEngine) return { success: false, code: 'goal_execution_unavailable' };
+      await goalEngine.resumeGoal(goalId, fromStepId);
+      return { success: true };
+    } catch {
+      return { success: false, code: 'goal_execution_unavailable' };
+    }
+  });
+  ipcMain.handle('goal:cancel', (event, rawGoalId: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const { goalId } = GoalIdRequestSchema.parse({ goalId: rawGoalId });
+      if (!goalEngine) return { success: false };
+      goalEngine.cancelGoal(goalId);
+      return { success: true };
+    } catch {
+      return { success: false };
+    }
+  });
+  ipcMain.handle('goal:getProgress', (event) => {
+    try {
+      requireRendererMainFrame(event);
+    } catch {
+      return undefined;
+    }
+    return undefined;
+  });
+  ipcMain.handle('goal:archive', async (event, rawGoalId: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const { goalId } = GoalIdRequestSchema.parse({ goalId: rawGoalId });
+      if (!goalEngine) return { success: false };
+      await goalEngine.archiveGoal(goalId);
+      return { success: true };
+    } catch {
+      return { success: false };
+    }
+  });
+  ipcMain.handle('goal:listArchives', (event) => {
+    try {
+      requireRendererMainFrame(event);
+    } catch {
+      return [];
+    }
+    return [];
+  });
+
+  // ── Skills ──────────────────────────────────────────────
+  ipcMain.handle('skill:list', (event) => {
+    try {
+      requireRendererMainFrame(event);
+      return skillRegistry?.list().map((skill) => ({
+        id: skill.id,
+        name: skill.name,
+        description: skill.description,
+        category: skill.category,
+      })) ?? [];
+    } catch {
+      return [];
+    }
+  });
+  ipcMain.handle('skill:get', (event, rawId: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const skill = skillRegistry?.get(RuntimeIdSchema.parse(rawId));
+      return skill ? {
+        id: skill.id,
+        name: skill.name,
+        description: skill.description,
+        category: skill.category,
+      } : undefined;
+    } catch {
+      return undefined;
+    }
+  });
+  ipcMain.handle('skill:setActive', (event, rawId: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      if (!skillRegistry) return { success: false, error: 'skill_registry_unavailable' };
+      if (rawId === null) {
+        skillRegistry.clearActiveSkillPrompt();
+        return { success: true, active: null };
+      }
+      const id = RuntimeIdSchema.parse(rawId);
+      const skill = skillRegistry.get(id);
+      if (!skill) return { success: false, error: 'skill_unavailable' };
+      skillRegistry.setActiveSkillPrompt(skill.systemPrompt);
+      return { success: true, active: id };
+    } catch {
+      return { success: false, error: 'skill_unavailable' };
+    }
+  });
+  ipcMain.handle('skill:getActive', (event) => {
+    try {
+      requireRendererMainFrame(event);
+      if (!skillRegistry) return { active: null };
+      const prompt = skillRegistry.getActiveSkillPrompt();
+      return { active: prompt ? 'active' : null };
+    } catch {
+      return { active: null };
+    }
+  });
+
+  // ── MCP Servers ─────────────────────────────────────────
+  ipcMain.handle('mcp:list', (event) => {
+    try {
+      requireRendererMainFrame(event);
+      return mcpManager?.getStatus().map(({ id, name, connected, toolCount }) => ({
+        id,
+        name,
+        connected,
+        toolCount,
+      })) ?? [];
+    } catch {
+      return [];
+    }
+  });
+  ipcMain.handle('mcp:add', async (event) => {
+    try {
+      requireRendererMainFrame(event);
+    } catch {
+      // Fixed response below.
+    }
+    return { success: false, code: 'managed_mcp_required' };
+  });
+  ipcMain.handle('mcp:remove', async (event, rawId: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const id = RuntimeIdSchema.parse(rawId);
+      if (!mcpManager) return { success: false };
+      await mcpManager.removeServer(id);
+      return { success: true };
+    } catch {
+      return { success: false };
+    }
+  });
+  ipcMain.handle('mcp:toggle', async (event, rawId: unknown, rawEnabled: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const id = RuntimeIdSchema.parse(rawId);
+      if (!mcpManager || typeof rawEnabled !== 'boolean') return { success: false };
+      if (rawEnabled) return { success: false, code: 'execution_consent_required' };
+      const status = await mcpManager.toggleServer(id, false);
+      return { success: true, ...status };
+    } catch {
+      return { success: false };
+    }
+  });
+  ipcMain.handle('mcp:test', async (event) => {
+    try {
+      requireRendererMainFrame(event);
+    } catch {
+      // Fixed response below.
+    }
+    return { success: false, code: 'managed_mcp_required' };
+  });
+
+  // ── HITL Approval ───────────────────────────────────────
+  // Track pending approval resolvers by request id
+  const approvalResolvers = new Map<string, (approved: boolean) => void>();
+
+  const approvalTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
+
+  ipcMain.handle('hitl:approval:respond', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = decodeApprovalResponseRequest(rawRequest);
+      if (!request) return createApprovalMutationFailure();
+      const resolve = approvalResolvers.get(request.requestId);
+      if (!resolve) return createApprovalMutationFailure();
+      resolve(request.decision === 'approve');
+      approvalResolvers.delete(request.requestId);
+      const timeout = approvalTimeouts.get(request.requestId);
+      if (timeout) clearTimeout(timeout);
+      approvalTimeouts.delete(request.requestId);
+      return decodeApprovalMutationResult({ success: true });
+    } catch {
+      return createApprovalMutationFailure();
+    }
+  });
+
+  // Set up approval handler that sends requests to renderer via IPC
+  if (approvalStore) {
+    approvalStore.setHandler(async (request) => {
+      return new Promise((resolve) => {
+        const win = mainWindow;
+        if (!win) {
+          resolve(false);
+          return;
+        }
+        approvalResolvers.set(request.id, resolve);
+        const presented = ApprovalRequestViewSchema.safeParse({
+          requestId: request.id,
+          action: presentApprovalAction(request.toolName),
+          createdAt: request.createdAt,
+        });
+        if (!presented.success) {
+          approvalResolvers.delete(request.id);
+          resolve(false);
+          return;
+        }
+        win.webContents.send('hitl:approval:required', presented.data);
+        // Timeout after 5 minutes to prevent hanging
+        const timeoutId = setTimeout(() => {
+          if (approvalResolvers.has(request.id)) {
+            approvalResolvers.delete(request.id);
+            approvalTimeouts.delete(request.id);
+            resolve(false);
+          }
+        }, 300_000);
+        approvalTimeouts.set(request.id, timeoutId);
+      });
+    });
+  }
+
+  ipcMain.handle('hitl:rules:list', (event) => {
+    try {
+      requireRendererMainFrame(event);
+      if (!approvalStore) return [];
+      return decodeApprovalRuleViews(approvalStore.getRules().map((rule) => ({
+        id: rule.id,
+        name: rule.name,
+        description: rule.description,
+        enabled: rule.enabled,
+      })));
+    } catch {
+      return [];
+    }
+  });
+
+  ipcMain.handle('hitl:rules:toggle', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = decodeApprovalRuleToggleRequest(rawRequest);
+      if (!request || !approvalStore) return createApprovalMutationFailure();
+      return approvalStore.setRuleEnabled(request.ruleId, request.enabled)
+        ? decodeApprovalMutationResult({ success: true })
+        : createApprovalMutationFailure();
+    } catch {
+      return createApprovalMutationFailure();
+    }
+  });
+
+  ipcMain.handle('hitl:approvals:pending', (event) => {
+    try {
+      requireRendererMainFrame(event);
+      if (!approvalStore) return [];
+      return approvalStore.getPending().flatMap((request) => {
+        const presented = ApprovalRequestViewSchema.safeParse({
+          requestId: request.id,
+          action: presentApprovalAction(request.toolName),
+          createdAt: request.createdAt,
+        });
+        return presented.success ? [presented.data] : [];
+      });
+    } catch {
+      return [];
+    }
+  });
+
+  // Legacy dialog:selectScript removed (GLM-102). Script selection is now
+  // handled entirely by experiment:attachScript through secure adapter path.
+
+  // ── Terminal (node-pty) ────────────────────────────────
+  ipcMain.handle('terminal:requestGrant', async (event) => {
+    try {
+      const window = requireRendererMainFrame(event);
+      if (!executionCapabilities) return createTerminalFailure();
+      const consent = await dialog.showMessageBox(window, {
+        type: 'warning',
+        title: 'Open controlled terminal',
+        message: 'The terminal can run commands in the Metis managed workspace.',
+        detail: 'Only continue if you intend to use an interactive shell. The renderer cannot choose the executable, environment, or working directory.',
+        buttons: ['Open terminal', 'Cancel'],
+        defaultId: 1,
+        cancelId: 1,
+        noLink: true,
+      });
+      if (consent.response !== 0) return createTerminalFailure();
+      const executablePath = process.platform === 'win32'
+        ? path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+        : '/bin/bash';
+      const issued = executionCapabilities.issue({
+        operation: 'terminal-session',
+        lifetime: 'session',
+        owner: executionOwnerFor(event),
+        userConsentAt: Date.now(),
+        executablePath,
+        fixedArgs: process.platform === 'win32' ? ['-NoLogo', '-NoProfile'] : ['--noprofile', '--norc'],
+        cwd: TERMINAL_WORKSPACE_DIR,
+      });
+      return issued.success
+        ? decodeTerminalGrantResult({
+            success: true,
+            code: 'terminal_grant_issued',
+            grant: issued.grant,
+          })
+        : createTerminalFailure();
+    } catch {
+      return createTerminalFailure();
+    }
+  });
+
+  ipcMain.handle('terminal:create', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = TerminalCreateRequestSchema.safeParse(rawRequest);
+      if (!request.success || !executionCapabilities) return createTerminalFailure();
+      const owner = executionOwnerFor(event);
+      const authorized = executionCapabilities.authorize({
+        grantId: request.data.executionGrantId,
+        operation: 'terminal-session',
+        action: 'execute',
+      }, owner);
+      if (!authorized.ok || authorized.action !== 'execute') return createTerminalFailure();
+      const terminalId = nextTerminalId();
+      const terminal = pty.spawn(authorized.plan.executablePath, authorized.plan.args, {
+        name: 'xterm-256color',
+        cols: request.data.cols,
+        rows: request.data.rows,
+        cwd: authorized.plan.cwd,
+        env: authorized.plan.env,
+      });
+      const session: ActiveTerminalSession = {
+        terminal,
+        grantId: authorized.grant.grantId,
+        owner,
+        sequence: 0,
+        killed: false,
+      };
+      activeTerminals.set(terminalId, session);
+
+      terminal.onData((rawData: string) => {
+        const current = activeTerminals.get(terminalId);
+        const window = mainWindow;
+        if (!current || !window || window.isDestroyed() || window.webContents.id !== owner.webContentsId) return;
+        const data = rawData.replaceAll('\u0000', '');
+        for (let offset = 0; offset < data.length; offset += TERMINAL_RUNTIME_LIMITS.eventChars) {
+          const eventPayload = TerminalDataEventSchema.safeParse({
+            terminalId,
+            sequence: current.sequence++,
+            data: data.slice(offset, offset + TERMINAL_RUNTIME_LIMITS.eventChars),
+          });
+          if (eventPayload.success) window.webContents.send('terminal:data', eventPayload.data);
+        }
+      });
+
+      terminal.onExit(({ exitCode }: { exitCode: number }) => {
+        const current = activeTerminals.get(terminalId);
+        activeTerminals.delete(terminalId);
+        executionCapabilities?.revoke(authorized.grant.grantId);
+        const window = mainWindow;
+        if (!current || !window || window.isDestroyed() || window.webContents.id !== owner.webContentsId) return;
+        const eventPayload = TerminalExitEventSchema.safeParse({
+          terminalId,
+          sequence: current.sequence++,
+          exitCode,
+          reason: current.killed ? 'killed' : 'exit',
+        });
+        if (eventPayload.success) window.webContents.send('terminal:exit', eventPayload.data);
+      });
+
+      return decodeTerminalCreateResult({
+        success: true,
+        code: 'terminal_session_created',
+        terminalId,
+        sessionAccessGrantId: authorized.grant.grantId,
+      });
+    } catch {
+      return createTerminalFailure();
+    }
+  });
+
+  ipcMain.handle('terminal:write', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = TerminalWriteRequestSchema.safeParse(rawRequest);
+      if (!request.success || !executionCapabilities) return createTerminalFailure();
+      const owner = executionOwnerFor(event);
+      const session = activeTerminals.get(request.data.terminalId);
+      const authorized = executionCapabilities.authorize({
+        grantId: request.data.sessionAccessGrantId,
+        operation: 'terminal-session',
+        action: 'session-access',
+      }, owner);
+      if (!session || !authorized.ok || authorized.action !== 'session-access' || session.grantId !== request.data.sessionAccessGrantId) {
+        return createTerminalFailure();
+      }
+      session.terminal.write(request.data.data);
+      return decodeTerminalOperationResult({ success: true, code: 'terminal_operation_complete' });
+    } catch {
+      return createTerminalFailure();
+    }
+  });
+
+  ipcMain.handle('terminal:resize', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = TerminalResizeRequestSchema.safeParse(rawRequest);
+      if (!request.success || !executionCapabilities) return createTerminalFailure();
+      const owner = executionOwnerFor(event);
+      const session = activeTerminals.get(request.data.terminalId);
+      const authorized = executionCapabilities.authorize({
+        grantId: request.data.sessionAccessGrantId,
+        operation: 'terminal-session',
+        action: 'session-access',
+      }, owner);
+      if (!session || !authorized.ok || authorized.action !== 'session-access' || session.grantId !== request.data.sessionAccessGrantId) {
+        return createTerminalFailure();
+      }
+      session.terminal.resize(request.data.cols, request.data.rows);
+      return decodeTerminalOperationResult({ success: true, code: 'terminal_operation_complete' });
+    } catch {
+      return createTerminalFailure();
+    }
+  });
+
+  ipcMain.handle('terminal:kill', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = TerminalKillRequestSchema.safeParse(rawRequest);
+      if (!request.success || !executionCapabilities) return createTerminalFailure();
+      const owner = executionOwnerFor(event);
+      const session = activeTerminals.get(request.data.terminalId);
+      const authorized = executionCapabilities.authorize({
+        grantId: request.data.sessionAccessGrantId,
+        operation: 'terminal-session',
+        action: 'session-access',
+      }, owner);
+      if (!session || !authorized.ok || authorized.action !== 'session-access' || session.grantId !== request.data.sessionAccessGrantId) {
+        return createTerminalFailure();
+      }
+      session.killed = true;
+      session.terminal.kill();
+      return decodeTerminalOperationResult({ success: true, code: 'terminal_operation_complete' });
+    } catch {
+      return createTerminalFailure();
+    }
+  });
+}
+
+// ─── App Lifecycle ────────────────────────────────────────────
+
+// Enforce a single application instance per userData directory. Without this,
+// launching the app again opens a second instance that contends for the same
+// disk cache (producing "Unable to move the cache: access denied") and the
+// same SQLite database (risking concurrent-write corruption). The second
+// instance exits immediately; the first instance window is restored/focused.
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+}
+app.on('second-instance', () => {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+    mainWindow.show();
+  }
+});
+
+app.whenReady().then(async () => {
+  if (!gotSingleInstanceLock) return;
+  // Ensure data directory
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.mkdirSync(TERMINAL_WORKSPACE_DIR, { recursive: true });
+  executionCapabilities = new ExecutionCapabilityRegistry({
+    allowedCwdRoots: [DATA_DIR],
+    allowedEnvironmentKeys: ['ELECTRON_RUN_AS_NODE'],
+  });
+
+  // Initialize secure storage with Electron's safeStorage (must be after app.whenReady)
+  if (safeStorage && safeStorage.isEncryptionAvailable()) {
+    initSecureStorage(safeStorage);
+  } else {
+    console.warn('[Main] Electron safeStorage not available — config encryption will use fallback.');
+  }
+  const citationTruthSecret = loadOrCreateCitationTruthSecret(DATA_DIR, safeStorage);
+  citationTruthReceipts = citationTruthSecret
+    ? new CitationTruthReceiptService(citationTruthSecret)
+    : null;
+
+  // Load or create Current Affairs receipt signing secret
+  caReceiptSecret = loadOrCreateCurrentAffairsReceiptSecret(DATA_DIR, safeStorage);
+
+  // Initialize CA Runtime Service (DI wiring)
+  // Validate + create artifact root under trusted DATA_DIR (fail-closed, no recursive traversal)
+  const caArtifactRoot = path.join(DATA_DIR, 'ca-artifacts');
+  if (!fs.existsSync(DATA_DIR)) throw new Error('[Main] DATA_DIR missing — cannot create CA artifact root');
+  const dataDirStat = fs.lstatSync(DATA_DIR);
+  if (dataDirStat.isSymbolicLink()) throw new Error('[Main] DATA_DIR is a symlink — rejecting');
+  if (!fs.existsSync(caArtifactRoot)) {
+    fs.mkdirSync(caArtifactRoot); // non-recursive: parent must exist
+  }
+  const artifactRootStat = fs.lstatSync(caArtifactRoot);
+  if (artifactRootStat.isSymbolicLink()) throw new Error('[Main] CA artifact root is a symlink — rejecting');
+  if (!artifactRootStat.isDirectory()) throw new Error('[Main] CA artifact root is not a directory — rejecting');
+
+  const sharedGetSource = (id: string) => { try { const repo = researchRepository; if (!repo) return undefined; const src = repo.getSource(id); const adapted = src ? adaptSource(src) : undefined; return adapted ?? undefined; } catch { return undefined; } };
+  const caApprovalStore = new CurrentAffairsApprovalStore({ now: () => Date.now(), signingSecret: caReceiptSecret ?? undefined });
+  const caArtifactService = new CurrentAffairsArtifactService(caArtifactRoot);
+  const caSessionState = new CurrentAffairsSessionState({ now: () => Date.now() });
+  const caRepoService = new CurrentAffairsRepositoryService({
+    getSource: sharedGetSource,
+    now: () => Date.now(),
+  });
+  const { CurrentAffairsRuntimeService } = await import('./CurrentAffairsRuntimeService.js');
+  caRuntime = new CurrentAffairsRuntimeService({
+    repository: caRepoService, approvalStore: caApprovalStore, artifactService: caArtifactService,
+    sessionState: caSessionState, receiptSecret: caReceiptSecret,
+    now: () => Date.now(),
+    getSource: sharedGetSource,
+    confirmApproval: async (ctx) => {
+      const win = caOwnerWindows.get(ctx.ownerSessionId);
+      if (!win || win.isDestroyed()) { caOwnerWindows.delete(ctx.ownerSessionId); return false; }
+      try {
+        const { response } = await dialog.showMessageBox(win, {
+          type: 'question', title: 'Approve Research',
+          message: `Approve "${ctx.title}" for export?`,
+          detail: `Project: ${ctx.projectId}\nSources: ${ctx.sourceCount}\nFacts: ${ctx.factCount}\nDigest: ${ctx.contentDigest.slice(0,16)}…`,
+          buttons: ['Approve', 'Cancel'], defaultId: 1,
+        });
+        return response === 0;
+      } catch {
+        return false;
+      }
+    },
+  });
+  if (!citationTruthReceipts) {
+    console.warn('[Main] Citation truth key unavailable; verified deliverables and formal export are disabled.');
+  }
+
+  // Initialize persistence (graceful degradation if native module fails)
+  try {
+    store = new PersistenceStore(DB_PATH);
+    setSharedStore(store);
+    researchRepository = new ResearchRepository(store.raw, (manifest, content) => {
+      if (!researchRepository || !citationTruthReceipts) {
+        return { receiptVerified: false, profileEnforced: false };
+      }
+      return verifyArtifactForPersistence(
+        researchRepository,
+        citationTruthReceipts,
+        manifest,
+        content,
+      );
+    });
+    researchMedia = new ResearchMediaService({
+      repository: researchRepository,
+      fileCapabilities,
+      managedRoot: RESEARCH_MEDIA_DIR,
+    });
+    researchRuntime = new ResearchRuntimeService(
+      researchRepository,
+      researchMedia,
+      citationTruthReceipts ?? undefined,
+    );
+    // Initialize experiment script adapter (GLM-102)
+    try {
+      experimentScriptAdapter = createExperimentScriptAdapter({
+        db: store.raw,
+        resourcesPath: process.resourcesPath,
+        processSecret: EXPERIMENT_SESSION_SECRET,
+      });
+      console.log('[Main] ExperimentScriptAdapter initialized.');
+    } catch (err: unknown) {
+      experimentScriptAdapter = null;
+      console.warn('[Main] ExperimentScriptAdapter failed:', (err as Error)?.message);
+    }
+    console.log('[Main] PersistenceStore initialized.');
+  } catch (err: unknown) {
+    researchRepository = null;
+    researchRuntime = null;
+    researchMedia = null;
+    console.warn('[Main] PersistenceStore failed to load (SQLite native module not available). Running without persistence.');
+    console.warn('[Main] Error:', (err as Error)?.message);
+    // store remains null — IPC handlers check for null
+  }
+
+  // Initialize memory manager
+  if (store) {
+    memoryManager = new MemoryManager(store, DATA_DIR);
+  }
+
+  // Initialize MCP manager (before agent so tools can be registered)
+  if (store) {
+    mcpManager = new MCPManager(store, new ToolRegistry());
+  }
+
+  // Initialize skill registry with default skills
+  skillRegistry = registerDefaultSkills();
+
+  // Restore the OS-protected first-run configuration and atomically prepare the
+  // provider runtime before the renderer loads. Legacy configuration remains a
+  // migration fallback only when no new setup envelope is ready.
+  let setupRestored = false;
+  try {
+    firstRunSetup = new FirstRunSetupService({
+      configPath: SETUP_CONFIG_PATH,
+      secureStorage: createFirstRunSecureStorage(safeStorage),
+      probeTransport: new OpenAISetupProbeTransport(),
+      runtimeRebuilder: {
+        prepare: async (context) => prepareProviderRuntime(context),
+      },
+    });
+    const restored = await firstRunSetup.restore({
+      version: SETUP_RUNTIME_CONTRACT_VERSION,
+      operationId: 'startup-restore',
+    });
+    setupRestored = restored.state === 'ready';
+  } catch {
+    firstRunSetup?.dispose();
+    firstRunSetup = null;
+  }
+  currentTheme = loadTheme();
+  if (!setupRestored) initProviderAndAgent();
+
+  // Setup IPC before loading the renderer, then create the initial window.
+  setupIPC();
+  createWindow();
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
+  });
+});
+
+app.on('window-all-closed', () => {
+  fileCapabilities.clear();
+  exportPreviews.clear();
+  for (const session of activeTerminals.values()) {
+    session.killed = true;
+    session.terminal.kill();
+  }
+  activeTerminals.clear();
+  executionCapabilities?.clear();
+  experimentScriptAdapter?.dispose();
+  firstRunSetup?.dispose();
+  firstRunSetup = null;
+  mcpManager?.disconnectAll().catch(() => {});
+  store?.close();
+  store = null;
+  researchRepository = null;
+  researchRuntime = null;
+  researchMedia = null;
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});
+
+app.on('before-quit', () => {
+  fileCapabilities.clear();
+  exportPreviews.clear();
+  for (const session of activeTerminals.values()) {
+    session.killed = true;
+    session.terminal.kill();
+  }
+  activeTerminals.clear();
+  executionCapabilities?.clear();
+  experimentScriptAdapter?.dispose();
+  firstRunSetup?.dispose();
+  firstRunSetup = null;
+  mcpManager?.disconnectAll().catch(() => {});
+  store?.close();
+  store = null;
+  researchRepository = null;
+  researchRuntime = null;
+  researchMedia = null;
+});

@@ -1,0 +1,293 @@
+/**
+ * Academic Research Cockpit — global design tokens (DESIGN-METIS-403).
+ *
+ * Visual direction: high-end research instrument.
+ * Light mode: paper white / graphite / terracotta copper.
+ * Dark mode: obsidian + low-saturation copper.
+ *
+ * This file is the single source of truth for theme variables. Component
+ * styles should reference these custom properties; hardcoded accent colors
+ * and blue fallbacks are not allowed.
+ */
+
+/* ─── Light Theme ───────────────────────────────────── */
+
+:root {
+  /* Layout */
+  --sidebar-width: 220px;
+  --chat-sidebar-width: 240px;
+  --right-panel-width: 260px;
+
+  /* Radii — small and precise, no large decorative rounding */
+  --radius: 3px;
+  --radius-sm: 3px;
+  --radius-md: 6px;
+  --radius-lg: 6px;
+
+  /* Typography */
+  --font-sans: "Source Han Sans SC", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-serif: "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", "SimSun", Georgia, serif;
+  --font-mono: "JetBrains Mono", "Source Code Pro", Consolas, monospace;
+  --font-size-sm: 12px;
+  --font-size-base: 14px;
+  --font-size-lg: 17px;
+  --line-height: 1.6;
+
+  /* Spacing */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 20px;
+
+  /* Surfaces */
+  --bg-main: #f8f7f4;                 /* paper white */
+  --bg-body: var(--bg-main);
+  --bg-card: #ffffff;
+  --bg-sidebar: #fbfbfc;
+  --bg-inspector: #ffffff;
+  --bg-hover: #f0f1f3;
+  --bg-active: #f7ede6;               /* terracotta 8% */
+  --bg-input: #ffffff;
+  --bg-input-disabled: #f7f8fa;
+  --bg-code-header: #f7f8fa;
+  --bg-code-block: #1a202c;
+  --bg-modal-overlay: rgba(15, 20, 25, 0.45);
+  --bg-modal: #ffffff;
+  --bg-danger-hover: #fff5f5;
+  --bg-secondary: #f7f8fa;
+  --search-highlight-bg: #f7e8d6;
+
+  /* Accent — terracotta copper (single source of emphasis) */
+  --accent: #b05832;
+  --accent-hover: #914522;
+  --accent-soft: color-mix(in srgb, var(--accent) 11%, transparent);
+
+  /* Legacy primary alias for old App.css classes */
+  --primary: var(--accent);
+  --primary-hover: var(--accent-hover);
+  --primary-soft: var(--accent-soft);
+
+  /* Text — graphite hierarchy */
+  --text-heading: #1a202c;
+  --text-primary: var(--text-heading);
+  --text-body: #2d3748;
+  --text-secondary: #4a5568;
+  --text-muted: #667085;
+  --text-on-accent: #ffffff;
+  --text-on-primary: var(--text-on-accent);
+  --text-on-sidebar: var(--text-secondary);
+  --text-on-sidebar-muted: var(--text-muted);
+  --text-on-sidebar-hover: var(--text-heading);
+  --text-link: var(--accent);
+
+  /* Borders */
+  --border: #e2e2df;
+  --border-light: #e2e2df;
+  --border-danger: #e53e3e;
+
+  /* Shadows — restrained depth */
+  --shadow-card: 0 1px 3px rgba(15, 20, 25, 0.06);
+  --shadow-modal: 0 12px 40px rgba(15, 20, 25, 0.14);
+
+  /* Status — semantic colors only */
+  --status-read-bg: #e8f5ee;
+  --status-read-text: #276749;
+  --status-reading-bg: #eef4fb;
+  --status-reading-text: #2b6cb0;
+  --status-skimmed-bg: #faf6ed;
+  --status-skimmed-text: #744210;
+  --status-unread-bg: #f7f8fa;
+  --status-unread-text: #4a5568;
+  --status-running: var(--accent);
+  --status-running-bg: var(--accent-soft);
+  --status-completed: #2f855a;
+  --status-completed-bg: #e8f5ee;
+  --status-failed: #c53030;
+  --status-failed-bg: #fff5f5;
+  --status-danger: #c53030;
+
+  /* Evidence status */
+  --evidence-verified: #2f855a;
+  --evidence-pending: #b7791f;
+  --evidence-contested: #b7791f;
+  --evidence-stale: #718096;
+  --evidence-refuted: #c53030;
+
+  /* Chart palette — low-saturation, colorblind-aware */
+  --chart-1: #b05832;
+  --chart-2: #2f855a;
+  --chart-3: #718096;
+  --chart-4: #4d7a9e;
+  --chart-5: #c53030;
+  --chart-6: #b8922e;
+  --chart-7: #6b7280;
+  --chart-8: #8c7b70;
+
+  /* Focus ring (a11y): color is valid in outline; shadow is valid in box-shadow. */
+  --focus-ring-color: rgba(176, 88, 50, 0.72);
+  --focus-ring-shadow: 0 0 0 2px rgba(176, 88, 50, 0.4);
+  --focus-ring: 0 0 0 2px rgba(176, 88, 50, 0.72);
+
+  /* Tag / legacy accents now mapped to the single accent */
+  --tag-bg: var(--accent-soft);
+  --tag-text: var(--accent);
+  --accent-warm: var(--accent);
+  --accent-cool: var(--text-muted);
+  --accent-purple: var(--text-muted);
+}
+
+/* ─── Dark Theme ────────────────────────────────────── */
+
+[data-theme="dark"] {
+  --bg-main: #0f1419;                 /* obsidian */
+  --bg-body: var(--bg-main);
+  --bg-card: #161b22;
+  --bg-sidebar: #0d1117;
+  --bg-inspector: #161b22;
+  --bg-hover: #1f2630;
+  --bg-active: #2a201b;
+  --bg-input: #161b22;
+  --bg-input-disabled: #0f1419;
+  --bg-code-header: #161b22;
+  --bg-code-block: #0f1218;
+  --bg-modal-overlay: rgba(0, 0, 0, 0.65);
+  --bg-modal: #161b22;
+  --bg-danger-hover: rgba(197, 48, 48, 0.1);
+  --bg-secondary: #161b22;
+  --search-highlight-bg: #5a3d20;
+
+  --accent: #e49a72;                  /* low-saturation copper */
+  --accent-hover: #f0b693;
+  --accent-soft: rgb(228 154 114 / 13%);
+
+  --primary: var(--accent);
+  --primary-hover: var(--accent-hover);
+  --primary-soft: var(--accent-soft);
+
+  --text-heading: #e2e8f0;
+  --text-primary: var(--text-heading);
+  --text-body: #cbd5e0;
+  --text-secondary: #a0aec0;
+  --text-muted: #78879b;
+  --text-on-accent: #0a0d12;
+  --text-on-sidebar: var(--text-secondary);
+  --text-on-sidebar-muted: var(--text-muted);
+  --text-on-sidebar-hover: var(--text-heading);
+  --text-link: var(--accent);
+
+  --border: #2d3748;
+  --border-light: #2d3748;
+  --border-danger: #fc8181;
+
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow-modal: 0 12px 40px rgba(0, 0, 0, 0.45);
+
+  --status-read-bg: rgba(56, 161, 105, 0.12);
+  --status-read-text: #68d391;
+  --status-reading-bg: rgba(49, 130, 206, 0.12);
+  --status-reading-text: #63b3ed;
+  --status-skimmed-bg: rgba(183, 121, 31, 0.12);
+  --status-skimmed-text: #ecc94b;
+  --status-unread-bg: rgba(113, 128, 150, 0.12);
+  --status-unread-text: #a0aec0;
+  --status-running: var(--accent);
+  --status-running-bg: var(--accent-soft);
+  --status-completed: #68d391;
+  --status-completed-bg: rgba(56, 161, 105, 0.12);
+  --status-failed: #fc8181;
+  --status-failed-bg: rgba(252, 129, 129, 0.12);
+  --status-danger: #fc8181;
+
+  --evidence-verified: #68d391;
+  --evidence-pending: #f0bd84;
+  --evidence-contested: #f0bd84;
+  --evidence-stale: #a0aec0;
+  --evidence-refuted: #fc8181;
+
+  --chart-1: #e49a72;
+  --chart-2: #68d391;
+  --chart-3: #a0aec0;
+  --chart-4: #7aa2d4;
+  --chart-5: #fc8181;
+  --chart-6: #ecc94b;
+  --chart-7: #94a3b8;
+  --chart-8: #a8a29e;
+
+  --focus-ring-color: rgba(228, 154, 114, 0.82);
+  --focus-ring-shadow: 0 0 0 2px rgba(228, 154, 114, 0.5);
+  --focus-ring: 0 0 0 2px rgba(228, 154, 114, 0.82);
+
+  --tag-bg: var(--accent-soft);
+  --tag-text: var(--accent);
+  --accent-warm: var(--accent);
+  --accent-cool: var(--text-muted);
+  --accent-purple: var(--text-muted);
+}
+
+/* ─── Focus-visible (a11y) ─────────────────────────────── */
+
+:focus-visible {
+  outline: 2px solid rgba(176, 88, 50, 0.72);
+  outline-offset: 2px;
+}
+
+[data-theme="dark"] :focus-visible {
+  outline-color: rgba(228, 154, 114, 0.82);
+}
+
+/* ─── Reduced motion ───────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ─── Forced colors ────────────────────────────────────── */
+
+@media (forced-colors: active) {
+  :root {
+    --border: ButtonBorder;
+    --border-light: ButtonBorder;
+    --primary: Highlight;
+    --primary-hover: Highlight;
+    --text-secondary: CanvasText;
+    --text-muted: GrayText;
+    --text-on-accent: HighlightText;
+    --text-on-primary: HighlightText;
+    --bg-hover: Canvas;
+    --focus-ring-color: Highlight;
+    --status-read-bg: Canvas;
+    --status-read-text: CanvasText;
+    --status-unread-bg: Canvas;
+    --status-unread-text: GrayText;
+    --accent: Highlight;
+    --accent-hover: Highlight;
+    --text-heading: CanvasText;
+    --text-body: CanvasText;
+    --text-primary: CanvasText;
+    --bg-main: Canvas;
+    --bg-card: Canvas;
+    --bg-sidebar: Canvas;
+    --bg-inspector: Canvas;
+    --bg-input: Canvas;
+  }
+  [data-theme="dark"] {
+    --border: ButtonBorder;
+    --accent: Highlight;
+    --accent-hover: Highlight;
+    --text-heading: CanvasText;
+    --text-body: CanvasText;
+    --bg-main: Canvas;
+    --bg-card: Canvas;
+  }
+  :focus-visible {
+    outline: 3px solid Highlight;
+    outline-offset: 2px;
+  }
+}
