@@ -164,7 +164,7 @@
     "@vitejs/plugin-react": "^6.0.1",
     "@vitest/coverage-v8": "^4.1.8",
     "concurrently": "^10.0.3",
-    "electron": "^42.3.3",
+    "electron": "41.10.3",
     "electron-builder": "^26.15.0",
     "eslint": "^10.3.0",
     "eslint-plugin-react-hooks": "^7.1.1",

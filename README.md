@@ -5,9 +5,10 @@
 ### A local-first AI research workbench for literature, evidence, analysis, and writing
 
 [![Release](https://img.shields.io/github/v/release/TZUKWAN/metis-in-social-science?include_prereleases&label=release)](https://github.com/TZUKWAN/metis-in-social-science/releases)
+[![Quality gates](https://github.com/TZUKWAN/metis-in-social-science/actions/workflows/ci.yml/badge.svg)](https://github.com/TZUKWAN/metis-in-social-science/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-9b4f2f)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20x64-3b5268)](https://github.com/TZUKWAN/metis-in-social-science/releases)
-[![Electron](https://img.shields.io/badge/Electron-42-59667a)](https://www.electronjs.org/)
+[![Electron](https://img.shields.io/badge/Electron-41-59667a)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-19-59667a)](https://react.dev/)
 
 </div>
@@ -250,7 +251,7 @@ extraction so the agent retains context across research sessions.
 
 | Layer | Technology |
 |-------|-----------|
-| Desktop runtime | Electron 42 |
+| Desktop runtime | Electron 41 |
 | Frontend | React 19, Vite 8, TypeScript 6.0 |
 | State management | Zustand |
 | Styling | CSS Variables (light / dark themes) |

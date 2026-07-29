@@ -43,8 +43,8 @@ code-signed release.
 ### SHA-256 checksums
 
 ```text
-6d42848cb1ad830003e502b0b68a30d87f6d0170aba2d0b94df0dec81cd4009b  Metis-Research-Workbench-Setup-0.1.0-alpha.1-x64.exe
-8b775409775db0cca60f4b434bc888cad144e8f2aec459ffa7cd265a2eef897e  Metis-Research-Workbench-0.1.0-alpha.1-x64.msi
+0bf0e74cd920000fb8ee57d66d328cd7fbf00d190b450a93ed7aef17c4d68c60  Metis-Research-Workbench-Setup-0.1.0-alpha.1-x64.exe
+ae4a7d730dd23dccf4284a6e6fa404db2c97de88aa566818e606447fc20f220e  Metis-Research-Workbench-0.1.0-alpha.1-x64.msi
 ```
 
 These values are also published as the release asset
