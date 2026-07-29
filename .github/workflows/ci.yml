@@ -18,11 +18,11 @@ permissions:
 jobs:
   quality:
     name: Audit, type-check, and lint
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -36,7 +36,7 @@ jobs:
 
   tests:
     name: Tests (${{ matrix.group }})
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -51,8 +51,8 @@ jobs:
           - group: electron-and-e2e
             paths: tests/electron tests/e2e tests/scripts
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -65,11 +65,11 @@ jobs:
   build:
     name: Electron production build
     needs: quality
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
