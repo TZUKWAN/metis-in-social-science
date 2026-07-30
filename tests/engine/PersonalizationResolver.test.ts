@@ -115,7 +115,7 @@ const scenario: ScenarioDefinition = {
     toolIds: ['format_citation'],
     mcpIds: [],
     dependsOn: [],
-    maxTurns: 10,
+    maxTurns: 20,
   }],
   fullAccess: {
     mode: 'full_access',
@@ -171,9 +171,14 @@ describe('PersonalizationResolver', () => {
     ]);
     expect(result.manifest.workflow[0]).toMatchObject({
       agentId: agent.id,
+      agentModelPreference: null,
+      retryLimit: 2,
       skillIds: [skill.id],
       mcpIds: [mcp.id],
       toolIds: ['external_search', 'format_citation', 'read_pdf', 'verify_claim'],
+      maxTurns: 10,
+      memory: agent.memory,
+      output: agent.output,
     });
     expect(result.manifest.truthPolicy).toBe('automatic_required');
     expect(result.manifest.fullAccess.perActionConfirmation).toBe(false);

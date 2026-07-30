@@ -49,6 +49,13 @@ export interface PersonalizationVersionView {
   createdAt: number;
 }
 
+export interface ScenarioMemoryRecordQuery {
+  sessionId?: string;
+  projectId?: string;
+  scenarioId?: string;
+  limit?: number;
+}
+
 const PERSONALIZATION_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS personalization_definitions (
   id TEXT PRIMARY KEY,
@@ -104,6 +111,12 @@ CREATE TABLE IF NOT EXISTS personalization_scenario_runs (
 
 CREATE INDEX IF NOT EXISTS idx_personalization_scenario_run_session
   ON personalization_scenario_runs(session_id, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_personalization_scenario_run_project
+  ON personalization_scenario_runs(project_id, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_personalization_scenario_run_scenario
+  ON personalization_scenario_runs(scenario_id, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS personalization_asset_bindings (
   owner_id TEXT PRIMARY KEY,
@@ -557,6 +570,38 @@ export class PersonalizationRepository {
       SELECT record_json, integrity_tag FROM personalization_scenario_runs
       WHERE session_id = ? ORDER BY updated_at DESC
     `).all(sessionId) as Array<{ record_json: string; integrity_tag: string | null }>;
+    return rows.flatMap((row) => {
+      try {
+        const parsed = ScenarioRunRecordSchema.safeParse(JSON.parse(row.record_json) as unknown);
+        return parsed.success && verifiesScenarioRun(this.#scenarioRunIntegritySecret, parsed.data, row.integrity_tag)
+          ? [parsed.data] : [];
+      } catch {
+        return [];
+      }
+    });
+  }
+
+  listCompletedScenarioRunRecords(query: ScenarioMemoryRecordQuery): ScenarioRunRecord[] {
+    const clauses = ["status = 'completed'"];
+    const parameters: Array<string | number> = [];
+    if (query.sessionId) {
+      clauses.push('session_id = ?');
+      parameters.push(query.sessionId);
+    }
+    if (query.projectId) {
+      clauses.push('project_id = ?');
+      parameters.push(query.projectId);
+    }
+    if (query.scenarioId) {
+      clauses.push('scenario_id = ?');
+      parameters.push(query.scenarioId);
+    }
+    if (parameters.length === 0) return [];
+    const limit = Math.max(1, Math.min(100, query.limit ?? 20));
+    const rows = this.#db.prepare(`
+      SELECT record_json, integrity_tag FROM personalization_scenario_runs
+      WHERE ${clauses.join(' AND ')} ORDER BY updated_at DESC LIMIT ?
+    `).all(...parameters, limit) as Array<{ record_json: string; integrity_tag: string | null }>;
     return rows.flatMap((row) => {
       try {
         const parsed = ScenarioRunRecordSchema.safeParse(JSON.parse(row.record_json) as unknown);

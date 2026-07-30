@@ -2296,6 +2296,7 @@ function setupIPC(): void {
     const requestRuntimeGeneration = runtimeGeneration;
     const requestAgentLoop = agentLoop;
     const requestProvider = provider;
+    const requestConfig = currentConfig ? { ...currentConfig } : null;
 
     const request = AgentChatRequestSchema.safeParse({
       version: CHAT_RUNTIME_CONTRACT_VERSION,
@@ -2431,9 +2432,26 @@ function setupIPC(): void {
       if (resolvedManifest?.allowedTools.some((tool) => !availableTools.has(tool))) {
         return createChatTurnErrorResponse(requestId, 'error', 'personalization_tool_unavailable');
       }
+      const preferredAgentLoops = new Map<string, AgentLoop>();
+      const agentLoopForModel = (modelPreference: string): AgentLoop => {
+        const model = modelPreference.trim();
+        if (!model || model === requestProvider.model || !requestConfig) return runAgentLoop;
+        const existing = preferredAgentLoops.get(model);
+        if (existing) return existing;
+        const preferredProvider = createProvider({ ...requestConfig, model });
+        const preferredLoop = createAgentLoop(
+          preferredProvider,
+          new ToolRegistry(),
+          approvalStore ?? undefined,
+          mcpToolRun?.registrations ?? [],
+        ).agentLoop;
+        preferredAgentLoops.set(model, preferredLoop);
+        return preferredLoop;
+      };
       const response = hasExecutableScenarioWorkflow(resolvedManifest) && resolvedSystemPrompt && personalizationRepository
         ? await runPersistedScenarioWorkflow({
             agentLoop: runAgentLoop,
+            agentLoopForModel,
             store,
             repository: personalizationRepository,
             sessionId,

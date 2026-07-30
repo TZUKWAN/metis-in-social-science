@@ -60,8 +60,10 @@ When a user selects a scenario, main resolves the exact definition graph:
    contract.
 9. Persist the frozen snapshot for restart recovery.
 
-Normal chat with no scenario skips this resolution path. It does not fall back to an
-internal general-research scenario.
+Chat starts with no scenario selected, even when definitions exist. An explicit user
+selection wins. While the selector is empty, the longest matching user-authored trigger
+phrase activates its scenario; with no match, chat skips this resolution path and does
+not fall back to an internal general-research scenario.
 
 ## Rule precedence
 
@@ -100,6 +102,15 @@ explicit step bindings
 Only the resulting step tool list is passed to `AgentLoop`. Managed MCP services can be
 prepared for the run, but a step cannot invoke an MCP tool unless that tool is present in
 its frozen execution profile.
+
+The resolved step also freezes the Agent's model preference, retry limit, memory policy,
+and output contract. A preferred model creates an AgentLoop against the current Provider
+connection with that model name. Retry count and maximum turns are enforced per step.
+
+Scenario and Agent memory policies are intersected. Completed run records are queried by
+the resulting session, project, and/or scenario filters; retained outputs and artifact
+references are clipped to the smaller configured summary limit before entering a later
+step prompt.
 
 ## Full Access and live steering
 

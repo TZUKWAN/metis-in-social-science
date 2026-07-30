@@ -286,6 +286,10 @@ export class PersonalizationResolver {
           .filter((mcp): mcp is McpDefinition => mcp !== undefined);
         return {
           ...step,
+          agentModelPreference: agent?.modelPreference ?? null,
+          retryLimit: agent?.retryLimit ?? 0,
+          memory: agent?.memory ?? scenario.memory,
+          output: agent?.output ?? scenario.output,
           skillIds,
           mcpIds,
           toolIds: unique([
@@ -294,6 +298,11 @@ export class PersonalizationResolver {
             ...stepSkills.flatMap((skill) => skill.toolIds),
             ...stepMcps.flatMap((mcp) => mcp.exposedTools),
           ]).sort(),
+          maxTurns: Math.max(1, Math.min(
+            step.maxTurns,
+            agent?.maxTurns ?? step.maxTurns,
+            ...stepSkills.map((skill) => skill.maxTurns),
+          )),
         };
       });
       const promptStack: ResolvedPromptLayer[] = [

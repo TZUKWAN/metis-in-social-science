@@ -3414,7 +3414,7 @@ describe('ChatPage', () => {
     }
   });
 
-  it('selects a user-created scenario and binds it to the chat request', async () => {
+  it('matches a user trigger phrase and lets an explicit scenario override the generic task router', async () => {
     resetStore();
     window.localStorage.removeItem('metis:active-scenario-id');
     const originalMetis = window.metis;
@@ -3454,9 +3454,9 @@ describe('ChatPage', () => {
       const { default: ChatPage } = await import('../../src/pages/ChatPage');
       render(<ChatPage renderLayout={renderChatProjectShell} />);
       const selector = await screen.findByRole('combobox', { name: '当前场景' });
-      fireEvent.change(selector, { target: { value: 'user:scenarios/qualitative' } });
+      expect((selector as HTMLSelectElement).value).toBe('');
       const input = screen.getByPlaceholderText('提出一个研究问题...');
-      fireEvent.change(input, { target: { value: '/chat 设计一个定性研究' } });
+      fireEvent.change(input, { target: { value: 'write a qualitative study with traceable evidence' } });
       fireEvent.click(screen.getByText('发送'));
       await waitFor(() => expect(agentChat).toHaveBeenCalledWith(
         'session-scenario',
@@ -3469,6 +3469,17 @@ describe('ChatPage', () => {
         }),
       ));
       expect(window.localStorage.getItem('metis:active-scenario-id')).toBe('user:scenarios/qualitative');
+      await waitFor(() => expect((selector as HTMLSelectElement).value).toBe('user:scenarios/qualitative'));
+
+      fireEvent.change(selector, { target: { value: 'user:scenarios/general' } });
+      fireEvent.change(input, { target: { value: '设计一个完整研究计划并执行' } });
+      fireEvent.click(screen.getByText('发送'));
+      await waitFor(() => expect(agentChat).toHaveBeenCalledTimes(2));
+      expect(agentChat.mock.calls[1]?.[3]).toEqual(expect.objectContaining({
+        mode: 'send',
+        scenarioId: 'user:scenarios/general',
+        projectId: 'global',
+      }));
     } finally {
       window.metis = originalMetis;
       window.localStorage.removeItem('metis:active-scenario-id');

@@ -110,6 +110,7 @@ graph with versioned dependencies.
 A scenario defines the overall research mode. The editor exposes:
 
 - Name, description, enable state, and trigger phrases.
+- Explicit selection by default, with optional user-authored trigger-phrase activation.
 - Scenario capability and Full Access execution policy.
 - Agent, Skill, MCP, and `Metis.md` bindings.
 - Ordered workflow steps and step dependencies.

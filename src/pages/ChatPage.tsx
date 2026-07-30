@@ -95,6 +95,22 @@ const validArtifactTypes: ArtifactItemType[] = ['pdf', 'docx', 'xlsx', 'pptx', '
 const DEFAULT_SCENARIO_ID = '';
 const ACTIVE_SCENARIO_KEY = 'metis:active-scenario-id';
 
+function matchScenarioTrigger(
+  content: string,
+  scenarios: readonly ScenarioDefinition[],
+): ScenarioDefinition | undefined {
+  const normalized = content.trim().toLocaleLowerCase();
+  if (!normalized) return undefined;
+  return scenarios
+    .flatMap((scenario) => scenario.triggerPhrases.map((phrase) => ({
+      scenario,
+      phrase: phrase.trim().toLocaleLowerCase(),
+    })))
+    .filter((candidate) => candidate.phrase.length > 0 && normalized.includes(candidate.phrase))
+    .sort((left, right) => right.phrase.length - left.phrase.length
+      || left.scenario.name.localeCompare(right.scenario.name))[0]?.scenario;
+}
+
 // ─── Timestamp helper (avoids Date.now() in render) ───────────
 
 function now(): number {
@@ -768,9 +784,11 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
         setScenarios(available);
         let remembered = DEFAULT_SCENARIO_ID;
         try { remembered = window.localStorage.getItem(ACTIVE_SCENARIO_KEY) ?? DEFAULT_SCENARIO_ID; } catch { /* use factory default */ }
-        setActiveScenarioId(available.some((scenario) => scenario.id === remembered)
-          ? remembered
-          : (available[0]?.id ?? DEFAULT_SCENARIO_ID));
+        setActiveScenarioId(remembered === DEFAULT_SCENARIO_ID
+          ? DEFAULT_SCENARIO_ID
+          : (available.some((scenario) => scenario.id === remembered)
+              ? remembered
+              : DEFAULT_SCENARIO_ID));
       })
       .catch(() => {});
     return () => { cancelled = true; };
@@ -1405,12 +1423,22 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
     // committed once. Goal-only messages still use appendMessage below.
     const hasActiveGoal = activeGoalId !== null;
 
-    if (!forceChat && !hasActiveGoal && isTaskLike(content)) {
+    const selectedScenarioId = scenarioOverride ?? activeScenarioId;
+    const matchedScenario = selectedScenarioId ? undefined : matchScenarioTrigger(content, scenarios);
+    const scenarioForTurn = selectedScenarioId || matchedScenario?.id || DEFAULT_SCENARIO_ID;
+    if (matchedScenario) {
+      setActiveScenarioId(matchedScenario.id);
+      try { window.localStorage.setItem(ACTIVE_SCENARIO_KEY, matchedScenario.id); } catch { /* preference persistence is best-effort */ }
+    }
+
+    if (scenarioForTurn) {
+      await handleChatFlow(content, scenarioForTurn);
+    } else if (!forceChat && !hasActiveGoal && isTaskLike(content)) {
       await handleGoalFlow(content);
     } else if (hasActiveGoal && !forceChat) {
       await handleInterjection(content);
     } else {
-      await handleChatFlow(content, scenarioOverride ?? activeScenarioId);
+      await handleChatFlow(content, DEFAULT_SCENARIO_ID);
     }
   }
 
@@ -1617,7 +1645,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
                 try { window.localStorage.setItem(ACTIVE_SCENARIO_KEY, id); } catch { /* preference persistence is best-effort */ }
               }}
             >
-              {scenarios.length === 0 && <option value="">{locale === 'zh' ? '未选择自定义场景' : 'No custom scenario selected'}</option>}
+              <option value="">{locale === 'zh' ? '未选择自定义场景' : 'No custom scenario selected'}</option>
               {scenarios.map((scenario) => <option key={scenario.id} value={scenario.id}>{scenario.name}</option>)}
             </select>
           </div>

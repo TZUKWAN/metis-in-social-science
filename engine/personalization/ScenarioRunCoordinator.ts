@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import {
   ResolvedRunManifestSchema,
-  WorkflowStepBindingSchema,
+  ResolvedWorkflowStepSchema,
   type ResolvedRunManifest,
 } from '../runtime/PersonalizationRuntimeContract.js';
 
@@ -51,7 +51,7 @@ export type ScenarioArtifactReference = z.infer<typeof ArtifactReferenceSchema>;
 const ScenarioStepRunRecordSchema = z.strictObject({
   stepId: z.string().min(1).max(160),
   executionKey: DigestSchema,
-  stepSnapshot: WorkflowStepBindingSchema,
+  stepSnapshot: ResolvedWorkflowStepSchema,
   stepSnapshotDigest: DigestSchema,
   status: z.enum(['pending', 'running', 'completed', 'failed', 'blocked']),
   startedAt: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).nullable(),

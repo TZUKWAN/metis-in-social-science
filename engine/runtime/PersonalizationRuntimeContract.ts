@@ -188,6 +188,14 @@ export const WorkflowStepBindingSchema = z.strictObject({
   maxTurns: z.number().int().min(1).max(100),
 });
 
+/** Runtime-only fields resolved from the executing Agent and its bound Skills. */
+export const ResolvedWorkflowStepSchema = WorkflowStepBindingSchema.extend({
+  agentModelPreference: singleLine(512).nullable().optional(),
+  retryLimit: z.number().int().min(0).max(10).optional(),
+  memory: MemoryPolicySchema.optional(),
+  output: OutputContractSchema.optional(),
+}).strict();
+
 export const AgentDefinitionSchema = DefinitionHeaderSchema.extend({
   kind: z.literal('agent'),
   role: singleLine(PERSONALIZATION_LIMITS.nameChars),
@@ -494,7 +502,7 @@ export const ResolvedRunManifestSchema = z.strictObject({
   skillIds: ReferenceListSchema,
   mcpIds: ReferenceListSchema,
   allowedTools: ToolListSchema,
-  workflow: z.array(WorkflowStepBindingSchema).max(PERSONALIZATION_LIMITS.workflowSteps),
+  workflow: z.array(ResolvedWorkflowStepSchema).max(PERSONALIZATION_LIMITS.workflowSteps),
   maxTurns: z.number().int().min(1).max(100),
   promptStack: z.array(ResolvedPromptLayerSchema).max(PERSONALIZATION_LIMITS.references),
   fullAccess: FullAccessPolicySchema,
