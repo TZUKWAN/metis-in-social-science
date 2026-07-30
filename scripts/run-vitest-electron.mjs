@@ -3,8 +3,10 @@
  * Electron can be exercised without rebuilding them for the host Node ABI.
  *
  * Electron injects flags such as --no-webstorage into process.execArgv. Node
- * worker_threads rejects those flags, so remove Electron-only switches before
- * Vitest creates its worker pool.
+ * worker and child-process runtimes reject those flags, so remove
+ * Electron-only switches before Vitest creates its worker pool. A fork pool
+ * also avoids Electron/native-addon teardown crashes observed after an
+ * otherwise successful thread-pool run on Windows.
  */
 process.execArgv = process.execArgv.filter((arg) => arg !== '--no-webstorage');
 
@@ -20,7 +22,7 @@ const outputFile = process.env.METIS_VITEST_OUTPUT_FILE;
 const context = await startVitest('test', filters, {
   run: true,
   watch: false,
-  pool: 'threads',
+  pool: 'forks',
   execArgv: [],
   reporters: [reporter],
   ...(outputFile ? { outputFile } : {}),
