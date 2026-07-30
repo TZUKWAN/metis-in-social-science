@@ -114,6 +114,8 @@ A scenario defines the overall research mode. The editor exposes:
 - Agent, Skill, MCP, and `Metis.md` bindings.
 - Ordered workflow steps and step dependencies.
 - Agent assignment, tools, Skills, MCP services, and turn budget for every step.
+- Step isolation: each step inherits its Agent's bindings without loading another step's
+  Agent or Skill prompts.
 - Memory scope, retained decisions, retained artifacts, and summary budget.
 - Output format and optional structured output schema.
 - Primary deliverable, supporting artifacts, and user-written quality criteria.

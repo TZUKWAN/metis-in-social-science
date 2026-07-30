@@ -53,10 +53,12 @@ When a user selects a scenario, main resolves the exact definition graph:
 3. Load the exact Agent, Skill, MCP, and rule revisions.
 4. Add active project `Metis.md` when a project is selected.
 5. Validate dependency references and workflow bindings.
-6. Create a resolved run manifest and prompt stack.
-7. Bind the manifest to the session, project, scenario, rules, capabilities, and output
+6. Expand every workflow step with the selected Agent's Skill, MCP, and tool bindings;
+   Skill-owned MCP tools are expanded into that same step.
+7. Create a resolved run manifest and prompt stack.
+8. Bind the manifest to the session, project, scenario, rules, capabilities, and output
    contract.
-8. Persist the frozen snapshot for restart recovery.
+9. Persist the frozen snapshot for restart recovery.
 
 Normal chat with no scenario skips this resolution path. It does not fall back to an
 internal general-research scenario.
@@ -67,16 +69,37 @@ Prompt layers are resolved from general to specific:
 
 ```text
 system runtime policy
+  -> effective Skill instructions for the current step
+  -> executing Agent instructions and Agent output contract
   -> global Metis.md
-  -> selected scenario
   -> scenario Metis.md
-  -> selected Agent
-  -> selected Skill
   -> active project Metis.md
+  -> scenario output contract
   -> current user instruction
 ```
 
-The exact ordered stack is part of the run snapshot.
+The exact ordered stack is part of the run snapshot. Each workflow step receives only its
+executing Agent and effective Skills; prompts belonging to other steps are not copied into
+that step. Rules and the scenario output contract continue to apply to every step.
+
+## Workflow execution
+
+Any non-empty workflow, including a one-step workflow, runs through the durable scenario
+coordinator. Steps are executed in dependency order. A failed step blocks only its
+downstream dependants, and completed steps are checkpointed for restart recovery.
+
+The effective capabilities of a step are computed as follows:
+
+```text
+explicit step bindings
+  + executing Agent's Skills, MCPs, and tools
+  + MCPs and tools required by those Skills
+  = frozen step execution profile
+```
+
+Only the resulting step tool list is passed to `AgentLoop`. Managed MCP services can be
+prepared for the run, but a step cannot invoke an MCP tool unless that tool is present in
+its frozen execution profile.
 
 ## Full Access and live steering
 

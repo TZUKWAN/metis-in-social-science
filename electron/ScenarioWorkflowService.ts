@@ -2,6 +2,7 @@ import type { AgentLoop } from '../engine/core/AgentLoop.js';
 import type { ChatMessage } from '../engine/core/types.js';
 import type { PersistenceStore } from '../engine/persistence/PersistenceStore.js';
 import type { PersonalizationRepository } from '../engine/personalization/PersonalizationRepository.js';
+import { composeManifestSystemPrompt } from '../engine/personalization/PersonalizationResolver.js';
 import {
   ScenarioRunCoordinator,
   digestScenarioStepOutput,
@@ -31,11 +32,16 @@ interface RunPersistedScenarioWorkflowOptions {
   messages: ChatMessage[];
   requestId: string;
   manifest: ResolvedRunManifest;
-  systemPrompt: string;
   mode?: ChatTurnMode;
   signal?: AbortSignal;
   liveSteering?: LiveSteeringSource;
   isCurrentRuntime?: () => boolean;
+}
+
+export function hasExecutableScenarioWorkflow(
+  manifest: ResolvedRunManifest | undefined,
+): manifest is ResolvedRunManifest {
+  return manifest !== undefined && manifest.workflow.length > 0;
 }
 
 function latestUserMessage(messages: readonly ChatMessage[]): ChatMessage | undefined {
@@ -75,7 +81,6 @@ export async function runPersistedScenarioWorkflow({
   messages,
   requestId,
   manifest,
-  systemPrompt,
   mode = 'send',
   signal,
   liveSteering,
@@ -108,7 +113,7 @@ export async function runPersistedScenarioWorkflow({
         taskContractHash: input.executionKey,
         promptStackHash: input.manifestDigest,
         resumeFromCheckpoint: false,
-        skillPrompt: systemPrompt,
+        skillPrompt: composeManifestSystemPrompt(manifest, input.step),
         fullAccess: manifest.fullAccess,
         signal,
         liveSteering,

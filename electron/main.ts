@@ -133,7 +133,10 @@ import {
   createChatTurnErrorResponse,
   runPersistedChatTurn,
 } from './ChatTurnService.js';
-import { runPersistedScenarioWorkflow } from './ScenarioWorkflowService.js';
+import {
+  hasExecutableScenarioWorkflow,
+  runPersistedScenarioWorkflow,
+} from './ScenarioWorkflowService.js';
 import { isAuthorizedRendererMainFrame } from './RendererAuthorization.js';
 import { createSecureExternalOpenHandler } from './SecureExternalOpenHandler.js';
 import {
@@ -2428,7 +2431,7 @@ function setupIPC(): void {
       if (resolvedManifest?.allowedTools.some((tool) => !availableTools.has(tool))) {
         return createChatTurnErrorResponse(requestId, 'error', 'personalization_tool_unavailable');
       }
-      const response = resolvedManifest && resolvedManifest.workflow.length > 1 && resolvedSystemPrompt && personalizationRepository
+      const response = hasExecutableScenarioWorkflow(resolvedManifest) && resolvedSystemPrompt && personalizationRepository
         ? await runPersistedScenarioWorkflow({
             agentLoop: runAgentLoop,
             store,
@@ -2437,7 +2440,6 @@ function setupIPC(): void {
             messages,
             requestId,
             manifest: resolvedManifest,
-            systemPrompt: resolvedSystemPrompt,
             mode,
             signal: activeRun.controller.signal,
             liveSteering: liveSteeringQueue,

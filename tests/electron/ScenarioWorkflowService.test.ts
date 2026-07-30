@@ -7,7 +7,10 @@ import { PersonalizationRepository } from '../../engine/personalization/Personal
 import { PersonalizationResolver } from '../../engine/personalization/PersonalizationResolver.js';
 import { buildBuiltinPersonalizationDefinitions } from '../fixtures/personalization/legacyBuiltinDefinitions.js';
 import type { AgentRunResult, ChatMessage } from '../../engine/core/types.js';
-import { runPersistedScenarioWorkflow } from '../../electron/ScenarioWorkflowService.js';
+import {
+  hasExecutableScenarioWorkflow,
+  runPersistedScenarioWorkflow,
+} from '../../electron/ScenarioWorkflowService.js';
 
 let root: string;
 let store: PersistenceStore;
@@ -52,6 +55,13 @@ afterEach(() => {
 });
 
 describe('runPersistedScenarioWorkflow', () => {
+  it('routes a single-step scenario through the persisted workflow engine', () => {
+    const resolved = resolveManifest('builtin:scenarios/general-research');
+    expect(resolved.manifest.workflow).toHaveLength(1);
+    expect(hasExecutableScenarioWorkflow(resolved.manifest)).toBe(true);
+    expect(hasExecutableScenarioWorkflow({ ...resolved.manifest, workflow: [] })).toBe(false);
+  });
+
   it('executes every real DAG step, checkpoints it, and persists only the final answer', async () => {
     const resolved = resolveManifest('builtin:scenarios/article-review');
     const run = vi.fn().mockImplementation((request: { requestId: string }) => Promise.resolve(
@@ -67,7 +77,6 @@ describe('runPersistedScenarioWorkflow', () => {
       messages,
       requestId: 'workflow-1',
       manifest: resolved.manifest,
-      systemPrompt: resolved.systemPrompt,
     });
 
     expect(response.status).toBe('completed');
@@ -79,6 +88,10 @@ describe('runPersistedScenarioWorkflow', () => {
         maxTurns: step?.maxTurns,
         fullAccess: resolved.manifest.fullAccess,
       });
+      expect(call[0].skillPrompt).toContain(`metis-source:${step?.agentId}`);
+      for (const otherAgentId of resolved.manifest.agentIds.filter((id) => id !== step?.agentId)) {
+        expect(call[0].skillPrompt).not.toContain(`metis-source:${otherAgentId}`);
+      }
     }
     expect(repository.listScenarioRunRecords('session-1')).toHaveLength(1);
     expect(repository.listScenarioRunRecords('session-1')[0]?.status).toBe('completed');
@@ -102,7 +115,6 @@ describe('runPersistedScenarioWorkflow', () => {
       messages: [{ role: 'user', content: 'Research this question.' }],
       requestId: 'workflow-interrupt',
       manifest: resolved.manifest,
-      systemPrompt: resolved.systemPrompt,
       signal: controller.signal,
     });
     expect(interrupted.status).toBe('interrupted');
@@ -117,7 +129,6 @@ describe('runPersistedScenarioWorkflow', () => {
       messages: [{ role: 'user', content: 'Research this question.' }],
       requestId: 'workflow-resume',
       manifest: resolved.manifest,
-      systemPrompt: resolved.systemPrompt,
       mode: 'regenerate',
     });
     expect(resumed.status).toBe('completed');
@@ -137,7 +148,6 @@ describe('runPersistedScenarioWorkflow', () => {
       messages: [{ role: 'user', content: 'Research this question.' }],
       requestId: 'workflow-failure',
       manifest: resolved.manifest,
-      systemPrompt: resolved.systemPrompt,
     });
 
     expect(response.status).toBe('error');

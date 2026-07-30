@@ -19,7 +19,10 @@ import {
   type ResolvedRunManifest,
 } from '../engine/runtime/PersonalizationRuntimeContract.js';
 import { PersonalizationRepository } from '../engine/personalization/PersonalizationRepository.js';
-import { PersonalizationResolver } from '../engine/personalization/PersonalizationResolver.js';
+import {
+  PersonalizationResolver,
+  composeManifestSystemPrompt,
+} from '../engine/personalization/PersonalizationResolver.js';
 import type { PersonalizationDefinitionReader } from '../engine/personalization/PersonalizationResolver.js';
 
 const AGENT_MANIFEST_INTEGRITY_DOMAIN = 'metis:personalization-run-manifest:v2\0';
@@ -224,7 +227,7 @@ export class PersonalizationRuntimeService {
       return {
         ok: true as const,
         manifest: active,
-        systemPrompt: PersonalizationRuntimeService.composePrompt(active),
+        systemPrompt: composeManifestSystemPrompt(active),
       };
     }
     const resolver = authoritativeProjectRule
@@ -239,13 +242,6 @@ export class PersonalizationRuntimeService {
   #saveRunManifest(manifest: ResolvedRunManifest): ResolvedRunManifest {
     const tag = this.#integritySecret ? manifestIntegrityTag(this.#integritySecret, manifest) : null;
     return this.#repository.saveRunManifest(manifest, tag);
-  }
-
-  private static composePrompt(manifest: ResolvedRunManifest): string {
-    return [...manifest.promptStack]
-      .sort((left, right) => left.precedence - right.precedence || left.sourceId.localeCompare(right.sourceId))
-      .map((layer) => `<!-- metis-source:${layer.sourceId} digest:${layer.contentDigest} -->\n${layer.content}`)
-      .join('\n\n');
   }
 
   static emptyListRequest() {

@@ -105,6 +105,73 @@ function composeSystemPrompt(layers: readonly ResolvedPromptLayer[]): string {
     .join('\n\n');
 }
 
+function formatOutputContract(
+  output: ResolvedRunManifest['output'],
+  heading: string,
+): string {
+  const lines = [
+    `# ${heading}`,
+    `Required format: ${output.format}.`,
+  ];
+  if (output.plan) {
+    lines.push(`Primary deliverable: ${output.plan.primaryDeliverable}.`);
+    if (output.plan.supportingArtifacts.length > 0) {
+      lines.push('Supporting artifacts:');
+      lines.push(...output.plan.supportingArtifacts.map((artifact) => `- ${artifact}`));
+    }
+    if (output.plan.qualityCriteria.length > 0) {
+      lines.push('Quality criteria:');
+      lines.push(...output.plan.qualityCriteria.map((criterion) => `- ${criterion}`));
+    }
+  }
+  if (output.schema) {
+    lines.push(`Output schema: ${canonicalJson(output.schema)}`);
+  }
+  if (output.requireEvidenceEnvelope) {
+    lines.push('Keep evidence and source references attached to the claims they support.');
+  }
+  if (output.includeIntegrityReport) {
+    lines.push('Include an integrity report covering unresolved gaps and incomplete deliverables.');
+  }
+  return lines.join('\n');
+}
+
+function skillPromptContent(skill: SkillDefinitionV2): string {
+  const sections = [skill.systemPrompt];
+  if (skill.inputSchema) sections.push(`# Skill input schema\n${canonicalJson(skill.inputSchema)}`);
+  if (skill.outputSchema) sections.push(`# Skill output schema\n${canonicalJson(skill.outputSchema)}`);
+  return sections.filter(Boolean).join('\n\n');
+}
+
+function agentPromptContent(agent: AgentDefinition): string {
+  return [
+    agent.systemPrompt,
+    formatOutputContract(agent.output, `Agent output contract: ${agent.name}`),
+  ].filter(Boolean).join('\n\n');
+}
+
+/**
+ * Compose the frozen prompt for either the complete scenario or one workflow step.
+ * A step receives only its executing Agent and effective Skills, while every scoped
+ * Metis.md rule and the scenario output contract continue to apply.
+ */
+export function composeManifestSystemPrompt(
+  manifest: ResolvedRunManifest,
+  step?: ResolvedRunManifest['workflow'][number],
+): string {
+  const layers = step
+    ? manifest.promptStack.filter((layer) => (
+        layer.sourceKind === 'rules'
+        || (layer.sourceKind === 'agent' && layer.sourceId === step.agentId)
+        || (layer.sourceKind === 'skill' && step.skillIds.includes(layer.sourceId))
+      ))
+    : manifest.promptStack;
+  return [
+    composeSystemPrompt(layers),
+    formatOutputContract(manifest.output, 'Scenario output contract'),
+  ].filter(Boolean).join('\n\n');
+}
+
 export class PersonalizationResolver {
   readonly #reader: PersonalizationDefinitionReader;
 
@@ -197,9 +264,41 @@ export class PersonalizationResolver {
       const skills = skillResult.values;
       const mcps = mcpResult.values;
       const rules = ruleResult.values;
+      const agentById = new Map(agents.map((agent) => [agent.id, agent]));
+      const skillById = new Map(skills.map((skill) => [skill.id, skill]));
+      const mcpById = new Map(mcps.map((mcp) => [mcp.id, mcp]));
+      const effectiveWorkflow = scenario.workflow.map((step) => {
+        const agent = agentById.get(step.agentId);
+        const skillIds = unique([
+          ...step.skillIds,
+          ...(agent?.skillIds ?? []),
+        ]);
+        const stepSkills = skillIds
+          .map((skillId) => skillById.get(skillId))
+          .filter((skill): skill is SkillDefinitionV2 => skill !== undefined);
+        const mcpIds = unique([
+          ...step.mcpIds,
+          ...(agent?.mcpIds ?? []),
+          ...stepSkills.flatMap((skill) => skill.mcpIds),
+        ]);
+        const stepMcps = mcpIds
+          .map((mcpId) => mcpById.get(mcpId))
+          .filter((mcp): mcp is McpDefinition => mcp !== undefined);
+        return {
+          ...step,
+          skillIds,
+          mcpIds,
+          toolIds: unique([
+            ...step.toolIds,
+            ...(agent?.toolIds ?? []),
+            ...stepSkills.flatMap((skill) => skill.toolIds),
+            ...stepMcps.flatMap((mcp) => mcp.exposedTools),
+          ]).sort(),
+        };
+      });
       const promptStack: ResolvedPromptLayer[] = [
-        ...skills.map((skill) => promptLayer(skill.id, 'skill', 100, skill.systemPrompt)),
-        ...agents.map((agent) => promptLayer(agent.id, 'agent', 200, agent.systemPrompt)),
+        ...skills.map((skill) => promptLayer(skill.id, 'skill', 100, skillPromptContent(skill))),
+        ...agents.map((agent) => promptLayer(agent.id, 'agent', 200, agentPromptContent(agent))),
         ...rules.filter((rule) => rule.scope === 'global')
           .map((rule) => promptLayer(rule.id, 'rules', 300, rule.markdown)),
         ...rules.filter((rule) => rule.scope === 'scenario')
@@ -211,15 +310,16 @@ export class PersonalizationResolver {
       const definitionRevisions = Object.fromEntries(
         definitions.map((definition) => [definition.id, definition.revision]),
       );
-      const allowedTools = unique([
-        ...scenario.workflow.flatMap((step) => step.toolIds),
-        ...agents.flatMap((agent) => agent.toolIds),
-        ...skills.flatMap((skill) => skill.toolIds),
-        ...mcps.flatMap((mcp) => mcp.exposedTools),
-      ]).sort();
+      const allowedTools = unique(effectiveWorkflow.length > 0
+        ? effectiveWorkflow.flatMap((step) => step.toolIds)
+        : [
+            ...agents.flatMap((agent) => agent.toolIds),
+            ...skills.flatMap((skill) => skill.toolIds),
+            ...mcps.flatMap((mcp) => mcp.exposedTools),
+          ]).sort();
       const maxTurns = Math.max(
         1,
-        ...scenario.workflow.map((step) => step.maxTurns),
+        ...effectiveWorkflow.map((step) => step.maxTurns),
         ...agents.map((agent) => agent.maxTurns),
         ...skills.map((skill) => skill.maxTurns),
       );
@@ -234,7 +334,7 @@ export class PersonalizationResolver {
         skillIds: skills.map((skill) => skill.id),
         mcpIds: mcps.map((mcp) => mcp.id),
         allowedTools,
-        workflow: scenario.workflow,
+        workflow: effectiveWorkflow,
         maxTurns,
         promptStack,
         fullAccess: scenario.fullAccess,
@@ -255,7 +355,7 @@ export class PersonalizationResolver {
         skills,
         mcps,
         rules,
-        systemPrompt: composeSystemPrompt(promptStack),
+        systemPrompt: composeManifestSystemPrompt(manifest),
       };
     } catch {
       return { ok: false, code: 'definition_corrupt', issues: ['Personalization graph could not be resolved'] };

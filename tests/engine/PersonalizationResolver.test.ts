@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { PersonalizationResolver } from '../../engine/personalization/PersonalizationResolver.js';
+import {
+  PersonalizationResolver,
+  composeManifestSystemPrompt,
+} from '../../engine/personalization/PersonalizationResolver.js';
 import type {
   AgentDefinition,
   McpDefinition,
@@ -108,9 +111,9 @@ const scenario: ScenarioDefinition = {
     name: 'Review',
     description: 'Review evidence.',
     agentId: agent.id,
-    skillIds: [skill.id],
+    skillIds: [],
     toolIds: ['format_citation'],
-    mcpIds: [mcp.id],
+    mcpIds: [],
     dependsOn: [],
     maxTurns: 10,
   }],
@@ -166,12 +169,93 @@ describe('PersonalizationResolver', () => {
       'read_pdf',
       'verify_claim',
     ]);
+    expect(result.manifest.workflow[0]).toMatchObject({
+      agentId: agent.id,
+      skillIds: [skill.id],
+      mcpIds: [mcp.id],
+      toolIds: ['external_search', 'format_citation', 'read_pdf', 'verify_claim'],
+    });
     expect(result.manifest.truthPolicy).toBe('automatic_required');
     expect(result.manifest.fullAccess.perActionConfirmation).toBe(false);
     expect(result.manifest.manifestDigest).toMatch(/^[a-f0-9]{64}$/u);
     expect(result.systemPrompt).toContain('Review evidence.');
     expect(result.systemPrompt).toContain('Use traceable evidence.');
     expect(result.systemPrompt).toContain('Use the project terminology.');
+  });
+
+  it('builds an isolated step prompt from only the executing agent and its effective skills', () => {
+    const otherSkill: SkillDefinitionV2 = {
+      ...skill,
+      ...header('user:skills/statistics', 'skill'),
+      id: 'user:skills/statistics',
+      name: 'Statistics',
+      markdown: '# Statistics',
+      systemPrompt: 'Run the statistical analysis only.',
+      toolIds: ['run_statistics'],
+      mcpIds: [],
+    };
+    const otherAgent: AgentDefinition = {
+      ...agent,
+      ...header('user:agents/statistician', 'agent'),
+      id: 'user:agents/statistician',
+      name: 'Statistician',
+      role: 'Statistician',
+      systemPrompt: 'Act only as the statistician.',
+      skillIds: [otherSkill.id],
+      toolIds: [],
+    };
+    const reader = new Reader();
+    reader.definitions.set(otherSkill.id, otherSkill);
+    reader.definitions.set(otherAgent.id, otherAgent);
+    reader.definitions.set(scenario.id, {
+      ...scenario,
+      agentIds: [agent.id, otherAgent.id],
+      skillIds: [skill.id, otherSkill.id],
+      workflow: [
+        { ...scenario.workflow[0]!, skillIds: [], mcpIds: [] },
+        {
+          id: 'statistics',
+          name: 'Statistics',
+          description: 'Analyse the data.',
+          agentId: otherAgent.id,
+          skillIds: [],
+          toolIds: [],
+          mcpIds: [],
+          dependsOn: ['review'],
+          maxTurns: 10,
+        },
+      ],
+      output: {
+        ...scenario.output,
+        plan: {
+          primaryDeliverable: 'Complete evidence-grounded manuscript',
+          supportingArtifacts: ['Evidence table'],
+          qualityCriteria: ['Every claim is traceable'],
+        },
+      },
+    });
+
+    const result = new PersonalizationResolver(reader).resolve({
+      sessionId: 'session-isolated',
+      projectId: 'project-one',
+      scenarioId: scenario.id,
+      createdAt: NOW,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const reviewPrompt = composeManifestSystemPrompt(result.manifest, result.manifest.workflow[0]);
+    const statisticsPrompt = composeManifestSystemPrompt(result.manifest, result.manifest.workflow[1]);
+    expect(reviewPrompt).toContain('Act as a reviewer.');
+    expect(reviewPrompt).toContain('Review evidence.');
+    expect(reviewPrompt).not.toContain('Act only as the statistician.');
+    expect(reviewPrompt).not.toContain('Run the statistical analysis only.');
+    expect(statisticsPrompt).toContain('Act only as the statistician.');
+    expect(statisticsPrompt).toContain('Run the statistical analysis only.');
+    expect(statisticsPrompt).not.toContain('Act as a reviewer.');
+    expect(statisticsPrompt).not.toContain('Review evidence.');
+    expect(statisticsPrompt).toContain('Primary deliverable: Complete evidence-grounded manuscript.');
+    expect(statisticsPrompt).toContain('- Evidence table');
+    expect(statisticsPrompt).toContain('- Every claim is traceable');
   });
 
   it('is deterministic for the same request and changes digest for a material edit', () => {
