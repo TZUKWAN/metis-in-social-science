@@ -329,7 +329,13 @@ describe('PersonalizationRuntimeContract', () => {
       expectedRevision: 0,
       extra: true,
     }).success).toBe(false);
-    expect(decodePersonalizationListResponse({ ok: true, definitions: 'bad' })).toEqual({ ok: true, definitions: [] });
+    expect(decodePersonalizationListResponse({ ok: true, definitions: 'bad' }))
+      .toEqual({ ok: false, code: 'invalid_response' });
+    expect(decodePersonalizationListResponse({
+      contractVersion: 2,
+      ok: true,
+      definitions: [],
+    })).toEqual({ ok: false, code: 'invalid_response' });
     expect(decodePersonalizationMutationResult({ ok: true, code: 'invented' })).toEqual({ ok: false, code: 'invalid_request' });
   });
 });

@@ -138,4 +138,39 @@ describe('Personalization visual and accessibility contracts', () => {
     expect(shell).toContain('.personalization-trigger:focus-visible');
     expect(cssBlock(shell, '.personalization-trigger.active')).not.toContain('var(--primary)');
   });
+
+  it('keeps short bundle actions intrinsic on 400px and 650px layouts', () => {
+    const center = read('src/personalization/PersonalizationCenter.css');
+    const narrow = center.slice(center.indexOf('@media (max-width: 900px)'));
+    expect(narrow).toMatch(/\.personalization-bundle-actions\s*\{[^}]*align-items:\s*flex-start/isu);
+    expect(narrow).toMatch(/\.personalization-bundle-actions\s*\{[^}]*flex-direction:\s*row/isu);
+    expect(narrow).toMatch(/\.personalization-bundle-actions\s*\{[^}]*flex-wrap:\s*wrap/isu);
+    expect(narrow).not.toMatch(/\.personalization-bundle-actions\s*\{[^}]*align-items:\s*stretch/isu);
+    expect(narrow).toMatch(/\.personalization-bundle-actions\s*>\s*span\s*\{[^}]*flex-basis:\s*100%/isu);
+    expect(narrow).toMatch(/\.personalization-card__draft\s*\{[^}]*flex:\s*1\s+0\s+100%/isu);
+    expect(narrow).toMatch(/\.personalization-card__draft\s*\{[^}]*margin-right:\s*0/isu);
+    expect(narrow).toMatch(/\.personalization-package-picker\s*\{[^}]*flex-wrap:\s*wrap/isu);
+    expect(narrow).toMatch(/\.personalization-package-picker\s+button\s*\{[^}]*white-space:\s*nowrap/isu);
+    expect(narrow).toMatch(/\.personalization-package-picker\s+span\s*\{[^}]*flex:\s*1\s+0\s+100%/isu);
+  });
+
+  it('keeps responsive sidebar controls named and decorative icons hidden from assistive technology', () => {
+    const app = read('src/App.tsx');
+    expect(app).toContain('aria-label={t(item.labelKey)}');
+    expect(app).toContain('title={t(item.labelKey)}');
+    expect(app).toContain('<span className="nav-icon" aria-hidden="true">{item.icon}</span>');
+    expect(app).toContain('aria-label={locale === \'zh\' ? \'个性化\' : \'Personalization\'}');
+    expect(app).toContain('<svg aria-hidden="true"');
+  });
+
+  it('exposes localized academic labels, draft feedback, and a visible focus target', () => {
+    const source = read('src/personalization/PersonalizationCenter.tsx');
+    const css = read('src/personalization/PersonalizationCenter.css');
+    expect(source).toContain("zh ? '研究个性化工作台' : 'RESEARCH PERSONALIZATION WORKBENCH'");
+    expect(source).toContain("zh ? '全权限运行' : 'Full Access'");
+    expect(source).toContain("zh ? '草稿已自动保留' : 'Draft preserved automatically'");
+    expect(source).toContain('ref={headingRef} tabIndex={-1}');
+    expect(cssBlock(css, '.personalization-editor__header h2:focus-visible')).toContain('outline: 2px solid var(--focus-ring-color)');
+    expect(cssBlock(css, '.personalization-draft-notice')).toContain('min-height: 18px');
+  });
 });

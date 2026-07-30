@@ -597,9 +597,11 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
                   className={`nav-item ${!personalizationOpen && currentEntry === item.id ? 'active' : ''}`}
                   onClick={() => { setPersonalizationOpen(false); setCurrentEntry(item.id); }}
                   aria-current={!personalizationOpen && currentEntry === item.id ? 'page' : undefined}
+                  aria-label={t(item.labelKey)}
+                  title={t(item.labelKey)}
                   data-nav-id={item.id}
                 >
-                  <span className="nav-icon">{item.icon}</span>
+                  <span className="nav-icon" aria-hidden="true">{item.icon}</span>
                   <span className="nav-label">{t(item.labelKey)}</span>
                   {item.id === 'library' && unreadPapers > 0 && (
                     <span className="nav-badge" aria-label={t('dashboard.statPapersNeedAttention')}>{unreadPapers}</span>
@@ -615,15 +617,16 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
                 className={`personalization-trigger ${personalizationOpen ? 'active' : ''}`}
                 onClick={() => { setPersonalizationOpen(true); setStandalonePage(null); }}
                 aria-current={personalizationOpen ? 'page' : undefined}
+                aria-label={locale === 'zh' ? '个性化' : 'Personalization'}
                 title={locale === 'zh' ? '个性化' : 'Personalization'}
                 data-testid="personalization-trigger"
               >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                   <line x1="4" y1="6" x2="20" y2="6" /><circle cx="9" cy="6" r="2" />
                   <line x1="4" y1="12" x2="20" y2="12" /><circle cx="15" cy="12" r="2" />
                   <line x1="4" y1="18" x2="20" y2="18" /><circle cx="11" cy="18" r="2" />
                 </svg>
-                <span>{locale === 'zh' ? '个性化' : 'Personalize'}</span>
+                <span>{locale === 'zh' ? '个性化' : 'Personalization'}</span>
               </button>
             </div>
             <button

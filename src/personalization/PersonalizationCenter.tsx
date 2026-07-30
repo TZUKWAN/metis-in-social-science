@@ -1,13 +1,17 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import type {
-  AgentDefinition,
-  McpDefinition,
-  MetisRulesDefinition,
-  PersonalizationDefinition,
-  PersonalizationMutationResult,
-  PersonalizationVersionView,
-  ScenarioDefinition,
-  SkillDefinitionV2,
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  DefinitionProvenanceSchema,
+  FullAccessPolicySchema,
+  MemoryPolicySchema,
+  PersonalizationDefinitionSchema,
+  type AgentDefinition,
+  type McpDefinition,
+  type MetisRulesDefinition,
+  type PersonalizationDefinition,
+  type PersonalizationMutationResult,
+  type PersonalizationVersionView,
+  type ScenarioDefinition,
+  type SkillDefinitionV2,
 } from '../../engine/runtime/PersonalizationRuntimeContract.js';
 import { useTranslation } from '../i18n';
 import { useResearchWorkspaceStore } from '../research/researchWorkspaceStore';
@@ -45,6 +49,294 @@ const KIND_LABELS = {
   zh: { scenario: '场景', agent: '智能体', skill: '技能', mcp: 'MCP', rules: 'Metis.md' },
   en: { scenario: 'Scenarios', agent: 'Agents', skill: 'Skills', mcp: 'MCP', rules: 'Metis.md' },
 } as const;
+
+const MEMORY_SCOPE_OPTIONS: ReadonlyArray<{
+  value: AgentDefinition['memory']['scope'];
+  zh: string;
+  en: string;
+}> = [
+  { value: 'none', zh: '不保留', en: 'None' },
+  { value: 'session', zh: '当前会话', en: 'Session' },
+  { value: 'project', zh: '当前项目', en: 'Project' },
+  { value: 'scenario', zh: '当前场景', en: 'Scenario' },
+];
+
+const OUTPUT_FORMAT_OPTIONS: ReadonlyArray<{
+  value: AgentDefinition['output']['format'];
+  zh: string;
+  en: string;
+}> = [
+  { value: 'markdown', zh: 'Markdown', en: 'Markdown' },
+  { value: 'json', zh: 'JSON', en: 'JSON' },
+  { value: 'document', zh: '文档', en: 'Document' },
+  { value: 'artifact_bundle', zh: '产物包', en: 'Artifact bundle' },
+  { value: 'custom', zh: '自定义', en: 'Custom' },
+];
+
+const CAPABILITY_OPTIONS: ReadonlyArray<{
+  value: ScenarioDefinition['capability'];
+  zh: string;
+  en: string;
+}> = [
+  { value: 'research', zh: '研究', en: 'Research' },
+  { value: 'writing', zh: '写作', en: 'Writing' },
+  { value: 'analysis', zh: '分析', en: 'Analysis' },
+  { value: 'funding', zh: '基金申报', en: 'Funding' },
+  { value: 'custom', zh: '自定义', en: 'Custom' },
+  { value: 'presentation_reserved', zh: '演示文稿（预留）', en: 'Presentation (reserved)' },
+];
+
+const RULE_SCOPE_OPTIONS: ReadonlyArray<{
+  value: Exclude<MetisRulesDefinition['scope'], 'project'>;
+  zh: string;
+  en: string;
+}> = [
+  { value: 'global', zh: '全局', en: 'Global' },
+  { value: 'scenario', zh: '场景', en: 'Scenario' },
+];
+
+const PERSONALIZATION_DRAFT_PREFIX = 'metis:personalization-draft:v1:';
+const PERSONALIZATION_DRAFT_DEBOUNCE_MS = 200;
+
+interface StoredPersonalizationDraft {
+  version: 1;
+  baseRevision: number;
+  draft: PersonalizationDefinition;
+}
+
+const volatilePersonalizationDrafts = new Map<string, StoredPersonalizationDraft>();
+const volatileOnlyPersonalizationDraftIds = new Set<string>();
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
+function isDraftOutput(value: unknown): value is AgentDefinition['output'] {
+  if (!isRecord(value)
+    || typeof value.format !== 'string'
+    || !('schema' in value)
+    || (value.schema !== null && !isRecord(value.schema))
+    || typeof value.requireEvidenceEnvelope !== 'boolean'
+    || typeof value.includeIntegrityReport !== 'boolean') return false;
+  if (value.plan === undefined || value.plan === null) return true;
+  return isRecord(value.plan)
+    && typeof value.plan.primaryDeliverable === 'string'
+    && isStringArray(value.plan.supportingArtifacts)
+    && isStringArray(value.plan.qualityCriteria);
+}
+
+function isDraftWorkflow(value: unknown): value is ScenarioDefinition['workflow'] {
+  return Array.isArray(value) && value.every((step) => isRecord(step)
+    && typeof step.id === 'string'
+    && typeof step.name === 'string'
+    && typeof step.description === 'string'
+    && typeof step.agentId === 'string'
+    && isStringArray(step.skillIds)
+    && isStringArray(step.toolIds)
+    && isStringArray(step.mcpIds)
+    && isStringArray(step.dependsOn)
+    && typeof step.maxTurns === 'number');
+}
+
+/**
+ * Editor drafts deliberately accept temporarily incomplete business values (for example an empty
+ * required name while it is being replaced). Stable structure is still checked so malformed
+ * storage cannot reach the editor as an arbitrary object.
+ */
+function isPersonalizationEditorDraft(value: unknown): value is PersonalizationDefinition {
+  if (!isRecord(value)
+    || value.contractVersion !== 1
+    || typeof value.id !== 'string'
+    || !['scenario', 'agent', 'skill', 'mcp', 'rules'].includes(String(value.kind))
+    || typeof value.name !== 'string'
+    || typeof value.description !== 'string'
+    || typeof value.enabled !== 'boolean'
+    || !isStringArray(value.tags)
+    || !Number.isSafeInteger(value.revision)
+    || !DefinitionProvenanceSchema.safeParse(value.provenance).success) return false;
+
+  if (value.kind === 'agent') {
+    return typeof value.role === 'string'
+      && typeof value.systemPrompt === 'string'
+      && (value.modelPreference === null || typeof value.modelPreference === 'string')
+      && isStringArray(value.skillIds)
+      && isStringArray(value.toolIds)
+      && isStringArray(value.mcpIds)
+      && MemoryPolicySchema.safeParse(value.memory).success
+      && isDraftOutput(value.output)
+      && typeof value.maxTurns === 'number'
+      && typeof value.retryLimit === 'number';
+  }
+  if (value.kind === 'skill') {
+    return ['markdown', 'package', 'url'].includes(String(value.sourceMode))
+      && typeof value.markdown === 'string'
+      && typeof value.systemPrompt === 'string'
+      && isStringArray(value.toolIds)
+      && isStringArray(value.mcpIds)
+      && typeof value.maxTurns === 'number'
+      && (value.inputSchema === null || isRecord(value.inputSchema))
+      && (value.outputSchema === null || isRecord(value.outputSchema))
+      && (value.packageEntry === null || typeof value.packageEntry === 'string');
+  }
+  if (value.kind === 'scenario') {
+    return isStringArray(value.agentIds)
+      && isStringArray(value.skillIds)
+      && isStringArray(value.mcpIds)
+      && isStringArray(value.rulesIds)
+      && isDraftWorkflow(value.workflow)
+      && FullAccessPolicySchema.safeParse(value.fullAccess).success
+      && MemoryPolicySchema.safeParse(value.memory).success
+      && isDraftOutput(value.output)
+      && isStringArray(value.triggerPhrases)
+      && ['research', 'writing', 'analysis', 'funding', 'presentation_reserved', 'custom']
+        .includes(String(value.capability));
+  }
+  if (value.kind === 'rules') {
+    return ['global', 'scenario', 'project'].includes(String(value.scope))
+      && (value.scopeId === null || typeof value.scopeId === 'string')
+      && typeof value.markdown === 'string';
+  }
+  return PersonalizationDefinitionSchema.safeParse(value).success;
+}
+
+function personalizationDraftKey(definitionId: string): string {
+  return `${PERSONALIZATION_DRAFT_PREFIX}${definitionId}`;
+}
+
+function parseStoredPersonalizationDraft(raw: string): StoredPersonalizationDraft | null {
+  try {
+    const candidate = JSON.parse(raw) as Partial<StoredPersonalizationDraft>;
+    if (candidate.version !== 1 || !Number.isInteger(candidate.baseRevision)) return null;
+    if (!isPersonalizationEditorDraft(candidate.draft)) return null;
+    return { version: 1, baseRevision: candidate.baseRevision!, draft: candidate.draft };
+  } catch {
+    return null;
+  }
+}
+
+function personalizationDefinitionSignature(definition: PersonalizationDefinition): string {
+  const parsed = PersonalizationDefinitionSchema.safeParse(definition);
+  return JSON.stringify(parsed.success ? parsed.data : definition);
+}
+
+function readPersonalizationDraft(definition: PersonalizationDefinition): PersonalizationDefinition | null {
+  const key = personalizationDraftKey(definition.id);
+  let stored = volatilePersonalizationDrafts.get(definition.id) ?? null;
+  let durableStorageReadable = false;
+  try {
+    let raw = window.localStorage.getItem(key);
+    durableStorageReadable = true;
+    if (!raw) {
+      raw = window.sessionStorage.getItem(key);
+      if (raw) {
+        window.localStorage.setItem(key, raw);
+      }
+    }
+    if (raw) {
+      stored = parseStoredPersonalizationDraft(raw);
+      if (!stored) {
+        clearPersonalizationDraft(definition.id);
+        return null;
+      }
+      volatilePersonalizationDrafts.set(definition.id, stored);
+    } else if (!volatileOnlyPersonalizationDraftIds.has(definition.id)) {
+      volatilePersonalizationDrafts.delete(definition.id);
+      stored = null;
+    }
+  } catch {
+    try {
+      const raw = window.sessionStorage.getItem(key);
+      if (raw) stored = parseStoredPersonalizationDraft(raw);
+    } catch {
+      // The in-memory mirror remains available when browser storage is restricted.
+    }
+  }
+  if (durableStorageReadable && stored) {
+    try {
+      window.sessionStorage.setItem(key, JSON.stringify(stored));
+    } catch {
+      // localStorage remains the durable copy when session storage is restricted.
+    }
+  }
+  if (!stored
+    || stored.baseRevision !== definition.revision
+    || stored.draft.id !== definition.id
+    || stored.draft.kind !== definition.kind) {
+    if (stored) clearPersonalizationDraft(definition.id);
+    return null;
+  }
+  return stored.draft;
+}
+
+function writePersonalizationDraft(
+  definition: PersonalizationDefinition,
+  draft: PersonalizationDefinition,
+): void {
+  const stored: StoredPersonalizationDraft = {
+    version: 1,
+    baseRevision: definition.revision,
+    draft,
+  };
+  volatilePersonalizationDrafts.set(definition.id, stored);
+  let persisted = false;
+  try {
+    const serialized = JSON.stringify(stored);
+    window.localStorage.setItem(personalizationDraftKey(definition.id), serialized);
+    persisted = true;
+    window.sessionStorage.setItem(personalizationDraftKey(definition.id), serialized);
+    volatileOnlyPersonalizationDraftIds.delete(definition.id);
+  } catch {
+    try {
+      window.sessionStorage.setItem(personalizationDraftKey(definition.id), JSON.stringify(stored));
+      persisted = true;
+    } catch {
+      // The in-memory mirror still protects navigation within this renderer session.
+    }
+    if (persisted) volatileOnlyPersonalizationDraftIds.delete(definition.id);
+    else volatileOnlyPersonalizationDraftIds.add(definition.id);
+  }
+}
+
+function clearPersonalizationDraft(definitionId: string): void {
+  volatilePersonalizationDrafts.delete(definitionId);
+  volatileOnlyPersonalizationDraftIds.delete(definitionId);
+  try {
+    window.localStorage.removeItem(personalizationDraftKey(definitionId));
+    window.sessionStorage.removeItem(personalizationDraftKey(definitionId));
+  } catch {
+    try {
+      window.sessionStorage.removeItem(personalizationDraftKey(definitionId));
+    } catch {
+      // A restricted storage implementation does not affect the in-memory cleanup.
+    }
+  }
+}
+
+function retainedPersonalizationDraftIds(): Set<string> {
+  const ids = new Set<string>();
+  try {
+    for (const storage of [window.localStorage, window.sessionStorage]) {
+      for (let index = 0; index < storage.length; index += 1) {
+        const key = storage.key(index);
+        if (key?.startsWith(PERSONALIZATION_DRAFT_PREFIX)) {
+          ids.add(key.slice(PERSONALIZATION_DRAFT_PREFIX.length));
+        }
+      }
+    }
+    volatileOnlyPersonalizationDraftIds.forEach((id) => ids.add(id));
+    volatilePersonalizationDrafts.forEach((_draft, id) => {
+      if (!ids.has(id)) volatilePersonalizationDrafts.delete(id);
+    });
+  } catch {
+    // The in-memory mirror is authoritative when browser storage is restricted.
+    volatilePersonalizationDrafts.forEach((_draft, id) => ids.add(id));
+  }
+  return ids;
+}
 
 function localId(name: string, fallback = 'custom'): string {
   const normalized = name.trim().toLowerCase()
@@ -204,6 +496,30 @@ function editableCopy(definition: PersonalizationDefinition): PersonalizationDef
   };
 }
 
+function rebasePersonalizationDraft(
+  savedDefinition: PersonalizationDefinition,
+  retainedDraft: PersonalizationDefinition,
+): PersonalizationDefinition {
+  const baseline = editableCopy(savedDefinition);
+  if (retainedDraft.id !== savedDefinition.id || retainedDraft.kind !== savedDefinition.kind) {
+    return baseline;
+  }
+  return {
+    ...baseline,
+    ...retainedDraft,
+    contractVersion: savedDefinition.contractVersion,
+    id: savedDefinition.id,
+    kind: savedDefinition.kind,
+    revision: baseline.revision,
+    provenance: {
+      ...baseline.provenance,
+      ...retainedDraft.provenance,
+      locallyModified: true,
+      updatedAt: Math.max(retainedDraft.provenance.updatedAt, baseline.provenance.updatedAt),
+    },
+  } as PersonalizationDefinition;
+}
+
 function resultMessage(result: PersonalizationMutationResult, zh: boolean): string {
   if (result.ok) return zh ? '已保存' : 'Saved';
   const labels: Record<string, [string, string]> = {
@@ -292,38 +608,71 @@ function OutputPlanEditor({
   onChange: (output: AgentDefinition['output']) => void;
   zh: boolean;
 }) {
+  const { t } = useTranslation();
   const plan = output.plan ?? null;
+  const editablePlan = plan ?? {
+    primaryDeliverable: '',
+    supportingArtifacts: [],
+    qualityCriteria: [],
+  };
+  const updatePlan = (nextPlan: NonNullable<AgentDefinition['output']['plan']>) => {
+    const isCompletelyEmpty = !nextPlan.primaryDeliverable.trim()
+      && nextPlan.supportingArtifacts.length === 0
+      && nextPlan.qualityCriteria.length === 0;
+    onChange({ ...output, plan: isCompletelyEmpty ? null : nextPlan });
+  };
   const setPrimary = (primaryDeliverable: string) => {
-    if (!primaryDeliverable.trim()) {
-      onChange({ ...output, plan: null });
-      return;
-    }
-    onChange({
-      ...output,
-      plan: {
-        primaryDeliverable,
-        supportingArtifacts: plan?.supportingArtifacts ?? [],
-        qualityCriteria: plan?.qualityCriteria ?? [],
-      },
+    const supportingArtifacts = editablePlan.supportingArtifacts;
+    const qualityCriteria = editablePlan.qualityCriteria;
+    updatePlan({
+      primaryDeliverable,
+      supportingArtifacts,
+      qualityCriteria,
     });
   };
   return <fieldset className="personalization-output-plan">
     <legend>{zh ? '输出计划' : 'Output plan'}</legend>
     <p>{zh ? '用普通文字说明要交付什么，不需要编写 JSON。' : 'Describe the expected deliverables in plain language; no JSON is required.'}</p>
-    <label><span>{zh ? '主交付物' : 'Primary deliverable'}</span><input value={plan?.primaryDeliverable ?? ''} maxLength={512} onChange={(event) => setPrimary(event.target.value)} placeholder={zh ? '例如：完整的学术论文草稿' : 'For example: a complete academic article draft'} /></label>
+    <label><span>{zh ? '主交付物' : 'Primary deliverable'}</span><input aria-required="true" value={editablePlan.primaryDeliverable} maxLength={512} onChange={(event) => setPrimary(event.target.value)} placeholder={zh ? '例如：完整的学术论文草稿' : 'For example: a complete academic article draft'} /></label>
+    {!editablePlan.primaryDeliverable.trim() && (editablePlan.supportingArtifacts.length > 0 || editablePlan.qualityCriteria.length > 0) && <p className="personalization-output-plan__required" role="note">{t('personalization.outputPrimaryRequired')}</p>}
     <div className="personalization-grid personalization-grid--2">
-      <label><span>{zh ? '配套产物（每行一项）' : 'Supporting artifacts (one per line)'}</span><textarea rows={4} disabled={!plan} value={plan ? plan.supportingArtifacts.join('\n') : ''} onChange={(event) => plan && onChange({ ...output, plan: { ...plan, supportingArtifacts: parseLines(event.target.value).slice(0, 64) } })} /></label>
-      <label><span>{zh ? '质量标准（每行一项）' : 'Quality criteria (one per line)'}</span><textarea rows={4} disabled={!plan} value={plan ? plan.qualityCriteria.join('\n') : ''} onChange={(event) => plan && onChange({ ...output, plan: { ...plan, qualityCriteria: parseLines(event.target.value).slice(0, 64) } })} /></label>
+      <label><span>{zh ? '配套产物（每行一项）' : 'Supporting artifacts (one per line)'}</span><textarea rows={4} value={editablePlan.supportingArtifacts.join('\n')} onChange={(event) => updatePlan({ ...editablePlan, supportingArtifacts: parseLines(event.target.value).slice(0, 64) })} /></label>
+      <label><span>{zh ? '质量标准（每行一项）' : 'Quality criteria (one per line)'}</span><textarea rows={4} value={editablePlan.qualityCriteria.join('\n')} onChange={(event) => updatePlan({ ...editablePlan, qualityCriteria: parseLines(event.target.value).slice(0, 64) })} /></label>
     </div>
   </fieldset>;
 }
 
 type SimpleSchemaFieldType = 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object';
+
+const SIMPLE_SCHEMA_TYPE_OPTIONS: ReadonlyArray<{
+  value: SimpleSchemaFieldType;
+  zh: string;
+  en: string;
+}> = [
+  { value: 'string', zh: '文本', en: 'Text' },
+  { value: 'number', zh: '数值', en: 'Number' },
+  { value: 'integer', zh: '整数', en: 'Integer' },
+  { value: 'boolean', zh: '是 / 否', en: 'Yes / No' },
+  { value: 'array', zh: '列表', en: 'List' },
+  { value: 'object', zh: '对象', en: 'Object' },
+];
 interface SimpleSchemaField {
   name: string;
   type: SimpleSchemaFieldType;
   description: string;
   required: boolean;
+}
+
+const SIMPLE_SCHEMA_DRAFT_ROWS_KEY = 'x-metis-visual-schema-draft-rows';
+const SIMPLE_SCHEMA_REPLACEMENT_DRAFT_KEY = 'x-metis-visual-schema-replacement';
+
+interface SimpleSchemaDraftState {
+  rows: SimpleSchemaField[];
+  preserveEmptyObject: boolean;
+}
+
+interface SimpleSchemaReplacementDraft extends SimpleSchemaDraftState {
+  original: Record<string, unknown>;
 }
 
 function recordValue(value: unknown): Record<string, unknown> | null {
@@ -332,17 +681,100 @@ function recordValue(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+function isSimpleSchemaField(value: unknown): value is SimpleSchemaField {
+  const record = recordValue(value);
+  return record !== null
+    && typeof record.name === 'string'
+    && ['string', 'number', 'integer', 'boolean', 'array', 'object'].includes(String(record.type))
+    && typeof record.description === 'string'
+    && typeof record.required === 'boolean';
+}
+
+function isSimpleSchemaRowsValid(rows: readonly SimpleSchemaField[]): boolean {
+  const names = rows.map((row) => row.name.trim());
+  return names.every((name) => /^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/u.test(name))
+    && new Set(names).size === names.length;
+}
+
+function readSimpleSchemaDraftState(value: unknown): SimpleSchemaDraftState | null {
+  if (Array.isArray(value)) {
+    return value.every(isSimpleSchemaField) ? { rows: value, preserveEmptyObject: false } : null;
+  }
+  const record = recordValue(value);
+  if (!record
+    || !Array.isArray(record.rows)
+    || !record.rows.every(isSimpleSchemaField)
+    || typeof record.preserveEmptyObject !== 'boolean') return null;
+  return { rows: record.rows, preserveEmptyObject: record.preserveEmptyObject };
+}
+
+function readInvalidSimpleSchemaDraft(schema: Record<string, unknown> | null): SimpleSchemaDraftState | null {
+  if (schema === null || Object.keys(schema).length !== 1) return null;
+  return readSimpleSchemaDraftState(schema[SIMPLE_SCHEMA_DRAFT_ROWS_KEY]);
+}
+
+function buildInvalidSimpleSchemaDraft(
+  rows: readonly SimpleSchemaField[],
+  preserveEmptyObject: boolean,
+): Record<string, unknown> {
+  return { [SIMPLE_SCHEMA_DRAFT_ROWS_KEY]: { rows, preserveEmptyObject } };
+}
+
+function readSimpleSchemaReplacementDraft(
+  schema: Record<string, unknown> | null,
+): SimpleSchemaReplacementDraft | null {
+  if (schema === null || Object.keys(schema).length !== 1) return null;
+  const replacement = recordValue(schema[SIMPLE_SCHEMA_REPLACEMENT_DRAFT_KEY]);
+  const state = readSimpleSchemaDraftState(replacement);
+  const original = recordValue(replacement?.original);
+  return replacement && state && original ? { ...state, original } : null;
+}
+
+function buildSimpleSchemaReplacementDraft(
+  original: Record<string, unknown>,
+  rows: readonly SimpleSchemaField[],
+  preserveEmptyObject: boolean,
+): Record<string, unknown> {
+  return {
+    [SIMPLE_SCHEMA_REPLACEMENT_DRAFT_KEY]: {
+      original,
+      rows,
+      preserveEmptyObject,
+    },
+  };
+}
+
 function readSimpleSchema(schema: Record<string, unknown> | null): SimpleSchemaField[] | null {
   if (schema === null) return [];
+  const invalidDraft = readInvalidSimpleSchemaDraft(schema);
+  if (invalidDraft) return invalidDraft.rows;
+  const replacementDraft = readSimpleSchemaReplacementDraft(schema);
+  if (replacementDraft) return replacementDraft.rows;
   if (schema.type !== 'object') return null;
+  const topLevelKeys = Object.keys(schema);
+  if (topLevelKeys.length !== 4
+    || !['type', 'additionalProperties', 'properties', 'required']
+      .every((key) => Object.hasOwn(schema, key))
+    || schema.additionalProperties !== false
+    || !Array.isArray(schema.required)
+    || !schema.required.every((item) => typeof item === 'string')
+    || new Set(schema.required).size !== schema.required.length) return null;
   const properties = recordValue(schema.properties);
   if (!properties) return null;
-  const required = new Set(Array.isArray(schema.required) ? schema.required.filter((item): item is string => typeof item === 'string') : []);
+  const required = new Set(schema.required);
+  if ([...required].some((name) => !Object.hasOwn(properties, name))) return null;
   const supported = new Set<SimpleSchemaFieldType>(['string', 'number', 'integer', 'boolean', 'array', 'object']);
   const rows: SimpleSchemaField[] = [];
   for (const [name, rawProperty] of Object.entries(properties)) {
     const property = recordValue(rawProperty);
-    if (!property || typeof property.type !== 'string' || !supported.has(property.type as SimpleSchemaFieldType)) return null;
+    if (!property
+      || typeof property.type !== 'string'
+      || !supported.has(property.type as SimpleSchemaFieldType)
+      || Object.keys(property).some((key) => key !== 'type' && key !== 'description')
+      || (property.description !== undefined
+        && (typeof property.description !== 'string'
+          || property.description.length === 0
+          || property.description.trim() !== property.description))) return null;
     rows.push({
       name,
       type: property.type as SimpleSchemaFieldType,
@@ -353,8 +785,17 @@ function readSimpleSchema(schema: Record<string, unknown> | null): SimpleSchemaF
   return rows;
 }
 
-function buildSimpleSchema(rows: readonly SimpleSchemaField[]): Record<string, unknown> | null {
-  if (rows.length === 0) return null;
+function isStrictEmptySimpleSchema(schema: Record<string, unknown> | null): boolean {
+  if (!schema || readInvalidSimpleSchemaDraft(schema) || readSimpleSchemaReplacementDraft(schema)) return false;
+  const parsed = readSimpleSchema(schema);
+  return parsed !== null && parsed.length === 0 && schema !== null;
+}
+
+function buildSimpleSchema(
+  rows: readonly SimpleSchemaField[],
+  preserveEmptyObject = false,
+): Record<string, unknown> | null {
+  if (rows.length === 0 && !preserveEmptyObject) return null;
   return {
     type: 'object',
     additionalProperties: false,
@@ -370,44 +811,105 @@ function SimpleSchemaEditor({
   label,
   value,
   onChange,
+  onValidityChange,
   zh,
 }: {
   label: string;
   value: Record<string, unknown> | null;
   onChange: (value: Record<string, unknown> | null) => void;
+  onValidityChange: (valid: boolean) => void;
   zh: boolean;
 }) {
   const parsed = readSimpleSchema(value);
+  const invalidDraft = readInvalidSimpleSchemaDraft(value);
+  const restoredReplacement = readSimpleSchemaReplacementDraft(value);
   const [rows, setRows] = useState<SimpleSchemaField[]>(parsed ?? []);
   const [unsupported, setUnsupported] = useState(parsed === null);
-  const [error, setError] = useState('');
+  const [replacementOriginal, setReplacementOriginal] = useState<Record<string, unknown> | null>(
+    restoredReplacement?.original ?? null,
+  );
+  const [replacementMode, setReplacementMode] = useState(restoredReplacement !== null);
+  const [preserveEmptyObject, setPreserveEmptyObject] = useState(
+    invalidDraft?.preserveEmptyObject
+      ?? restoredReplacement?.preserveEmptyObject
+      ?? isStrictEmptySimpleSchema(value),
+  );
+  const [error, setError] = useState(invalidDraft
+    ? (zh ? '字段名必须唯一，以字母或下划线开头。' : 'Field names must be unique and start with a letter or underscore.')
+    : '');
 
   const commit = (next: SimpleSchemaField[]) => {
     setRows(next);
     const names = next.map((row) => row.name.trim());
-    const valid = names.every((name) => /^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/u.test(name))
-      && new Set(names).size === names.length;
+    const valid = isSimpleSchemaRowsValid(next);
     if (!valid) {
       setError(zh ? '字段名必须唯一，以字母或下划线开头。' : 'Field names must be unique and start with a letter or underscore.');
+      onChange(replacementMode && replacementOriginal
+        ? buildSimpleSchemaReplacementDraft(replacementOriginal, next, preserveEmptyObject)
+        : buildInvalidSimpleSchemaDraft(next, preserveEmptyObject));
+      onValidityChange(false);
       return;
     }
     setError('');
-    onChange(buildSimpleSchema(next.map((row, index) => ({ ...row, name: names[index]! }))));
+    const normalizedRows = next.map((row, index) => ({ ...row, name: names[index]! }));
+    if (replacementMode && replacementOriginal) {
+      onChange(buildSimpleSchemaReplacementDraft(replacementOriginal, normalizedRows, preserveEmptyObject));
+      onValidityChange(false);
+    } else {
+      onChange(buildSimpleSchema(normalizedRows, preserveEmptyObject));
+      onValidityChange(true);
+    }
   };
 
   if (unsupported) return <fieldset className="personalization-schema-editor">
     <legend>{label}</legend>
     <div className="personalization-boundary"><strong>{zh ? '已保留现有复杂结构' : 'Existing advanced schema preserved'}</strong><span>{zh ? '此结构超出可视化字段编辑器范围。只有明确选择替换时才会清空。' : 'This schema is more complex than the visual field editor. It remains unchanged unless you explicitly replace it.'}</span></div>
-    <button type="button" onClick={() => { setUnsupported(false); setRows([]); onChange(null); }}>{zh ? '替换为可视化字段' : 'Replace with visual fields'}</button>
+    <button type="button" onClick={() => {
+      if (!value) return;
+      setUnsupported(false);
+      setRows([]);
+      setError('');
+      setReplacementOriginal(value);
+      setReplacementMode(true);
+      setPreserveEmptyObject(true);
+      onChange(buildSimpleSchemaReplacementDraft(value, [], true));
+      onValidityChange(false);
+    }}>{zh ? '替换为可视化字段' : 'Replace with visual fields'}</button>
   </fieldset>;
 
   return <fieldset className="personalization-schema-editor">
     <legend>{label}</legend>
+    {replacementMode && replacementOriginal && <div className="personalization-boundary">
+      <strong>{zh ? '可视化替换尚未应用' : 'Visual replacement not applied'}</strong>
+      <span>{zh ? '原始高级结构仍可恢复。应用替换后才能保存定义。' : 'The original advanced schema remains recoverable. Apply the replacement before saving the definition.'}</span>
+      <div className="personalization-actions">
+        <button type="button" onClick={() => {
+          setRows([]);
+          setError('');
+          setReplacementMode(false);
+          setReplacementOriginal(null);
+          setUnsupported(true);
+          setPreserveEmptyObject(false);
+          onChange(replacementOriginal);
+          onValidityChange(true);
+        }}>{zh ? '取消替换' : 'Cancel replacement'}</button>
+        <button type="button" disabled={!isSimpleSchemaRowsValid(rows)} onClick={() => {
+          const names = rows.map((row) => row.name.trim());
+          const normalizedRows = rows.map((row, index) => ({ ...row, name: names[index]! }));
+          setRows(normalizedRows);
+          setReplacementMode(false);
+          setReplacementOriginal(null);
+          setError('');
+          onChange(buildSimpleSchema(normalizedRows, preserveEmptyObject));
+          onValidityChange(true);
+        }}>{zh ? '应用可视化替换' : 'Apply visual replacement'}</button>
+      </div>
+    </div>}
     <p>{zh ? '逐项定义字段；Metis 会生成严格结构，不需要直接编写 JSON。' : 'Define fields one by one. Metis builds a strict schema without raw JSON editing.'}</p>
     <div className="personalization-schema-fields">
       {rows.map((row, index) => <div className="personalization-schema-field" key={`schema-field-${index}`}>
         <label><span>{zh ? '字段名' : 'Field name'}</span><input value={row.name} onChange={(event) => commit(rows.map((item, itemIndex) => itemIndex === index ? { ...item, name: event.target.value } : item))} /></label>
-        <label><span>{zh ? '类型' : 'Type'}</span><select value={row.type} onChange={(event) => commit(rows.map((item, itemIndex) => itemIndex === index ? { ...item, type: event.target.value as SimpleSchemaFieldType } : item))}><option value="string">text</option><option value="number">number</option><option value="integer">integer</option><option value="boolean">yes / no</option><option value="array">list</option><option value="object">object</option></select></label>
+        <label><span>{zh ? '类型' : 'Type'}</span><select value={row.type} onChange={(event) => commit(rows.map((item, itemIndex) => itemIndex === index ? { ...item, type: event.target.value as SimpleSchemaFieldType } : item))}>{SIMPLE_SCHEMA_TYPE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option[zh ? 'zh' : 'en']}</option>)}</select></label>
         <label className="personalization-schema-field__description"><span>{zh ? '说明' : 'Description'}</span><input value={row.description} onChange={(event) => commit(rows.map((item, itemIndex) => itemIndex === index ? { ...item, description: event.target.value } : item))} /></label>
         <label className="personalization-schema-field__required"><input type="checkbox" checked={row.required} onChange={(event) => commit(rows.map((item, itemIndex) => itemIndex === index ? { ...item, required: event.target.checked } : item))} />{zh ? '必填' : 'Required'}</label>
         <button type="button" onClick={() => commit(rows.filter((_item, itemIndex) => itemIndex !== index))}>{zh ? '删除' : 'Remove'}</button>
@@ -424,10 +926,14 @@ function SimpleSchemaEditor({
 
 function ExtensionInstaller({
   kind,
+  definitions,
   onInstalled,
+  onRefresh,
 }: {
   kind: 'skill' | 'mcp';
+  definitions: readonly PersonalizationDefinition[];
   onInstalled: (definitionId: string) => Promise<void>;
+  onRefresh: () => Promise<void>;
 }) {
   const { locale } = useTranslation();
   const zh = locale === 'zh';
@@ -439,18 +945,41 @@ function ExtensionInstaller({
   const [requirement, setRequirement] = useState('');
   const [expectedVersion, setExpectedVersion] = useState('');
   const [expectedDigest, setExpectedDigest] = useState('');
-  const [expectedRevision, setExpectedRevision] = useState(0);
+  const [targetDefinitionId, setTargetDefinitionId] = useState('');
   const [sourceCapabilityId, setSourceCapabilityId] = useState<string | null>(null);
   const [sourceDisplayName, setSourceDisplayName] = useState('');
   const [sourceCapabilityKind, setSourceCapabilityKind] = useState<'file' | 'folder' | null>(null);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
   const mcpLocalId = localId(mcpName, 'my-mcp');
-  const definitionId = mode === 'mcp_url' ? `url:mcp/${mcpLocalId}` : `generated:mcp/${mcpLocalId}`;
+  const derivedMcpDefinitionId = mode === 'mcp_url' ? `url:mcp/${mcpLocalId}` : `generated:mcp/${mcpLocalId}`;
+  const targetCandidates = definitions.filter((definition) => {
+    if (definition.kind !== kind) return false;
+    if (kind === 'skill') {
+      return mode === 'skill_url'
+        ? definition.id.startsWith('url:skills/')
+        : definition.id.startsWith('user:skills/');
+    }
+    return mode === 'mcp_url'
+      ? definition.id.startsWith('url:mcp/')
+      : definition.id.startsWith('generated:mcp/');
+  });
+  const automaticTarget = targetDefinitionId
+    ? null
+    : mode === 'skill_url'
+      ? targetCandidates.find((definition) => definition.provenance.sourceUrl === url.trim()) ?? null
+      : kind === 'mcp'
+        ? targetCandidates.find((definition) => definition.id === derivedMcpDefinitionId) ?? null
+        : null;
+  const targetDefinition = targetCandidates.find((definition) => definition.id === targetDefinitionId)
+    ?? automaticTarget;
+  const expectedRevision = targetDefinition?.revision ?? 0;
+  const definitionId = kind === 'mcp' && targetDefinition ? targetDefinition.id : derivedMcpDefinitionId;
   const packageId = mcpLocalId;
 
   const changeMode = (nextMode: typeof mode) => {
     setMode(nextMode);
+    setTargetDefinitionId('');
     setStatus('');
   };
 
@@ -518,14 +1047,19 @@ function ExtensionInstaller({
     const operationId = crypto.randomUUID();
     const common = { contractVersion: 1 as const, operationId, expectedRevision };
     const request = mode === 'skill_package'
-      ? sourceCapabilityId ? { ...common, mode, sourceCapabilityId } as const : null
+      ? sourceCapabilityId ? {
+          ...common,
+          mode,
+          sourceCapabilityId,
+          expectedId: targetDefinition?.id ?? null,
+        } as const : null
       : mode === 'skill_url'
         ? {
             ...common,
             mode,
             url: trimmedUrl,
             expectedArchiveSha256: expectedDigest || null,
-            expectedId: null,
+            expectedId: targetDefinition?.id ?? null,
             expectedVersion: expectedVersion || null,
           } as const
         : mode === 'mcp_requirements'
@@ -552,6 +1086,23 @@ function ExtensionInstaller({
     try {
       const result = await apply(request);
       if (!result.ok) {
+        if (result.code === 'definition_rejected' && result.detailCode === 'definition_cas_failed') {
+          if (mode === 'skill_package') {
+            setSourceCapabilityId(null);
+            setSourceDisplayName('');
+            setSourceCapabilityKind(null);
+            setTargetDefinitionId('');
+          }
+          await onRefresh();
+          setStatus(mode === 'skill_package'
+            ? (zh
+                ? '该技能已在其他位置更新。Metis 已载入最新版本；请重新选择安装目标和技能包后重试。'
+                : 'This Skill changed elsewhere. Metis loaded the latest version; select the target and skill package again to retry.')
+            : (zh
+                ? '配置已在其他位置更新。Metis 已载入最新版本，请检查后重试。'
+                : 'This configuration changed elsewhere. Metis loaded the latest version; review it and try again.'));
+          return;
+        }
         setStatus(`${zh ? '安装失败' : 'Installation failed'}: ${result.code}${result.detailCode ? ` / ${result.detailCode}` : ''}`);
         return;
       }
@@ -572,17 +1123,21 @@ function ExtensionInstaller({
 
   return <section className="personalization-installer" aria-label={zh ? '安全扩展安装器' : 'Secure extension installer'}>
     <div className="personalization-installer__header">
-      <div><span className="personalization-eyebrow">{kind === 'skill' ? 'SKILL' : 'MCP'}</span><h2>{zh ? '安装与构建' : 'Install and build'}</h2></div>
+      <div><span className="personalization-eyebrow">{kind === 'skill' ? (zh ? '技能' : 'SKILL') : 'MCP'}</span><h2>{zh ? '安装与构建' : 'Install and build'}</h2></div>
       <span>{zh ? '所有来源先验证、再保存；安装结果不能伪造“已核验”状态。' : 'Sources are verified before persistence and can never forge a verified truth state.'}</span>
     </div>
     <label><span>{zh ? '模式' : 'Mode'}</span><select value={mode} onChange={(event) => changeMode(event.target.value as typeof mode)}>{modeOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+    <label><span>{zh ? '安装目标' : 'Installation target'}</span><select value={targetDefinition?.id ?? ''} onChange={(event) => setTargetDefinitionId(event.target.value)}><option value="">{zh ? '安装为新定义' : 'Install as a new definition'}</option>{targetCandidates.map((definition) => <option key={definition.id} value={definition.id}>{definition.name}</option>)}</select></label>
+    <p className="personalization-installer__mode-help">{targetDefinition
+      ? (zh ? `将更新“${targetDefinition.name}”；Metis 会自动绑定当前保存版本。` : `Updating “${targetDefinition.name}”. Metis binds the current saved version automatically.`)
+      : (zh ? '将创建新定义；无需填写内部修订号。' : 'A new definition will be created; no internal revision number is required.')}</p>
     <p className="personalization-installer__mode-help">{mode === 'skill_package'
       ? (zh ? 'ZIP 适合完整技能包；文件夹适合本地开发中的文档、脚本与资源集合。' : 'ZIP is for portable packages; folders are for locally developed documents, scripts, and assets.')
       : mode === 'skill_url'
         ? (zh ? '粘贴 GitHub 或技能包直链，Metis 会下载、核验再安装。' : 'Paste a GitHub or package URL. Metis downloads, verifies, then installs it.')
         : mode === 'mcp_requirements'
           ? (zh ? '用自然语言说明工具需求，Metis Builder 会构建、验证并注册 MCP。' : 'Describe the tool in natural language. Metis Builder constructs, validates, and registers the MCP.')
-          : (zh ? '粘贴 MCP manifest 的 HTTPS 地址，核验通过后才启用。' : 'Paste an HTTPS MCP manifest URL. It is enabled only after verification.')}</p>
+          : (zh ? '粘贴 MCP 清单的 HTTPS 地址，核验通过后才启用。' : 'Paste an HTTPS MCP manifest URL. It is enabled only after verification.')}</p>
     {mode === 'skill_package' && <div className="personalization-package-picker">
       <button type="button" onClick={() => void selectPackage('file')}>{zh ? '选择 ZIP 技能包' : 'Choose skill ZIP package'}</button>
       <button type="button" onClick={() => void selectPackage('folder')}>{zh ? '选择技能文件夹' : 'Choose skill folder'}</button>
@@ -590,12 +1145,11 @@ function ExtensionInstaller({
         ? `${sourceCapabilityKind === 'folder' ? (zh ? '文件夹' : 'Folder') : 'ZIP'}: ${sourceDisplayName}`
         : (zh ? '尚未选择' : 'Nothing selected')}</span>
     </div>}
-    {(mode === 'skill_url' || mode === 'mcp_url') && <label><span>{mode === 'skill_url' ? (zh ? '技能包 URL / GitHub 地址' : 'Skill package URL / GitHub address') : (zh ? 'MCP manifest HTTPS 地址' : 'MCP manifest HTTPS URL')}</span><input value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://..." /></label>}
+    {(mode === 'skill_url' || mode === 'mcp_url') && <label><span>{mode === 'skill_url' ? (zh ? '技能包 URL / GitHub 地址' : 'Skill package URL / GitHub address') : (zh ? 'MCP 清单 HTTPS 地址' : 'MCP manifest HTTPS URL')}</span><input value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://..." /></label>}
     {mode === 'skill_url' && <label><span>{zh ? '预期版本（可选）' : 'Expected version (optional)'}</span><input value={expectedVersion} onChange={(event) => setExpectedVersion(event.target.value)} placeholder="1.0.0" /></label>}
     {mode === 'mcp_requirements' && <><label><span>{zh ? 'MCP 名称' : 'MCP name'}</span><input value={mcpName} maxLength={100} onChange={(event) => setMcpName(event.target.value)} /></label><label><span>{zh ? '说明你需要 MCP 做什么' : 'Describe what the MCP must do'}</span><textarea rows={6} value={requirement} onChange={(event) => setRequirement(event.target.value)} /></label><p className="personalization-derived-id">{zh ? '安装后名称' : 'Installed as'}: <strong>{mcpName.trim() || (zh ? '未命名 MCP' : 'Unnamed MCP')}</strong></p></>}
     {mode === 'mcp_url' && <><label><span>{zh ? 'MCP 名称' : 'MCP name'}</span><input value={mcpName} maxLength={100} onChange={(event) => setMcpName(event.target.value)} /></label><p className="personalization-derived-id">{zh ? '安装后名称' : 'Installed as'}: <strong>{mcpName.trim() || (zh ? '未命名 MCP' : 'Unnamed MCP')}</strong></p></>}
     {(mode === 'skill_url' || mode === 'mcp_url') && <label><span>{zh ? '预期 SHA-256（可选）' : 'Expected SHA-256 (optional)'}</span><input value={expectedDigest} onChange={(event) => setExpectedDigest(event.target.value.trim().toLowerCase())} /></label>}
-    <label><span>{zh ? '现有定义修订号（新安装填 0）' : 'Existing definition revision (0 for new)'}</span><input type="number" min={0} value={expectedRevision} onChange={(event) => setExpectedRevision(boundedInteger(event.target.value, 0, 1_000_000_000, 0))} /></label>
     <div className="personalization-actions"><button className="btn-primary" type="button" disabled={busy} onClick={() => void install()}>{busy ? (zh ? '处理中…' : 'Working…') : (zh ? '验证并安装' : 'Verify and install')}</button><span role="status" aria-live="polite">{status}</span></div>
   </section>;
 }
@@ -693,7 +1247,7 @@ function SecretVaultPanel() {
 
   return <section className="personalization-installer" aria-label={zh ? '加密凭据库' : 'Encrypted credential vault'}>
     <div className="personalization-installer__header">
-      <div><span className="personalization-eyebrow">SECRETS</span><h2>{zh ? 'MCP 凭据' : 'MCP credentials'}</h2></div>
+      <div><span className="personalization-eyebrow">{zh ? '凭据' : 'SECRETS'}</span><h2>{zh ? 'MCP 凭据' : 'MCP credentials'}</h2></div>
       <span>{zh ? '值仅在主进程通过系统安全存储加密；界面和配置包只使用 ${secret:NAME} 引用。' : 'Values are encrypted through OS secure storage in the main process; UI and bundles use only ${secret:NAME} references.'}</span>
     </div>
     <div className="personalization-grid personalization-grid--2">
@@ -715,14 +1269,42 @@ function DefinitionEditor({
   definition,
   definitions,
   onSaved,
+  onDraftStateChange,
 }: {
   definition: PersonalizationDefinition;
   definitions: readonly PersonalizationDefinition[];
   onSaved: () => Promise<void>;
+  onDraftStateChange: (definitionId: string, retained: boolean) => void;
 }) {
-  const { locale } = useTranslation();
+  const { locale, t } = useTranslation();
   const zh = locale === 'zh';
-  const [draft, setDraft] = useState<PersonalizationDefinition>(() => editableCopy(definition));
+  const [initialDraftState] = useState(() => {
+    const fresh = editableCopy(definition);
+    const retained = readPersonalizationDraft(definition);
+    return { fresh, draft: retained ?? fresh, restored: retained !== null };
+  });
+  const [draft, setDraft] = useState<PersonalizationDefinition>(initialDraftState.draft);
+  const [inputSchemaValid, setInputSchemaValid] = useState(
+    initialDraftState.draft.kind !== 'skill'
+      || (readInvalidSimpleSchemaDraft(initialDraftState.draft.inputSchema) === null
+        && readSimpleSchemaReplacementDraft(initialDraftState.draft.inputSchema) === null),
+  );
+  const [outputSchemaValid, setOutputSchemaValid] = useState(
+    initialDraftState.draft.kind !== 'skill'
+      || (readInvalidSimpleSchemaDraft(initialDraftState.draft.outputSchema) === null
+        && readSimpleSchemaReplacementDraft(initialDraftState.draft.outputSchema) === null),
+  );
+  const baselineSignatureRef = useRef(JSON.stringify(initialDraftState.fresh));
+  const baseDefinitionRef = useRef(definition);
+  const latestDraftRef = useRef(initialDraftState.draft);
+  const observedDraftRef = useRef(initialDraftState.draft);
+  const draftPersistenceTimerRef = useRef<number | null>(null);
+  const draftPersistencePendingRef = useRef(false);
+  const savedRevisionReloadPendingRef = useRef(false);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const [draftRetention, setDraftRetention] = useState<'preserved' | 'restored' | null>(
+    initialDraftState.restored ? 'restored' : null,
+  );
   const [status, setStatus] = useState('');
   const [saving, setSaving] = useState(false);
   const [versions, setVersions] = useState<PersonalizationVersionView[]>([]);
@@ -745,6 +1327,102 @@ function DefinitionEditor({
     return () => { cancelled = true; };
   }, [loadVersions]);
 
+  useEffect(() => {
+    const heading = headingRef.current;
+    if (!heading) return;
+    heading.focus({ preventScroll: true });
+    const stackedLayout = typeof window.matchMedia === 'function'
+      ? window.matchMedia('(max-width: 1120px)').matches
+      : window.innerWidth <= 1120;
+    if (stackedLayout && typeof heading.scrollIntoView === 'function') {
+      heading.scrollIntoView({ block: 'start', inline: 'nearest' });
+    }
+  }, [definition.id, definition.revision]);
+
+  const flushPendingDraft = useCallback((updateEditorState = true) => {
+    if (draftPersistenceTimerRef.current !== null) {
+      window.clearTimeout(draftPersistenceTimerRef.current);
+      draftPersistenceTimerRef.current = null;
+    }
+    if (!draftPersistencePendingRef.current) return;
+    draftPersistencePendingRef.current = false;
+
+    const baseDefinition = baseDefinitionRef.current;
+    const latestDraft = latestDraftRef.current;
+    const draftSignature = personalizationDefinitionSignature(latestDraft);
+    if (draftSignature === baselineSignatureRef.current) {
+      clearPersonalizationDraft(baseDefinition.id);
+      onDraftStateChange(baseDefinition.id, false);
+      if (updateEditorState) setDraftRetention(null);
+      return;
+    }
+    writePersonalizationDraft(baseDefinition, latestDraft);
+    onDraftStateChange(baseDefinition.id, true);
+    if (updateEditorState) setDraftRetention('preserved');
+  }, [onDraftStateChange]);
+
+  useEffect(() => {
+    latestDraftRef.current = draft;
+    if (observedDraftRef.current === draft) return;
+    observedDraftRef.current = draft;
+    draftPersistencePendingRef.current = true;
+    if (draftPersistenceTimerRef.current !== null) {
+      window.clearTimeout(draftPersistenceTimerRef.current);
+    }
+    onDraftStateChange(definition.id, true);
+    setDraftRetention('preserved');
+    if (savedRevisionReloadPendingRef.current) {
+      flushPendingDraft(true);
+      return;
+    }
+    draftPersistenceTimerRef.current = window.setTimeout(() => {
+      flushPendingDraft(true);
+    }, PERSONALIZATION_DRAFT_DEBOUNCE_MS);
+  }, [definition.id, draft, flushPendingDraft, onDraftStateChange]);
+
+  useEffect(() => () => {
+    flushPendingDraft(false);
+  }, [flushPendingDraft]);
+
+  const finishSuccessfulMutation = async (
+    submittedSignature: string,
+    savedDefinition: PersonalizationDefinition,
+  ) => {
+    flushPendingDraft(false);
+    const parsedSavedDefinition = PersonalizationDefinitionSchema.safeParse(savedDefinition);
+    if (!parsedSavedDefinition.success) {
+      await onSaved();
+      return;
+    }
+    const persistedDefinition = parsedSavedDefinition.data;
+    const retained = latestDraftRef.current;
+    const hasNewerEdits = personalizationDefinitionSignature(retained) !== submittedSignature;
+    const nextDraft = hasNewerEdits
+      ? rebasePersonalizationDraft(persistedDefinition, retained)
+      : editableCopy(persistedDefinition);
+
+    baseDefinitionRef.current = persistedDefinition;
+    baselineSignatureRef.current = personalizationDefinitionSignature(editableCopy(persistedDefinition));
+    latestDraftRef.current = nextDraft;
+    observedDraftRef.current = nextDraft;
+    setDraft(nextDraft);
+    if (hasNewerEdits) {
+      writePersonalizationDraft(persistedDefinition, nextDraft);
+      onDraftStateChange(persistedDefinition.id, true);
+      setDraftRetention('preserved');
+    } else {
+      clearPersonalizationDraft(persistedDefinition.id);
+      onDraftStateChange(persistedDefinition.id, false);
+      setDraftRetention(null);
+    }
+    savedRevisionReloadPendingRef.current = true;
+    try {
+      await onSaved();
+    } finally {
+      savedRevisionReloadPendingRef.current = false;
+    }
+  };
+
   const updateCommon = (patch: Partial<Pick<PersonalizationDefinition, 'name' | 'description' | 'enabled'>>) => {
     setDraft((current) => ({ ...current, ...patch } as PersonalizationDefinition));
   };
@@ -752,9 +1430,18 @@ function DefinitionEditor({
   const updateWorkflowStep = (index: number, patch: Partial<ScenarioDefinition['workflow'][number]>) => {
     setDraft((current) => {
       if (current.kind !== 'scenario') return current;
+      const previousId = current.workflow[index]?.id;
+      const nextId = patch.id;
       return {
         ...current,
-        workflow: current.workflow.map((step, stepIndex) => stepIndex === index ? { ...step, ...patch } : step),
+        workflow: current.workflow.map((step, stepIndex) => {
+          const updatedStep = stepIndex === index ? { ...step, ...patch } : step;
+          if (!previousId || nextId === undefined || nextId === previousId) return updatedStep;
+          return {
+            ...updatedStep,
+            dependsOn: updatedStep.dependsOn.map((dependencyId) => dependencyId === previousId ? nextId : dependencyId),
+          };
+        }),
       };
     });
   };
@@ -762,7 +1449,12 @@ function DefinitionEditor({
   const addWorkflowStep = () => {
     setDraft((current) => {
       if (current.kind !== 'scenario') return current;
-      const stepNumber = current.workflow.length + 1;
+      const stepNumber = current.workflow.reduce((maximum, step) => {
+        const match = /^step-(\d+)$/u.exec(step.id);
+        if (!match) return maximum;
+        const suffix = Number(match[1]);
+        return Number.isSafeInteger(suffix) ? Math.max(maximum, suffix) : maximum;
+      }, current.workflow.length) + 1;
       const firstAgentId = current.agentIds[0] ?? '';
       if (!firstAgentId) {
         setStatus(zh ? '请先从“用于此场景的智能体”中选择至少一个智能体' : 'Choose at least one agent for this scenario first');
@@ -786,22 +1478,47 @@ function DefinitionEditor({
   };
 
   const removeWorkflowStep = (index: number) => {
-    setDraft((current) => current.kind === 'scenario'
-      ? { ...current, workflow: current.workflow.filter((_step, stepIndex) => stepIndex !== index) }
-      : current);
+    setDraft((current) => {
+      if (current.kind !== 'scenario') return current;
+      const removedId = current.workflow[index]?.id;
+      if (!removedId) return current;
+      return {
+        ...current,
+        workflow: current.workflow
+          .filter((_step, stepIndex) => stepIndex !== index)
+          .map((step) => ({
+            ...step,
+            dependsOn: step.dependsOn.filter((dependencyId) => dependencyId !== removedId),
+          })),
+      };
+    });
   };
 
   const save = async () => {
+    if (draft.kind === 'skill' && (!inputSchemaValid || !outputSchemaValid)) {
+      setStatus(zh
+        ? '请先修正字段名称；当前编辑已保留，但不会提交旧结构。'
+        : 'Correct the field names first. Your edits are preserved and the previous schema will not be submitted.');
+      return;
+    }
     if (draft.kind === 'rules' && draft.scope === 'project') {
       setStatus(zh
-        ? '普通 project 规则定义不是权威项目 Metis.md；请先转换为 global 或 scenario。'
+        ? '普通项目规则定义不是权威项目 Metis.md；请先转换为全局或场景规则。'
         : 'A regular project-scoped definition is not authoritative; convert it to global or scenario first.');
+      return;
+    }
+    if ((draft.kind === 'agent' || draft.kind === 'scenario')
+      && draft.output.plan != null
+      && !draft.output.plan.primaryDeliverable.trim()) {
+      setStatus(t('personalization.outputPrimaryRequiredSave'));
       return;
     }
     if (!window.metis?.savePersonalization) {
       setStatus(zh ? '个性化服务不可用' : 'Personalization service is unavailable');
       return;
     }
+    flushPendingDraft(false);
+    const submittedSignature = personalizationDefinitionSignature(draft);
     setSaving(true);
     try {
       if (draft.kind === 'skill' && draft.sourceMode === 'markdown' && window.metis.applyPersonalizationExtension) {
@@ -826,7 +1543,9 @@ function DefinitionEditor({
         setStatus(result.ok
           ? (zh ? '已保存，并写入签名来源记录' : 'Saved with a signed source record')
           : `${zh ? '保存失败' : 'Save failed'}: ${result.code}`);
-        if (result.ok) await onSaved();
+        if (result.ok) {
+          await finishSuccessfulMutation(submittedSignature, result.definition);
+        }
         return;
       }
       const result = await window.metis.savePersonalization({
@@ -835,7 +1554,9 @@ function DefinitionEditor({
         expectedRevision: definition.revision,
       });
       setStatus(resultMessage(result, zh));
-      if (result.ok) await onSaved();
+      if (result.ok && result.code === 'saved') {
+        await finishSuccessfulMutation(submittedSignature, result.definition);
+      }
     } catch {
       setStatus(zh
         ? '保存未完成：无法连接个性化服务，你的本地编辑已保留。'
@@ -846,6 +1567,8 @@ function DefinitionEditor({
   };
 
   const restore = async (sourceRevision: number) => {
+    flushPendingDraft(false);
+    const submittedSignature = personalizationDefinitionSignature(draft);
     try {
       const result = await window.metis?.restorePersonalization?.({
         contractVersion: 1,
@@ -858,7 +1581,9 @@ function DefinitionEditor({
         return;
       }
       setStatus(resultMessage(result, zh));
-      if (result.ok) await onSaved();
+      if (result.ok && result.code === 'saved') {
+        await finishSuccessfulMutation(submittedSignature, result.definition);
+      }
     } catch {
       setStatus(zh ? '版本恢复未完成，当前内容未改变。' : 'Version restore did not complete; the current content is unchanged.');
     }
@@ -867,13 +1592,14 @@ function DefinitionEditor({
   const presentationReserved = draft.kind === 'scenario'
     && draft.capability === 'presentation_reserved';
   const nonAuthoritativeProjectRule = draft.kind === 'rules' && draft.scope === 'project';
+  const schemaEditorsValid = draft.kind !== 'skill' || (inputSchemaValid && outputSchemaValid);
 
   return (
     <section className="personalization-editor" aria-label={zh ? '定义编辑器' : 'Definition editor'}>
       <div className="personalization-editor__header">
         <div>
           <span className="personalization-eyebrow">{KIND_LABELS[zh ? 'zh' : 'en'][draft.kind]}</span>
-          <h2>{draft.name}</h2>
+          <h2 ref={headingRef} tabIndex={-1}>{draft.name}</h2>
           <code>{draft.id}</code>
         </div>
         <div className="personalization-editor__header-actions">
@@ -881,13 +1607,20 @@ function DefinitionEditor({
           <button
             type="button"
             className="btn-primary"
-            disabled={saving || !draft.name.trim() || nonAuthoritativeProjectRule}
+            disabled={saving || !draft.name.trim() || nonAuthoritativeProjectRule || !schemaEditorsValid}
             onClick={() => void save()}
           >
             {saving ? (zh ? '保存中…' : 'Saving…') : (zh ? '保存' : 'Save')}
           </button>
         </div>
       </div>
+      <p className="personalization-draft-notice" role="status" aria-live="polite">
+        {draftRetention === 'restored'
+          ? (zh ? '已恢复保留的草稿' : 'Preserved draft restored')
+          : draftRetention === 'preserved'
+            ? (zh ? '草稿已自动保留' : 'Draft preserved automatically')
+            : ''}
+      </p>
       <label>
         <span>{zh ? '名称' : 'Name'}</span>
         <input value={draft.name} maxLength={200} onChange={(event) => updateCommon({ name: event.target.value })} />
@@ -916,8 +1649,8 @@ function DefinitionEditor({
         <DefinitionReferencePicker label={zh ? '允许此技能使用的 MCP' : 'MCP available to this skill'} help={zh ? '按名称选择；不需要手工复制 ID。' : 'Choose by name; no ID copying is required.'} kind="mcp" definitions={definitions} selectedIds={draft.mcpIds} onChange={(mcpIds) => setDraft({ ...draft, mcpIds })} emptyLabel={zh ? '还没有可用的 MCP。' : 'No MCP definitions are available.'} />
         <label><span>{zh ? '最大轮次' : 'Maximum turns'}</span><input type="number" min={1} max={100} value={draft.maxTurns} onChange={(event) => setDraft({ ...draft, maxTurns: boundedInteger(event.target.value, 1, 100, draft.maxTurns) })} /></label>
         <div className="personalization-grid personalization-grid--2">
-          <SimpleSchemaEditor key={`${definition.id}:${definition.revision}:input`} label={zh ? '输入字段' : 'Input fields'} value={draft.inputSchema} onChange={(inputSchema) => setDraft({ ...draft, inputSchema })} zh={zh} />
-          <SimpleSchemaEditor key={`${definition.id}:${definition.revision}:output`} label={zh ? '输出字段' : 'Output fields'} value={draft.outputSchema} onChange={(outputSchema) => setDraft({ ...draft, outputSchema })} zh={zh} />
+          <SimpleSchemaEditor key={`${definition.id}:${definition.revision}:input`} label={zh ? '输入字段' : 'Input fields'} value={draft.inputSchema} onChange={(inputSchema) => setDraft({ ...draft, inputSchema })} onValidityChange={setInputSchemaValid} zh={zh} />
+          <SimpleSchemaEditor key={`${definition.id}:${definition.revision}:output`} label={zh ? '输出字段' : 'Output fields'} value={draft.outputSchema} onChange={(outputSchema) => setDraft({ ...draft, outputSchema })} onValidityChange={setOutputSchemaValid} zh={zh} />
         </div>
       </>}
 
@@ -933,8 +1666,8 @@ function DefinitionEditor({
           <label><span>{zh ? '重试次数' : 'Retry limit'}</span><input type="number" min={0} max={10} value={draft.retryLimit} onChange={(event) => setDraft({ ...draft, retryLimit: boundedInteger(event.target.value, 0, 10, draft.retryLimit) })} /></label>
         </div>
         <div className="personalization-grid personalization-grid--2">
-          <label><span>{zh ? '记忆范围' : 'Memory scope'}</span><select value={draft.memory.scope} onChange={(event) => setDraft({ ...draft, memory: { ...draft.memory, scope: event.target.value as AgentDefinition['memory']['scope'] } })}><option value="none">none</option><option value="session">session</option><option value="project">project</option><option value="scenario">scenario</option></select></label>
-          <label><span>{zh ? '输出格式' : 'Output format'}</span><select value={draft.output.format} onChange={(event) => setDraft({ ...draft, output: { ...draft.output, format: event.target.value as AgentDefinition['output']['format'] } })}><option value="markdown">markdown</option><option value="json">json</option><option value="document">document</option><option value="artifact_bundle">artifact_bundle</option><option value="custom">custom</option></select></label>
+          <label><span>{zh ? '记忆范围' : 'Memory scope'}</span><select value={draft.memory.scope} onChange={(event) => setDraft({ ...draft, memory: { ...draft.memory, scope: event.target.value as AgentDefinition['memory']['scope'] } })}>{MEMORY_SCOPE_OPTIONS.map((option) => <option value={option.value} key={option.value}>{option[zh ? 'zh' : 'en']}</option>)}</select></label>
+          <label><span>{zh ? '输出格式' : 'Output format'}</span><select value={draft.output.format} onChange={(event) => setDraft({ ...draft, output: { ...draft.output, format: event.target.value as AgentDefinition['output']['format'] } })}>{OUTPUT_FORMAT_OPTIONS.map((option) => <option value={option.value} key={option.value}>{option[zh ? 'zh' : 'en']}</option>)}</select></label>
           <label><span>{zh ? '记忆摘要上限' : 'Memory summary limit'}</span><input type="number" min={1000} max={500000} value={draft.memory.maxSummaryChars} onChange={(event) => setDraft({ ...draft, memory: { ...draft.memory, maxSummaryChars: boundedInteger(event.target.value, 1000, 500000, draft.memory.maxSummaryChars) } })} /></label>
         </div>
         <div className="personalization-inline-checks">
@@ -947,7 +1680,7 @@ function DefinitionEditor({
 
       {draft.kind === 'scenario' && !presentationReserved && <>
         <div className="personalization-boundary">
-          <strong>Full Access</strong>
+          <strong>{zh ? '全权限运行' : 'Full Access'}</strong>
           <span>{zh ? '运行时不做逐步权限确认，允许用户随时发消息引导或打断。' : 'No per-action permission prompts; the user may steer or interrupt at any time.'}</span>
         </div>
         <DefinitionReferencePicker label={zh ? '用于此场景的智能体' : 'Agents for this scenario'} help={zh ? '选择后才能创建工作流步骤。' : 'Select agents before adding workflow steps.'} kind="agent" definitions={definitions} selectedIds={draft.agentIds} onChange={(agentIds) => setDraft({ ...draft, agentIds, workflow: draft.workflow.filter((step) => agentIds.includes(step.agentId)) })} emptyLabel={zh ? '还没有可用智能体。' : 'No agents are available.'} />
@@ -955,11 +1688,11 @@ function DefinitionEditor({
         <DefinitionReferencePicker label={zh ? '场景可使用的 MCP' : 'MCP available to this scenario'} help={zh ? '工作流步骤只能从这些 MCP 中选择。' : 'Workflow steps can choose from this scenario-level set.'} kind="mcp" definitions={definitions} selectedIds={draft.mcpIds} onChange={(mcpIds) => setDraft({ ...draft, mcpIds, workflow: draft.workflow.map((step) => ({ ...step, mcpIds: step.mcpIds.filter((id) => mcpIds.includes(id)) })) })} emptyLabel={zh ? '还没有可用 MCP。' : 'No MCP definitions are available.'} />
         <DefinitionReferencePicker label={zh ? '场景专属 Metis.md' : 'Scenario-specific Metis.md'} help={zh ? '全局 Metis.md 会自动生效；这里只选择绑定到该场景的规则。项目 Metis.md 由“当前项目 Metis.md”独立管理。' : 'Global Metis.md applies automatically. Select only scenario-bound rules here; project Metis.md is managed separately.'} kind="rules" definitions={definitions} selectedIds={draft.rulesIds} onChange={(rulesIds) => setDraft({ ...draft, rulesIds })} filter={(candidate) => candidate.kind === 'rules' && candidate.scope === 'scenario' && candidate.scopeId === draft.id} emptyLabel={zh ? '还没有绑定到此场景的 Metis.md。' : 'No Metis.md definition is bound to this scenario yet.'} />
         <div className="personalization-grid personalization-grid--2">
-          <label><span>{zh ? '场景能力' : 'Scenario capability'}</span><select value={draft.capability} onChange={(event) => setDraft({ ...draft, capability: event.target.value as ScenarioDefinition['capability'] })}><option value="research">research</option><option value="writing">writing</option><option value="analysis">analysis</option><option value="funding">funding</option><option value="custom">custom</option>{draft.capability === 'presentation_reserved' && <option value="presentation_reserved">presentation_reserved</option>}</select></label>
+          <label><span>{zh ? '场景能力' : 'Scenario capability'}</span><select value={draft.capability} onChange={(event) => setDraft({ ...draft, capability: event.target.value as ScenarioDefinition['capability'] })}>{CAPABILITY_OPTIONS.filter((option) => option.value !== 'presentation_reserved' || draft.capability === 'presentation_reserved').map((option) => <option value={option.value} key={option.value}>{option[zh ? 'zh' : 'en']}</option>)}</select></label>
           <label><span>{zh ? '触发短语' : 'Trigger phrases'}</span><textarea rows={3} value={csv(draft.triggerPhrases)} onChange={(event) => setDraft({ ...draft, triggerPhrases: parseCsv(event.target.value) })} /></label>
-          <label><span>{zh ? '记忆范围' : 'Memory scope'}</span><select value={draft.memory.scope} onChange={(event) => setDraft({ ...draft, memory: { ...draft.memory, scope: event.target.value as ScenarioDefinition['memory']['scope'] } })}><option value="none">none</option><option value="session">session</option><option value="project">project</option><option value="scenario">scenario</option></select></label>
+          <label><span>{zh ? '记忆范围' : 'Memory scope'}</span><select value={draft.memory.scope} onChange={(event) => setDraft({ ...draft, memory: { ...draft.memory, scope: event.target.value as ScenarioDefinition['memory']['scope'] } })}>{MEMORY_SCOPE_OPTIONS.map((option) => <option value={option.value} key={option.value}>{option[zh ? 'zh' : 'en']}</option>)}</select></label>
           <label><span>{zh ? '记忆摘要上限' : 'Memory summary limit'}</span><input type="number" min={1000} max={500000} value={draft.memory.maxSummaryChars} onChange={(event) => setDraft({ ...draft, memory: { ...draft.memory, maxSummaryChars: boundedInteger(event.target.value, 1000, 500000, draft.memory.maxSummaryChars) } })} /></label>
-          <label><span>{zh ? '产物格式' : 'Artifact format'}</span><select value={draft.output.format} onChange={(event) => setDraft({ ...draft, output: { ...draft.output, format: event.target.value as ScenarioDefinition['output']['format'] } })}><option value="markdown">markdown</option><option value="json">json</option><option value="document">document</option><option value="artifact_bundle">artifact_bundle</option><option value="custom">custom</option></select></label>
+          <label><span>{zh ? '产物格式' : 'Artifact format'}</span><select value={draft.output.format} onChange={(event) => setDraft({ ...draft, output: { ...draft.output, format: event.target.value as ScenarioDefinition['output']['format'] } })}>{OUTPUT_FORMAT_OPTIONS.map((option) => <option value={option.value} key={option.value}>{option[zh ? 'zh' : 'en']}</option>)}</select></label>
         </div>
         <div className="personalization-inline-checks">
           <label><input type="checkbox" checked={draft.memory.retainDecisions} onChange={(event) => setDraft({ ...draft, memory: { ...draft.memory, retainDecisions: event.target.checked } })} />{zh ? '保留场景决策摘要' : 'Retain scenario decisions'}</label>
@@ -993,21 +1726,21 @@ function DefinitionEditor({
           <label><span>{zh ? '规则层级' : 'Rule scope'}</span><select value={draft.scope} onChange={(event) => {
             const scope = event.target.value as MetisRulesDefinition['scope'];
             setDraft({ ...draft, scope, scopeId: scope === 'global' ? null : draft.scopeId });
-          }}><option value="global">global</option><option value="scenario">scenario</option>{draft.scope === 'project' && <option value="project" disabled>{zh ? 'project（非权威旧定义）' : 'project (legacy, non-authoritative)'}</option>}</select></label>
+          }}>{RULE_SCOPE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option[zh ? 'zh' : 'en']}</option>)}{draft.scope === 'project' && <option value="project" disabled>{zh ? '项目（非权威旧定义）' : 'Project (legacy, non-authoritative)'}</option>}</select></label>
           {draft.scope === 'scenario' && <label><span>{zh ? '绑定场景' : 'Bound scenario'}</span><select value={draft.scopeId ?? ''} onChange={(event) => setDraft({ ...draft, scopeId: event.target.value || null })}><option value="">{zh ? '请选择场景' : 'Choose a scenario'}</option>{definitions.filter((candidate) => candidate.kind === 'scenario').map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}</select></label>}
         </div>
-        {draft.scope === 'project' && <div className="personalization-boundary" role="note"><strong>{zh ? '这不是权威项目 Metis.md' : 'This is not the authoritative project Metis.md'}</strong><span>{zh ? '请使用本分类顶部的“当前项目 Metis.md”。可将此旧定义转换为 global 或 scenario 后再保存。' : 'Use Current project Metis.md at the top of this category. You may convert this legacy definition to global or scenario before saving.'}</span></div>}
+        {draft.scope === 'project' && <div className="personalization-boundary" role="note"><strong>{zh ? '这不是权威项目 Metis.md' : 'This is not the authoritative project Metis.md'}</strong><span>{zh ? '请使用上方“打开当前项目 Metis.md”返回独立编辑器。也可将此旧定义转换为全局或场景规则后再保存。' : 'Use “Open current project Metis.md” above to return to its separate editor. You may also convert this legacy definition to global or scenario before saving.'}</span></div>}
         <label><span>Metis.md</span><textarea rows={20} value={draft.markdown} onChange={(event) => setDraft({ ...draft, markdown: event.target.value })} /></label>
       </>}
 
       {draft.kind === 'mcp' && <>
-        <label><span>{zh ? 'MCP 来源模式' : 'MCP source mode'}</span><select value={draft.sourceMode} onChange={(event) => setDraft({ ...draft, sourceMode: event.target.value as McpDefinition['sourceMode'] })}><option value="generated">{zh ? '描述需求，由 Metis 构建' : 'Describe requirements; Metis builds it'}</option><option value="url">URL / GitHub</option></select></label>
+        <label><span>{zh ? 'MCP 来源模式' : 'MCP source mode'}</span><select value={draft.sourceMode} onChange={(event) => setDraft({ ...draft, sourceMode: event.target.value as McpDefinition['sourceMode'] })}><option value="generated">{zh ? '描述需求，由 Metis 构建' : 'Describe requirements; Metis builds it'}</option><option value="url">{zh ? 'URL / GitHub 地址' : 'URL / GitHub'}</option></select></label>
         <div className="personalization-boundary"><strong>{zh ? '托管运行时' : 'Managed runtime'}</strong><span>{zh ? '启动程序、参数和工作目录由已验证安装记录决定，不能在界面中替换为任意命令。' : 'Executable, arguments, and working directory come from the verified installation record and cannot be replaced with arbitrary commands.'}</span></div>
         <label><span>{zh ? '安装来源（只读）' : 'Installation source (read-only)'}</span><input value={draft.sourceUrl ?? ''} readOnly /></label>
       </>}
 
       <div className="personalization-actions">
-        <button className="btn-primary" disabled={saving || !draft.name.trim() || nonAuthoritativeProjectRule} onClick={() => void save()}>{saving ? (zh ? '保存中…' : 'Saving…') : (zh ? '保存新版本' : 'Save new revision')}</button>
+        <button className="btn-primary" disabled={saving || !draft.name.trim() || nonAuthoritativeProjectRule || !schemaEditorsValid} onClick={() => void save()}>{saving ? (zh ? '保存中…' : 'Saving…') : (zh ? '保存新版本' : 'Save new revision')}</button>
         <span role="status" aria-live="polite">{status}</span>
       </div>
       <details className="personalization-history">
@@ -1027,7 +1760,7 @@ function DefinitionEditor({
 }
 
 export default function PersonalizationCenter({ onActivateScenario }: PersonalizationCenterProps = {}) {
-  const { locale } = useTranslation();
+  const { locale, t } = useTranslation();
   const zh = locale === 'zh';
   const [definitions, setDefinitions] = useState<PersonalizationDefinition[]>([]);
   const [kind, setKind] = useState<Kind>('scenario');
@@ -1035,6 +1768,7 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
   const [status, setStatus] = useState('');
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
+  const [draftIds, setDraftIds] = useState<Set<string>>(() => retainedPersonalizationDraftIds());
   const activeProjectId = useResearchWorkspaceStore((state) => state.activeProjectId);
   const mcpActivationDependencies = useMemo<McpActivationPanelDependencies>(() => ({
     activateMcp: async (request) => (
@@ -1073,6 +1807,16 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
   );
   const filtered = useMemo(() => userDefinitions.filter((item) => item.kind === kind), [userDefinitions, kind]);
   const selected = userDefinitions.find((item) => item.id === selectedId) ?? null;
+
+  const handleDraftStateChange = useCallback((definitionId: string, retained: boolean) => {
+    setDraftIds((current) => {
+      if (current.has(definitionId) === retained) return current;
+      const next = new Set(current);
+      if (retained) next.add(definitionId);
+      else next.delete(definitionId);
+      return next;
+    });
+  }, []);
 
   const afterExtensionInstall = async (definitionId: string) => {
     await load();
@@ -1119,7 +1863,11 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
       const result = await window.metis?.archivePersonalization({ contractVersion: 1, id: definition.id, expectedRevision: definition.revision });
       if (!result) { setStatus(zh ? '归档服务不可用。' : 'Archive service is unavailable.'); return; }
       setStatus(result.ok ? (zh ? '已移入归档；内置原版始终保留' : 'Archived; the factory original remains available') : resultMessage(result, zh));
-      if (result.ok) await load();
+      if (result.ok) {
+        clearPersonalizationDraft(definition.id);
+        handleDraftStateChange(definition.id, false);
+        await load();
+      }
     } catch {
       setStatus(zh ? '归档未完成，定义仍保留。' : 'Archive did not complete; the definition remains available.');
     }
@@ -1130,6 +1878,18 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
       setStatus(zh
         ? '该场景当前不可运行；没有启动任何任务。'
         : 'This scenario is not executable; no task was started.');
+      return;
+    }
+    if (definition.agentIds.length === 0) {
+      setStatus(zh
+        ? '请先为此场景绑定至少一个智能体；没有启动任何任务。'
+        : 'Bind at least one Agent to this scenario first; no task was started.');
+      return;
+    }
+    if (definition.output.plan != null
+      && definition.workflow.length === 0
+      && definition.agentIds.length !== 1) {
+      setStatus(t('personalization.scenarioNeedsUniqueAgent'));
       return;
     }
     if (!onActivateScenario) {
@@ -1189,7 +1949,7 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
     <div className="personalization-page">
       <header className="personalization-hero">
         <div>
-          <span className="personalization-eyebrow">THE MOST FREE FOR METIS</span>
+          <span className="personalization-eyebrow">{zh ? '研究个性化工作台' : 'RESEARCH PERSONALIZATION WORKBENCH'}</span>
           <h1>{zh ? '个性化' : 'Personalization'}</h1>
           <p>{zh ? '从空白场景开始，将你创建的智能体、技能、MCP 与 Metis.md 组合成专属研究系统。' : 'Start from a blank scenario and compose the agents, skills, MCP servers, and Metis.md that belong to your research system.'}</p>
         </div>
@@ -1219,7 +1979,19 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
           {!loading && loadError && <div className="personalization-load-error" role="alert"><span>{loadError}</span><button type="button" onClick={() => void load()}>{zh ? '重试' : 'Retry'}</button></div>}
           {!loading && !loadError && filtered.length === 0 && <p className="personalization-empty">{kind === 'scenario' ? (zh ? '还没有场景。从新建场景开始。' : 'No scenarios yet. Start by creating one.') : (zh ? '还没有自定义内容。' : 'No custom definitions yet.')}</p>}
           <div className="personalization-cards">
-            {filtered.map((definition) => {
+            {filtered.map((definition, index) => {
+              const missingScenarioAgent = definition.kind === 'scenario'
+                && definition.enabled
+                && definition.capability !== 'presentation_reserved'
+                && definition.agentIds.length === 0;
+              const ambiguousPlannedScenario = definition.kind === 'scenario'
+                && definition.enabled
+                && definition.capability !== 'presentation_reserved'
+                && definition.output.plan != null
+                && definition.workflow.length === 0
+                && definition.agentIds.length > 1;
+              const scenarioUseBlocked = missingScenarioAgent || ambiguousPlannedScenario;
+              const readinessId = `personalization-scenario-readiness-${index}`;
               return <article key={definition.id} className={`personalization-card ${selectedId === definition.id ? 'selected' : ''}`}>
                 <button className="personalization-card__select" data-definition-id={definition.id} onClick={() => setSelectedId(definition.id)}>
                   <span className="personalization-card__meta"><b>{definition.provenance.origin === 'builtin' ? (zh ? '内置' : 'Built-in') : (zh ? '自定义' : 'Custom')}</b><span>r{definition.revision}</span></span>
@@ -1227,18 +1999,34 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
                   <span>{definition.description || (zh ? '暂无说明' : 'No description')}</span>
                 </button>
                 <div className="personalization-card__actions">
+                  {draftIds.has(definition.id) && <span className="personalization-card__draft">{zh ? '草稿已保留' : 'Draft preserved'}</span>}
                   {definition.kind === 'scenario'
                     && definition.enabled
                     && definition.capability !== 'presentation_reserved'
                     && (
                       <button
                         type="button"
-                        disabled={!onActivateScenario}
+                        disabled={!onActivateScenario || scenarioUseBlocked}
+                        aria-describedby={scenarioUseBlocked ? readinessId : undefined}
+                        title={missingScenarioAgent
+                          ? (zh ? '请先绑定至少一个智能体' : 'Bind at least one Agent first')
+                          : ambiguousPlannedScenario
+                            ? t('personalization.scenarioNeedsUniqueAgentTitle')
+                          : undefined}
                         onClick={() => void activateScenario(definition)}
                       >
                         {zh ? '在对话中使用' : 'Use in conversation'}
                       </button>
                     )}
+                  {scenarioUseBlocked && (
+                    <span id={readinessId} className="personalization-card__readiness">
+                      {ambiguousPlannedScenario
+                        ? t('personalization.scenarioNeedsUniqueAgent')
+                        : zh
+                        ? '请先绑定至少一个智能体，再在对话中使用此场景。'
+                        : 'Bind at least one Agent before using this scenario in conversation.'}
+                    </span>
+                  )}
                   {definition.provenance.origin === 'builtin'
                     ? <button onClick={() => void fork(definition)}>{zh ? '创建可编辑副本' : 'Create editable copy'}</button>
                     : <button onClick={() => void archive(definition)}>{zh ? '归档' : 'Archive'}</button>}
@@ -1253,10 +2041,21 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
           className="personalization-detail"
           aria-label={zh ? '个性化详情' : 'Personalization details'}
         >
-          {kind === 'rules' && (
+          {kind === 'rules' && !selected && (
             <ProjectMetisRulesEditor projectId={activeProjectId} />
           )}
-          {(kind === 'skill' || kind === 'mcp') && <ExtensionInstaller kind={kind} onInstalled={afterExtensionInstall} />}
+          {selected?.kind === 'rules' && (
+            <div className="personalization-boundary personalization-rules-context" role="note">
+              <strong>{selected.scope === 'global'
+                ? t('personalization.globalRulesContext')
+                : selected.scope === 'scenario'
+                  ? t('personalization.scenarioRulesContext')
+                  : t('personalization.legacyProjectRulesContext')}</strong>
+              <span>{t('personalization.rulesContextDescription')}</span>
+              <button type="button" onClick={() => setSelectedId(null)}>{t('personalization.openProjectRules')}</button>
+            </div>
+          )}
+          {(kind === 'skill' || kind === 'mcp') && <ExtensionInstaller key={kind} kind={kind} definitions={userDefinitions} onInstalled={afterExtensionInstall} onRefresh={load} />}
           {kind === 'mcp' && <SecretVaultPanel />}
           {selected?.kind === 'mcp' && (
             <McpActivationPanel
@@ -1269,8 +2068,8 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
               }}
             />
           )}
-          {!selected && <div className="personalization-welcome"><h2>{kind === 'scenario' ? (zh ? '创建你的第一个场景' : 'Create your first scenario') : (zh ? '选择或新建配置' : 'Choose or create a configuration')}</h2><p>{kind === 'scenario' ? (zh ? '从空白场景开始，再按名称组合你自己的智能体、技能、MCP 和 Metis.md。' : 'Start from a blank scenario, then compose your own agents, skills, MCP, and Metis.md by name.') : (zh ? '这里只展示你创建或安装的内容。' : 'Only content you create or install is shown here.')}</p>{kind === 'scenario' && <button className="btn-primary" type="button" onClick={() => void create()}>{zh ? '新建场景' : 'Create scenario'}</button>}</div>}
-          {selected && isDirectlyEditable(selected) && <DefinitionEditor key={`${selected.id}:${selected.revision}`} definition={selected} definitions={userDefinitions} onSaved={load} />}
+          {!selected && kind !== 'rules' && <div className="personalization-welcome"><h2>{kind === 'scenario' ? (zh ? '创建你的第一个场景' : 'Create your first scenario') : (zh ? '选择或新建配置' : 'Choose or create a configuration')}</h2><p>{kind === 'scenario' ? (zh ? '从空白场景开始，再按名称组合你自己的智能体、技能、MCP 和 Metis.md。' : 'Start from a blank scenario, then compose your own agents, skills, MCP, and Metis.md by name.') : (zh ? '这里只展示你创建或安装的内容。' : 'Only content you create or install is shown here.')}</p>{kind === 'scenario' && <button className="btn-primary" type="button" onClick={() => void create()}>{zh ? '新建场景' : 'Create scenario'}</button>}</div>}
+          {selected && isDirectlyEditable(selected) && <DefinitionEditor key={`${selected.id}:${selected.revision}`} definition={selected} definitions={userDefinitions} onSaved={load} onDraftStateChange={handleDraftStateChange} />}
           {selected && selected.provenance.origin !== 'builtin' && !isDirectlyEditable(selected) && (
             <div className="personalization-welcome">
               <h2>{selected.name}</h2>

@@ -60,6 +60,8 @@
 .personalization-card__actions { padding: 0 13px 11px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .personalization-card__actions button { border: 0; padding: 0; background: transparent; color: var(--primary); font-size: 11px; cursor: pointer; }
 .personalization-card__actions button:disabled { color: var(--text-muted); cursor: not-allowed; }
+.personalization-card__draft { margin-right: auto; color: var(--primary); font-size: 11px; font-weight: 700; }
+.personalization-card__readiness { flex: 1 0 100%; color: var(--text-muted); font-size: 11px; line-height: 1.45; }
 .personalization-library__status { min-height: 24px; margin-top: 12px; font-size: 12px; color: var(--text-secondary); }
 
 .personalization-detail { min-height: 520px; padding: clamp(20px, 2.4vw, 32px); }
@@ -82,10 +84,12 @@
 .personalization-editor { display: grid; gap: 16px; width: min(100%, 980px); }
 .personalization-editor__header { display: flex; justify-content: space-between; gap: 24px; padding-bottom: 18px; border-bottom: 1px solid var(--border-light); }
 .personalization-editor__header > div { min-width: 0; }
-.personalization-editor__header h2 { margin: 3px 0; font-size: 25px; overflow-wrap: anywhere; }
+.personalization-editor__header h2 { margin: 3px 0; font-size: 25px; overflow-wrap: anywhere; scroll-margin-top: 16px; }
+.personalization-editor__header h2:focus-visible { outline: 2px solid var(--focus-ring-color); outline-offset: 3px; border-radius: 2px; }
 .personalization-editor__header code { font-size: 11px; color: var(--text-muted); overflow-wrap: anywhere; }
 .personalization-editor__header-actions { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
 .personalization-revision { color: var(--text-muted); font-size: 12px; }
+.personalization-draft-notice { min-height: 18px; margin: -8px 0 0; color: var(--primary); font-size: 11px; font-weight: 700; }
 .personalization-editor label { display: grid; gap: 6px; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
 .personalization-editor input:not([type=checkbox]), .personalization-editor textarea, .personalization-editor select { width: 100%; min-height: 38px; border: 1px solid var(--border-light); background: var(--bg-input); color: var(--text-primary); border-radius: var(--radius); padding: 9px 11px; font-family: inherit; font-size: 13px; font-weight: 400; line-height: 1.4; resize: vertical; }
 .personalization-editor textarea { font-family: var(--font-mono); font-size: 12px; line-height: 1.55; }
@@ -116,6 +120,8 @@
 .personalization-output-plan { min-width: 0; margin: 0; padding: 14px; border: 1px solid var(--border-light); border-radius: var(--radius); }
 .personalization-output-plan legend { padding: 0 5px; color: var(--text-primary); font-size: 12px; font-weight: 700; }
 .personalization-output-plan > p { margin: 0 0 12px; color: var(--text-muted); font-size: 11px; }
+.personalization-output-plan > .personalization-output-plan__required { padding-left: 8px; border-left: 2px solid var(--primary); color: var(--text-primary); font-weight: 650; }
+.personalization-rules-context button { justify-self: start; margin-top: 6px; }
 .personalization-schema-editor { min-width: 0; margin: 0; padding: 12px; border: 1px solid var(--border-light); border-radius: var(--radius); }
 .personalization-schema-editor legend { padding: 0 5px; color: var(--text-primary); font-size: 12px; font-weight: 700; }
 .personalization-schema-editor > p { margin: 0 0 10px; color: var(--text-muted); font-size: 11px; line-height: 1.45; }
@@ -171,19 +177,25 @@
   .personalization-editor__header { display: grid; gap: 10px; }
   .personalization-editor__header-actions { justify-content: space-between; }
   .personalization-step__title { align-items: flex-start; }
-  .personalization-bundle-actions { align-items: stretch; flex-direction: column; }
+  .personalization-bundle-actions { align-items: flex-start; flex-direction: row; flex-wrap: wrap; }
+  .personalization-bundle-actions > span { flex-basis: 100%; }
   .personalization-project-rules__footer { align-items: stretch; flex-direction: column; }
 }
 
 @media (max-width: 700px) {
   .personalization-tabs button { padding: 8px 7px 7px; font-size: 12px; }
   .personalization-tabs button span { margin-left: 3px; }
+  .personalization-card__draft { flex: 1 0 100%; margin-right: 0; }
+  .personalization-package-picker { flex-wrap: wrap; }
+  .personalization-package-picker button { flex: 0 0 auto; white-space: nowrap; }
+  .personalization-package-picker span { flex: 1 0 100%; }
 }
 
 @media (forced-colors: active) {
   .personalization-tabs button.active { border: 2px solid Highlight; }
   .personalization-card.selected { outline: 2px solid Highlight; }
   .personalization-reference-picker__options label:has(input:checked) { outline: 2px solid Highlight; }
+  .personalization-editor__header h2:focus-visible { outline-color: Highlight; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -10,6 +10,28 @@ import PersonalizationCenter from '../../src/personalization/PersonalizationCent
 const builtin = buildBuiltinPersonalizationDefinitions();
 const PENDING_MCP_INSTALLATION = `mcp_${'c'.repeat(32)}`;
 
+function editableUserDefinition<T extends PersonalizationDefinition>(
+  source: T,
+  id: string,
+  name: string,
+): T {
+  return {
+    ...structuredClone(source),
+    id,
+    name,
+    revision: 1,
+    provenance: {
+      ...source.provenance,
+      origin: 'user',
+      sourceUrl: null,
+      sourceRevision: null,
+      installedDigest: null,
+      parentId: source.id,
+      locallyModified: true,
+    },
+  } as T;
+}
+
 function pendingUrlMcp(): Extract<PersonalizationDefinition, { kind: 'mcp' }> {
   return {
     contractVersion: 1,
@@ -62,10 +84,12 @@ let getWorkspaceAgents: ReturnType<typeof vi.fn>;
 let setWorkspaceAgents: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
+  window.localStorage.clear();
+  window.sessionStorage.clear();
   useMetisStore.setState({ locale: 'en' });
   researchWorkspaceStore.setState({ activeProjectId: null });
   definitions = structuredClone(builtin);
-  listPersonalization = vi.fn().mockImplementation(() => Promise.resolve({ ok: true, definitions }));
+  listPersonalization = vi.fn().mockImplementation(() => Promise.resolve({ ok: true, definitions: [...definitions] }));
   savePersonalization = vi.fn().mockImplementation((request: { definition: PersonalizationDefinition }) => {
     const existing = definitions.findIndex((item) => item.id === request.definition.id);
     if (existing >= 0) definitions[existing] = request.definition;
@@ -184,6 +208,10 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+  window.localStorage.clear();
+  window.sessionStorage.clear();
   Object.defineProperty(window, 'metis', { configurable: true, writable: true, value: undefined });
 });
 
@@ -267,15 +295,348 @@ describe('PersonalizationCenter', () => {
     await screen.findAllByText(custom.name);
     fireEvent.click(document.querySelector(`[data-definition-id="${custom.id}"]`) as HTMLButtonElement);
     const editor = await screen.findByRole('textbox', { name: 'Metis.md' });
-    expect(screen.getByRole('option', { name: 'global' })).toBeDefined();
-    expect(screen.getByRole('option', { name: 'scenario' })).toBeDefined();
-    expect(screen.queryByRole('option', { name: 'project' })).toBeNull();
+    expect(screen.getByRole('option', { name: 'Global' })).toBeDefined();
+    expect(screen.getByRole('option', { name: 'Scenario' })).toBeDefined();
+    expect(screen.queryByRole('option', { name: 'Project' })).toBeNull();
     fireEvent.change(editor, { target: { value: '# Metis.md\n\nCustom rule' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save new revision' }));
     await waitFor(() => expect(savePersonalization).toHaveBeenCalled());
     const request = savePersonalization.mock.calls.at(-1)![0] as { expectedRevision: number; definition: PersonalizationDefinition };
     expect(request.expectedRevision).toBe(1);
     expect(request.definition.revision).toBe(2);
+  });
+
+  it('preserves independent drafts across card switches, category switches, and remounts', async () => {
+    const source = builtin.find((item) => item.kind === 'agent')!;
+    const first = editableUserDefinition(source, 'user:agents/draft-one', 'Draft one agent');
+    const second = editableUserDefinition(source, 'user:agents/draft-two', 'Draft two agent');
+    definitions.push(first, second);
+
+    const view = render(<PersonalizationCenter />);
+    fireEvent.click(await screen.findByRole('button', { name: /Agents/ }));
+    fireEvent.click(document.querySelector(`[data-definition-id="${first.id}"]`) as HTMLButtonElement);
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('heading', { name: first.name })));
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Description' }), {
+      target: { value: 'First retained draft' },
+    });
+    expect(await screen.findByText('Draft preserved automatically')).toBeDefined();
+    expect(within(document.querySelector(`[data-definition-id="${first.id}"]`)!.closest('.personalization-card') as HTMLElement).getByText('Draft preserved')).toBeDefined();
+
+    fireEvent.click(document.querySelector(`[data-definition-id="${second.id}"]`) as HTMLButtonElement);
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('heading', { name: second.name })));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Description' }), {
+      target: { value: 'Second retained draft' },
+    });
+    expect(await screen.findByText('Draft preserved automatically')).toBeDefined();
+
+    fireEvent.click(screen.getByRole('button', { name: /Scenarios/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Agents/ }));
+    fireEvent.click(document.querySelector(`[data-definition-id="${first.id}"]`) as HTMLButtonElement);
+    expect(await screen.findByDisplayValue('First retained draft')).toBeDefined();
+    expect(screen.getByText('Preserved draft restored')).toBeDefined();
+
+    fireEvent.click(document.querySelector(`[data-definition-id="${second.id}"]`) as HTMLButtonElement);
+    expect(await screen.findByDisplayValue('Second retained draft')).toBeDefined();
+
+    view.unmount();
+    expect([...Array(window.localStorage.length)].map((_item, index) => window.localStorage.key(index)))
+      .toContain(`metis:personalization-draft:v1:${first.id}`);
+    window.sessionStorage.clear();
+    render(<PersonalizationCenter />);
+    fireEvent.click(await screen.findByRole('button', { name: /Agents/ }));
+    fireEvent.click(document.querySelector(`[data-definition-id="${first.id}"]`) as HTMLButtonElement);
+    expect(await screen.findByDisplayValue('First retained draft')).toBeDefined();
+    expect(screen.getByText('Preserved draft restored')).toBeDefined();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('heading', { name: first.name })));
+  });
+
+  it('restores a valid in-progress draft even when a required field is temporarily blank', async () => {
+    const source = builtin.find((item) => item.kind === 'agent')!;
+    const custom = editableUserDefinition(source, 'user:agents/in-progress-blank-name', 'Blank-name draft');
+    definitions.push(custom);
+
+    const view = render(<PersonalizationCenter />);
+    fireEvent.click(await screen.findByRole('button', { name: /Agents/ }));
+    fireEvent.click(document.querySelector(`[data-definition-id="${custom.id}"]`) as HTMLButtonElement);
+    const name = await screen.findByRole('textbox', { name: 'Name' });
+    fireEvent.change(name, { target: { value: '' } });
+    expect(name).toHaveProperty('value', '');
+    view.unmount();
+
+    render(<PersonalizationCenter />);
+    fireEvent.click(await screen.findByRole('button', { name: /Agents/ }));
+    fireEvent.click(document.querySelector(`[data-definition-id="${custom.id}"]`) as HTMLButtonElement);
+    expect(await screen.findByRole('textbox', { name: 'Name' })).toHaveProperty('value', '');
+    expect(screen.getByText('Preserved draft restored')).toBeDefined();
+  });
+
+  it('debounces durable draft writes and flushes the latest value across rapid navigation and unmount', async () => {
+    const source = builtin.find((item) => item.kind === 'agent')!;
+    const first = editableUserDefinition(source, 'user:agents/debounce-one', 'Debounce one');
+    const second = editableUserDefinition(source, 'user:agents/debounce-two', 'Debounce two');
+    definitions.push(first, second);
+
+    const view = render(<PersonalizationCenter />);
+    fireEvent.click(await screen.findByRole('button', { name: /Agents/ }));
+    fireEvent.click(document.querySelector(`[data-definition-id="${first.id}"]`) as HTMLButtonElement);
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('heading', { name: first.name })));
+
+    vi.useFakeTimers();
+    const setItem = vi.spyOn(Storage.prototype, 'setItem');
+    const description = screen.getByRole('textbox', { name: 'Description' });
+    fireEvent.change(description, { target: { value: 'd' } });
+    fireEvent.change(description, { target: { value: 'de' } });
+    fireEvent.change(description, { target: { value: 'debounced latest' } });
+    expect(setItem).not.toHaveBeenCalled();
+
+    act(() => { vi.advanceTimersByTime(199); });
+    expect(setItem).not.toHaveBeenCalled();
+    act(() => { vi.advanceTimersByTime(1); });
+    expect(setItem).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(window.localStorage.getItem(`metis:personalization-draft:v1:${first.id}`)!).draft.description)
+      .toBe('debounced latest');
+
+    setItem.mockClear();
+    fireEvent.change(description, { target: { value: 'flushed on card switch' } });
+    fireEvent.click(document.querySelector(`[data-definition-id="${second.id}"]`) as HTMLButtonElement);
+    expect(setItem).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(window.localStorage.getItem(`metis:personalization-draft:v1:${first.id}`)!).draft.description)
+      .toBe('flushed on card switch');
+
+    setItem.mockClear();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Description' }), {
+      target: { value: 'flushed on category switch' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Scenarios/ }));
+    expect(setItem).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(window.localStorage.getItem(`metis:personalization-draft:v1:${second.id}`)!).draft.description)
+      .toBe('flushed on category switch');
+
+    fireEvent.click(screen.getByRole('button', { name: /Agents/ }));
+    fireEvent.click(document.querySelector(`[data-definition-id="${first.id}"]`) as HTMLButtonElement);
+    setItem.mockClear();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Description' }), {
+      target: { value: 'flushed on center unmount' },
+    });
+    view.unmount();
+    expect(setItem).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(window.localStorage.getItem(`metis:personalization-draft:v1:${first.id}`)!).draft.description)
+      .toBe('flushed on center unmount');
+    act(() => { vi.advanceTimersByTime(1_000); });
+    expect(setItem).toHaveBeenCalledTimes(2);
+  });
+
+  it('rebases edits made while an earlier save is pending instead of clearing the newer draft', async () => {
+    const source = builtin.find((item) => item.kind === 'agent')!;
+    const custom = editableUserDefinition(source, 'user:agents/pending-save', 'Pending save agent');
+    definitions.push(custom);
+    let resolveSave: ((result: {
+      ok: true;
+      code: 'saved';
+      definition: PersonalizationDefinition;
+    }) => void) | undefined;
+    savePersonalization.mockImplementationOnce(() => new Promise((resolve) => { resolveSave = resolve; }));
+
+    render(<PersonalizationCenter />);
+    fireEvent.click(await screen.findByRole('button', { name: /Agents/ }));
+    fireEvent.click(document.querySelector(`[data-definition-id="${custom.id}"]`) as HTMLButtonElement);
+    const description = await screen.findByRole('textbox', { name: 'Description' });
+    vi.useFakeTimers();
+    fireEvent.change(description, { target: { value: 'Submitted revision' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save new revision' }));
+    expect(savePersonalization).toHaveBeenCalledTimes(1);
+    fireEvent.change(description, { target: { value: 'Edited while save was pending' } });
+    expect(screen.getByText('Draft preserved automatically')).toBeDefined();
+
+    const request = savePersonalization.mock.calls[0]![0] as { definition: PersonalizationDefinition };
+    definitions = definitions.map((definition) => definition.id === custom.id ? request.definition : definition);
+    await act(async () => {
+      resolveSave?.({ ok: true, code: 'saved', definition: request.definition });
+      await Promise.resolve();
+    });
+    vi.useRealTimers();
+
+    expect(await screen.findByDisplayValue('Edited while save was pending')).toBeDefined();
+    expect(await screen.findByText('Preserved draft restored')).toBeDefined();
+    const raw = window.localStorage.getItem(`metis:personalization-draft:v1:${custom.id}`);
+    expect(raw).not.toBeNull();
+    const stored = JSON.parse(raw!) as { baseRevision: number; draft: PersonalizationDefinition };
+    expect(stored.baseRevision).toBe(request.definition.revision);
+    expect(stored.draft.revision).toBe(request.definition.revision + 1);
+    expect(stored.draft.description).toBe('Edited while save was pending');
+  });
+
+  it('rebases edits made after save succeeds but before the saved revision reloads', async () => {
+    const source = builtin.find((item) => item.kind === 'agent')!;
+    const custom = editableUserDefinition(source, 'user:agents/post-save-edit', 'Post-save edit agent');
+    definitions.push(custom);
+    let resolveReload: ((value: { ok: true; definitions: PersonalizationDefinition[] }) => void) | undefined;
+    listPersonalization
+      .mockImplementationOnce(() => Promise.resolve({ ok: true, definitions: [...definitions] }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveReload = resolve; }));
+
+    render(<PersonalizationCenter />);
+    fireEvent.click(await screen.findByRole('button', { name: /Agents/ }));
+    fireEvent.click(document.querySelector(`[data-definition-id="${custom.id}"]`) as HTMLButtonElement);
+    const description = await screen.findByRole('textbox', { name: 'Description' });
+    fireEvent.change(description, { target: { value: 'Saved revision content' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save new revision' }));
+    await waitFor(() => expect(listPersonalization).toHaveBeenCalledTimes(2));
+
+    fireEvent.change(description, { target: { value: 'Newer edit during reload' } });
+    expect(description).toHaveProperty('value', 'Newer edit during reload');
+    expect(await screen.findByText('Draft preserved automatically')).toBeDefined();
+    await act(async () => {
+      resolveReload?.({ ok: true, definitions: [...definitions] });
+      await Promise.resolve();
+    });
+
+    expect(await screen.findByDisplayValue('Newer edit during reload')).toBeDefined();
+    expect(screen.getByText('Preserved draft restored')).toBeDefined();
+    const raw = window.localStorage.getItem(`metis:personalization-draft:v1:${custom.id}`);
+    expect(raw).not.toBeNull();
+    const stored = JSON.parse(raw!) as { baseRevision: number; draft: PersonalizationDefinition };
+    expect(stored.baseRevision).toBe(2);
+    expect(stored.draft.revision).toBe(3);
+    expect(stored.draft.description).toBe('Newer edit during reload');
+  });
+
+  it('clears a retained draft after save and focuses the remounted revision heading', async () => {
+    const source = builtin.find((item) => item.kind === 'agent')!;
+    const custom = editableUserDefinition(source, 'user:agents/saved-draft', 'Saved draft agent');
+    definitions.push(custom);
+
+    const view = render(<PersonalizationCenter />);
+    fireEvent.click(await screen.findByRole('button', { name: /Agents/ }));
+    fireEvent.click(document.querySelector(`[data-definition-id="${custom.id}"]`) as HTMLButtonElement);
+    fireEvent.change(screen.getByRole('textbox', { name: 'Description' }), {
+      target: { value: 'Persisted by the save service' },
+    });
+    await screen.findByText('Draft preserved automatically');
+    fireEvent.click(screen.getByRole('button', { name: 'Save new revision' }));
+
+    await waitFor(() => expect(savePersonalization).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('heading', { name: custom.name })));
+    expect(screen.queryByText('Draft preserved')).toBeNull();
+    expect(screen.queryByText('Preserved draft restored')).toBeNull();
+    expect(screen.getByRole('textbox', { name: 'Description' })).toHaveProperty('value', 'Persisted by the save service');
+
+    view.unmount();
+    expect(window.localStorage.getItem(`metis:personalization-draft:v1:${custom.id}`)).toBeNull();
+    expect(window.sessionStorage.getItem(`metis:personalization-draft:v1:${custom.id}`)).toBeNull();
+    render(<PersonalizationCenter />);
+    fireEvent.click(await screen.findByRole('button', { name: /Agents/ }));
+    fireEvent.click(document.querySelector(`[data-definition-id="${custom.id}"]`) as HTMLButtonElement);
+    expect(await screen.findByDisplayValue('Persisted by the save service')).toBeDefined();
+    expect(screen.queryByText('Preserved draft restored')).toBeNull();
+  });
+
+  it('moves focus to the new definition heading after creation', async () => {
+    render(<PersonalizationCenter />);
+    fireEvent.click(await screen.findByRole('button', { name: /Agents/ }));
+    await screen.findByText('No custom definitions yet.');
+    fireEvent.click(screen.getByRole('button', { name: 'New' }));
+    const heading = await screen.findByRole('heading', { name: 'My Agents' });
+    await waitFor(() => expect(document.activeElement).toBe(heading));
+  });
+
+  it('scrolls a selected editor into view only when the layout is stacked', async () => {
+    const source = builtin.find((item) => item.kind === 'agent')!;
+    const first = editableUserDefinition(source, 'user:agents/narrow-scroll', 'Narrow scroll agent');
+    const second = editableUserDefinition(source, 'user:agents/desktop-focus', 'Desktop focus agent');
+    definitions.push(first, second);
+    const originalMatchMedia = Object.getOwnPropertyDescriptor(window, 'matchMedia');
+    const originalScrollIntoView = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+    let narrow = true;
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn(() => ({ matches: narrow })),
+    });
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    });
+
+    const view = render(<PersonalizationCenter />);
+    fireEvent.click(await screen.findByRole('button', { name: /Agents/ }));
+    fireEvent.click(document.querySelector(`[data-definition-id="${first.id}"]`) as HTMLButtonElement);
+    const narrowHeading = await screen.findByRole('heading', { name: first.name });
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start', inline: 'nearest' }));
+    expect(scrollIntoView.mock.instances[0]).toBe(narrowHeading);
+
+    view.unmount();
+    narrow = false;
+    scrollIntoView.mockClear();
+    render(<PersonalizationCenter />);
+    fireEvent.click(await screen.findByRole('button', { name: /Agents/ }));
+    fireEvent.click(document.querySelector(`[data-definition-id="${second.id}"]`) as HTMLButtonElement);
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('heading', { name: second.name })));
+    expect(scrollIntoView).not.toHaveBeenCalled();
+
+    if (originalMatchMedia) Object.defineProperty(window, 'matchMedia', originalMatchMedia);
+    else Reflect.deleteProperty(window, 'matchMedia');
+    if (originalScrollIntoView) Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', originalScrollIntoView);
+    else Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+  });
+
+  it('uses natural localized labels for the workbench and editable enum fields', async () => {
+    useMetisStore.setState({ locale: 'zh' });
+    const scenarioSource = builtin.find((item) => item.kind === 'scenario')!;
+    const rulesSource = builtin.find((item) => item.kind === 'rules')!;
+    const skillSource = builtin.find((item) => item.kind === 'skill')!;
+    const scenario = editableUserDefinition(scenarioSource, 'user:scenarios/localized-labels', '本地化场景');
+    const rules = {
+      ...editableUserDefinition(rulesSource, 'user:rules/localized-labels', '本地化规则'),
+      scope: 'project',
+      scopeId: 'legacy-project',
+    } as PersonalizationDefinition;
+    const skill = editableUserDefinition(skillSource, 'user:skills/localized-labels', '本地化技能');
+    definitions.push(scenario, rules, skill);
+
+    render(<PersonalizationCenter />);
+    expect(await screen.findByText('研究个性化工作台')).toBeDefined();
+    fireEvent.click(document.querySelector(`[data-definition-id="${scenario.id}"]`) as HTMLButtonElement);
+    expect(await screen.findByText('全权限运行')).toBeDefined();
+    expect(screen.queryByText('Full Access')).toBeNull();
+
+    const capability = screen.getByRole('combobox', { name: '场景能力' });
+    expect(within(capability).getByRole('option', { name: '研究' })).toBeDefined();
+    expect(within(capability).getByRole('option', { name: '基金申报' })).toBeDefined();
+    expect(within(capability).getByRole('option', { name: '自定义' })).toBeDefined();
+
+    const memory = screen.getByRole('combobox', { name: '记忆范围' });
+    expect(within(memory).getByRole('option', { name: '当前项目' })).toBeDefined();
+    const output = screen.getByRole('combobox', { name: '产物格式' });
+    expect(within(output).getByRole('option', { name: '产物包' })).toBeDefined();
+
+    fireEvent.click(screen.getByRole('button', { name: /Metis\.md/u }));
+    fireEvent.click(document.querySelector(`[data-definition-id="${rules.id}"]`) as HTMLButtonElement);
+    const scope = await screen.findByRole('combobox', { name: '规则层级' });
+    expect(within(scope).getByRole('option', { name: '全局' })).toBeDefined();
+    expect(within(scope).getByRole('option', { name: '场景' })).toBeDefined();
+    expect(within(scope).getByRole('option', { name: '项目（非权威旧定义）' })).toBeDefined();
+    expect(within(scope).queryByRole('option', { name: 'global' })).toBeNull();
+    expect(screen.getByText('请使用上方“打开当前项目 Metis.md”返回独立编辑器。也可将此旧定义转换为全局或场景规则后再保存。')).toBeDefined();
+
+    fireEvent.click(screen.getByRole('button', { name: /技能/u }));
+    expect(await screen.findByText('技能', { selector: '.personalization-eyebrow' })).toBeDefined();
+    fireEvent.click(document.querySelector(`[data-definition-id="${skill.id}"]`) as HTMLButtonElement);
+    fireEvent.click((await screen.findAllByRole('button', { name: '添加字段' }))[0]!);
+    const fieldType = screen.getAllByRole('combobox', { name: '类型' })[0]!;
+    expect(within(fieldType).getByRole('option', { name: '文本' })).toBeDefined();
+    expect(within(fieldType).getByRole('option', { name: '数值' })).toBeDefined();
+    expect(within(fieldType).getByRole('option', { name: '整数' })).toBeDefined();
+    expect(within(fieldType).getByRole('option', { name: '是 / 否' })).toBeDefined();
+    expect(within(fieldType).getByRole('option', { name: '列表' })).toBeDefined();
+    expect(within(fieldType).getByRole('option', { name: '对象' })).toBeDefined();
+
+    fireEvent.click(screen.getByRole('button', { name: /^MCP/u }));
+    expect(await screen.findByText('凭据', { selector: '.personalization-eyebrow' })).toBeDefined();
+    fireEvent.change(screen.getByRole('combobox', { name: '模式' }), { target: { value: 'mcp_url' } });
+    expect(await screen.findByText('粘贴 MCP 清单的 HTTPS 地址，核验通过后才启用。')).toBeDefined();
+    expect(screen.getByRole('textbox', { name: 'MCP 清单 HTTPS 地址' })).toBeDefined();
   });
 
   it('hosts the main-authoritative project Metis.md editor and reacts to the active project', async () => {
@@ -300,6 +661,29 @@ describe('PersonalizationCenter', () => {
       2,
     ));
     expect(screen.queryByRole('option', { name: 'project' })).toBeNull();
+  });
+
+  it('never renders the authoritative project editor beside a global or scenario Metis.md definition form', async () => {
+    const source = builtin.find((item) => item.kind === 'rules')!;
+    const globalRule = {
+      ...editableUserDefinition(source, 'user:rules/global-separation', 'Global separation rule'),
+      scope: 'global',
+      scopeId: null,
+    } as PersonalizationDefinition;
+    definitions.push(globalRule);
+
+    render(<PersonalizationCenter />);
+    fireEvent.click(await screen.findByRole('button', { name: /Metis\.md/u }));
+    expect(screen.getByRole('textbox', { name: 'Current project Metis.md content' })).toBeDefined();
+    expect(screen.queryByRole('region', { name: 'Definition editor' })).toBeNull();
+
+    fireEvent.click((await screen.findByText(globalRule.name)).closest('[data-definition-id]') as HTMLButtonElement);
+    expect(screen.queryByRole('textbox', { name: 'Current project Metis.md content' })).toBeNull();
+    expect(screen.getByRole('region', { name: 'Definition editor' })).toBeDefined();
+    expect(screen.getByText('Global Metis.md definition')).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'Open current project Metis.md' }));
+    expect(screen.getByRole('textbox', { name: 'Current project Metis.md content' })).toBeDefined();
+    expect(screen.queryByRole('region', { name: 'Definition editor' })).toBeNull();
   });
 
   it('prevents a legacy project-scoped definition from impersonating the authoritative file', async () => {
@@ -351,13 +735,22 @@ describe('PersonalizationCenter', () => {
     expect(screen.queryByRole('button', { name: /permission|confirm/iu })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Add step' }));
     expect(screen.getByDisplayValue('step-2')).toBeDefined();
-    fireEvent.change(screen.getByDisplayValue('step-2'), { target: { value: 'audit' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add step' }));
+    expect(screen.getByDisplayValue('step-3')).toBeDefined();
+    fireEvent.change(screen.getAllByRole('textbox', { name: 'ID' })[1]!, { target: { value: 'audit' } });
+    expect(screen.getAllByRole('textbox', { name: 'Dependency step IDs' })[2]).toHaveProperty('value', 'audit');
+    fireEvent.click(screen.getAllByRole('button', { name: 'Remove' })[1]!);
+    expect(screen.getAllByRole('textbox', { name: 'Dependency step IDs' })[1]).toHaveProperty('value', '');
+    fireEvent.click(screen.getByRole('button', { name: 'Add step' }));
+    expect(screen.getByDisplayValue('step-4')).toBeDefined();
     fireEvent.click(screen.getByRole('button', { name: 'Save new revision' }));
     await waitFor(() => {
       const request = savePersonalization.mock.calls.at(-1)?.[0] as { definition: PersonalizationDefinition };
       expect(request.definition.kind).toBe('scenario');
       if (request.definition.kind === 'scenario') {
-        expect(request.definition.workflow.at(-1)?.id).toBe('audit');
+        expect(request.definition.workflow.map((step) => step.id)).toEqual(['research', 'step-3', 'step-4']);
+        expect(request.definition.workflow[1]?.dependsOn).toEqual([]);
+        expect(request.definition.workflow[2]?.dependsOn).toEqual(['step-3']);
       }
     });
   });
@@ -374,11 +767,146 @@ describe('PersonalizationCenter', () => {
       contractVersion: 1,
       mode: 'skill_package',
       expectedRevision: 0,
+      expectedId: null,
       sourceCapabilityId: 'fc_personalizationskillpackage_123456789012345678',
     });
     expect(applyPersonalizationExtension.mock.calls[0]?.[0]?.operationId).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu,
     );
+  });
+
+  it('discards a consumed package selection after a CAS conflict and requires a fresh selection', async () => {
+    const source = builtin.find((item) => item.kind === 'skill')!;
+    const existing = editableUserDefinition(source, 'user:skills/update-target', 'Update target skill');
+    existing.revision = 3;
+    definitions.push(existing);
+    selectFileCapability
+      .mockReset()
+      .mockResolvedValueOnce({
+        success: true,
+        capability: {
+          capabilityId: 'fc_firstpackagecapability_123456789012345',
+          kind: 'file',
+          mime: 'application/zip',
+          displayName: 'first-review-skill.zip',
+          operations: ['file'],
+          issuedAt: Date.now(),
+          expiresAt: Date.now() + 60_000,
+        },
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        capability: {
+          capabilityId: 'fc_freshpackagecapability_123456789012345',
+          kind: 'file',
+          mime: 'application/zip',
+          displayName: 'fresh-review-skill.zip',
+          operations: ['file'],
+          issuedAt: Date.now(),
+          expiresAt: Date.now() + 60_000,
+        },
+      });
+    applyPersonalizationExtension
+      .mockImplementationOnce(() => {
+        definitions = definitions.map((definition) => definition.id === existing.id
+          ? { ...definition, revision: 4 }
+          : definition) as PersonalizationDefinition[];
+        return Promise.resolve({
+          ok: false,
+          mode: 'skill_package',
+          code: 'definition_rejected',
+          detailCode: 'definition_cas_failed',
+          compensated: false,
+        });
+      })
+      .mockImplementationOnce(() => Promise.resolve({
+        ok: true,
+        definition: definitions.find((definition) => definition.id === existing.id)!,
+      }));
+
+    render(<PersonalizationCenter />);
+    fireEvent.click(await screen.findByRole('button', { name: /Skills/ }));
+    expect(screen.queryByRole('spinbutton', { name: /revision/u })).toBeNull();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Installation target' }), {
+      target: { value: existing.id },
+    });
+    expect(screen.getByText(/Updating “Update target skill”/u)).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'Choose skill ZIP package' }));
+    await screen.findByText('ZIP: first-review-skill.zip');
+    fireEvent.click(screen.getByRole('button', { name: 'Verify and install' }));
+
+    expect(await screen.findByText(/select the target and skill package again/u)).toBeDefined();
+    expect(applyPersonalizationExtension.mock.calls[0]?.[0]).toMatchObject({
+      mode: 'skill_package',
+      expectedRevision: 3,
+      expectedId: existing.id,
+      sourceCapabilityId: 'fc_firstpackagecapability_123456789012345',
+    });
+    await waitFor(() => expect(listPersonalization).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole('combobox', { name: 'Installation target' })).toHaveProperty('value', '');
+    expect(screen.getByText('Nothing selected')).toBeDefined();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Verify and install' })).toHaveProperty('disabled', false));
+    fireEvent.click(screen.getByRole('button', { name: 'Verify and install' }));
+    await waitFor(() => expect(applyPersonalizationExtension).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText('Choose a skill ZIP package or folder first')).toBeDefined();
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Installation target' }), {
+      target: { value: existing.id },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Choose skill ZIP package' }));
+    await screen.findByText('ZIP: fresh-review-skill.zip');
+    fireEvent.click(screen.getByRole('button', { name: 'Verify and install' }));
+    await waitFor(() => expect(applyPersonalizationExtension).toHaveBeenCalledTimes(2));
+    expect(applyPersonalizationExtension.mock.calls[1]?.[0]).toMatchObject({
+      mode: 'skill_package',
+      expectedRevision: 4,
+      expectedId: existing.id,
+      sourceCapabilityId: 'fc_freshpackagecapability_123456789012345',
+    });
+  });
+
+  it('shows only Skill targets compatible with the selected installation mode', async () => {
+    const source = builtin.find((item) => item.kind === 'skill')!;
+    const packageTarget = editableUserDefinition(source, 'user:skills/package-target', 'Package target');
+    const urlTarget = {
+      ...editableUserDefinition(source, 'url:skills/url-target', 'URL target'),
+      provenance: {
+        ...source.provenance,
+        origin: 'url',
+        sourceUrl: 'https://example.com/url-target.zip',
+        sourceRevision: '1.0.0',
+        locallyModified: false,
+      },
+      sourceMode: 'url',
+    } as Extract<PersonalizationDefinition, { kind: 'skill' }>;
+    definitions.push(packageTarget, urlTarget);
+
+    render(<PersonalizationCenter />);
+    fireEvent.click(await screen.findByRole('button', { name: /Skills/u }));
+    const target = screen.getByRole('combobox', { name: 'Installation target' });
+    expect(within(target).getByRole('option', { name: packageTarget.name })).toBeDefined();
+    expect(within(target).queryByRole('option', { name: urlTarget.name })).toBeNull();
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Mode' }), { target: { value: 'skill_url' } });
+    expect(within(target).queryByRole('option', { name: packageTarget.name })).toBeNull();
+    expect(within(target).getByRole('option', { name: urlTarget.name })).toBeDefined();
+  });
+
+  it('resets the installer mode when switching between Skills and MCP', async () => {
+    render(<PersonalizationCenter />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /Skills/u }));
+    expect(screen.getByRole('combobox', { name: 'Mode' })).toHaveProperty('value', 'skill_package');
+    expect(screen.getByRole('button', { name: 'Choose skill ZIP package' })).toBeDefined();
+
+    fireEvent.click(screen.getByRole('button', { name: /^MCP/u }));
+    expect(screen.getByRole('combobox', { name: 'Mode' })).toHaveProperty('value', 'mcp_requirements');
+    expect(screen.getByRole('textbox', { name: 'Describe what the MCP must do' })).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Choose skill ZIP package' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /Skills/u }));
+    expect(screen.getByRole('combobox', { name: 'Mode' })).toHaveProperty('value', 'skill_package');
+    expect(screen.getByRole('button', { name: 'Choose skill ZIP package' })).toBeDefined();
   });
 
   it('saves an edited Markdown skill through the signed extension service', async () => {
@@ -435,6 +963,53 @@ describe('PersonalizationCenter', () => {
     });
   });
 
+  it('keeps generated and URL MCP update targets isolated when the installation mode changes', async () => {
+    const generated = {
+      ...pendingUrlMcp(),
+      id: 'generated:mcp/my-mcp',
+      name: 'Generated My MCP',
+      revision: 2,
+      provenance: {
+        ...pendingUrlMcp().provenance,
+        origin: 'generated',
+        sourceUrl: null,
+      },
+      sourceMode: 'generated',
+      sourceUrl: null,
+    } as Extract<PersonalizationDefinition, { kind: 'mcp' }>;
+    const fromUrl = {
+      ...pendingUrlMcp(),
+      id: 'url:mcp/my-mcp',
+      name: 'URL My MCP',
+      revision: 5,
+    } as Extract<PersonalizationDefinition, { kind: 'mcp' }>;
+    definitions.push(generated, fromUrl);
+    applyPersonalizationExtension.mockResolvedValueOnce({
+      ok: true,
+      definition: fromUrl,
+    });
+
+    render(<PersonalizationCenter />);
+    fireEvent.click(await screen.findByRole('button', { name: /^MCP/u }));
+    const target = screen.getByRole('combobox', { name: 'Installation target' });
+    expect(target).toHaveProperty('value', generated.id);
+    expect(within(target).queryByRole('option', { name: fromUrl.name })).toBeNull();
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Mode' }), { target: { value: 'mcp_url' } });
+    expect(target).toHaveProperty('value', fromUrl.id);
+    expect(within(target).queryByRole('option', { name: generated.name })).toBeNull();
+    fireEvent.change(screen.getByRole('textbox', { name: 'MCP manifest HTTPS URL' }), {
+      target: { value: 'https://example.com/mcp/manifest.json' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Verify and install' }));
+    await waitFor(() => expect(applyPersonalizationExtension).toHaveBeenCalledTimes(1));
+    expect(applyPersonalizationExtension.mock.calls[0]?.[0]).toMatchObject({
+      mode: 'mcp_url',
+      definitionId: fromUrl.id,
+      expectedRevision: 5,
+    });
+  });
+
   it('wires pending URL MCP activation through an owner-blind request', async () => {
     definitions.push(pendingUrlMcp());
     activatePersonalizationMcp.mockImplementation((request: { operationId: string }) => Promise.resolve({
@@ -447,8 +1022,8 @@ describe('PersonalizationCenter', () => {
     }));
     render(<PersonalizationCenter />);
     fireEvent.click(await screen.findByRole('button', { name: /^MCP/u }));
-    const definitionButton = await screen.findByText('Pending URL MCP');
-    fireEvent.click(definitionButton.closest('[data-definition-id]') as HTMLButtonElement);
+    await waitFor(() => expect(document.querySelector('[data-definition-id="url:mcp/center-activation"]')).not.toBeNull());
+    fireEvent.click(document.querySelector('[data-definition-id="url:mcp/center-activation"]') as HTMLButtonElement);
     const activateButton = document.querySelector('.mcp-activation-panel__action') as HTMLButtonElement;
     expect(activateButton).toBeDefined();
     fireEvent.click(activateButton);
@@ -623,7 +1198,7 @@ describe('PersonalizationCenter', () => {
     }
   });
 
-  it('saves a readable scenario output plan without splitting commas inside a line', async () => {
+  it('allows output-plan fields in any order and validates the primary deliverable only on save', async () => {
     const source = definitions.find((item) => item.id === 'builtin:scenarios/general-research')!;
     definitions.push({
       ...structuredClone(source),
@@ -641,14 +1216,23 @@ describe('PersonalizationCenter', () => {
 
     render(<PersonalizationCenter />);
     fireEvent.click((await screen.findByText('Output plan scenario')).closest('[data-definition-id]') as HTMLButtonElement);
-    fireEvent.change(screen.getByRole('textbox', { name: 'Primary deliverable' }), {
-      target: { value: 'Complete journal article' },
-    });
-    fireEvent.change(screen.getByRole('textbox', { name: 'Supporting artifacts (one per line)' }), {
+    const supporting = screen.getByRole('textbox', { name: 'Supporting artifacts (one per line)' });
+    const quality = screen.getByRole('textbox', { name: 'Quality criteria (one per line)' });
+    expect(supporting).toHaveProperty('disabled', false);
+    expect(quality).toHaveProperty('disabled', false);
+    fireEvent.change(supporting, {
       target: { value: 'Annotated bibliography, with source notes\nEvidence table' },
     });
-    fireEvent.change(screen.getByRole('textbox', { name: 'Quality criteria (one per line)' }), {
+    fireEvent.change(quality, {
       target: { value: 'Every claim has evidence\nMethods are reproducible' },
+    });
+    expect(screen.getByText(/Add the primary deliverable before saving/u)).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'Save new revision' }));
+    expect(await screen.findByText(/Primary deliverable is required/u)).toBeDefined();
+    expect(savePersonalization).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Primary deliverable' }), {
+      target: { value: 'Complete journal article' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Save new revision' }));
 
@@ -662,6 +1246,48 @@ describe('PersonalizationCenter', () => {
         qualityCriteria: ['Every claim has evidence', 'Methods are reproducible'],
       });
     }
+  });
+
+  it('normalizes an output plan to null when all three fields become empty', async () => {
+    const source = definitions.find((item) => item.id === 'builtin:scenarios/general-research')!;
+    definitions.push({
+      ...structuredClone(source),
+      id: 'user:scenarios/empty-output-plan',
+      name: 'Empty output plan scenario',
+      revision: 1,
+      agentIds: [],
+      skillIds: [],
+      mcpIds: [],
+      rulesIds: [],
+      workflow: [],
+      output: {
+        ...source.output,
+        plan: {
+          primaryDeliverable: 'Draft article',
+          supportingArtifacts: ['Evidence table'],
+          qualityCriteria: ['Every claim is supported'],
+        },
+      },
+      provenance: { ...source.provenance, origin: 'user', parentId: null, locallyModified: true },
+    } as PersonalizationDefinition);
+
+    render(<PersonalizationCenter />);
+    fireEvent.click((await screen.findByText('Empty output plan scenario')).closest('[data-definition-id]') as HTMLButtonElement);
+    fireEvent.change(screen.getByRole('textbox', { name: 'Primary deliverable' }), {
+      target: { value: '' },
+    });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Supporting artifacts (one per line)' }), {
+      target: { value: '' },
+    });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Quality criteria (one per line)' }), {
+      target: { value: '' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save new revision' }));
+
+    await waitFor(() => expect(savePersonalization).toHaveBeenCalledTimes(1));
+    const saved = (savePersonalization.mock.calls[0]![0] as { definition: PersonalizationDefinition }).definition;
+    expect(saved.kind).toBe('scenario');
+    if (saved.kind === 'scenario') expect(saved.output.plan).toBeNull();
   });
 
   it('builds strict Skill input and output structures through visual fields without raw JSON', async () => {
@@ -678,7 +1304,8 @@ describe('PersonalizationCenter', () => {
 
     render(<PersonalizationCenter />);
     fireEvent.click(await screen.findByRole('button', { name: /Skills/u }));
-    fireEvent.click((await screen.findByText('Visual schema skill')).closest('[data-definition-id]') as HTMLButtonElement);
+    await waitFor(() => expect(document.querySelector('[data-definition-id="user:skills/visual-schema"]')).not.toBeNull());
+    fireEvent.click(document.querySelector('[data-definition-id="user:skills/visual-schema"]') as HTMLButtonElement);
     expect(screen.queryByRole('textbox', { name: /JSON/u })).toBeNull();
 
     let addButtons = screen.getAllByRole('button', { name: 'Add field' });
@@ -707,6 +1334,162 @@ describe('PersonalizationCenter', () => {
       properties: { findings: { type: 'string' } },
       required: [],
     });
+  });
+
+  it('preserves an invalid visual field name and blocks saving until the user fixes it', async () => {
+    const source = definitions.find((item) => item.kind === 'skill')!;
+    const custom = {
+      ...structuredClone(source),
+      id: 'user:skills/invalid-visual-field',
+      name: 'Invalid visual field skill',
+      revision: 1,
+      inputSchema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: { topic: { type: 'string' } },
+        required: [],
+      },
+      outputSchema: null,
+      provenance: { ...source.provenance, origin: 'user', parentId: null, locallyModified: true },
+    } as PersonalizationDefinition;
+    definitions.push(custom);
+
+    const view = render(<PersonalizationCenter />);
+    fireEvent.click(await screen.findByRole('button', { name: /Skills/u }));
+    await waitFor(() => expect(document.querySelector(`[data-definition-id="${custom.id}"]`)).not.toBeNull());
+    fireEvent.click(document.querySelector(`[data-definition-id="${custom.id}"]`) as HTMLButtonElement);
+    fireEvent.change(screen.getByRole('textbox', { name: 'Field name' }), {
+      target: { value: 'invalid field name' },
+    });
+
+    expect(screen.getByRole('textbox', { name: 'Field name' })).toHaveProperty('value', 'invalid field name');
+    expect(screen.getByText('Field names must be unique and start with a letter or underscore.')).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Save new revision' })).toHaveProperty('disabled', true);
+    expect(applyPersonalizationExtension).not.toHaveBeenCalled();
+
+    view.unmount();
+    render(<PersonalizationCenter />);
+    fireEvent.click(await screen.findByRole('button', { name: /Skills/u }));
+    await waitFor(() => expect(document.querySelector(`[data-definition-id="${custom.id}"]`)).not.toBeNull());
+    fireEvent.click(document.querySelector(`[data-definition-id="${custom.id}"]`) as HTMLButtonElement);
+    expect(await screen.findByDisplayValue('invalid field name')).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Save new revision' })).toHaveProperty('disabled', true);
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Field name' }), {
+      target: { value: 'research_topic' },
+    });
+    expect(screen.getByRole('button', { name: 'Save new revision' })).toHaveProperty('disabled', false);
+    fireEvent.click(screen.getByRole('button', { name: 'Save new revision' }));
+    await waitFor(() => expect(applyPersonalizationExtension).toHaveBeenCalledTimes(1));
+    expect((applyPersonalizationExtension.mock.calls[0]![0] as { inputSchema: unknown }).inputSchema).toEqual({
+      type: 'object',
+      additionalProperties: false,
+      properties: { research_topic: { type: 'string' } },
+      required: [],
+    });
+  });
+
+  it('keeps advanced schemas read-only until the user explicitly replaces them', async () => {
+    const source = definitions.find((item) => item.kind === 'skill')!;
+    const advancedSchema = {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        sources: { type: 'array', items: { type: 'string' } },
+        method: { type: 'string', enum: ['qualitative', 'quantitative'], default: 'qualitative' },
+        options: {
+          type: 'object',
+          additionalProperties: false,
+          properties: { includeAppendix: { type: 'boolean' } },
+          required: [],
+        },
+      },
+      required: ['sources'],
+    };
+    const custom = {
+      ...structuredClone(source),
+      id: 'user:skills/advanced-schema',
+      name: 'Advanced schema skill',
+      revision: 1,
+      inputSchema: advancedSchema,
+      outputSchema: null,
+      provenance: { ...source.provenance, origin: 'user', parentId: null, locallyModified: true },
+    } as PersonalizationDefinition;
+    definitions.push(custom);
+
+    const view = render(<PersonalizationCenter />);
+    fireEvent.click(await screen.findByRole('button', { name: /Skills/u }));
+    await waitFor(() => expect(document.querySelector(`[data-definition-id="${custom.id}"]`)).not.toBeNull());
+    fireEvent.click(document.querySelector(`[data-definition-id="${custom.id}"]`) as HTMLButtonElement);
+    expect(screen.getByText('Existing advanced schema preserved')).toBeDefined();
+    expect(screen.queryByDisplayValue('sources')).toBeNull();
+    let inputEditor = screen.getByRole('group', { name: 'Input fields' });
+    fireEvent.click(within(inputEditor).getByRole('button', { name: 'Replace with visual fields' }));
+    expect(screen.getByText('Visual replacement not applied')).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Save new revision' })).toHaveProperty('disabled', true);
+    inputEditor = screen.getByRole('group', { name: 'Input fields' });
+    fireEvent.click(within(inputEditor).getByRole('button', { name: 'Add field' }));
+    fireEvent.change(within(inputEditor).getByRole('textbox', { name: 'Field name' }), {
+      target: { value: 'replacement_topic' },
+    });
+    view.unmount();
+    render(<PersonalizationCenter />);
+    fireEvent.click(await screen.findByRole('button', { name: /Skills/u }));
+    await waitFor(() => expect(document.querySelector(`[data-definition-id="${custom.id}"]`)).not.toBeNull());
+    fireEvent.click(document.querySelector(`[data-definition-id="${custom.id}"]`) as HTMLButtonElement);
+    expect(await screen.findByDisplayValue('replacement_topic')).toBeDefined();
+    expect(screen.getByText('Visual replacement not applied')).toBeDefined();
+    inputEditor = screen.getByRole('group', { name: 'Input fields' });
+    fireEvent.click(within(inputEditor).getByRole('button', { name: 'Cancel replacement' }));
+    expect(screen.getByText('Existing advanced schema preserved')).toBeDefined();
+    expect(screen.queryByDisplayValue('replacement_topic')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Save new revision' })).toHaveProperty('disabled', false);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save new revision' }));
+    await waitFor(() => expect(applyPersonalizationExtension).toHaveBeenCalledTimes(1));
+    expect((applyPersonalizationExtension.mock.calls[0]![0] as { inputSchema: unknown }).inputSchema)
+      .toEqual(advancedSchema);
+  });
+
+  it('distinguishes a strict empty-object schema from removing all fields from no schema', async () => {
+    const source = definitions.find((item) => item.kind === 'skill')!;
+    const strictEmptyObject = {
+      type: 'object',
+      additionalProperties: false,
+      properties: {},
+      required: [],
+    };
+    const custom = {
+      ...structuredClone(source),
+      id: 'user:skills/empty-schema-semantics',
+      name: 'Empty schema semantics skill',
+      revision: 1,
+      inputSchema: strictEmptyObject,
+      outputSchema: null,
+      provenance: { ...source.provenance, origin: 'user', parentId: null, locallyModified: true },
+    } as PersonalizationDefinition;
+    definitions.push(custom);
+
+    render(<PersonalizationCenter />);
+    fireEvent.click(await screen.findByRole('button', { name: /Skills/u }));
+    await waitFor(() => expect(document.querySelector(`[data-definition-id="${custom.id}"]`)).not.toBeNull());
+    fireEvent.click(document.querySelector(`[data-definition-id="${custom.id}"]`) as HTMLButtonElement);
+    const inputEditor = screen.getByRole('group', { name: 'Input fields' });
+    const outputEditor = screen.getByRole('group', { name: 'Output fields' });
+
+    fireEvent.click(within(inputEditor).getByRole('button', { name: 'Add field' }));
+    fireEvent.click(within(inputEditor).getByRole('button', { name: 'Remove' }));
+    fireEvent.click(within(outputEditor).getByRole('button', { name: 'Add field' }));
+    fireEvent.click(within(outputEditor).getByRole('button', { name: 'Remove' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save new revision' }));
+
+    await waitFor(() => expect(applyPersonalizationExtension).toHaveBeenCalledTimes(1));
+    const request = applyPersonalizationExtension.mock.calls[0]![0] as {
+      inputSchema: unknown;
+      outputSchema: unknown;
+    };
+    expect(request.inputSchema).toEqual(strictEmptyObject);
+    expect(request.outputSchema).toBeNull();
   });
 
   it('shows a recoverable load error and retries without remounting the center', async () => {
@@ -769,5 +1552,90 @@ describe('PersonalizationCenter', () => {
     fireEvent.click(within(card).getByRole('button', { name: 'Use in conversation' }));
     await waitFor(() => expect(activate).toHaveBeenCalledWith('user:scenarios/my-workflow'));
     expect(screen.queryByText('Academic monograph')).toBeNull();
+  });
+
+  it('keeps zero-Agent scenarios editable but only enables conversation use after an Agent is bound', async () => {
+    const activate = vi.fn().mockResolvedValue(undefined);
+    const scenarioSource = definitions.find((item) => item.id === 'builtin:scenarios/general-research')!;
+    const agentSource = definitions.find((item) => item.kind === 'agent')!;
+    const agent = editableUserDefinition(agentSource, 'user:agents/single-agent', 'Single Agent');
+    const emptyScenario = {
+      ...editableUserDefinition(scenarioSource, 'user:scenarios/empty-agent', 'Empty Agent scenario'),
+      agentIds: [],
+      workflow: [],
+    } as PersonalizationDefinition;
+    const singleAgentScenario = {
+      ...editableUserDefinition(scenarioSource, 'user:scenarios/single-agent', 'Single Agent scenario'),
+      agentIds: [agent.id],
+      workflow: [],
+    } as PersonalizationDefinition;
+    definitions.push(agent, emptyScenario, singleAgentScenario);
+
+    render(<PersonalizationCenter onActivateScenario={activate} />);
+    const emptyCard = (await screen.findByText('Empty Agent scenario')).closest('.personalization-card') as HTMLElement;
+    const emptyUseButton = within(emptyCard).getByRole('button', { name: 'Use in conversation' });
+    expect(emptyUseButton).toHaveProperty('disabled', true);
+    expect(within(emptyCard).getByText('Bind at least one Agent before using this scenario in conversation.')).toBeDefined();
+    fireEvent.click(emptyCard.querySelector('[data-definition-id="user:scenarios/empty-agent"]') as HTMLButtonElement);
+    expect(await screen.findByRole('textbox', { name: 'Description' })).toBeDefined();
+    fireEvent.click(emptyUseButton);
+    expect(activate).not.toHaveBeenCalled();
+
+    const singleAgentCard = screen.getByText('Single Agent scenario').closest('.personalization-card') as HTMLElement;
+    const singleAgentUseButton = within(singleAgentCard).getByRole('button', { name: 'Use in conversation' });
+    expect(singleAgentUseButton).toHaveProperty('disabled', false);
+    fireEvent.click(singleAgentUseButton);
+    await waitFor(() => expect(activate).toHaveBeenCalledWith('user:scenarios/single-agent'));
+  });
+
+  it('requires one Agent for an output-planned scenario without workflow but permits routed multi-Agent workflows', async () => {
+    const activate = vi.fn().mockResolvedValue(undefined);
+    const scenarioSource = definitions.find((item) => item.id === 'builtin:scenarios/general-research')!;
+    const agentSource = definitions.find((item) => item.kind === 'agent')!;
+    const firstAgent = editableUserDefinition(agentSource, 'user:agents/plan-first', 'Plan First Agent');
+    const secondAgent = editableUserDefinition(agentSource, 'user:agents/plan-second', 'Plan Second Agent');
+    const plannedOutput = {
+      ...scenarioSource.output,
+      plan: {
+        primaryDeliverable: 'Complete article',
+        supportingArtifacts: [],
+        qualityCriteria: [],
+      },
+    };
+    const ambiguous = {
+      ...editableUserDefinition(scenarioSource, 'user:scenarios/ambiguous-plan', 'Ambiguous plan'),
+      agentIds: [firstAgent.id, secondAgent.id],
+      workflow: [],
+      output: plannedOutput,
+    } as PersonalizationDefinition;
+    const routed = {
+      ...editableUserDefinition(scenarioSource, 'user:scenarios/routed-plan', 'Routed plan'),
+      agentIds: [firstAgent.id, secondAgent.id],
+      workflow: [{
+        id: 'draft',
+        name: 'Draft',
+        description: 'Produce the routed draft.',
+        agentId: firstAgent.id,
+        skillIds: [],
+        toolIds: [],
+        mcpIds: [],
+        dependsOn: [],
+        maxTurns: 12,
+      }],
+      output: plannedOutput,
+    } as PersonalizationDefinition;
+    definitions.push(firstAgent, secondAgent, ambiguous, routed);
+
+    render(<PersonalizationCenter onActivateScenario={activate} />);
+    const ambiguousCard = (await screen.findByText(ambiguous.name)).closest('.personalization-card') as HTMLElement;
+    expect(within(ambiguousCard).getByRole('button', { name: 'Use in conversation' })).toHaveProperty('disabled', true);
+    expect(within(ambiguousCard).getByText(/Bind exactly one Agent, or add workflow steps/u)).toBeDefined();
+
+    const routedCard = screen.getByText(routed.name).closest('.personalization-card') as HTMLElement;
+    const routedUse = within(routedCard).getByRole('button', { name: 'Use in conversation' });
+    expect(routedUse).toHaveProperty('disabled', false);
+    fireEvent.click(routedUse);
+    await waitFor(() => expect(activate).toHaveBeenCalledWith(routed.id));
+    expect(activate).not.toHaveBeenCalledWith(ambiguous.id);
   });
 });

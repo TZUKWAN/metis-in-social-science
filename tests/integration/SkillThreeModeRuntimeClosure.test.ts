@@ -278,6 +278,7 @@ describe('Skill three-mode persisted runtime closure', () => {
       contractVersion: 1,
       mode: 'skill_package',
       sourceCapabilityId: directoryGrant.capability.capabilityId,
+      expectedId: null,
       expectedRevision: 0,
       evidenceContext: evidenceContext(bootstrap.manifest.manifestDigest),
     }, {
@@ -304,6 +305,7 @@ describe('Skill three-mode persisted runtime closure', () => {
       contractVersion: 1,
       mode: 'skill_package',
       sourceCapabilityId: zipGrant.capability.capabilityId,
+      expectedId: null,
       expectedRevision: 0,
       evidenceContext: evidenceContext(bootstrap.manifest.manifestDigest),
     }, {
@@ -320,7 +322,7 @@ describe('Skill three-mode persisted runtime closure', () => {
       mode: 'skill_url',
       url: githubSourceUrl,
       expectedArchiveSha256: sha256(githubFixture.archive),
-      expectedId: githubFixture.manifest.id,
+      expectedId: null,
       expectedVersion: githubFixture.manifest.version,
       expectedRevision: 0,
       evidenceContext: evidenceContext(bootstrap.manifest.manifestDigest),
@@ -528,6 +530,7 @@ describe('Skill three-mode persisted runtime closure', () => {
       contractVersion: 1,
       mode: 'skill_package',
       sourceCapabilityId: CAPABILITY_ID,
+      expectedId: null,
       expectedRevision: 0,
       evidenceContext: evidenceContext(bootstrap.manifest.manifestDigest),
     }, {

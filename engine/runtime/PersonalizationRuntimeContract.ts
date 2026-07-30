@@ -457,10 +457,16 @@ export const PersonalizationResolveRequestSchema = z.strictObject({
   projectRulesId: PersonalizationIdSchema.optional(),
 });
 
-export const PersonalizationListResponseSchema = z.strictObject({
-  ok: z.literal(true),
-  definitions: z.array(PersonalizationDefinitionSchema).max(PERSONALIZATION_LIMITS.definitionList),
-});
+export const PersonalizationListResponseSchema = z.discriminatedUnion('ok', [
+  z.strictObject({
+    ok: z.literal(true),
+    definitions: z.array(PersonalizationDefinitionSchema).max(PERSONALIZATION_LIMITS.definitionList),
+  }),
+  z.strictObject({
+    ok: z.literal(false),
+    code: z.enum(['invalid_request', 'unavailable', 'invalid_response']),
+  }),
+]);
 
 export const PersonalizationGetResponseSchema = z.strictObject({
   ok: z.literal(true),
@@ -514,6 +520,8 @@ export const ResolvedRunManifestSchema = z.strictObject({
   mcpIds: ReferenceListSchema,
   allowedTools: ToolListSchema,
   workflow: z.array(ResolvedWorkflowStepSchema).max(PERSONALIZATION_LIMITS.workflowSteps),
+  /** Frozen runtime policy for a one-Agent output plan whose authored workflow is intentionally empty. */
+  implicitOutputStep: ResolvedWorkflowStepSchema.nullable().optional(),
   maxTurns: z.number().int().min(1).max(100),
   promptStack: z.array(ResolvedPromptLayerSchema).max(PERSONALIZATION_LIMITS.references),
   fullAccess: FullAccessPolicySchema,
@@ -557,7 +565,7 @@ export function decodePersonalizationDefinition(input: unknown): Personalization
 
 export function decodePersonalizationListResponse(input: unknown): PersonalizationListResponse {
   const parsed = PersonalizationListResponseSchema.safeParse(input);
-  return parsed.success ? parsed.data : { ok: true, definitions: [] };
+  return parsed.success ? parsed.data : { ok: false, code: 'invalid_response' };
 }
 
 export function decodePersonalizationGetResponse(input: unknown): PersonalizationGetResponse {

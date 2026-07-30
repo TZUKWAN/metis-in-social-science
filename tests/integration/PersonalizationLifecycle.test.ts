@@ -493,6 +493,7 @@ async function provisionAllModes(
     contractVersion: 1,
     mode: 'skill_package',
     sourceCapabilityId: FILE_CAPABILITY_ID,
+    expectedId: null,
     expectedRevision: 0,
     evidenceContext: evidenceContext(manifestDigest),
   }, {
@@ -512,7 +513,7 @@ async function provisionAllModes(
     mode: 'skill_url',
     url: skillUrl,
     expectedArchiveSha256: sha256(urlFixture.archive),
-    expectedId: urlFixture.manifest.id,
+    expectedId: null,
     expectedVersion: urlFixture.manifest.version,
     expectedRevision: 0,
     evidenceContext: evidenceContext(manifestDigest),

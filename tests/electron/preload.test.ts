@@ -149,8 +149,35 @@ describe('preload personalization boundary', () => {
     electronMocks.invoke.mockResolvedValueOnce({ ok: true, definitions: [{ __leak: 'secret' }] });
     const api = await loadExposedAPI();
     await expect(api.listPersonalization({ contractVersion: 1, includeDisabled: false }))
-      .resolves.toEqual({ ok: true, definitions: [] });
+      .rejects.toThrow('Personalization list failed: invalid_response');
   });
+
+  it('rejects version-mismatched list requests and responses without inventing an empty catalog', async () => {
+    const api = await loadExposedAPI();
+    await expect(api.listPersonalization({
+      contractVersion: 2,
+      includeDisabled: false,
+    } as unknown as PersonalizationListRequest)).rejects.toThrow('Invalid personalization list request');
+    expect(electronMocks.invoke).not.toHaveBeenCalledWith('personalization:list', expect.anything());
+
+    electronMocks.invoke.mockResolvedValueOnce({
+      contractVersion: 2,
+      ok: true,
+      definitions: [],
+    });
+    await expect(api.listPersonalization({ contractVersion: 1, includeDisabled: false }))
+      .rejects.toThrow('Personalization list failed: invalid_response');
+  });
+
+  it.each(['invalid_request', 'unavailable'] as const)(
+    'rejects an explicit %s main-process list failure instead of resolving an empty catalog',
+    async (code) => {
+      electronMocks.invoke.mockResolvedValueOnce({ ok: false, code });
+      const api = await loadExposedAPI();
+      await expect(api.listPersonalization({ contractVersion: 1, includeDisabled: false }))
+        .rejects.toThrow(`Personalization list failed: ${code}`);
+    },
+  );
 
   it('forwards a valid factory fork and rejects unsafe targets', async () => {
     electronMocks.invoke.mockResolvedValueOnce({

@@ -184,8 +184,65 @@ describe('PersonalizationResolver', () => {
     expect(result.manifest.fullAccess.perActionConfirmation).toBe(false);
     expect(result.manifest.manifestDigest).toMatch(/^[a-f0-9]{64}$/u);
     expect(result.systemPrompt).toContain('Review evidence.');
+    expect(result.systemPrompt).toContain('# Review');
     expect(result.systemPrompt).toContain('Use traceable evidence.');
     expect(result.systemPrompt).toContain('Use the project terminology.');
+  });
+
+  it('freezes the exact single-Agent runtime policy for an output plan without an authored workflow', () => {
+    const reader = new Reader();
+    const exactMemory = {
+      scope: 'session' as const,
+      retainDecisions: false,
+      retainArtifacts: true,
+      maxSummaryChars: 12_000,
+    };
+    reader.definitions.set(skill.id, { ...skill, maxTurns: 4 });
+    reader.definitions.set(agent.id, {
+      ...agent,
+      modelPreference: 'specialized-output-model',
+      maxTurns: 9,
+      retryLimit: 3,
+      memory: exactMemory,
+    });
+    reader.definitions.set(scenario.id, {
+      ...scenario,
+      workflow: [],
+      output: {
+        ...scenario.output,
+        plan: {
+          primaryDeliverable: 'Complete manuscript',
+          supportingArtifacts: ['Evidence table'],
+          qualityCriteria: ['Claims remain traceable'],
+        },
+      },
+    });
+
+    const result = new PersonalizationResolver(reader).resolve({
+      sessionId: 'session-policy',
+      projectId: 'project-one',
+      scenarioId: scenario.id,
+      createdAt: NOW,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.manifest.workflow).toEqual([]);
+    const frozen = (result.manifest as unknown as {
+      implicitOutputStep?: Record<string, unknown>;
+    }).implicitOutputStep;
+    expect(frozen).toMatchObject({
+      id: 'runtime-output-plan',
+      agentId: agent.id,
+      agentModelPreference: 'specialized-output-model',
+      retryLimit: 3,
+      skillIds: [skill.id],
+      mcpIds: [mcp.id],
+      toolIds: ['external_search', 'read_pdf', 'verify_claim'],
+      maxTurns: 4,
+      memory: exactMemory,
+      output: agent.output,
+    });
   });
 
   it('builds an isolated step prompt from only the executing agent and its effective skills', () => {
@@ -252,6 +309,7 @@ describe('PersonalizationResolver', () => {
     const statisticsPrompt = composeManifestSystemPrompt(result.manifest, result.manifest.workflow[1]);
     expect(reviewPrompt).toContain('Act as a reviewer.');
     expect(reviewPrompt).toContain('Review evidence.');
+    expect(reviewPrompt).toContain('# Review');
     expect(reviewPrompt).not.toContain('Act only as the statistician.');
     expect(reviewPrompt).not.toContain('Run the statistical analysis only.');
     expect(statisticsPrompt).toContain('Act only as the statistician.');

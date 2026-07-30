@@ -334,6 +334,7 @@ describe('PersonalizationExtensionService Skill modes', () => {
       contractVersion: 1,
       mode: 'skill_package',
       sourceCapabilityId: capabilityId,
+      expectedId: null,
       expectedRevision: 0,
       evidenceContext,
     }, { resolveLocalSkillSource: (candidate) => candidate === capabilityId ? fixture.source : undefined });
@@ -360,6 +361,7 @@ describe('PersonalizationExtensionService Skill modes', () => {
       contractVersion: 1,
       mode: 'skill_package',
       sourceCapabilityId: 'fc_22222222222222222222222222222222',
+      expectedId: null,
       expectedRevision: 0,
       evidenceContext,
     } as const;
@@ -368,7 +370,7 @@ describe('PersonalizationExtensionService Skill modes', () => {
     expect(installer.listInstalled()).toEqual([]);
   });
 
-  it('applies a URL-installed skill and records URL provenance without granting truth status', async () => {
+  it('creates and then updates a URL-installed skill with revision-bound identity', async () => {
     const root = temporaryRoot('metis-extension-url-skill-');
     const fixture = installedUrlSkill(root);
     const service = new PersonalizationExtensionService({
@@ -382,7 +384,7 @@ describe('PersonalizationExtensionService Skill modes', () => {
       mode: 'skill_url',
       url: 'https://example.com/skill.zip',
       expectedArchiveSha256: null,
-      expectedId: fixture.installed.id,
+      expectedId: null,
       expectedVersion: fixture.installed.version,
       expectedRevision: 0,
       evidenceContext,
@@ -392,6 +394,18 @@ describe('PersonalizationExtensionService Skill modes', () => {
       expect(result.definition.provenance).toMatchObject({ origin: 'url', sourceUrl: 'https://example.com/skill.zip' });
       expect(result.evidence.truth.claimEligible).toBe(false);
     }
+    const updated = await service.apply({
+      contractVersion: PERSONALIZATION_CONTRACT_VERSION,
+      mode: 'skill_url',
+      url: 'https://example.com/skill.zip',
+      expectedArchiveSha256: null,
+      expectedId: fixture.installed.id,
+      expectedVersion: fixture.installed.version,
+      expectedRevision: 1,
+      evidenceContext,
+    });
+    expect(updated.ok).toBe(true);
+    if (updated.ok) expect(updated.definition).toMatchObject({ id: fixture.installed.id, revision: 2 });
   });
 
   it('rolls a package version back when evidence or CAS persistence fails', async () => {
@@ -411,10 +425,40 @@ describe('PersonalizationExtensionService Skill modes', () => {
       contractVersion: 1,
       mode: 'skill_package',
       sourceCapabilityId: capabilityId,
+      expectedId: null,
       expectedRevision: 0,
       evidenceContext,
     }, { resolveLocalSkillSource: (candidate) => candidate === capabilityId ? first.source : undefined });
     expect(result).toMatchObject({ ok: false, code: 'definition_rejected', compensated: true });
+    expect(installer.listInstalled()).toEqual([]);
+  });
+
+  it('rejects and compensates a package whose manifest identity differs from the selected update target', async () => {
+    const root = temporaryRoot('metis-extension-package-identity-');
+    const fixture = packageSource(root, 'user:skills/manifest-identity');
+    const installer = new PersonalizationSkillInstaller(path.join(root, 'store'));
+    const service = new PersonalizationExtensionService({
+      definitions: new MemoryDefinitionSink(),
+      evidence: new EvidenceEnvelopeService(randomBytes(32)),
+      skills: installer,
+      ...unusedMcpDependencies(),
+    });
+    const capabilityId = 'fc_3123456789abcdef0123456789abcdef';
+    const result = await service.apply({
+      contractVersion: 1,
+      mode: 'skill_package',
+      sourceCapabilityId: capabilityId,
+      expectedId: 'user:skills/selected-update-target',
+      expectedRevision: 4,
+      evidenceContext,
+    }, { resolveLocalSkillSource: (candidate) => candidate === capabilityId ? fixture.source : undefined });
+    expect(result).toMatchObject({
+      ok: false,
+      mode: 'skill_package',
+      code: 'package_identity_rejected',
+      detailCode: 'local_package_identity_mismatch',
+      compensated: true,
+    });
     expect(installer.listInstalled()).toEqual([]);
   });
 
@@ -436,7 +480,7 @@ describe('PersonalizationExtensionService Skill modes', () => {
       mode: 'skill_url',
       url: 'https://example.com/skill.zip',
       expectedArchiveSha256: null,
-      expectedId: fixture.installed.id,
+      expectedId: null,
       expectedVersion: fixture.installed.version,
       expectedRevision: 0,
       evidenceContext,
@@ -460,7 +504,7 @@ describe('PersonalizationExtensionService Skill modes', () => {
       mode: 'skill_url',
       url: 'https://example.com/skill.zip',
       expectedArchiveSha256: null,
-      expectedId: fixture.installed.id,
+      expectedId: null,
       expectedVersion: fixture.installed.version,
       expectedRevision: 0,
       evidenceContext,
@@ -485,7 +529,7 @@ describe('PersonalizationExtensionService Skill modes', () => {
       mode: 'skill_url',
       url: 'https://example.com/skill.zip',
       expectedArchiveSha256: null,
-      expectedId: fixture.installed.id,
+      expectedId: null,
       expectedVersion: fixture.installed.version,
       expectedRevision: 0,
       evidenceContext,
@@ -909,7 +953,7 @@ describe('PersonalizationExtensionService MCP modes', () => {
       mode: 'skill_url',
       url: 'https://example.com/skill.zip',
       expectedArchiveSha256: null,
-      expectedId: fixture.installed.id,
+      expectedId: null,
       expectedVersion: fixture.installed.version,
       expectedRevision: 0,
       evidenceContext,

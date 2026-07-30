@@ -137,7 +137,10 @@ function formatOutputContract(
 }
 
 function skillPromptContent(skill: SkillDefinitionV2): string {
-  const sections = [skill.systemPrompt];
+  const sections = [
+    skill.markdown,
+    skill.systemPrompt,
+  ];
   if (skill.inputSchema) sections.push(`# Skill input schema\n${canonicalJson(skill.inputSchema)}`);
   if (skill.outputSchema) sections.push(`# Skill output schema\n${canonicalJson(skill.outputSchema)}`);
   return sections.filter(Boolean).join('\n\n');
@@ -267,7 +270,7 @@ export class PersonalizationResolver {
       const agentById = new Map(agents.map((agent) => [agent.id, agent]));
       const skillById = new Map(skills.map((skill) => [skill.id, skill]));
       const mcpById = new Map(mcps.map((mcp) => [mcp.id, mcp]));
-      const effectiveWorkflow = scenario.workflow.map((step) => {
+      const resolveEffectiveStep = (step: ScenarioDefinition['workflow'][number]) => {
         const agent = agentById.get(step.agentId);
         const skillIds = unique([
           ...step.skillIds,
@@ -304,7 +307,23 @@ export class PersonalizationResolver {
             ...stepSkills.map((skill) => skill.maxTurns),
           )),
         };
-      });
+      };
+      const effectiveWorkflow = scenario.workflow.map(resolveEffectiveStep);
+      const implicitOutputStep = scenario.workflow.length === 0
+        && scenario.output.plan
+        && agents.length === 1
+        ? resolveEffectiveStep({
+            id: 'runtime-output-plan',
+            name: 'Generate configured deliverables',
+            description: 'Generate the user-configured output plan with the selected Agent and bound capabilities.',
+            agentId: agents[0]!.id,
+            skillIds: [...scenario.skillIds],
+            toolIds: [],
+            mcpIds: [...scenario.mcpIds],
+            dependsOn: [],
+            maxTurns: agents[0]!.maxTurns,
+          })
+        : undefined;
       const promptStack: ResolvedPromptLayer[] = [
         ...skills.map((skill) => promptLayer(skill.id, 'skill', 100, skillPromptContent(skill))),
         ...agents.map((agent) => promptLayer(agent.id, 'agent', 200, agentPromptContent(agent))),
@@ -344,6 +363,7 @@ export class PersonalizationResolver {
         mcpIds: mcps.map((mcp) => mcp.id),
         allowedTools,
         workflow: effectiveWorkflow,
+        ...(implicitOutputStep ? { implicitOutputStep } : {}),
         maxTurns,
         promptStack,
         fullAccess: scenario.fullAccess,

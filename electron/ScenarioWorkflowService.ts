@@ -8,6 +8,7 @@ import { composeManifestSystemPrompt } from '../engine/personalization/Personali
 import {
   ScenarioRunCoordinator,
   digestScenarioStepOutput,
+  digestResolvedManifestSnapshot,
   resolveScenarioExecutionOrder,
   type ScenarioStepExecutionInput,
 } from '../engine/personalization/ScenarioRunCoordinator.js';
@@ -17,7 +18,10 @@ import {
   RuntimeIdSchema,
   type AgentResponse,
 } from '../engine/runtime/ChatRuntimeContract.js';
-import type { ResolvedRunManifest } from '../engine/runtime/PersonalizationRuntimeContract.js';
+import {
+  ResolvedRunManifestSchema,
+  type ResolvedRunManifest,
+} from '../engine/runtime/PersonalizationRuntimeContract.js';
 import {
   decodeScenarioOutputBundle,
   type ScenarioOutputBundle,
@@ -50,7 +54,82 @@ interface RunPersistedScenarioWorkflowOptions {
 export function hasExecutableScenarioWorkflow(
   manifest: ResolvedRunManifest | undefined,
 ): manifest is ResolvedRunManifest {
-  return manifest !== undefined && manifest.workflow.length > 0;
+  const result = preflightScenarioExecution(manifest);
+  return result.ok && result.useCoordinator;
+}
+
+export type ScenarioExecutionPreflight =
+  | { ok: true; useCoordinator: boolean }
+  | { ok: false; code: 'scenario_output_agent_ambiguous' | 'scenario_output_policy_missing' };
+
+/** Main-process preflight; call before preparing MCP processes or other run side effects. */
+export function preflightScenarioExecution(
+  manifest: ResolvedRunManifest | undefined,
+): ScenarioExecutionPreflight {
+  if (!manifest) return { ok: true, useCoordinator: false };
+  if (manifest.workflow.length > 0) return { ok: true, useCoordinator: true };
+  if (!manifest.output.plan) return { ok: true, useCoordinator: false };
+  if (manifest.agentIds.length !== 1) return { ok: false, code: 'scenario_output_agent_ambiguous' };
+  if (!manifest.implicitOutputStep || manifest.implicitOutputStep.agentId !== manifest.agentIds[0]) {
+    return { ok: false, code: 'scenario_output_policy_missing' };
+  }
+  return { ok: true, useCoordinator: true };
+}
+
+export type ScenarioExecutionCompilation =
+  | { ok: true; useCoordinator: boolean; manifest: ResolvedRunManifest | undefined }
+  | {
+      ok: false;
+      code:
+        | 'scenario_output_agent_ambiguous'
+        | 'scenario_output_policy_missing'
+        | 'scenario_execution_manifest_invalid';
+    };
+
+/**
+ * Compile the one immutable manifest identity used by MCP evidence, workflow checkpoints and
+ * artifacts. Runtime instructions are frozen into a final prompt layer before the digest is made.
+ */
+export function compileScenarioExecutionManifest(
+  manifest: ResolvedRunManifest | undefined,
+  options: { executionInstructions?: readonly string[] } = {},
+): ScenarioExecutionCompilation {
+  const preflight = preflightScenarioExecution(manifest);
+  if (!preflight.ok) return preflight;
+  if (!manifest) return { ok: true, useCoordinator: false, manifest: undefined };
+  const instructions = (options.executionInstructions ?? []).filter((value) => value.trim().length > 0);
+  const executionContent = instructions.join('\n\n');
+  const promptStack = executionContent
+    ? [
+        ...manifest.promptStack,
+        {
+          sourceId: manifest.scenarioId,
+          sourceKind: 'rules' as const,
+          precedence: 10_000,
+          contentDigest: createHash('sha256').update(executionContent, 'utf8').digest('hex'),
+          content: executionContent,
+        },
+      ]
+    : manifest.promptStack;
+  const workflow = preflight.useCoordinator && manifest.workflow.length === 0
+    ? [{ ...manifest.implicitOutputStep! }]
+    : manifest.workflow;
+  if (workflow === manifest.workflow && promptStack === manifest.promptStack) {
+    return { ok: true, useCoordinator: preflight.useCoordinator, manifest };
+  }
+  const candidate: ResolvedRunManifest = {
+    ...manifest,
+    workflow,
+    promptStack,
+    manifestDigest: '0'.repeat(64),
+  };
+  const parsed = ResolvedRunManifestSchema.safeParse({
+    ...candidate,
+    manifestDigest: digestResolvedManifestSnapshot(candidate),
+  });
+  return parsed.success
+    ? { ok: true, useCoordinator: preflight.useCoordinator, manifest: parsed.data }
+    : { ok: false, code: 'scenario_execution_manifest_invalid' };
 }
 
 function latestUserMessage(messages: readonly ChatMessage[]): ChatMessage | undefined {
@@ -148,6 +227,7 @@ function stepInstruction(
     `Upstream outputs: ${dependencyJson}`,
     memoryContext,
     finalOutputPlan ? outputBundleInstruction(finalOutputPlan) : '',
+    'Before returning, satisfy every active Agent, Skill, and Metis.md instruction from the system prompt. Exact tokens, required content, and placement constraints are mandatory.',
     'Return only the complete, evidence-aware output for this step. Do not claim that later steps ran.',
   ].filter(Boolean).join('\n\n');
 }
@@ -251,6 +331,17 @@ export async function runPersistedScenarioWorkflow({
   if (!userMessage) return createChatTurnErrorResponse(turnId, 'error', 'missing_user_message');
   if (manifest.sessionId !== sessionId.replace(/:/gu, '-')) {
     return createChatTurnErrorResponse(turnId, 'error', 'scenario_session_mismatch');
+  }
+  const preflight = preflightScenarioExecution(manifest);
+  if (!preflight.ok) {
+    return createChatTurnErrorResponse(
+      turnId,
+      'error',
+      preflight.code,
+    );
+  }
+  if (!preflight.useCoordinator || manifest.workflow.length === 0) {
+    return createChatTurnErrorResponse(turnId, 'error', 'scenario_execution_manifest_uncompiled');
   }
   const executionOrder = resolveScenarioExecutionOrder(manifest);
   if (!executionOrder) {

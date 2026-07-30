@@ -107,6 +107,25 @@ describe('P0 owner-bound file capability registry', () => {
     expect(registry.resolve(request, OWNER_A).ok).toBe(false);
   });
 
+  it('consumes a package-selection capability once through the main-process matching path', () => {
+    const grant = registry.issue({
+      path: filePath,
+      kind: 'file',
+      mime: 'application/zip',
+      displayName: 'research-skill.zip',
+      operations: ['file'],
+      purpose: 'personalization-skill-package',
+    }, OWNER_A);
+    if (!grant.success) throw new Error('Test package capability issuance failed');
+    const requirements = [{
+      purpose: 'personalization-skill-package',
+      kind: 'file',
+      operation: 'file',
+    }] as const;
+    expect(registry.consumeMatching(grant.capability.capabilityId, OWNER_A, requirements).ok).toBe(true);
+    expect(registry.consumeMatching(grant.capability.capabilityId, OWNER_A, requirements).ok).toBe(false);
+  });
+
   it('rejects a wrong operation without consuming the valid grant', () => {
     const capability = issue(['read']);
     expect(registry.consume({

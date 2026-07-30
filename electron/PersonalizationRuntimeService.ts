@@ -117,7 +117,7 @@ export class PersonalizationRuntimeService {
 
   list(raw: unknown): PersonalizationListResponse {
     const request = PersonalizationListRequestSchema.safeParse(raw);
-    if (!request.success) return { ok: true, definitions: [] };
+    if (!request.success) return { ok: false, code: 'invalid_request' };
     return {
       ok: true,
       definitions: this.#repository.list(request.data.kind, request.data.includeDisabled),
@@ -221,6 +221,7 @@ export class PersonalizationRuntimeService {
       && active.sessionId === request.data.sessionId
       && active.projectId === request.data.projectId
       && active.scenarioId === request.data.scenarioId
+      && !(active.output.plan && active.workflow.length === 0 && !active.implicitOutputStep)
       && activeManifestMatchesProjectRule(active, request.data.projectRulesId, authoritativeProjectRule)
       && verifiesManifestIntegrity(this.#integritySecret, active, activeRecord.integrityTag)
     ) {

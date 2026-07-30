@@ -125,6 +125,7 @@ const zh: Locale = {
     typing: '思考中...',
     copied: '已复制',
     copy: '复制',
+    regenerate: '重新生成',
     cancel: '取消',
     saveResend: '保存并重发',
     skill: '技能：',
@@ -168,6 +169,15 @@ const zh: Locale = {
     goalRefining: '根据您的反馈更新研究计划...',
     goalUseChat: '请在对话中创建新的研究任务。',
     socraticPlan: '苏格拉底式规划',
+    scenarioLabel: '场景',
+    activeScenario: '当前场景',
+    noCustomScenario: '未选择自定义场景',
+    scenarioLoadingOption: '正在加载场景...',
+    scenarioUnavailableOption: '场景暂不可用',
+    scenarioLoading: '正在加载你的场景...',
+    scenarioLoadFailed: '场景暂时无法加载，交接内容已保留。',
+    retryScenarioLoading: '重新加载场景',
+    retry: '重试',
   },
 
   // ─── 工作流页 ──────────────────────────────────────────────
@@ -941,6 +951,18 @@ const zh: Locale = {
   },
 
   // ─── 错误边界 ──────────────────────────────────────────────
+  personalization: {
+    outputPrimaryRequired: '保存输出计划前必须填写主交付物；配套产物和质量标准仍可继续编辑。',
+    outputPrimaryRequiredSave: '输出计划包含配套产物或质量标准时，主交付物不能为空。',
+    scenarioNeedsUniqueAgentTitle: '请选择唯一智能体或添加工作流步骤',
+    scenarioNeedsUniqueAgent: '此场景设置了输出计划，但没有工作流。请只绑定一个智能体，或添加工作流步骤为多个智能体分配任务。',
+    globalRulesContext: '全局 Metis.md 定义',
+    scenarioRulesContext: '场景专属 Metis.md 定义',
+    legacyProjectRulesContext: '旧版项目范围定义',
+    rulesContextDescription: '此处编辑保存的规则定义；当前项目的权威 Metis.md 使用独立编辑器管理。',
+    openProjectRules: '打开当前项目 Metis.md',
+  },
+
   errorBoundary: {
     title: '出错了',
     message: '发生了一个意外错误。您可以点击重试，或重新加载应用。',

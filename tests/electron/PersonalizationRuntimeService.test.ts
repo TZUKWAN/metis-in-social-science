@@ -1,10 +1,22 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { createHash, createHmac } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { PersonalizationRuntimeService } from '../../electron/PersonalizationRuntimeService.js';
 import { PersonalizationRepository } from '../../engine/personalization/PersonalizationRepository.js';
 import { buildBuiltinPersonalizationDefinitions } from '../fixtures/personalization/legacyBuiltinDefinitions.js';
 import { projectMetisRulesFromWorkspace } from '../../electron/ProjectMetisRulesBridge.js';
 import { hashWorkspaceAgentsContent } from '../../engine/memory/WorkspaceAgentsHash.js';
+
+const RUNTIME_SECRET = Buffer.alloc(32, 7);
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map(
+    (key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`,
+  ).join(',')}}`;
+}
 
 describe('PersonalizationRuntimeService', () => {
   let db: Database.Database | undefined;
@@ -16,7 +28,7 @@ describe('PersonalizationRuntimeService', () => {
     db.pragma('foreign_keys = ON');
     repository = new PersonalizationRepository(db);
     repository.seedBuiltins(buildBuiltinPersonalizationDefinitions());
-    service = new PersonalizationRuntimeService(repository, Buffer.alloc(32, 7));
+    service = new PersonalizationRuntimeService(repository, RUNTIME_SECRET);
   });
 
   afterEach(() => db?.close());
@@ -24,8 +36,16 @@ describe('PersonalizationRuntimeService', () => {
   it('lists factory definitions through a strict request', () => {
     const result = service.list({ contractVersion: 1, includeDisabled: true });
     expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(`Expected a successful list response, received ${result.code}`);
     expect(result.definitions.length).toBeGreaterThan(12);
     expect(result.definitions.some((definition) => definition.id === 'builtin:scenarios/general-research')).toBe(true);
+  });
+
+  it('returns an explicit failure instead of an authoritative empty list for malformed requests', () => {
+    expect(service.list({ contractVersion: 2, includeDisabled: true }))
+      .toEqual({ ok: false, code: 'invalid_request' });
+    expect(service.list({ contractVersion: 1, includeDisabled: 'yes' }))
+      .toEqual({ ok: false, code: 'invalid_request' });
   });
 
   it('rejects malformed save and archive requests without mutation', () => {
@@ -103,6 +123,51 @@ describe('PersonalizationRuntimeService', () => {
     const second = service.resolveForAgent(request);
     expect(second?.manifest.manifestDigest).toBe(frozenDigest);
     expect(repository.listRunManifests('session-frozen')).toHaveLength(1);
+  });
+
+  it('re-resolves an old output-plan snapshot that lacks its frozen implicit step policy', () => {
+    const request = {
+      contractVersion: 1 as const,
+      sessionId: 'session-old-output-plan',
+      projectId: 'project-one',
+      scenarioId: 'builtin:scenarios/general-research',
+    };
+    const preview = service.resolve(request);
+    expect(preview.ok).toBe(true);
+    if (!preview.ok) return;
+    const {
+      manifestDigest: _previewDigest,
+      implicitOutputStep: _implicitOutputStep,
+      ...previewWithoutDigest
+    } = preview.manifest;
+    void _previewDigest;
+    void _implicitOutputStep;
+    const legacyWithoutDigest = {
+      ...previewWithoutDigest,
+      workflow: [],
+      output: {
+        ...preview.manifest.output,
+        plan: {
+          primaryDeliverable: 'Legacy primary',
+          supportingArtifacts: ['Legacy supporting'],
+          qualityCriteria: ['Legacy criterion'],
+        },
+      },
+    };
+    const legacyManifest = {
+      ...legacyWithoutDigest,
+      manifestDigest: createHash('sha256').update(canonicalJson(legacyWithoutDigest), 'utf8').digest('hex'),
+    };
+    const integrityTag = createHmac('sha256', RUNTIME_SECRET)
+      .update('metis:personalization-run-manifest:v2\0')
+      .update(canonicalJson(legacyManifest), 'utf8')
+      .digest('hex');
+    repository.saveRunManifest(legacyManifest, integrityTag);
+
+    const resolved = service.resolveForAgent(request);
+    expect(resolved?.ok).toBe(true);
+    expect(resolved?.manifest.manifestDigest).not.toBe(legacyManifest.manifestDigest);
+    expect(resolved?.manifest.workflow.length).toBeGreaterThan(0);
   });
 
   it('binds authoritative project Metis.md and replaces the session snapshot when that file revision changes', () => {

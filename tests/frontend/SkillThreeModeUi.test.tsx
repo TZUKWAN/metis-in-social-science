@@ -99,6 +99,7 @@ describe('Skill three-mode personalization UI', () => {
       mode: 'skill_package',
       expectedRevision: 0,
       sourceCapabilityId: `fc_${'d'.repeat(32)}`,
+      expectedId: null,
     });
     expect(request).not.toHaveProperty('sourcePath');
     expect(request).not.toHaveProperty('evidenceContext');
@@ -117,6 +118,7 @@ describe('Skill three-mode personalization UI', () => {
       mode: 'skill_package',
       expectedRevision: 0,
       sourceCapabilityId: `fc_${'e'.repeat(32)}`,
+      expectedId: null,
     });
     expect(request).not.toHaveProperty('sourcePath');
     expect(request).not.toHaveProperty('evidenceContext');

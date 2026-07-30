@@ -10,7 +10,11 @@ import 'prismjs/components/prism-markdown';
 import 'prismjs/components/prism-latex';
 import { useTranslation } from '../i18n';
 import { researchWorkspaceStore, useResearchWorkspaceStore } from '../research/researchWorkspaceStore';
-import { consumePendingChatIntent } from '../lib/chatIntent.js';
+import {
+  clearPendingChatIntent,
+  consumePendingChatIntent,
+  peekPendingChatIntent,
+} from '../lib/chatIntent.js';
 import { PaperclipIcon, TerminalIcon } from '../components/Icons';
 import GoalCardInline, { type GoalCardData } from '../components/GoalCardInline';
 import TerminalPanel from '../components/TerminalPanel';
@@ -95,6 +99,43 @@ interface ArtifactItem {
 const validArtifactTypes: ArtifactItemType[] = ['pdf', 'docx', 'xlsx', 'pptx', 'md', 'latex', 'other'];
 const DEFAULT_SCENARIO_ID = '';
 const ACTIVE_SCENARIO_KEY = 'metis:active-scenario-id';
+const SCENARIO_CATALOG_MAX_ATTEMPTS = 2;
+const SCENARIO_CATALOG_RETRY_DELAY_MS = 150;
+
+const triggerWordCharacterPattern = /[\p{Script=Latin}\p{N}_]/u;
+const triggerLetterPattern = /\p{L}/u;
+const triggerNumberPattern = /\p{N}/u;
+const triggerLatinLetterPattern = /\p{Script=Latin}/u;
+
+function requiresTriggerWordBoundaries(phrase: string): boolean {
+  let hasLatinLetterOrNumber = false;
+  for (const character of phrase) {
+    if (triggerNumberPattern.test(character)) {
+      hasLatinLetterOrNumber = true;
+    } else if (triggerLetterPattern.test(character)) {
+      if (!triggerLatinLetterPattern.test(character)) return false;
+      hasLatinLetterOrNumber = true;
+    }
+  }
+  return hasLatinLetterOrNumber;
+}
+
+function includesScenarioTrigger(content: string, phrase: string): boolean {
+  if (!requiresTriggerWordBoundaries(phrase)) return content.includes(phrase);
+
+  let searchFrom = 0;
+  while (searchFrom <= content.length - phrase.length) {
+    const matchIndex = content.indexOf(phrase, searchFrom);
+    if (matchIndex === -1) return false;
+    const before = Array.from(content.slice(0, matchIndex)).at(-1);
+    const after = Array.from(content.slice(matchIndex + phrase.length))[0];
+    const hasLeftBoundary = before === undefined || !triggerWordCharacterPattern.test(before);
+    const hasRightBoundary = after === undefined || !triggerWordCharacterPattern.test(after);
+    if (hasLeftBoundary && hasRightBoundary) return true;
+    searchFrom = matchIndex + 1;
+  }
+  return false;
+}
 
 function matchScenarioTrigger(
   content: string,
@@ -107,7 +148,7 @@ function matchScenarioTrigger(
       scenario,
       phrase: phrase.trim().toLocaleLowerCase(),
     })))
-    .filter((candidate) => candidate.phrase.length > 0 && normalized.includes(candidate.phrase))
+    .filter((candidate) => candidate.phrase.length > 0 && includesScenarioTrigger(normalized, candidate.phrase))
     .sort((left, right) => right.phrase.length - left.phrase.length
       || left.scenario.name.localeCompare(right.scenario.name))[0]?.scenario;
 }
@@ -401,12 +442,22 @@ function ChatMessageItem({
               {new Date(msg.timestamp).toLocaleTimeString()}
             </span>
             {msg.role === 'user' && onEdit && (
-              <button className="message-action-btn" onClick={() => setEditing(true)} title="编辑">
+              <button
+                className="message-action-btn"
+                onClick={() => setEditing(true)}
+                title={t('common.edit')}
+                aria-label={t('common.edit')}
+              >
                 {editIcon}
               </button>
             )}
             {msg.role === 'assistant' && isLast && onRegenerate && (
-              <button className="message-action-btn" onClick={onRegenerate} title="重新生成">
+              <button
+                className="message-action-btn"
+                onClick={onRegenerate}
+                title={t('chat.regenerate')}
+                aria-label={t('chat.regenerate')}
+              >
                 {regenerateIcon}
               </button>
             )}
@@ -628,6 +679,8 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
   const [skills, setSkills] = useState<Array<{ id: string; name: string; description: string; category: string }>>([]);
   const [activeSkillId, setActiveSkillId] = useState<string | null>(null);
   const [scenarios, setScenarios] = useState<ScenarioDefinition[]>([]);
+  const [scenarioLoadState, setScenarioLoadState] = useState<'loading' | 'ready' | 'failed'>('loading');
+  const [scenarioLoadRevision, setScenarioLoadRevision] = useState(0);
   const [activeScenarioId, setActiveScenarioId] = useState(DEFAULT_SCENARIO_ID);
   const activeResearchProjectId = useResearchWorkspaceStore((state) => state.activeProjectId);
   const currentProjectId = activeResearchProjectId ?? 'global';
@@ -803,29 +856,53 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
   // preference and is never an authority boundary.
   useEffect(() => {
     let cancelled = false;
+    let retryTimer: number | undefined;
     const metis = window.metis;
-    if (!metis?.listPersonalization) return () => { cancelled = true; };
-    metis.listPersonalization({ contractVersion: 1, kind: 'scenario', includeDisabled: false })
-      .then((response) => {
-        if (cancelled) return;
-        const available = response.definitions.filter((definition): definition is ScenarioDefinition => (
-          definition.kind === 'scenario'
-          && definition.enabled
-          && definition.capability !== 'presentation_reserved'
-          && definition.provenance.origin !== 'builtin'
-        ));
-        setScenarios(available);
-        let remembered = DEFAULT_SCENARIO_ID;
-        try { remembered = window.localStorage.getItem(ACTIVE_SCENARIO_KEY) ?? DEFAULT_SCENARIO_ID; } catch { /* use factory default */ }
-        setActiveScenarioId(remembered === DEFAULT_SCENARIO_ID
-          ? DEFAULT_SCENARIO_ID
-          : (available.some((scenario) => scenario.id === remembered)
-              ? remembered
-              : DEFAULT_SCENARIO_ID));
-      })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, []);
+    setScenarioLoadState('loading');
+    if (!metis?.listPersonalization) {
+      setScenarios([]);
+      setScenarioLoadState('failed');
+      return () => { cancelled = true; };
+    }
+    const loadCatalog = (attempt: number) => {
+      void metis.listPersonalization({ contractVersion: 1, kind: 'scenario', includeDisabled: false })
+        .then((response) => {
+          if (cancelled) return;
+          const available = response.definitions.filter((definition): definition is ScenarioDefinition => (
+            definition.kind === 'scenario'
+            && definition.enabled
+            && definition.capability !== 'presentation_reserved'
+            && definition.provenance.origin !== 'builtin'
+          ));
+          setScenarios(available);
+          let remembered = DEFAULT_SCENARIO_ID;
+          try { remembered = window.localStorage.getItem(ACTIVE_SCENARIO_KEY) ?? DEFAULT_SCENARIO_ID; } catch { /* use factory default */ }
+          setActiveScenarioId(remembered === DEFAULT_SCENARIO_ID
+            ? DEFAULT_SCENARIO_ID
+            : (available.some((scenario) => scenario.id === remembered)
+                ? remembered
+                : DEFAULT_SCENARIO_ID));
+          setScenarioLoadState('ready');
+        })
+        .catch(() => {
+          if (cancelled) return;
+          if (attempt < SCENARIO_CATALOG_MAX_ATTEMPTS) {
+            retryTimer = window.setTimeout(
+              () => loadCatalog(attempt + 1),
+              SCENARIO_CATALOG_RETRY_DELAY_MS,
+            );
+            return;
+          }
+          setScenarios([]);
+          setScenarioLoadState('failed');
+        });
+    };
+    loadCatalog(1);
+    return () => {
+      cancelled = true;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+    };
+  }, [scenarioLoadRevision]);
 
   // Helper: create a new session (defined before useEffect that calls it)
   async function createNewSession() {
@@ -1474,9 +1551,19 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
   // authoritative scenario list are both ready. Full Access launch intents may
   // auto-send once; ordinary paper/note intents remain editable drafts.
   useEffect(() => {
-    if (!currentSessionId || !historyReady || scenarios.length === 0) return;
-    const intent = consumePendingChatIntent();
-    if (!intent) return;
+    if (!currentSessionId || !historyReady) return;
+    const pendingIntent = peekPendingChatIntent();
+    if (!pendingIntent) {
+      // Preserve the legacy cleanup behavior for malformed stored values.
+      consumePendingChatIntent();
+      return;
+    }
+    // A failed catalog load is not authoritative evidence that a scenario is
+    // missing. Keep scenario handoffs pending so a later Chat mount can retry.
+    // Ordinary handoffs do not depend on the scenario catalog and remain usable.
+    if (pendingIntent.scenarioId && scenarioLoadState !== 'ready') return;
+    clearPendingChatIntent();
+    const intent = pendingIntent;
     const rejectHandoff = (english: string, chinese: string) => {
       setMessages((previous) => [...previous, {
         role: 'system',
@@ -1525,7 +1612,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
     // handleSend intentionally consumes the state snapshot guarded by
     // historyReady; re-subscribing to its function identity would replay work.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeScenarioId, currentProjectId, currentSessionId, historyReady, intentRevision, locale, scenarios, skills]);
+  }, [activeScenarioId, currentProjectId, currentSessionId, historyReady, intentRevision, locale, scenarioLoadState, scenarios, skills]);
 
   // Regenerate last assistant response
   async function handleRegenerate() {
@@ -1693,9 +1780,11 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
     <div className="chat-main">
         <div className="chat-scenario-bar" data-testid="chat-scenario-controls">
           <div className="chat-scenario-bar__identity">
-            <span>{locale === 'zh' ? '场景' : 'Scenario'}</span>
+            <span>{t('chat.scenarioLabel')}</span>
             <select
-              aria-label={locale === 'zh' ? '当前场景' : 'Active scenario'}
+              aria-label={t('chat.activeScenario')}
+              aria-describedby={scenarioLoadState === 'ready' ? undefined : 'chat-scenario-load-status'}
+              disabled={scenarioLoadState !== 'ready'}
               value={activeScenarioId}
               onChange={(event) => {
                 const id = event.target.value;
@@ -1703,9 +1792,44 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
                 try { window.localStorage.setItem(ACTIVE_SCENARIO_KEY, id); } catch { /* preference persistence is best-effort */ }
               }}
             >
-              <option value="">{locale === 'zh' ? '未选择自定义场景' : 'No custom scenario selected'}</option>
+              <option value="">
+                {scenarioLoadState === 'loading'
+                  ? t('chat.scenarioLoadingOption')
+                  : scenarioLoadState === 'failed'
+                    ? t('chat.scenarioUnavailableOption')
+                    : t('chat.noCustomScenario')}
+              </option>
               {scenarios.map((scenario) => <option key={scenario.id} value={scenario.id}>{scenario.name}</option>)}
             </select>
+            {scenarioLoadState === 'loading' && (
+              <span
+                id="chat-scenario-load-status"
+                className="chat-scenario-bar__status"
+                role="status"
+                aria-live="polite"
+              >
+                {t('chat.scenarioLoading')}
+              </span>
+            )}
+            {scenarioLoadState === 'failed' && (
+              <div className="chat-scenario-bar__recovery">
+                <span
+                  id="chat-scenario-load-status"
+                  className="chat-scenario-bar__status"
+                  role="alert"
+                >
+                  {t('chat.scenarioLoadFailed')}
+                </span>
+                <button
+                  type="button"
+                  className="chat-scenario-bar__retry"
+                  onClick={() => setScenarioLoadRevision((revision) => revision + 1)}
+                  aria-label={t('chat.retryScenarioLoading')}
+                >
+                  {t('chat.retry')}
+                </button>
+              </div>
+            )}
           </div>
           <span className="chat-scenario-bar__policy">Full Access · {locale === 'zh' ? '可随时引导或打断 · 真实性自动执行' : 'live steering · automatic truth controls'}</span>
         </div>

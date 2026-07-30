@@ -133,10 +133,7 @@ import {
   createChatTurnErrorResponse,
   runPersistedChatTurn,
 } from './ChatTurnService.js';
-import {
-  hasExecutableScenarioWorkflow,
-  runPersistedScenarioWorkflow,
-} from './ScenarioWorkflowService.js';
+import { compileScenarioExecutionManifest, runPersistedScenarioWorkflow } from './ScenarioWorkflowService.js';
 import { isAuthorizedRendererMainFrame } from './RendererAuthorization.js';
 import { createSecureExternalOpenHandler } from './SecureExternalOpenHandler.js';
 import {
@@ -2397,6 +2394,33 @@ function setupIPC(): void {
       return createChatTurnErrorResponse(requestId, 'error', 'personalization_unavailable');
     }
 
+    const fundingToolScope = {
+      ownerId: FUNDING_LOCAL_OWNER_ID,
+      projectId: projectId ?? 'global',
+      ownerWebContentsId: event.sender.id,
+    };
+    const scopeInstruction = allowedTools?.some((tool) => tool.startsWith('funding_template_'))
+      ? [
+          'Funding-template tools are read-only and bound by Electron main to this run scope.',
+          `Use ownerId=${fundingToolScope.ownerId} and projectId=${fundingToolScope.projectId} exactly; never infer or replace them.`,
+        ].join('\n')
+      : undefined;
+    const scenarioCompilation = compileScenarioExecutionManifest(resolvedManifest, {
+      executionInstructions: scopeInstruction ? [scopeInstruction] : [],
+    });
+    if (!scenarioCompilation.ok) {
+      return createChatTurnErrorResponse(requestId, 'error', scenarioCompilation.code);
+    }
+    resolvedManifest = scenarioCompilation.manifest;
+    if (resolvedManifest) {
+      taskContractHash = resolvedManifest.manifestDigest;
+      promptStackHash = resolvedManifest.manifestDigest;
+    }
+    if (scenarioCompilation.useCoordinator
+      && (!resolvedManifest || !resolvedSystemPrompt || !personalizationRepository)) {
+      return createChatTurnErrorResponse(requestId, 'error', 'scenario_workflow_unavailable');
+    }
+
     if (activeChatRuns.has(sessionId)) {
       return createChatTurnErrorResponse(requestId, 'error', 'agent_run_active');
     }
@@ -2407,17 +2431,8 @@ function setupIPC(): void {
     };
     liveSteeringQueue.clear(sessionId);
     activeChatRuns.set(sessionId, activeRun);
-    const fundingToolScope = {
-      ownerId: FUNDING_LOCAL_OWNER_ID,
-      projectId: projectId ?? 'global',
-      ownerWebContentsId: event.sender.id,
-    };
     activeFundingToolScopes.set(sessionId, fundingToolScope);
-    if (allowedTools?.some((tool) => tool.startsWith('funding_template_'))) {
-      const scopeInstruction = [
-        'Funding-template tools are read-only and bound by Electron main to this run scope.',
-        `Use ownerId=${fundingToolScope.ownerId} and projectId=${fundingToolScope.projectId} exactly; never infer or replace them.`,
-      ].join('\n');
+    if (scopeInstruction) {
       skillPrompt = [skillPrompt, scopeInstruction].filter(Boolean).join('\n\n');
       resolvedSystemPrompt = [resolvedSystemPrompt, scopeInstruction].filter(Boolean).join('\n\n');
     }
@@ -2469,7 +2484,7 @@ function setupIPC(): void {
         preferredAgentLoops.set(model, preferredLoop);
         return preferredLoop;
       };
-      const response = hasExecutableScenarioWorkflow(resolvedManifest) && resolvedSystemPrompt && personalizationRepository
+      const response = scenarioCompilation.useCoordinator && resolvedManifest && resolvedSystemPrompt && personalizationRepository
         ? await runPersistedScenarioWorkflow({
             agentLoop: runAgentLoop,
             agentLoopForModel,
@@ -3403,9 +3418,9 @@ function setupIPC(): void {
   ipcMain.handle('personalization:list', (event, rawRequest: unknown) => {
     try {
       requireRendererMainFrame(event);
-      return personalizationRuntime?.list(rawRequest) ?? { ok: true, definitions: [] };
+      return personalizationRuntime?.list(rawRequest) ?? { ok: false, code: 'unavailable' };
     } catch {
-      return { ok: true, definitions: [] };
+      return { ok: false, code: 'unavailable' };
     }
   });
   ipcMain.handle('personalization:get', (event, rawRequest: unknown) => {

@@ -9,6 +9,30 @@ import { render, cleanup, fireEvent, waitFor, screen, within, act } from '@testi
 import App from '../../src/App';
 import { useMetisStore } from '../../src/store';
 import { setDiagnosticMode } from '../../engine/capabilities/DiagnosticMode';
+import type { PersonalizationDefinition } from '../../engine/runtime/PersonalizationRuntimeContract';
+import { buildBuiltinPersonalizationDefinitions } from '../fixtures/personalization/legacyBuiltinDefinitions';
+
+const builtinPersonalization = buildBuiltinPersonalizationDefinitions();
+
+function editableAppAgent(): Extract<PersonalizationDefinition, { kind: 'agent' }> {
+  const source = builtinPersonalization.find((item) => item.kind === 'agent')!;
+  return {
+    ...structuredClone(source),
+    id: 'user:agents/app-navigation-draft',
+    name: 'App navigation agent',
+    description: '',
+    revision: 1,
+    provenance: {
+      ...source.provenance,
+      origin: 'user',
+      sourceUrl: null,
+      sourceRevision: null,
+      installedDigest: null,
+      parentId: source.id,
+      locallyModified: true,
+    },
+  };
+}
 
 function resetStore() {
   useMetisStore.setState({
@@ -52,10 +76,14 @@ beforeAll(() => {
 describe('App', () => {
   beforeEach(() => {
     setDiagnosticMode('normal');
+    window.localStorage.clear();
+    window.sessionStorage.clear();
   });
 
   afterEach(() => {
     cleanup();
+    window.localStorage.clear();
+    window.sessionStorage.clear();
     clearMockMetis();
     setDiagnosticMode('normal');
   });
@@ -77,8 +105,36 @@ describe('App', () => {
       '资料库',
       '设置',
     ]);
+    expect(primaryItems.map((button) => button.getAttribute('aria-label'))).toEqual([
+      '研究项目',
+      '资料库',
+      '设置',
+    ]);
+    expect(primaryItems.map((button) => button.getAttribute('title'))).toEqual([
+      '研究项目',
+      '资料库',
+      '设置',
+    ]);
+    primaryItems.forEach((button) => {
+      expect(button.querySelector('.nav-icon')?.getAttribute('aria-hidden')).toBe('true');
+    });
     expect(within(nav).queryByText('评估')).toBeNull();
     expect(screen.getByRole('tab', { name: '对话' }).getAttribute('aria-selected')).toBe('true');
+
+    await act(async () => {
+      useMetisStore.setState({ locale: 'en' });
+      await Promise.resolve();
+    });
+    expect(primaryItems.map((button) => button.getAttribute('aria-label'))).toEqual([
+      'Research Projects',
+      'Library',
+      'Settings',
+    ]);
+    expect(primaryItems.map((button) => button.getAttribute('title'))).toEqual([
+      'Research Projects',
+      'Library',
+      'Settings',
+    ]);
   });
 
   it('opens Personalization from the bottom-left control beside the theme toggle', async () => {
@@ -93,6 +149,36 @@ describe('App', () => {
     fireEvent.click(trigger);
     expect(await screen.findByRole('heading', { name: '个性化' })).toBeDefined();
     expect(screen.getByText('自动真实性层始终强制执行')).toBeDefined();
+  });
+
+  it('restores an automatic personalization draft after leaving through the app sidebar', async () => {
+    resetStore();
+    const agent = editableAppAgent();
+    const definitions: PersonalizationDefinition[] = [agent];
+    const listPersonalization = vi.fn().mockImplementation(() => Promise.resolve({ ok: true, definitions }));
+    setMockMetis({ listPersonalization });
+
+    render(<App />);
+    fireEvent.click(await screen.findByTestId('personalization-trigger'));
+    fireEvent.click(await screen.findByRole('button', { name: /智能体/ }));
+    fireEvent.click(document.querySelector(`[data-definition-id="${agent.id}"]`) as HTMLButtonElement);
+    const description = await screen.findByRole('textbox', { name: '说明' });
+    fireEvent.change(description, { target: { value: '从应用侧栏返回后仍在的草稿' } });
+    expect(await screen.findByText('草稿已自动保留')).toBeDefined();
+
+    fireEvent.click(document.querySelector('[data-nav-id="settings"]') as HTMLButtonElement);
+    await waitFor(() => expect(screen.queryByRole('heading', { name: '个性化' })).toBeNull());
+    const callsBeforeReturn = listPersonalization.mock.calls.length;
+
+    fireEvent.click(screen.getByTestId('personalization-trigger'));
+    fireEvent.click(await screen.findByRole('button', { name: /智能体/ }));
+    fireEvent.click(document.querySelector(`[data-definition-id="${agent.id}"]`) as HTMLButtonElement);
+    expect(await screen.findByDisplayValue('从应用侧栏返回后仍在的草稿')).toBeDefined();
+    expect(screen.getByText('已恢复保留的草稿')).toBeDefined();
+    await waitFor(() => expect(document.activeElement).toBe(
+      screen.getByRole('heading', { name: agent.name }),
+    ));
+    expect(listPersonalization.mock.calls.length).toBeGreaterThan(callsBeforeReturn);
   });
 
   it('composes converse mode as exactly one project shell with one chat region per column', async () => {

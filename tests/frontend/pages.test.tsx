@@ -20,6 +20,7 @@ import type { ChatPageLayoutSlots } from '../../src/pages/ChatPage.js';
 import type { FileCapabilityDescriptor, FileCapabilityUseResult } from '../../engine/runtime/FileCapabilityContract.js';
 import type { PaperDownloadResult } from '../../engine/runtime/PaperRuntimeContract.js';
 import { buildBuiltinPersonalizationDefinitions } from '../fixtures/personalization/legacyBuiltinDefinitions.js';
+import { setPendingChatIntent } from '../../src/lib/chatIntent.js';
 
 function makePdfCapability(overrides?: Partial<FileCapabilityDescriptor>): FileCapabilityDescriptor {
   const now = Date.now();
@@ -118,6 +119,7 @@ beforeAll(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   cleanup();
+  window.localStorage.removeItem('metis:pendingChatIntent');
   if (typeof document !== 'undefined') document.body.innerHTML = '';
 });
 import type { PaperItem, NoteItem, ExperimentItem } from '../../src/store';
@@ -143,6 +145,26 @@ function completedAgentResponse(answer: string, turnId = 'test-turn') {
     diagnostics: [],
     citations: [],
     events: [],
+  };
+}
+
+function makeTriggerScenario(id: string, name: string, triggerPhrases: string[]) {
+  const scenario = buildBuiltinPersonalizationDefinitions().find((definition) => (
+    definition.kind === 'scenario' && definition.id === 'builtin:scenarios/general-research'
+  ));
+  if (!scenario || scenario.kind !== 'scenario') throw new Error('General research scenario fixture is unavailable');
+  return {
+    ...scenario,
+    id,
+    name,
+    triggerPhrases,
+    provenance: {
+      ...scenario.provenance,
+      origin: 'user' as const,
+      parentId: null,
+      parentVersion: null,
+      locallyModified: true,
+    },
   };
 }
 
@@ -1180,8 +1202,8 @@ describe('PapersPage', () => {
 
   it('should bulk archive and unarchive selected papers', async () => {
     resetStore();
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Archive Bulk', doi: '10.1234/p1' }));
-    useMetisStore.getState().addPaper(makePaper({ id: 'p2', title: 'Keep Active', doi: '10.1234/p2' }));
+    await useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Archive Bulk', doi: '10.1234/p1' }));
+    await useMetisStore.getState().addPaper(makePaper({ id: 'p2', title: 'Keep Active', doi: '10.1234/p2' }));
     const { default: PapersPage } = await import('../../src/pages/PapersPage');
     render(<PapersPage />);
     fireEvent.click(screen.getAllByTestId('paper-checkbox')[0]!);
@@ -3508,6 +3530,51 @@ describe('ChatPage', () => {
     }
   });
 
+  it('localizes message edit and regenerate accessible names in English and Chinese', async () => {
+    resetStore();
+    useMetisStore.setState({ locale: 'en' });
+    const originalMetis = window.metis;
+    window.metis = {
+      listSessions: vi.fn().mockResolvedValue([{
+        id: 'session-message-actions',
+        createdAt: 1,
+        lastActivity: 1,
+        messageCount: 2,
+        metadata: { title: 'Message actions' },
+      }]),
+      getMessages: vi.fn().mockResolvedValue([
+        { role: 'user', content: 'Original question' },
+        { role: 'assistant', content: 'Original answer' },
+      ]),
+      listArtifacts: vi.fn().mockResolvedValue([]),
+      listSkills: vi.fn().mockResolvedValue([]),
+      getActiveSkill: vi.fn().mockResolvedValue({ active: null }),
+    } as unknown as typeof window.metis;
+
+    try {
+      const { default: ChatPage } = await import('../../src/pages/ChatPage');
+      render(<ChatPage renderLayout={renderChatProjectShell} />);
+      await screen.findByText('Original answer');
+
+      const edit = screen.getByRole('button', { name: 'Edit' });
+      const regenerate = screen.getByRole('button', { name: 'Regenerate' });
+      expect(edit.getAttribute('title')).toBe('Edit');
+      expect(regenerate.getAttribute('title')).toBe('Regenerate');
+      expect(screen.queryByTitle('编辑')).toBeNull();
+      expect(screen.queryByTitle('重新生成')).toBeNull();
+
+      await act(async () => {
+        useMetisStore.setState({ locale: 'zh' });
+        await Promise.resolve();
+      });
+      expect(screen.getByRole('button', { name: '编辑' }).getAttribute('title')).toBe('编辑');
+      expect(screen.getByRole('button', { name: '重新生成' }).getAttribute('title')).toBe('重新生成');
+    } finally {
+      act(() => { useMetisStore.setState({ locale: 'zh' }); });
+      window.metis = originalMetis;
+    }
+  });
+
   it('should replace the last assistant response when regenerated without renderer persistence', async () => {
     resetStore();
     const originalMetis = window.metis;
@@ -3707,6 +3774,493 @@ describe('ChatPage', () => {
       await waitFor(() => expect(screen.getByText('发送')).toBeDefined());
     } finally {
       window.metis = originalMetis;
+    }
+  });
+
+  it('waits for history, then consumes an ordinary pending intent when no custom scenarios exist', async () => {
+    resetStore();
+    useMetisStore.setState({ locale: 'zh' });
+    const originalMetis = window.metis;
+    const history = deferred<Array<{ role: string; content: string }>>();
+    const listPersonalization = vi.fn().mockResolvedValue({ ok: true, definitions: [] });
+    setPendingChatIntent({ message: '零场景也要恢复的普通草稿', autoSend: false });
+    window.metis = {
+      listSessions: vi.fn().mockResolvedValue([{
+        id: 'session-pending-draft',
+        createdAt: 1,
+        lastActivity: 1,
+        messageCount: 0,
+        metadata: { title: '待恢复草稿' },
+      }]),
+      getMessages: vi.fn().mockReturnValue(history.promise),
+      listArtifacts: vi.fn().mockResolvedValue([]),
+      listPersonalization,
+      agentChat: vi.fn(),
+    } as unknown as typeof window.metis;
+
+    try {
+      const { default: ChatPage } = await import('../../src/pages/ChatPage');
+      render(<ChatPage renderLayout={renderChatProjectShell} />);
+      await waitFor(() => expect(listPersonalization).toHaveBeenCalled());
+      expect(window.localStorage.getItem('metis:pendingChatIntent')).not.toBeNull();
+      expect(screen.getByPlaceholderText('提出一个研究问题...')).toHaveProperty('value', '');
+
+      await act(async () => {
+        history.resolve([]);
+        await history.promise;
+      });
+
+      await waitFor(() => expect(screen.getByPlaceholderText('提出一个研究问题...')).toHaveProperty(
+        'value',
+        '零场景也要恢复的普通草稿',
+      ));
+      expect(window.localStorage.getItem('metis:pendingChatIntent')).toBeNull();
+      expect(window.metis?.agentChat).not.toHaveBeenCalled();
+    } finally {
+      window.metis = originalMetis;
+    }
+  });
+
+  it('ends scenario readiness and consumes an ordinary pending intent when scenario loading fails', async () => {
+    resetStore();
+    useMetisStore.setState({ locale: 'zh' });
+    const originalMetis = window.metis;
+    setPendingChatIntent({ message: '场景列表失败后仍恢复的草稿', autoSend: false });
+    window.metis = {
+      listSessions: vi.fn().mockResolvedValue([{
+        id: 'session-scenario-load-failed',
+        createdAt: 1,
+        lastActivity: 1,
+        messageCount: 0,
+        metadata: { title: '场景加载失败' },
+      }]),
+      getMessages: vi.fn().mockResolvedValue([]),
+      listArtifacts: vi.fn().mockResolvedValue([]),
+      listPersonalization: vi.fn().mockRejectedValue(new Error('temporary scenario list failure')),
+      agentChat: vi.fn(),
+    } as unknown as typeof window.metis;
+
+    try {
+      const { default: ChatPage } = await import('../../src/pages/ChatPage');
+      render(<ChatPage renderLayout={renderChatProjectShell} />);
+      expect(await screen.findByDisplayValue('场景列表失败后仍恢复的草稿')).toBeDefined();
+      await waitFor(() => expect(window.metis?.listPersonalization).toHaveBeenCalledTimes(2));
+      expect(window.localStorage.getItem('metis:pendingChatIntent')).toBeNull();
+      expect(window.metis?.agentChat).not.toHaveBeenCalled();
+    } finally {
+      window.metis = originalMetis;
+    }
+  });
+
+  it('preserves a scenario handoff after catalog failure and consumes it after a later successful retry', async () => {
+    resetStore();
+    useMetisStore.setState({ locale: 'zh' });
+    window.localStorage.removeItem('metis:active-scenario-id');
+    const originalMetis = window.metis;
+    const scenario = makeTriggerScenario(
+      'user:scenarios/retry-after-load-failure',
+      '重试后可用场景',
+      [],
+    );
+    const listPersonalization = vi.fn()
+      .mockRejectedValueOnce(new Error('temporary scenario catalog failure'))
+      .mockResolvedValueOnce({ ok: true, definitions: [scenario] });
+    const agentChat = vi.fn();
+    setPendingChatIntent({
+      scenarioId: scenario.id,
+      projectId: 'global',
+      message: '场景目录恢复后的草稿',
+      autoSend: false,
+    });
+    window.metis = {
+      listSessions: vi.fn().mockResolvedValue([{
+        id: 'session-scenario-retry',
+        createdAt: 1,
+        lastActivity: 1,
+        messageCount: 0,
+        metadata: { title: '场景目录重试' },
+      }]),
+      getMessages: vi.fn().mockResolvedValue([]),
+      listArtifacts: vi.fn().mockResolvedValue([]),
+      listPersonalization,
+      agentChat,
+    } as unknown as typeof window.metis;
+
+    try {
+      const { default: ChatPage } = await import('../../src/pages/ChatPage');
+      render(<ChatPage renderLayout={renderChatProjectShell} />);
+      await waitFor(() => expect(listPersonalization).toHaveBeenCalledTimes(1));
+      expect(window.localStorage.getItem('metis:pendingChatIntent')).not.toBeNull();
+      expect(screen.queryByText('场景交接已拒绝：所请求的场景不可用或已禁用。')).toBeNull();
+      expect(screen.getByPlaceholderText('提出一个研究问题...')).toHaveProperty('value', '');
+      expect(agentChat).not.toHaveBeenCalled();
+
+      await waitFor(() => expect(listPersonalization).toHaveBeenCalledTimes(2));
+      expect(await screen.findByDisplayValue('场景目录恢复后的草稿')).toBeDefined();
+      expect(screen.getByRole('combobox', { name: '当前场景' })).toHaveProperty('value', scenario.id);
+      expect(window.localStorage.getItem('metis:pendingChatIntent')).toBeNull();
+      expect(agentChat).not.toHaveBeenCalled();
+    } finally {
+      window.metis = originalMetis;
+      window.localStorage.removeItem('metis:active-scenario-id');
+    }
+  });
+
+  it('shows loading state until the authoritative scenario catalog resolves', async () => {
+    resetStore();
+    useMetisStore.setState({ locale: 'zh' });
+    const originalMetis = window.metis;
+    const catalog = deferred<{ ok: true; definitions: [] }>();
+    window.metis = {
+      listSessions: vi.fn().mockResolvedValue([{
+        id: 'session-catalog-loading',
+        createdAt: 1,
+        lastActivity: 1,
+        messageCount: 0,
+        metadata: { title: '目录加载中' },
+      }]),
+      getMessages: vi.fn().mockResolvedValue([]),
+      listArtifacts: vi.fn().mockResolvedValue([]),
+      listPersonalization: vi.fn().mockReturnValue(catalog.promise),
+    } as unknown as typeof window.metis;
+
+    try {
+      const { default: ChatPage } = await import('../../src/pages/ChatPage');
+      render(<ChatPage renderLayout={renderChatProjectShell} />);
+
+      expect((await screen.findByRole('status')).textContent).toContain('正在加载你的场景...');
+      expect(screen.getByRole('combobox', { name: '当前场景' }).hasAttribute('disabled')).toBe(true);
+      expect(screen.getByRole('option', { name: '正在加载场景...' })).toBeDefined();
+
+      await act(async () => {
+        catalog.resolve({ ok: true, definitions: [] });
+        await catalog.promise;
+      });
+      await waitFor(() => expect(
+        screen.getByRole('combobox', { name: '当前场景' }).hasAttribute('disabled'),
+      ).toBe(false));
+      expect(screen.getByRole('option', { name: '未选择自定义场景' })).toBeDefined();
+    } finally {
+      window.metis = originalMetis;
+    }
+  });
+
+  it('keeps a scenario handoff after bounded failures and consumes it after explicit retry', async () => {
+    resetStore();
+    useMetisStore.setState({ locale: 'zh' });
+    const originalMetis = window.metis;
+    const scenario = makeTriggerScenario(
+      'user:scenarios/preserve-until-catalog-recovers',
+      '恢复后场景',
+      [],
+    );
+    const firstCatalog = deferred<{ ok: true; definitions: ReturnType<typeof makeTriggerScenario>[] }>();
+    const secondCatalog = deferred<{ ok: true; definitions: ReturnType<typeof makeTriggerScenario>[] }>();
+    const retryCatalog = deferred<{ ok: true; definitions: ReturnType<typeof makeTriggerScenario>[] }>();
+    const listPersonalization = vi.fn()
+      .mockReturnValueOnce(firstCatalog.promise)
+      .mockReturnValueOnce(secondCatalog.promise)
+      .mockReturnValue(retryCatalog.promise);
+    const agentChat = vi.fn();
+    setPendingChatIntent({
+      scenarioId: scenario.id,
+      projectId: 'global',
+      message: '目录恢复前不能丢失的场景交接',
+      autoSend: false,
+    });
+    window.metis = {
+      listSessions: vi.fn().mockResolvedValue([{
+        id: 'session-bounded-catalog-retry',
+        createdAt: 1,
+        lastActivity: 1,
+        messageCount: 0,
+        metadata: { title: '有限目录重试' },
+      }]),
+      getMessages: vi.fn().mockResolvedValue([]),
+      listArtifacts: vi.fn().mockResolvedValue([]),
+      listPersonalization,
+      agentChat,
+    } as unknown as typeof window.metis;
+
+    try {
+      const { default: ChatPage } = await import('../../src/pages/ChatPage');
+      render(<ChatPage renderLayout={renderChatProjectShell} />);
+
+      await waitFor(() => expect(listPersonalization).toHaveBeenCalledTimes(1));
+      await act(async () => {
+        firstCatalog.reject(new Error('catalog unavailable'));
+        await firstCatalog.promise.catch(() => undefined);
+      });
+      await waitFor(() => expect(listPersonalization).toHaveBeenCalledTimes(2));
+      await act(async () => {
+        secondCatalog.reject(new Error('catalog still unavailable'));
+        await secondCatalog.promise.catch(() => undefined);
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+      });
+
+      expect(listPersonalization).toHaveBeenCalledTimes(2);
+      expect(window.localStorage.getItem('metis:pendingChatIntent')).toContain(
+        'user:scenarios/preserve-until-catalog-recovers',
+      );
+      expect(screen.queryByText('场景交接已拒绝：所请求的场景不可用或已禁用。')).toBeNull();
+      expect(screen.getByRole('alert').textContent).toContain('场景暂时无法加载，交接内容已保留。');
+      expect(screen.getByRole('combobox', { name: '当前场景' }).hasAttribute('disabled')).toBe(true);
+      expect(screen.getByRole('option', { name: '场景暂不可用' })).toBeDefined();
+      expect(screen.getByRole('button', { name: '重新加载场景' })).toBeDefined();
+      expect(agentChat).not.toHaveBeenCalled();
+
+      const retry = screen.getByRole('button', { name: '重新加载场景' });
+      expect(retry.textContent).toContain('重试');
+      await act(async () => {
+        fireEvent.click(retry);
+        await Promise.resolve();
+      });
+
+      await waitFor(() => expect(listPersonalization).toHaveBeenCalledTimes(3));
+      await act(async () => {
+        retryCatalog.resolve({ ok: true, definitions: [scenario] });
+        await retryCatalog.promise;
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+      });
+      expect(await screen.findByDisplayValue('目录恢复前不能丢失的场景交接')).toBeDefined();
+      expect(screen.getByRole('combobox', { name: '当前场景' })).toHaveProperty('value', scenario.id);
+      expect(window.localStorage.getItem('metis:pendingChatIntent')).toBeNull();
+      expect(screen.queryByRole('alert')).toBeNull();
+      expect(agentChat).not.toHaveBeenCalled();
+    } finally {
+      window.metis = originalMetis;
+    }
+  });
+
+  it('localizes the failed scenario catalog recovery controls in English', async () => {
+    resetStore();
+    useMetisStore.setState({ locale: 'en' });
+    const originalMetis = window.metis;
+    let mounted: ReturnType<typeof render> | undefined;
+    window.metis = {
+      listSessions: vi.fn().mockResolvedValue([{
+        id: 'session-catalog-failed-en',
+        createdAt: 1,
+        lastActivity: 1,
+        messageCount: 0,
+        metadata: { title: 'Catalog failed' },
+      }]),
+      getMessages: vi.fn().mockResolvedValue([]),
+      listArtifacts: vi.fn().mockResolvedValue([]),
+    } as unknown as typeof window.metis;
+
+    try {
+      const { default: ChatPage } = await import('../../src/pages/ChatPage');
+      mounted = render(<ChatPage renderLayout={renderChatProjectShell} />);
+
+      expect((await screen.findByRole('alert')).textContent).toContain(
+        'Scenarios could not be loaded. Your handoff is preserved.',
+      );
+      expect(screen.getByRole('combobox', { name: 'Active scenario' }).hasAttribute('disabled')).toBe(true);
+      expect(screen.getByRole('option', { name: 'Scenarios unavailable' })).toBeDefined();
+      expect(screen.getByRole('button', { name: 'Retry scenario loading' }).textContent).toContain('Retry');
+    } finally {
+      mounted?.unmount();
+      useMetisStore.setState({ locale: 'zh' });
+      window.metis = originalMetis;
+    }
+  });
+
+  it('consumes a missing-scenario handoff only after an authoritative empty catalog is loaded', async () => {
+    resetStore();
+    useMetisStore.setState({ locale: 'zh' });
+    const originalMetis = window.metis;
+    const agentChat = vi.fn();
+    setPendingChatIntent({
+      scenarioId: 'user:scenarios/no-longer-available',
+      projectId: 'global',
+      message: '',
+      autoSend: false,
+    });
+    window.metis = {
+      listSessions: vi.fn().mockResolvedValue([{
+        id: 'session-missing-scenario',
+        createdAt: 1,
+        lastActivity: 1,
+        messageCount: 0,
+        metadata: { title: '缺失场景' },
+      }]),
+      getMessages: vi.fn().mockResolvedValue([]),
+      listArtifacts: vi.fn().mockResolvedValue([]),
+      listPersonalization: vi.fn().mockResolvedValue({ ok: true, definitions: [] }),
+      agentChat,
+    } as unknown as typeof window.metis;
+
+    try {
+      const { default: ChatPage } = await import('../../src/pages/ChatPage');
+      render(<ChatPage renderLayout={renderChatProjectShell} />);
+      expect(await screen.findByText('场景交接已拒绝：所请求的场景不可用或已禁用。')).toBeDefined();
+      expect(window.localStorage.getItem('metis:pendingChatIntent')).toBeNull();
+      expect(agentChat).not.toHaveBeenCalled();
+    } finally {
+      window.metis = originalMetis;
+    }
+  });
+
+  it('requires real word boundaries for English and numeric scenario triggers', async () => {
+    resetStore();
+    useMetisStore.setState({ locale: 'zh' });
+    window.localStorage.removeItem('metis:active-scenario-id');
+    const originalMetis = window.metis;
+    const agentChat = vi.fn().mockResolvedValue(completedAgentResponse('边界测试回答'));
+    const scenarios = [makeTriggerScenario(
+      'user:scenarios/word-boundaries',
+      '英文边界场景',
+      ['paper', 'R', '2024'],
+    )];
+    window.metis = {
+      listSessions: vi.fn().mockResolvedValue([{
+        id: 'session-trigger-boundaries',
+        createdAt: 1,
+        lastActivity: 1,
+        messageCount: 0,
+        metadata: { title: '触发词边界' },
+      }]),
+      getMessages: vi.fn().mockResolvedValue([]),
+      listArtifacts: vi.fn().mockResolvedValue([]),
+      listSkills: vi.fn().mockResolvedValue([]),
+      getActiveSkill: vi.fn().mockResolvedValue({ active: null }),
+      listPersonalization: vi.fn().mockResolvedValue({ ok: true, definitions: scenarios }),
+      agentChat,
+    } as unknown as typeof window.metis;
+
+    try {
+      const { default: ChatPage } = await import('../../src/pages/ChatPage');
+      render(<ChatPage renderLayout={renderChatProjectShell} />);
+      const selector = await screen.findByRole('combobox', { name: '当前场景' });
+      const input = screen.getByPlaceholderText('提出一个研究问题...');
+      const sendButton = screen.getByRole('button', { name: '发送' }) as HTMLButtonElement;
+      const submit = async (content: string, expectedCalls: number) => {
+        fireEvent.change(input, { target: { value: content } });
+        fireEvent.click(sendButton);
+        await waitFor(() => expect(agentChat).toHaveBeenCalledTimes(expectedCalls));
+        await waitFor(() => expect(screen.getAllByText('边界测试回答')).toHaveLength(expectedCalls));
+      };
+
+      for (const [index, content] of ['newspaper', 'ordinary', 'release2024'].entries()) {
+        await submit(content, index + 1);
+        expect(agentChat.mock.calls[index]?.[3]).not.toHaveProperty('scenarioId');
+        expect((selector as HTMLSelectElement).value).toBe('');
+      }
+
+      await submit('paper综述', 4);
+      expect(agentChat.mock.calls[3]?.[3]).toEqual(expect.objectContaining({
+        mode: 'send',
+        scenarioId: 'user:scenarios/word-boundaries',
+        projectId: 'global',
+      }));
+    } finally {
+      window.metis = originalMetis;
+      window.localStorage.removeItem('metis:active-scenario-id');
+    }
+  });
+
+  it('keeps natural substring matching for Chinese scenario triggers', async () => {
+    resetStore();
+    useMetisStore.setState({ locale: 'zh' });
+    window.localStorage.removeItem('metis:active-scenario-id');
+    const originalMetis = window.metis;
+    const agentChat = vi.fn().mockResolvedValue(completedAgentResponse('中文触发回答'));
+    const scenarios = [makeTriggerScenario(
+      'user:scenarios/chinese-substring',
+      '中文子串场景',
+      ['定性研究'],
+    )];
+    window.metis = {
+      listSessions: vi.fn().mockResolvedValue([{
+        id: 'session-chinese-trigger',
+        createdAt: 1,
+        lastActivity: 1,
+        messageCount: 0,
+        metadata: { title: '中文触发词' },
+      }]),
+      getMessages: vi.fn().mockResolvedValue([]),
+      listArtifacts: vi.fn().mockResolvedValue([]),
+      listSkills: vi.fn().mockResolvedValue([]),
+      getActiveSkill: vi.fn().mockResolvedValue({ active: null }),
+      listPersonalization: vi.fn().mockResolvedValue({ ok: true, definitions: scenarios }),
+      agentChat,
+    } as unknown as typeof window.metis;
+
+    try {
+      const { default: ChatPage } = await import('../../src/pages/ChatPage');
+      render(<ChatPage renderLayout={renderChatProjectShell} />);
+      await screen.findByRole('combobox', { name: '当前场景' });
+      fireEvent.change(screen.getByPlaceholderText('提出一个研究问题...'), {
+        target: { value: '请帮我设计一套定性研究方案' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+      await waitFor(() => expect(agentChat).toHaveBeenCalledWith(
+        'session-chinese-trigger',
+        expect.any(Array),
+        undefined,
+        expect.objectContaining({
+          mode: 'send',
+          scenarioId: 'user:scenarios/chinese-substring',
+          projectId: 'global',
+        }),
+      ));
+    } finally {
+      window.metis = originalMetis;
+      window.localStorage.removeItem('metis:active-scenario-id');
+    }
+  });
+
+  it('keeps the longest matching scenario trigger phrase as the winner', async () => {
+    resetStore();
+    useMetisStore.setState({ locale: 'zh' });
+    window.localStorage.removeItem('metis:active-scenario-id');
+    const originalMetis = window.metis;
+    const agentChat = vi.fn().mockResolvedValue(completedAgentResponse('最长触发词回答'));
+    const scenarios = [
+      makeTriggerScenario('user:scenarios/short-trigger', '短触发词场景', ['paper']),
+      makeTriggerScenario('user:scenarios/long-trigger', '长触发词场景', ['paper review']),
+    ];
+    window.metis = {
+      listSessions: vi.fn().mockResolvedValue([{
+        id: 'session-longest-trigger',
+        createdAt: 1,
+        lastActivity: 1,
+        messageCount: 0,
+        metadata: { title: '最长触发词' },
+      }]),
+      getMessages: vi.fn().mockResolvedValue([]),
+      listArtifacts: vi.fn().mockResolvedValue([]),
+      listSkills: vi.fn().mockResolvedValue([]),
+      getActiveSkill: vi.fn().mockResolvedValue({ active: null }),
+      listPersonalization: vi.fn().mockResolvedValue({ ok: true, definitions: scenarios }),
+      agentChat,
+    } as unknown as typeof window.metis;
+
+    try {
+      const { default: ChatPage } = await import('../../src/pages/ChatPage');
+      render(<ChatPage renderLayout={renderChatProjectShell} />);
+      await screen.findByRole('combobox', { name: '当前场景' });
+      fireEvent.change(screen.getByPlaceholderText('提出一个研究问题...'), {
+        target: { value: 'paper review' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+      await waitFor(() => expect(agentChat).toHaveBeenCalledWith(
+        'session-longest-trigger',
+        expect.any(Array),
+        undefined,
+        expect.objectContaining({
+          mode: 'send',
+          scenarioId: 'user:scenarios/long-trigger',
+          projectId: 'global',
+        }),
+      ));
+      expect(window.localStorage.getItem('metis:active-scenario-id')).toBe('user:scenarios/long-trigger');
+    } finally {
+      window.metis = originalMetis;
+      window.localStorage.removeItem('metis:active-scenario-id');
     }
   });
 

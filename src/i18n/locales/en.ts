@@ -123,6 +123,7 @@ const en = {
     typing: 'Thinking...',
     copied: 'Copied',
     copy: 'Copy',
+    regenerate: 'Regenerate',
     cancel: 'Cancel',
     saveResend: 'Save & Resend',
     skill: 'Skill:',
@@ -166,6 +167,15 @@ const en = {
     goalRefining: 'Updating the research plan based on your feedback...',
     goalUseChat: 'Create a new research task in Conversation.',
     socraticPlan: 'Socratic Plan',
+    scenarioLabel: 'Scenario',
+    activeScenario: 'Active scenario',
+    noCustomScenario: 'No custom scenario selected',
+    scenarioLoadingOption: 'Loading scenarios...',
+    scenarioUnavailableOption: 'Scenarios unavailable',
+    scenarioLoading: 'Loading your scenarios...',
+    scenarioLoadFailed: 'Scenarios could not be loaded. Your handoff is preserved.',
+    retryScenarioLoading: 'Retry scenario loading',
+    retry: 'Retry',
   },
 
   // ─── Workflow Page ─────────────────────────────────────────
@@ -939,6 +949,18 @@ const en = {
   },
 
   // ─── Error Boundary ────────────────────────────────────────
+  personalization: {
+    outputPrimaryRequired: 'Add the primary deliverable before saving this output plan. Supporting artifacts and quality criteria remain editable.',
+    outputPrimaryRequiredSave: 'Primary deliverable is required when an output plan contains supporting artifacts or quality criteria.',
+    scenarioNeedsUniqueAgentTitle: 'Choose exactly one Agent or add workflow steps',
+    scenarioNeedsUniqueAgent: 'This output-planned scenario has no workflow. Bind exactly one Agent, or add workflow steps that assign work between multiple Agents.',
+    globalRulesContext: 'Global Metis.md definition',
+    scenarioRulesContext: 'Scenario-specific Metis.md definition',
+    legacyProjectRulesContext: 'Legacy project-scoped definition',
+    rulesContextDescription: 'This editor changes a saved rule definition. The active project’s authoritative Metis.md is a separate editor.',
+    openProjectRules: 'Open current project Metis.md',
+  },
+
   errorBoundary: {
     title: 'Something went wrong',
     message: 'An unexpected error occurred. You can retry or reload the app.',

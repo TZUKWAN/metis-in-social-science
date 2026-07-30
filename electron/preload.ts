@@ -896,8 +896,12 @@ const api = {
 
   listPersonalization: async (rawRequest: PersonalizationListRequest) => {
     const request = PersonalizationListRequestSchema.safeParse(rawRequest);
-    if (!request.success) return { ok: true as const, definitions: [] };
-    return decodePersonalizationListResponse(await ipcRenderer.invoke('personalization:list', request.data));
+    if (!request.success) throw new TypeError('Invalid personalization list request');
+    const response = decodePersonalizationListResponse(
+      await ipcRenderer.invoke('personalization:list', request.data),
+    );
+    if (!response.ok) throw new TypeError(`Personalization list failed: ${response.code}`);
+    return response;
   },
   getPersonalization: async (rawRequest: PersonalizationGetRequest) => {
     const request = PersonalizationGetRequestSchema.safeParse(rawRequest);

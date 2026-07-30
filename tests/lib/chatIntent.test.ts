@@ -3,7 +3,12 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { setPendingChatIntent, consumePendingChatIntent } from '../../src/lib/chatIntent.js';
+import {
+  clearPendingChatIntent,
+  consumePendingChatIntent,
+  peekPendingChatIntent,
+  setPendingChatIntent,
+} from '../../src/lib/chatIntent.js';
 
 const KEY = 'metis:pendingChatIntent';
 
@@ -35,6 +40,24 @@ describe('chatIntent', () => {
       message: 'Run the exact scenario',
       autoSend: true,
     });
+    expect(localStorage.getItem(KEY)).toBeNull();
+  });
+
+  it('can inspect a scenario handoff without consuming it until the catalog is authoritative', () => {
+    const intent = {
+      scenarioId: 'user:scenarios/catalog-dependent',
+      projectId: 'project-a',
+      message: 'Wait for the authoritative catalog',
+      autoSend: true,
+    };
+    setPendingChatIntent(intent);
+
+    expect(peekPendingChatIntent()).toEqual(intent);
+    expect(peekPendingChatIntent()).toEqual(intent);
+    expect(localStorage.getItem(KEY)).not.toBeNull();
+
+    clearPendingChatIntent();
+    expect(peekPendingChatIntent()).toBeNull();
     expect(localStorage.getItem(KEY)).toBeNull();
   });
 

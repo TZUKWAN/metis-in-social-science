@@ -3,6 +3,7 @@ import {
   MarkdownSkillApplyRequestSchema,
   PackageSkillApplyRequestSchema,
   PersonalizationExtensionApplyRequestSchema,
+  PersonalizationExtensionIpcRequestSchema,
   RequirementsMcpApplyRequestSchema,
   UrlMcpApplyRequestSchema,
   UrlSkillApplyRequestSchema,
@@ -45,6 +46,7 @@ describe('PersonalizationExtensionContract', () => {
       contractVersion: 1,
       mode: 'skill_package',
       sourceCapabilityId: 'fc_0123456789abcdef0123456789abcdef',
+      expectedId: null,
       expectedRevision: 0,
       evidenceContext: context,
     }).success).toBe(true);
@@ -58,6 +60,109 @@ describe('PersonalizationExtensionContract', () => {
       expectedRevision: 0,
       evidenceContext: context,
     }).success).toBe(true);
+  });
+
+  it('requires package installs to declare whether they create or update a Skill identity', () => {
+    const request = {
+      contractVersion: 1,
+      mode: 'skill_package',
+      sourceCapabilityId: 'fc_0123456789abcdef0123456789abcdef',
+      expectedRevision: 3,
+      evidenceContext: context,
+    } as const;
+    expect(PackageSkillApplyRequestSchema.safeParse(request).success).toBe(false);
+    expect(PackageSkillApplyRequestSchema.safeParse({
+      ...request,
+      expectedId: null,
+    }).success).toBe(false);
+    expect(PackageSkillApplyRequestSchema.safeParse({
+      ...request,
+      expectedId: 'user:skills/updated-skill',
+    }).success).toBe(true);
+    expect(PackageSkillApplyRequestSchema.safeParse({
+      ...request,
+      expectedId: 'url:skills/wrong-install-mode',
+    }).success).toBe(false);
+    expect(PackageSkillApplyRequestSchema.safeParse({
+      ...request,
+      expectedRevision: 0,
+      expectedId: null,
+    }).success).toBe(true);
+    expect(PackageSkillApplyRequestSchema.safeParse({
+      ...request,
+      expectedRevision: 0,
+      expectedId: 'user:skills/not-a-new-install',
+    }).success).toBe(false);
+    expect(PersonalizationExtensionIpcRequestSchema.safeParse({
+      contractVersion: 1,
+      mode: 'skill_package',
+      operationId: context.operationId,
+      sourceCapabilityId: request.sourceCapabilityId,
+      expectedRevision: 2,
+      expectedId: null,
+    }).success).toBe(false);
+  });
+
+  it('binds URL Skill create and update identities to revision in runtime and IPC schemas', () => {
+    const runtimeRequest = {
+      contractVersion: 1,
+      mode: 'skill_url',
+      url: 'https://example.com/skill.zip',
+      expectedArchiveSha256: null,
+      expectedVersion: null,
+      evidenceContext: context,
+    } as const;
+    const ipcRequest = {
+      contractVersion: 1,
+      mode: 'skill_url',
+      operationId: context.operationId,
+      url: runtimeRequest.url,
+      expectedArchiveSha256: null,
+      expectedVersion: null,
+    } as const;
+
+    expect(UrlSkillApplyRequestSchema.safeParse({
+      ...runtimeRequest,
+      expectedRevision: 0,
+      expectedId: null,
+    }).success).toBe(true);
+    expect(UrlSkillApplyRequestSchema.safeParse({
+      ...runtimeRequest,
+      expectedRevision: 2,
+      expectedId: 'url:skills/research-helper',
+    }).success).toBe(true);
+
+    expect(UrlSkillApplyRequestSchema.safeParse({
+      ...runtimeRequest,
+      expectedRevision: 0,
+      expectedId: 'url:skills/research-helper',
+    }).success).toBe(false);
+    expect(UrlSkillApplyRequestSchema.safeParse({
+      ...runtimeRequest,
+      expectedRevision: 2,
+      expectedId: null,
+    }).success).toBe(false);
+    expect(PersonalizationExtensionIpcRequestSchema.safeParse({
+      ...ipcRequest,
+      expectedRevision: 0,
+      expectedId: 'url:skills/research-helper',
+    }).success).toBe(false);
+    expect(PersonalizationExtensionIpcRequestSchema.safeParse({
+      ...ipcRequest,
+      expectedRevision: 2,
+      expectedId: null,
+    }).success).toBe(false);
+
+    expect(UrlSkillApplyRequestSchema.safeParse({
+      ...runtimeRequest,
+      expectedRevision: 2,
+      expectedId: 'user:skills/wrong-url-target',
+    }).success).toBe(false);
+    expect(PersonalizationExtensionIpcRequestSchema.safeParse({
+      ...ipcRequest,
+      expectedRevision: 2,
+      expectedId: 'user:skills/wrong-url-target',
+    }).success).toBe(false);
   });
 
   it('accepts the two exact MCP modes', () => {

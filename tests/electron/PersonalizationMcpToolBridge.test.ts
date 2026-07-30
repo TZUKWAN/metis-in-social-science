@@ -31,6 +31,12 @@ import type { EvidenceEnvelope } from '../../engine/runtime/EvidenceEnvelopeCont
 import { digestResolvedManifestSnapshot } from '../../engine/personalization/ScenarioRunCoordinator.js';
 import { ToolRegistry } from '../../engine/tools/ToolRegistry.js';
 import { ToolDispatcher } from '../../engine/tools/ToolDispatcher.js';
+import { PersistenceStore } from '../../engine/persistence/PersistenceStore.js';
+import { PersonalizationRepository } from '../../engine/personalization/PersonalizationRepository.js';
+import {
+  compileScenarioExecutionManifest,
+  runPersistedScenarioWorkflow,
+} from '../../electron/ScenarioWorkflowService.js';
 
 const roots: string[] = [];
 const activeRuntimes: ManagedPersonalizationMcpRuntime[] = [];
@@ -313,6 +319,110 @@ afterEach(async () => {
 });
 
 describe('PersonalizationMcpToolBridge', () => {
+  it('binds MCP evidence, scenario checkpoints and output artifacts to one compiled manifest digest', async () => {
+    const harness = await createHarness();
+    const agentId = 'user:agents/bridge-writer';
+    const outputPlan = {
+      primaryDeliverable: 'MCP-backed manuscript',
+      supportingArtifacts: ['Evidence appendix'],
+      qualityCriteria: ['External evidence remains identified'],
+    };
+    const agentPrompt = 'Use the managed MCP evidence and produce every configured artifact.';
+    const sourceCandidate = {
+      ...harness.manifest,
+      agentIds: [agentId],
+      definitionRevisions: { ...harness.manifest.definitionRevisions, [agentId]: 1 },
+      promptStack: [{
+        sourceId: agentId,
+        sourceKind: 'agent' as const,
+        precedence: 200,
+        contentDigest: sha256(agentPrompt),
+        content: agentPrompt,
+      }],
+      output: { ...harness.manifest.output, format: 'artifact_bundle' as const, plan: outputPlan },
+      implicitOutputStep: {
+        id: 'runtime-output-plan',
+        name: 'Generate configured deliverables',
+        description: 'Generate every configured deliverable.',
+        agentId,
+        agentModelPreference: null,
+        retryLimit: 0,
+        skillIds: [],
+        toolIds: ['external_lookup'],
+        mcpIds: [harness.definition.id],
+        dependsOn: [],
+        maxTurns: 5,
+        memory: harness.manifest.memory,
+        output: harness.manifest.output,
+      },
+      manifestDigest: '0'.repeat(64),
+    };
+    const sourceManifest = ResolvedRunManifestSchema.parse({
+      ...sourceCandidate,
+      manifestDigest: digestResolvedManifestSnapshot(sourceCandidate),
+    });
+    const compilation = compileScenarioExecutionManifest(sourceManifest);
+    expect(compilation.ok).toBe(true);
+    if (!compilation.ok || !compilation.manifest) return;
+    const executionManifest = compilation.manifest;
+    expect(executionManifest.manifestDigest).not.toBe(sourceManifest.manifestDigest);
+
+    const prepared = await prepare(harness, { manifest: executionManifest });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    await prepared.run.registrations[0]!.handler({ query: 'social science' }, {
+      sessionId: executionManifest.sessionId,
+      workspace: '.',
+      turnIndex: 0,
+    });
+
+    const storeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'metis-mcp-scenario-digest-'));
+    roots.push(storeRoot);
+    const store = new PersistenceStore(path.join(storeRoot, 'runtime.db'));
+    try {
+      store.createSession(executionManifest.sessionId);
+      const repository = new PersonalizationRepository(store.raw);
+      const bundle = JSON.stringify({
+        primary: { name: outputPlan.primaryDeliverable, content: '# MCP-backed manuscript' },
+        supporting: outputPlan.supportingArtifacts.map((name) => ({ name, content: '# Evidence appendix' })),
+        quality: outputPlan.qualityCriteria.map((criterion) => ({
+          criterion,
+          status: 'met',
+          evidence: 'The evidence appendix identifies the external evidence.',
+        })),
+      });
+      const response = await runPersistedScenarioWorkflow({
+        agentLoop: { run: async () => ({
+          status: 'completed',
+          finalText: bundle,
+          finalVerified: true,
+          messages: [],
+          turnsUsed: 1,
+          toolResults: [],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          errors: [],
+          traceEvents: [],
+        }) },
+        store,
+        repository,
+        sessionId: executionManifest.sessionId,
+        messages: [{ role: 'user', content: 'Produce the MCP-backed bundle.' }],
+        requestId: 'mcp-digest-identity',
+        manifest: executionManifest,
+      });
+      expect(response.status).toBe('completed');
+      expect(harness.sink.envelopes[0]?.runManifestDigest).toBe(executionManifest.manifestDigest);
+      expect(repository.listScenarioRunRecords(executionManifest.sessionId)[0]?.manifestDigest)
+        .toBe(executionManifest.manifestDigest);
+      expect(store.listArtifacts(executionManifest.sessionId).every((artifact) => (
+        artifact.metadata.manifestDigest === executionManifest.manifestDigest
+      ))).toBe(true);
+    } finally {
+      store.close();
+      await prepared.run.close();
+    }
+  });
+
   it('runs a real generated MCP through ToolRegistry/ToolDispatcher without sending raw output to AgentLoop', async () => {
     const harness = await createHarness();
     const prepared = await prepare(harness);

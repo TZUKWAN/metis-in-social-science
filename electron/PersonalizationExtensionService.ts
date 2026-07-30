@@ -367,7 +367,13 @@ export class PersonalizationExtensionService {
     const installation = SkillInstallationResultSchema.safeParse(raw);
     if (!installation.success) return this.#failure(request.mode, 'skill_install_failed', 'invalid_installer_response', false);
     if (!installation.data.ok) return this.#failure(request.mode, 'skill_install_failed', installation.data.code, false);
-    if (!this.#coherentSkillInstallation(installation.data.installed, 'package', null, null, null)) {
+    if (!this.#coherentSkillInstallation(
+      installation.data.installed,
+      'package',
+      null,
+      request.expectedId,
+      null,
+    )) {
       return this.#afterSkillCompensation(request.mode, installation.data.installed, 'package_identity_rejected', 'local_package_identity_mismatch');
     }
     return this.#persistInstalledSkill(request, installation.data.installed, 'package');

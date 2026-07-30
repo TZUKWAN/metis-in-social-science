@@ -71,6 +71,7 @@ describe('Skill three-mode preload boundary', () => {
         operationId: '22222222-2222-4222-8222-222222222222',
         expectedRevision: 0,
         sourceCapabilityId: `fc_${'a'.repeat(32)}`,
+        expectedId: null,
       },
       {
         contractVersion: 1,
@@ -79,7 +80,7 @@ describe('Skill three-mode preload boundary', () => {
         expectedRevision: 0,
         url: 'https://github.com/metis-test/research-skill',
         expectedArchiveSha256: 'b'.repeat(64),
-        expectedId: 'url:skills/preload-github',
+        expectedId: null,
         expectedVersion: '1.0.0',
       },
     ];
@@ -99,6 +100,7 @@ describe('Skill three-mode preload boundary', () => {
       operationId: '44444444-4444-4444-8444-444444444444',
       expectedRevision: 0,
       sourceCapabilityId: `fc_${'b'.repeat(32)}`,
+      expectedId: null,
       sourcePath: 'C:\\Users\\victim\\secret-skill',
       evidenceContext: {
         sessionId: 'attacker',
@@ -109,6 +111,29 @@ describe('Skill three-mode preload boundary', () => {
       },
     } as unknown as PersonalizationExtensionIpcRequest;
     await expect(apply(injected)).resolves.toEqual(invalidResponse);
+    expect(electronMocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it('rejects URL Skill create/update identity mismatches before IPC', async () => {
+    const { applyPersonalizationExtension: apply } = await loadExtensionBridge();
+    const base = {
+      contractVersion: 1,
+      mode: 'skill_url',
+      operationId: '55555555-5555-4555-8555-555555555555',
+      url: 'https://github.com/metis-test/research-skill',
+      expectedArchiveSha256: null,
+      expectedVersion: null,
+    } as const;
+    await expect(apply({
+      ...base,
+      expectedRevision: 0,
+      expectedId: 'url:skills/existing-target',
+    } as PersonalizationExtensionIpcRequest)).resolves.toEqual(invalidResponse);
+    await expect(apply({
+      ...base,
+      expectedRevision: 2,
+      expectedId: null,
+    } as PersonalizationExtensionIpcRequest)).resolves.toEqual(invalidResponse);
     expect(electronMocks.invoke).not.toHaveBeenCalled();
   });
 

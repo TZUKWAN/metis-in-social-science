@@ -74,18 +74,44 @@ export const MarkdownSkillApplyRequestSchema = z.strictObject({
   outputSchema: z.record(z.string(), z.unknown()).nullable().default(null),
 });
 
+const PackageSkillExpectedIdSchema = PersonalizationIdSchema
+  .refine((value) => value.startsWith('user:skills/'))
+  .nullable();
+const UrlSkillExpectedIdSchema = PersonalizationIdSchema
+  .refine((value) => value.startsWith('url:skills/'))
+  .nullable();
+
+function bindInstallIdentityToRevision(
+  request: { expectedId: string | null; expectedRevision: number },
+  context: z.RefinementCtx,
+) {
+  const createsDefinition = request.expectedRevision === 0;
+  if (createsDefinition !== (request.expectedId === null)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['expectedId'],
+      message: createsDefinition
+        ? 'New installs cannot target an existing Skill identity'
+        : 'Updates require the existing Skill identity',
+    });
+  }
+}
+
 export const PackageSkillApplyRequestSchema = z.strictObject({
   ...ExtensionMutationShape,
   mode: z.literal('skill_package'),
   sourceCapabilityId: FileCapabilityIdSchema,
-});
+  expectedId: PackageSkillExpectedIdSchema,
+}).superRefine(bindInstallIdentityToRevision);
 
 export const UrlSkillApplyRequestSchema = z.strictObject({
   ...SkillUrlInstallRequestSchema.shape,
+  expectedId: UrlSkillExpectedIdSchema,
   mode: z.literal('skill_url'),
   expectedRevision: z.number().int().min(0).max(PERSONALIZATION_LIMITS.version),
   evidenceContext: ExtensionEvidenceContextSchema,
 }).superRefine((request, context) => {
+  bindInstallIdentityToRevision(request, context);
   try {
     const parsed = new URL(request.url);
     if (parsed.hash.length > 0) context.addIssue({ code: 'custom', path: ['url'], message: 'URL fragments are forbidden' });
@@ -147,15 +173,21 @@ export const PersonalizationExtensionIpcRequestSchema = z.discriminatedUnion('mo
   MarkdownSkillApplyRequestSchema.omit({ evidenceContext: true }).extend({
     operationId: z.string().uuid(),
   }).strict(),
-  PackageSkillApplyRequestSchema.omit({ evidenceContext: true }).extend({
+  z.strictObject({
+    contractVersion: z.literal(PERSONALIZATION_EXTENSION_CONTRACT_VERSION),
+    mode: z.literal('skill_package'),
+    sourceCapabilityId: FileCapabilityIdSchema,
+    expectedId: PackageSkillExpectedIdSchema,
+    expectedRevision: z.number().int().min(0).max(PERSONALIZATION_LIMITS.version),
     operationId: z.string().uuid(),
-  }).strict(),
+  }).superRefine(bindInstallIdentityToRevision),
   z.strictObject({
     ...SkillUrlInstallRequestSchema.shape,
+    expectedId: UrlSkillExpectedIdSchema,
     mode: z.literal('skill_url'),
     expectedRevision: z.number().int().min(0).max(PERSONALIZATION_LIMITS.version),
     operationId: z.string().uuid(),
-  }),
+  }).superRefine(bindInstallIdentityToRevision),
   z.strictObject({
     ...McpBuilderRequestSchema.shape,
     contractVersion: z.literal(PERSONALIZATION_EXTENSION_CONTRACT_VERSION),

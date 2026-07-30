@@ -9,7 +9,9 @@ import { digestResolvedManifestSnapshot } from '../../engine/personalization/Sce
 import { buildBuiltinPersonalizationDefinitions } from '../fixtures/personalization/legacyBuiltinDefinitions.js';
 import type { AgentRunResult, ChatMessage } from '../../engine/core/types.js';
 import {
+  compileScenarioExecutionManifest,
   hasExecutableScenarioWorkflow,
+  preflightScenarioExecution,
   runPersistedScenarioWorkflow,
 } from '../../electron/ScenarioWorkflowService.js';
 
@@ -106,9 +108,153 @@ describe('runPersistedScenarioWorkflow', () => {
     expect(hasExecutableScenarioWorkflow({ ...resolved.manifest, workflow: [] })).toBe(false);
   });
 
+  it('executes a one-Agent scenario output plan without requiring an authored workflow', async () => {
+    const resolved = resolveManifest('builtin:scenarios/general-research');
+    const planned = withOutputPlan(resolved);
+    const exactMemory = {
+      scope: 'session' as const,
+      retainDecisions: false,
+      retainArtifacts: true,
+      maxSummaryChars: 12_000,
+    };
+    const candidate = {
+      ...planned,
+      workflow: [],
+      implicitOutputStep: {
+        id: 'runtime-output-plan',
+        name: 'Generate configured deliverables',
+        description: 'Generate every configured deliverable.',
+        agentId: planned.agentIds[0]!,
+        agentModelPreference: 'specialized-output-model',
+        retryLimit: 1,
+        skillIds: [...planned.skillIds],
+        toolIds: [...planned.allowedTools],
+        mcpIds: [...planned.mcpIds],
+        dependsOn: [],
+        maxTurns: 3,
+        memory: exactMemory,
+        output: planned.output,
+      },
+      manifestDigest: '0'.repeat(64),
+    };
+    const manifest = {
+      ...candidate,
+      manifestDigest: digestResolvedManifestSnapshot(candidate),
+    };
+    const fundingScope = 'Use ownerId=local and projectId=project-1 exactly; never infer or replace them.';
+    const compilation = compileScenarioExecutionManifest(manifest, {
+      executionInstructions: [fundingScope],
+    });
+    expect(compilation.ok).toBe(true);
+    if (!compilation.ok || !compilation.manifest) return;
+    const executionManifest = compilation.manifest;
+    const plan = executionManifest.output.plan!;
+    const run = vi.fn();
+    const preferredRun = vi.fn()
+      .mockResolvedValueOnce(completedResult('{"primary":{"name":"wrong"}}'))
+      .mockResolvedValueOnce(completedResult(outputBundleText(
+        plan,
+        '# Workflow-free primary deliverable',
+      )));
+    const agentLoopForModel = vi.fn().mockReturnValue({ run: preferredRun });
+
+    expect(manifest.agentIds).toHaveLength(1);
+    expect(hasExecutableScenarioWorkflow(manifest)).toBe(true);
+    expect(preflightScenarioExecution(manifest)).toEqual({ ok: true, useCoordinator: true });
+
+    const response = await runPersistedScenarioWorkflow({
+      agentLoop: { run },
+      agentLoopForModel,
+      store,
+      repository,
+      sessionId: 'session-1',
+      messages: [{ role: 'user', content: 'Generate every configured deliverable.' }],
+      requestId: 'workflow-plan-only',
+      manifest: executionManifest,
+    });
+
+    expect(response.status).toBe('completed');
+    expect(response.answer).toBe('# Workflow-free primary deliverable');
+    expect(run).not.toHaveBeenCalled();
+    expect(agentLoopForModel).toHaveBeenCalledWith('specialized-output-model');
+    expect(preferredRun).toHaveBeenCalledTimes(2);
+    expect(preferredRun.mock.calls[0]?.[0]).toMatchObject({
+      allowedTools: executionManifest.allowedTools,
+      maxTurns: 3,
+      fullAccess: executionManifest.fullAccess,
+    });
+    expect((preferredRun.mock.calls[0]?.[0].messages as ChatMessage[]).at(-1)?.content)
+      .toContain('# Required output bundle');
+    expect(preferredRun.mock.calls[0]?.[0].skillPrompt)
+      .toContain(`metis-source:${manifest.agentIds[0]}`);
+    expect(preferredRun.mock.calls[0]?.[0].skillPrompt).toContain(fundingScope);
+    const artifacts = store.listArtifacts('session-1');
+    expect(artifacts).toHaveLength(
+      1 + plan.supportingArtifacts.length + 1,
+    );
+    expect(artifacts.every((artifact) => (
+      artifact.metadata.manifestDigest === executionManifest.manifestDigest
+    ))).toBe(true);
+    const record = repository.listScenarioRunRecords('session-1')[0];
+    expect(record?.manifestSnapshot.scenarioId).toBe(manifest.scenarioId);
+    expect(record?.manifestDigest).toBe(executionManifest.manifestDigest);
+    expect(record?.manifestSnapshot.workflow).toHaveLength(1);
+    expect(record?.steps[0]?.artifactRefs).toHaveLength(1 + plan.supportingArtifacts.length + 1);
+  });
+
+  it('fails explicitly instead of silently dropping an output plan when no-workflow Agent selection is ambiguous', async () => {
+    const resolved = resolveManifest('builtin:scenarios/general-research');
+    const planned = withOutputPlan(resolved);
+    const extraAgentId = 'user:agents/second';
+    const candidate = {
+      ...planned,
+      workflow: [],
+      agentIds: [...planned.agentIds, extraAgentId],
+      definitionRevisions: { ...planned.definitionRevisions, [extraAgentId]: 1 },
+      manifestDigest: '0'.repeat(64),
+    };
+    const manifest = {
+      ...candidate,
+      manifestDigest: digestResolvedManifestSnapshot(candidate),
+    };
+    const run = vi.fn();
+    const prepareMcp = vi.fn();
+
+    expect(hasExecutableScenarioWorkflow(manifest)).toBe(false);
+    const preflight = preflightScenarioExecution(manifest);
+    expect(preflight).toEqual({
+      ok: false,
+      code: 'scenario_output_agent_ambiguous',
+    });
+    if (preflight.ok) await prepareMcp();
+    expect(prepareMcp).not.toHaveBeenCalled();
+    const response = await runPersistedScenarioWorkflow({
+      agentLoop: { run },
+      store,
+      repository,
+      sessionId: 'session-1',
+      messages: [{ role: 'user', content: 'Generate the configured bundle.' }],
+      requestId: 'workflow-plan-ambiguous-agent',
+      manifest,
+    });
+
+    expect(response.status).toBe('error');
+    expect(response.diagnostics[0]?.code).toBe('scenario_output_agent_ambiguous');
+    expect(run).not.toHaveBeenCalled();
+    expect(store.listArtifacts('session-1')).toEqual([]);
+    expect(store.getMessages('session-1')).toEqual([]);
+  });
+
   it('executes every real DAG step and persists its configured output bundle as reusable artifacts', async () => {
     const resolved = resolveManifest('builtin:scenarios/article-review');
-    const manifest = withOutputPlan(resolved);
+    const authoredManifest = withOutputPlan(resolved);
+    const fundingScope = 'Use ownerId=local and projectId=project-1 exactly; never infer or replace them.';
+    const compilation = compileScenarioExecutionManifest(authoredManifest, {
+      executionInstructions: [fundingScope],
+    });
+    expect(compilation.ok).toBe(true);
+    if (!compilation.ok || !compilation.manifest) return;
+    const manifest = compilation.manifest;
     const plan = manifest.output.plan!;
     const run = vi.fn().mockImplementation((request: { requestId: string; messages: ChatMessage[] }) => Promise.resolve(
       completedResult(request.messages.at(-1)?.content.includes('# Required output bundle')
@@ -137,6 +283,9 @@ describe('runPersistedScenarioWorkflow', () => {
         fullAccess: resolved.manifest.fullAccess,
       });
       expect(call[0].skillPrompt).toContain(`metis-source:${step?.agentId}`);
+      expect((call[0].messages as ChatMessage[]).at(-1)?.content)
+        .toContain('satisfy every active Agent, Skill, and Metis.md instruction');
+      expect(call[0].skillPrompt).toContain(fundingScope);
       for (const otherAgentId of resolved.manifest.agentIds.filter((id) => id !== step?.agentId)) {
         expect(call[0].skillPrompt).not.toContain(`metis-source:${otherAgentId}`);
       }
