@@ -26,6 +26,8 @@ import {
 } from '../engine/runtime/GoalRuntimeContract.js';
 import {
   createArtifactListRecovery,
+  decodeArtifactContentRequest,
+  decodeArtifactContentResponse,
   decodeArtifactCreateRequest,
   decodeArtifactCreatedNotification,
   decodeArtifactListResponse,
@@ -559,6 +561,13 @@ const api = {
   listArtifacts: async (sessionId: string) => {
     if (!RuntimeIdSchema.safeParse(sessionId).success) return createArtifactListRecovery();
     return decodeArtifactListResponse(await ipcRenderer.invoke('artifact:list', sessionId));
+  },
+  getArtifactContent: async (sessionId: string, artifactId: string) => {
+    const decoded = decodeArtifactContentRequest({ sessionId, artifactId });
+    if (!decoded.ok) return decodeArtifactContentResponse(null);
+    return decodeArtifactContentResponse(
+      await ipcRenderer.invoke('artifact:get-content', decoded.value),
+    );
   },
   deleteArtifact: async (id: string) => {
     if (!RuntimeIdSchema.safeParse(id).success) return decodeArtifactMutationResult(null);

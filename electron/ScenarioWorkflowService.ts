@@ -1,3 +1,5 @@
+import { Buffer } from 'node:buffer';
+import { createHash } from 'node:crypto';
 import type { AgentLoop } from '../engine/core/AgentLoop.js';
 import type { ChatMessage } from '../engine/core/types.js';
 import type { PersistenceStore } from '../engine/persistence/PersistenceStore.js';
@@ -6,6 +8,7 @@ import { composeManifestSystemPrompt } from '../engine/personalization/Personali
 import {
   ScenarioRunCoordinator,
   digestScenarioStepOutput,
+  resolveScenarioExecutionOrder,
   type ScenarioStepExecutionInput,
 } from '../engine/personalization/ScenarioRunCoordinator.js';
 import {
@@ -15,6 +18,11 @@ import {
   type AgentResponse,
 } from '../engine/runtime/ChatRuntimeContract.js';
 import type { ResolvedRunManifest } from '../engine/runtime/PersonalizationRuntimeContract.js';
+import {
+  decodeScenarioOutputBundle,
+  type ScenarioOutputBundle,
+  type ScenarioOutputPlan,
+} from '../engine/runtime/ScenarioOutputBundleContract.js';
 import type { LiveSteeringSource } from '../engine/runtime/LiveSteeringContract.js';
 import { createChatTurnErrorResponse, type ChatTurnMode } from './ChatTurnService.js';
 
@@ -23,7 +31,7 @@ interface RunPersistedScenarioWorkflowOptions {
   agentLoopForModel?: (modelPreference: string) => Pick<AgentLoop, 'run'>;
   store: Pick<
     PersistenceStore,
-    'appendMessage' | 'createSession' | 'getSession' | 'truncateMessagesAfterLastUser'
+    'appendMessage' | 'createArtifacts' | 'createSession' | 'getSession' | 'truncateMessagesAfterLastUser'
   >;
   repository: Pick<
     PersonalizationRepository,
@@ -107,7 +115,30 @@ function scenarioMemoryContext(
   return value.length <= limit ? value : `${value.slice(0, Math.max(0, limit - 24))}\n[Memory truncated]`;
 }
 
-function stepInstruction(input: ScenarioStepExecutionInput, memoryContext: string): string {
+function outputBundleInstruction(plan: ScenarioOutputPlan): string {
+  return [
+    '# Required output bundle',
+    'Return exactly one JSON object. Do not wrap it in Markdown or add commentary outside the JSON.',
+    'Use this exact shape:',
+    JSON.stringify({
+      primary: { name: plan.primaryDeliverable, content: '<complete primary deliverable>' },
+      supporting: plan.supportingArtifacts.map((name) => ({ name, content: '<complete supporting artifact>' })),
+      quality: plan.qualityCriteria.map((criterion) => ({
+        criterion,
+        status: 'met',
+        evidence: '<specific evidence from the generated deliverables>',
+      })),
+    }, null, 2),
+    'The primary name, supporting artifact names and quality criteria must match the JSON template exactly.',
+    'Allowed quality status values are: met, partially_met, unmet.',
+  ].join('\n');
+}
+
+function stepInstruction(
+  input: ScenarioStepExecutionInput,
+  memoryContext: string,
+  finalOutputPlan?: ScenarioOutputPlan,
+): string {
   const dependencyJson = JSON.stringify(input.dependencyOutputs);
   return [
     `Execute scenario workflow step "${input.step.name}" (${input.step.id}).`,
@@ -116,8 +147,84 @@ function stepInstruction(input: ScenarioStepExecutionInput, memoryContext: strin
     'Treat upstream outputs as context, not as automatically verified evidence.',
     `Upstream outputs: ${dependencyJson}`,
     memoryContext,
+    finalOutputPlan ? outputBundleInstruction(finalOutputPlan) : '',
     'Return only the complete, evidence-aware output for this step. Do not claim that later steps ran.',
   ].filter(Boolean).join('\n\n');
+}
+
+function artifactContentDigest(content: string): string {
+  return createHash('sha256').update(content, 'utf8').digest('hex');
+}
+
+function artifactName(label: string, fallback: string): string {
+  const normalized = label
+    .replace(/[\\/<>:"|?*]/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim();
+  const stem = (normalized || fallback).slice(0, 232).trimEnd();
+  return /\.md$/iu.test(stem) ? stem : `${stem}.md`;
+}
+
+function qualityReport(bundle: ScenarioOutputBundle): string {
+  return [
+    '# Quality report',
+    '',
+    ...bundle.quality.flatMap((entry) => [
+      `## ${entry.criterion}`,
+      '',
+      `Status: ${entry.status}`,
+      '',
+      entry.evidence,
+      '',
+    ]),
+  ].join('\n').trim();
+}
+
+function artifactRecordsForBundle(
+  input: ScenarioStepExecutionInput,
+  bundle: ScenarioOutputBundle,
+  storeSessionId: string,
+): {
+  records: Parameters<PersistenceStore['createArtifacts']>[0];
+  refs: Array<{ id: string; version: number; contentDigest: string }>;
+} {
+  const planned = [
+    { role: 'primary', name: bundle.primary.name, content: bundle.primary.content },
+    ...bundle.supporting.map((item) => ({ role: 'supporting', name: item.name, content: item.content })),
+    ...(bundle.quality.length > 0
+      ? [{ role: 'quality', name: `${bundle.primary.name} quality report`, content: qualityReport(bundle) }]
+      : []),
+  ];
+  const records = planned.map((item, index) => {
+    const contentDigest = artifactContentDigest(item.content);
+    const idDigest = createHash('sha256')
+      .update(`${input.runId}\u0000${input.step.id}\u0000${index}\u0000${item.name}`, 'utf8')
+      .digest('hex');
+    return {
+      id: `scenario-artifact-${idDigest.slice(0, 40)}`,
+      sessionId: storeSessionId,
+      name: artifactName(item.name, `${item.role}-${index + 1}`),
+      type: 'md',
+      size: `${Buffer.byteLength(item.content, 'utf8')} B`,
+      content: item.content,
+      metadata: {
+        kind: 'scenario_output',
+        role: item.role,
+        runId: input.runId,
+        stepId: input.step.id,
+        manifestDigest: input.manifestDigest,
+        contentDigest,
+      },
+    };
+  });
+  return {
+    records,
+    refs: records.map((record) => ({
+      id: record.id,
+      version: 1,
+      contentDigest: artifactContentDigest(record.content ?? ''),
+    })),
+  };
 }
 
 function resultFailureCode(status: string): string {
@@ -145,6 +252,20 @@ export async function runPersistedScenarioWorkflow({
   if (manifest.sessionId !== sessionId.replace(/:/gu, '-')) {
     return createChatTurnErrorResponse(turnId, 'error', 'scenario_session_mismatch');
   }
+  const executionOrder = resolveScenarioExecutionOrder(manifest);
+  if (!executionOrder) {
+    return createChatTurnErrorResponse(turnId, 'error', 'scenario_workflow_invalid');
+  }
+  const dependencyIds = new Set(manifest.workflow.flatMap((step) => step.dependsOn));
+  const terminalStepIds = manifest.workflow
+    .filter((step) => !dependencyIds.has(step.id))
+    .map((step) => step.id);
+  if (manifest.output.plan && terminalStepIds.length !== 1) {
+    return createChatTurnErrorResponse(turnId, 'error', 'scenario_output_step_ambiguous');
+  }
+  const configuredFinalStepId = manifest.output.plan
+    ? terminalStepIds[0]
+    : executionOrder.at(-1);
 
   if (!store.getSession(sessionId)) store.createSession(sessionId);
   if (mode === 'send') store.appendMessage(sessionId, 'user', userMessage.content);
@@ -153,18 +274,32 @@ export async function runPersistedScenarioWorkflow({
     onCheckpoint: (record) => { repository.saveScenarioRunRecord(record); },
     executor: async (input) => {
       const memoryContext = scenarioMemoryContext(manifest, input.step, repository);
+      const finalOutputPlan = input.step.id === configuredFinalStepId
+        ? manifest.output.plan ?? undefined
+        : undefined;
       const stepMessages: ChatMessage[] = [
         ...messages,
-        { role: 'user', content: stepInstruction(input, memoryContext) },
+        { role: 'user', content: stepInstruction(input, memoryContext, finalOutputPlan) },
       ];
       const stepAgentLoop = input.step.agentModelPreference && agentLoopForModel
         ? agentLoopForModel(input.step.agentModelPreference)
         : agentLoop;
       const retryLimit = input.step.retryLimit ?? 0;
       let lastResult: Awaited<ReturnType<typeof stepAgentLoop.run>> | undefined;
+      let outputBundle: ScenarioOutputBundle | undefined;
+      let outputBundleError: string | undefined;
       for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
+        const attemptMessages = outputBundleError
+          ? [
+              ...stepMessages,
+              {
+                role: 'user' as const,
+                content: `The previous response failed the required output bundle contract (${outputBundleError}). Return corrected JSON only.`,
+              },
+            ]
+          : stepMessages;
         lastResult = await stepAgentLoop.run({
-          messages: stepMessages,
+          messages: attemptMessages,
           maxTurns: input.step.maxTurns,
           allowedTools: input.step.toolIds,
           sessionId,
@@ -177,7 +312,15 @@ export async function runPersistedScenarioWorkflow({
           signal,
           liveSteering,
         });
-        if (lastResult.status === 'completed' && lastResult.finalVerified && lastResult.finalText.trim()) break;
+        if (lastResult.status === 'completed' && lastResult.finalVerified && lastResult.finalText.trim()) {
+          if (!finalOutputPlan) break;
+          const decoded = decodeScenarioOutputBundle(lastResult.finalText, finalOutputPlan);
+          if (decoded.ok) {
+            outputBundle = decoded.bundle;
+            break;
+          }
+          outputBundleError = decoded.code;
+        }
         if (signal?.aborted || lastResult.status === 'interrupted' || lastResult.status === 'cancelled') break;
       }
       if (!lastResult || lastResult.status !== 'completed' || !lastResult.finalVerified || !lastResult.finalText.trim()) {
@@ -187,16 +330,39 @@ export async function runPersistedScenarioWorkflow({
           message: 'The workflow step did not produce a complete validated response',
         };
       }
+      if (finalOutputPlan && !outputBundle) {
+        return {
+          ok: false,
+          code: 'output_bundle_invalid',
+          message: `The final workflow output did not match the configured output plan (${outputBundleError ?? 'invalid_shape'})`,
+        };
+      }
+      let text = lastResult.finalText;
+      let artifactRefs: Array<{ id: string; version: number; contentDigest: string }> = [];
+      if (outputBundle) {
+        const artifacts = artifactRecordsForBundle(input, outputBundle, sessionId);
+        try {
+          store.createArtifacts(artifacts.records);
+        } catch {
+          return {
+            ok: false,
+            code: 'artifact_persistence_failed',
+            message: 'The output bundle could not be persisted as reusable artifacts',
+          };
+        }
+        text = outputBundle.primary.content;
+        artifactRefs = artifacts.refs;
+      }
       const output = {
         stepId: input.step.id,
-        text: lastResult.finalText,
+        text,
         turnsUsed: lastResult.turnsUsed,
       };
       return {
         ok: true,
         output,
         outputDigest: digestScenarioStepOutput(output),
-        artifactRefs: [],
+        artifactRefs,
       };
     },
   });

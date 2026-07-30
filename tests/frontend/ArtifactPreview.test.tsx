@@ -85,11 +85,13 @@ describe('P0 Artifact 实时预览', () => {
             id: 'artifact-path',
             name: 'C:\\Users\\researcher\\private\\field-notes.md',
             type: 'md',
+            contentAvailable: true,
           },
           {
             id: 'artifact-url',
             name: 'https://user:password@example.test/private/source.pdf?token=secret#fragment',
             type: 'pdf',
+            contentAvailable: true,
           },
         ]}
         onArtifactClick={() => {}}
@@ -181,13 +183,13 @@ describe('P0 Artifact 实时预览', () => {
         <ControlledRightPanel
           initialTab="artifacts"
           previewContent="预览一"
-          artifacts={[{ id: 'a1', name: 'one.md', type: 'md' }]}
+          artifacts={[{ id: 'a1', name: 'one.md', type: 'md', contentAvailable: true }]}
           onArtifactClick={onArtifactClick}
         />
         <ControlledRightPanel
           initialTab="artifacts"
           previewContent="预览二"
-          artifacts={[{ id: 'a2', name: 'two.md', type: 'md' }]}
+          artifacts={[{ id: 'a2', name: 'two.md', type: 'md', contentAvailable: true }]}
           onArtifactClick={onArtifactClick}
         />
       </>,
@@ -226,10 +228,46 @@ describe('P0 Artifact 实时预览', () => {
     const { container } = render(
       <ControlledRightPanel
         initialTab="artifacts"
-        artifacts={[{ id: 'a1', name: 'test.md', type: 'md' }]}
+        artifacts={[{ id: 'a1', name: 'test.md', type: 'md', contentAvailable: false }]}
       />,
     );
     expect(container.querySelector('.artifact-live-preview')).toBeNull();
+  });
+
+  it('在生成物读取失败时显示明确错误而不是保留误导性预览', () => {
+    render(
+      <ControlledRightPanel
+        initialTab="artifacts"
+        artifactError="无法打开这个生成物，请稍后重试。"
+        artifacts={[{ id: 'failed', name: 'failed.md', type: 'md', contentAvailable: true }]}
+        onArtifactClick={() => {}}
+      />,
+    );
+    expect(screen.getByRole('alert').textContent).toContain('无法打开这个生成物');
+  });
+
+  it('仅允许重新打开已持久化的内容型生成物', () => {
+    const onArtifactClick = vi.fn();
+    render(
+      <ControlledRightPanel
+        initialTab="artifacts"
+        artifacts={[
+          { id: 'inline', name: 'analysis.md', type: 'md', contentAvailable: true },
+          { id: 'file', name: 'attachment.pdf', type: 'pdf', contentAvailable: false },
+        ]}
+        onArtifactClick={onArtifactClick}
+      />,
+    );
+
+    const inline = screen.getByRole('button', { name: 'analysis.md' });
+    const file = screen.getByRole('button', { name: 'attachment.pdf' });
+    expect(inline.hasAttribute('disabled')).toBe(false);
+    expect(file.hasAttribute('disabled')).toBe(true);
+    fireEvent.click(file);
+    expect(onArtifactClick).not.toHaveBeenCalled();
+    fireEvent.click(inline);
+    expect(onArtifactClick).toHaveBeenCalledTimes(1);
+    expect(onArtifactClick).toHaveBeenCalledWith(expect.objectContaining({ id: 'inline' }));
   });
 
   it('严格服从父级 tab 状态而不保留内部兼容状态', () => {

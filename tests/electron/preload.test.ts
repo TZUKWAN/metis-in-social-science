@@ -70,6 +70,7 @@ async function loadExposedAPI() {
     appendMessage(sessionId: string, role: string, content: string): Promise<number>;
     createArtifact(record: Record<string, unknown>): Promise<unknown>;
     listArtifacts(sessionId: string): Promise<unknown>;
+    getArtifactContent(sessionId: string, artifactId: string): Promise<unknown>;
     deleteArtifact(id: string): Promise<unknown>;
     onArtifactCreated(callback: (event: unknown) => void): () => void;
     agentChat(
@@ -1089,6 +1090,7 @@ describe('preload runtime-schema boundary', () => {
         sessionId: 'session-1',
         name: 'paper.pdf',
         type: 'pdf',
+        contentAvailable: false,
         createdAt: 1,
         path: 'C:\\Users\\researcher\\artifact-list-secret-marker.pdf',
       }],
@@ -1113,6 +1115,7 @@ describe('preload runtime-schema boundary', () => {
       sessionId: 'session-1',
       name: 'paper.pdf',
       type: 'pdf',
+      contentAvailable: false,
       createdAt: 1,
       path: 'C:\\Users\\researcher\\artifact-event-secret-marker.pdf',
     });
@@ -1123,10 +1126,62 @@ describe('preload runtime-schema boundary', () => {
       sessionId: 'session-1',
       name: 'paper.pdf',
       type: 'pdf',
+      contentAvailable: false,
       createdAt: 1,
     });
     expect(callback).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(callback.mock.calls)).not.toContain('artifact-event-secret-marker');
+  });
+
+  it('strictly decodes artifact content requests and responses', async () => {
+    electronMocks.invoke.mockResolvedValueOnce({
+      success: true,
+      id: 'artifact-1',
+      sessionId: 'session-1',
+      name: 'analysis.md',
+      type: 'md',
+      content: '# Persisted analysis',
+      createdAt: 1,
+    });
+    const api = await loadExposedAPI();
+
+    await expect(api.getArtifactContent('session-1', 'artifact-1')).resolves.toEqual({
+      success: true,
+      id: 'artifact-1',
+      sessionId: 'session-1',
+      name: 'analysis.md',
+      type: 'md',
+      content: '# Persisted analysis',
+      createdAt: 1,
+    });
+    expect(electronMocks.invoke).toHaveBeenCalledWith('artifact:get-content', {
+      sessionId: 'session-1',
+      artifactId: 'artifact-1',
+    });
+  });
+
+  it('blocks malformed artifact content traffic on both sides of IPC', async () => {
+    const api = await loadExposedAPI();
+
+    await expect(api.getArtifactContent('../session', 'artifact-1')).resolves.toEqual({
+      success: false,
+      code: 'artifact_content_unavailable',
+    });
+    expect(electronMocks.invoke).not.toHaveBeenCalled();
+
+    electronMocks.invoke.mockResolvedValueOnce({
+      success: true,
+      id: 'artifact-1',
+      sessionId: 'session-1',
+      name: 'analysis.md',
+      type: 'md',
+      content: '# Safe content',
+      createdAt: 1,
+      path: 'C:\\private\\artifact-content-secret-marker.md',
+    });
+    const result = await api.getArtifactContent('session-1', 'artifact-1');
+    expect(result).toEqual({ success: false, code: 'artifact_content_unavailable' });
+    expect(JSON.stringify(result)).not.toContain('artifact-content-secret-marker');
   });
 
   it('revalidates the final agent response and drops malformed partial content', async () => {

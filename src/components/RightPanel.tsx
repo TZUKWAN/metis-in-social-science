@@ -20,6 +20,7 @@ interface ArtifactItem {
   name: string;
   type: 'pdf' | 'docx' | 'xlsx' | 'pptx' | 'md' | 'latex' | 'other';
   size?: string;
+  contentAvailable: boolean;
 }
 
 interface NoteItem {
@@ -48,6 +49,7 @@ export interface RightPanelProps {
    *  The parent owns tab transitions; this component only renders the supplied preview. */
   previewContent?: string;
   previewTitle?: string;
+  artifactError?: string;
   uiMode?: SafeMarkdownMode;
 }
 
@@ -85,6 +87,7 @@ export default function RightPanel({
   embedded = false,
   previewContent,
   previewTitle,
+  artifactError,
   uiMode = 'normal',
 }: RightPanelProps) {
   const { t, locale } = useTranslation();
@@ -209,20 +212,24 @@ export default function RightPanel({
                 </button>
               )}
             </div>
+            {artifactError && (
+              <div className="right-panel-empty" role="alert">{artifactError}</div>
+            )}
             {artifacts.length === 0 ? (
               <div className="right-panel-empty">{t('rightPanel.noArtifacts')}</div>
             ) : (
               <ul className="right-panel-list artifact-list">
                 {artifacts.map((item) => {
                   const displayName = presentArtifactName(item.name, locale);
+                  const canOpenContent = item.contentAvailable && onArtifactClick !== undefined;
                   return (
                     <li key={item.id}>
                       <button
                         type="button"
                         className="right-panel-item artifact-item"
                         aria-label={displayName}
-                        onClick={() => onArtifactClick?.(item)}
-                        disabled={!onArtifactClick}
+                        onClick={() => { if (canOpenContent) onArtifactClick(item); }}
+                        disabled={!canOpenContent}
                       >
                         <span className="artifact-icon"><FileTypeIcon type={item.type} size={22} /></span>
                         <div className="artifact-info">

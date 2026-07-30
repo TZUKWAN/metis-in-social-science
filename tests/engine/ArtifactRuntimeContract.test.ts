@@ -1,11 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
   ARTIFACT_RUNTIME_LIMITS,
+  ArtifactContentRequestSchema,
+  ArtifactContentResponseSchema,
   ArtifactCreateRequestSchema,
   ArtifactCreatedNotificationSchema,
   ArtifactListItemSchema,
   ArtifactListResponseSchema,
   ArtifactMutationResultSchema,
+  ArtifactTypeSchema,
+  createArtifactContentRecovery,
+  decodeArtifactContentRequest,
+  decodeArtifactContentResponse,
   decodeArtifactCreateRequest,
   decodeArtifactCreatedNotification,
   decodeArtifactListItem,
@@ -21,6 +27,7 @@ function makeListItem(overrides: Record<string, unknown> = {}) {
     name: 'results.md',
     type: 'md',
     size: '12 KB',
+    contentAvailable: false,
     createdAt: 1,
     ...overrides,
   };
@@ -116,6 +123,19 @@ describe('ordinary-renderer artifact list contract', () => {
     expect(JSON.stringify(decoded.value)).not.toContain('fragment-secret-marker');
   });
 
+  it('requires an explicit content availability flag and accepts inline availability', () => {
+    expect(decodeArtifactListItem(makeListItem({ contentAvailable: true }))).toMatchObject({
+      ok: true,
+      value: { id: 'artifact-1', contentAvailable: true },
+    });
+    const { contentAvailable: _contentAvailable, ...missingFlag } = makeListItem();
+    void _contentAvailable;
+    expect(decodeArtifactListItem(missingFlag)).toEqual({
+      ok: false,
+      recovery: { kind: 'recovery', code: 'artifact_list_item_unavailable' },
+    });
+  });
+
   it('rejects path and metadata fields instead of stripping them after IPC', () => {
     const invalidItems = [
       makeListItem({ path: 'C:\\private\\list-path-secret-marker.md' }),
@@ -184,8 +204,12 @@ describe('ordinary-renderer artifact list contract', () => {
   });
 
   it('migrates a legacy list array while discarding path and metadata fields', () => {
+    const { contentAvailable: _contentAvailable, ...legacyItem } = makeListItem({
+      name: 'C:\\private\\legacy.md?token=legacy-secret-marker',
+    });
+    void _contentAvailable;
     const decoded = decodeArtifactListPayload([{
-      ...makeListItem({ name: 'C:\\private\\legacy.md?token=legacy-secret-marker' }),
+      ...legacyItem,
       path: 'C:\\private\\legacy.md',
       metadata: { apiKey: 'metadata-secret-marker' },
     }]);
@@ -209,6 +233,7 @@ describe('artifact created notification contract', () => {
       name: '\\\\server\\private\\results.pdf?token=notification-secret-marker',
       type: 'pdf',
       size: '2 MB',
+      contentAvailable: false,
       createdAt: 1,
     };
     const decoded = decodeArtifactCreatedNotification(input);
@@ -222,6 +247,21 @@ describe('artifact created notification contract', () => {
     expect(JSON.stringify(decoded)).not.toContain('notification-secret-marker');
   });
 
+  it('marks generated inline artifact notifications as content-available', () => {
+    const decoded = decodeArtifactCreatedNotification({
+      artifactId: 'artifact-inline',
+      sessionId: 'session-1',
+      name: 'generated.md',
+      type: 'md',
+      contentAvailable: true,
+      createdAt: 2,
+    });
+    expect(decoded).toMatchObject({
+      ok: true,
+      value: { artifactId: 'artifact-inline', contentAvailable: true },
+    });
+  });
+
   it('returns fixed notification recovery when path or other raw data is present', () => {
     const invalidInputs = [
       {
@@ -229,6 +269,7 @@ describe('artifact created notification contract', () => {
         sessionId: 'session-1',
         name: 'results.pdf',
         type: 'pdf',
+        contentAvailable: false,
         createdAt: 1,
         path: 'C:\\private\\notification-path-secret-marker.pdf',
       },
@@ -237,6 +278,7 @@ describe('artifact created notification contract', () => {
         sessionId: 'unsafe session id',
         name: 'notification-secret-marker.pdf',
         type: 'pdf',
+        contentAvailable: false,
         createdAt: 1,
       },
     ];
@@ -247,6 +289,99 @@ describe('artifact created notification contract', () => {
         ok: false,
         recovery: { kind: 'recovery', code: 'artifact_notification_unavailable' },
       });
+      expect(JSON.stringify(decoded)).not.toContain('secret-marker');
+    }
+  });
+});
+
+describe('artifact inline content contract', () => {
+  it('keeps generated plans as md and exposes the fixed two-million-character content bound', () => {
+    expect(ARTIFACT_RUNTIME_LIMITS.contentChars).toBe(2_000_000);
+    expect(ArtifactTypeSchema.safeParse('md').success).toBe(true);
+    expect(ArtifactTypeSchema.safeParse('plan').success).toBe(false);
+  });
+
+  it('accepts only a strict artifact/session content request and returns fixed request recovery', () => {
+    const request = { artifactId: 'artifact-1', sessionId: 'session-1' };
+    expect(ArtifactContentRequestSchema.parse(request)).toEqual(request);
+    expect(decodeArtifactContentRequest(request)).toEqual({ ok: true, value: request });
+
+    for (const input of [
+      { ...request, path: 'C:\\private\\request-secret-marker.md' },
+      { ...request, artifactId: 'unsafe artifact id' },
+      { artifactId: 'artifact-1' },
+    ]) {
+      const decoded = decodeArtifactContentRequest(input);
+      expect(decoded).toEqual({
+        ok: false,
+        recovery: { kind: 'recovery', code: 'artifact_content_request_unavailable' },
+      });
+      expect(JSON.stringify(decoded)).not.toContain('secret-marker');
+    }
+  });
+
+  it('round-trips strict inline content and preserves only the two fixed failure codes', () => {
+    const success = {
+      success: true as const,
+      id: 'artifact-1',
+      sessionId: 'session-1',
+      name: 'C:\\private\\research-plan.md?token=content-secret-marker',
+      type: 'md' as const,
+      content: '# Research plan\n\n1. Review the evidence.\n',
+      createdAt: 42,
+    };
+    expect(decodeArtifactContentResponse(success)).toEqual({
+      ...success,
+      name: 'research-plan.md',
+    });
+    expect(ArtifactContentResponseSchema.parse({
+      ...success,
+      name: 'research-plan.md',
+    })).toMatchObject({ success: true, type: 'md' });
+    expect(JSON.stringify(decodeArtifactContentResponse(success))).not.toContain('content-secret-marker');
+
+    for (const failure of [
+      { success: false as const, code: 'not_found' as const },
+      { success: false as const, code: 'artifact_content_unavailable' as const },
+    ]) {
+      expect(decodeArtifactContentResponse(failure)).toEqual(failure);
+    }
+    expect(createArtifactContentRecovery()).toEqual({
+      success: false,
+      code: 'artifact_content_unavailable',
+    });
+  });
+
+  it('recovers without reflecting oversized, malformed, cyclic, or control-bearing content', () => {
+    const cyclic: Record<string, unknown> = { success: true };
+    cyclic.self = cyclic;
+    const invalidInputs = [
+      {
+        success: true,
+        id: 'artifact-1',
+        sessionId: 'session-1',
+        name: 'oversized-secret-marker.md',
+        type: 'md',
+        content: 'x'.repeat(ARTIFACT_RUNTIME_LIMITS.contentChars + 1),
+        createdAt: 1,
+      },
+      {
+        success: true,
+        id: 'artifact-1',
+        sessionId: 'session-1',
+        name: 'control-secret-marker.md',
+        type: 'md',
+        content: 'valid prefix\u0000content-secret-marker',
+        createdAt: 1,
+      },
+      { success: false, code: 'unknown-secret-marker' },
+      { success: false, code: 'not_found', detail: 'path-secret-marker' },
+      cyclic,
+    ];
+
+    for (const input of invalidInputs) {
+      const decoded = decodeArtifactContentResponse(input);
+      expect(decoded).toEqual({ success: false, code: 'artifact_content_unavailable' });
       expect(JSON.stringify(decoded)).not.toContain('secret-marker');
     }
   });
@@ -320,6 +455,7 @@ describe('artifact schema strictness', () => {
       sessionId: 'session-1',
       name: 'results.md',
       type: 'md',
+      contentAvailable: false,
       createdAt: 1,
       path: '/private/notification-secret-marker.md',
     }).success).toBe(false);

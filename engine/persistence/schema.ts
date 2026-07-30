@@ -4,7 +4,7 @@
  *         papers, notes, experiments.
  */
 
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS sessions (
@@ -166,6 +166,7 @@ CREATE TABLE IF NOT EXISTS artifacts (
   type TEXT NOT NULL DEFAULT 'other',
   path TEXT,
   size TEXT,
+  content TEXT,
   metadata TEXT NOT NULL DEFAULT '{}',
   created_at INTEGER NOT NULL,
   FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE

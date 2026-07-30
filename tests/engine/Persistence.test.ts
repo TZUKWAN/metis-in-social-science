@@ -4,6 +4,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { PersistenceStore } from '../../engine/persistence/PersistenceStore.js';
+import Database from 'better-sqlite3';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -208,9 +209,157 @@ describe('PersistenceStore', () => {
     const artifacts = store.listArtifacts('s8');
     expect(artifacts).toHaveLength(2);
     expect(artifacts[0].name).toBe('data.xlsx');
+    expect(artifacts.every((artifact) => artifact.contentAvailable === false)).toBe(true);
+    expect(artifacts.every((artifact) => !Object.hasOwn(artifact, 'content'))).toBe(true);
+    expect(store.getArtifactContent('art-1', 's8')).toBeUndefined();
 
     store.deleteArtifact('art-1');
     expect(store.listArtifacts('s8')).toHaveLength(1);
+  });
+
+  it('round-trips inline artifact content while list results expose only availability', () => {
+    store.createSession('s-content');
+    const content = '# Generated plan\n\n- Review sources\n- Draft findings\n';
+    store.createArtifact({
+      id: 'art-content',
+      sessionId: 's-content',
+      name: 'plan.md',
+      type: 'md',
+      content,
+      metadata: { source: 'scenario-final-step' },
+    });
+
+    const listed = store.listArtifacts('s-content');
+    expect(listed).toEqual([
+      expect.objectContaining({
+        id: 'art-content',
+        sessionId: 's-content',
+        name: 'plan.md',
+        type: 'md',
+        contentAvailable: true,
+      }),
+    ]);
+    expect(listed[0]).not.toHaveProperty('content');
+    expect(store.getArtifactContent('art-content', 's-content')).toEqual({
+      id: 'art-content',
+      sessionId: 's-content',
+      name: 'plan.md',
+      type: 'md',
+      content,
+      createdAt: expect.any(Number),
+    });
+  });
+
+  it('scopes inline artifact content to its session and reports file-only content as unavailable', () => {
+    store.createSession('s-owner');
+    store.createSession('s-other');
+    store.createArtifact({
+      id: 'art-inline',
+      sessionId: 's-owner',
+      name: 'notes.md',
+      type: 'md',
+      content: 'Session-owned content',
+    });
+    store.createArtifact({
+      id: 'art-file',
+      sessionId: 's-owner',
+      name: 'paper.pdf',
+      type: 'pdf',
+      path: '/workspace/paper.pdf',
+    });
+
+    expect(store.getArtifactContent('art-inline', 's-other')).toBeUndefined();
+    expect(store.getArtifactContent('missing-artifact', 's-owner')).toBeUndefined();
+    expect(store.getArtifactContent('art-file', 's-owner')).toBeUndefined();
+    expect(store.listArtifacts('s-owner')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'art-inline', contentAvailable: true }),
+      expect.objectContaining({ id: 'art-file', contentAvailable: false }),
+    ]));
+  });
+
+  it('migrates an old artifacts table by adding nullable content without changing file records', () => {
+    store.close();
+    dbPath = path.join(tmpDir, 'legacy-artifacts.db');
+    const legacy = new Database(dbPath);
+    legacy.exec(`
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY,
+        created_at INTEGER NOT NULL,
+        last_activity INTEGER NOT NULL,
+        message_count INTEGER NOT NULL DEFAULT 0,
+        metadata TEXT NOT NULL DEFAULT '{}'
+      );
+      CREATE TABLE artifacts (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL DEFAULT 'other',
+        path TEXT,
+        size TEXT,
+        metadata TEXT NOT NULL DEFAULT '{}',
+        created_at INTEGER NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      );
+      INSERT INTO sessions (id, created_at, last_activity) VALUES ('legacy-session', 1, 1);
+      INSERT INTO artifacts (id, session_id, name, type, path, size, created_at)
+        VALUES ('legacy-file', 'legacy-session', 'legacy.pdf', 'pdf', '/workspace/legacy.pdf', '1MB', 2);
+    `);
+    legacy.close();
+
+    store = new PersistenceStore(dbPath);
+    const inspector = new Database(dbPath, { readonly: true });
+    const columns = inspector.prepare("SELECT name FROM pragma_table_info('artifacts')").all() as Array<{ name: string }>;
+    inspector.close();
+    expect(columns.map((column) => column.name)).toContain('content');
+    expect(store.listArtifacts('legacy-session')).toEqual([
+      expect.objectContaining({ id: 'legacy-file', contentAvailable: false }),
+    ]);
+    expect(store.getArtifactContent('legacy-file', 'legacy-session')).toBeUndefined();
+
+    store.createArtifact({
+      id: 'post-migration-inline',
+      sessionId: 'legacy-session',
+      name: 'generated.md',
+      type: 'md',
+      content: 'Persisted after migration',
+    });
+    expect(store.getArtifactContent('post-migration-inline', 'legacy-session'))
+      .toMatchObject({ content: 'Persisted after migration' });
+  });
+
+  it('replays identical deterministic ids idempotently and rolls back conflicting batches', () => {
+    store.createSession('s-idempotent');
+    const first = {
+      id: 'deterministic-artifact',
+      sessionId: 's-idempotent',
+      name: 'final.md',
+      type: 'md',
+      content: 'Stable generated result',
+      metadata: { step: 'final' },
+    };
+    store.createArtifact(first);
+    expect(() => store.createArtifact({ ...first })).not.toThrow();
+    expect(store.listArtifacts('s-idempotent')).toHaveLength(1);
+
+    expect(() => store.createArtifact({
+      ...first,
+      content: 'Different generated result',
+    })).toThrow('Artifact id conflicts with a different record');
+    expect(store.getArtifactContent(first.id, first.sessionId)?.content)
+      .toBe('Stable generated result');
+
+    expect(() => store.createArtifacts([
+      {
+        id: 'would-be-rolled-back',
+        sessionId: 's-idempotent',
+        name: 'second.md',
+        type: 'md',
+        content: 'Second result',
+      },
+      { ...first, name: 'conflicting-name.md' },
+    ])).toThrow('Artifact id conflicts with a different record');
+    expect(store.listArtifacts('s-idempotent').map((artifact) => artifact.id))
+      .toEqual(['deterministic-artifact']);
   });
 
   it('saves and retrieves paper pdfText', () => {

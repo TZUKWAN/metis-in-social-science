@@ -13,7 +13,6 @@ import {
 } from '../../electron/PersonalizationExtensionService.js';
 import { PersonalizationRuntimeService } from '../../electron/PersonalizationRuntimeService.js';
 import { PersonalizationSkillInstaller } from '../../electron/PersonalizationSkillInstaller.js';
-import { buildBuiltinPersonalizationDefinitions } from '../fixtures/personalization/legacyBuiltinDefinitions.js';
 import { PersonalizationRepository } from '../../engine/personalization/PersonalizationRepository.js';
 import type { PersonalizationExtensionIpcRequest } from '../../engine/runtime/PersonalizationExtensionContract.js';
 import App from '../../src/App.js';
@@ -24,7 +23,7 @@ const MANIFEST_SECRET = Buffer.from('happy-path-manifest-secret-at-least-32-byte
 const EVIDENCE_SECRET = Buffer.from('happy-path-evidence-secret-at-least-32-bytes');
 const CUSTOM_SCENARIO_ID = 'user:scenarios/my-scenarios';
 const CUSTOM_SKILL_ID = 'user:skills/my-skills';
-const BUILTIN_AGENT_ID = 'builtin:agents/general-researcher';
+const CUSTOM_AGENT_ID = 'user:agents/my-agents';
 const roots: string[] = [];
 const databases: Database.Database[] = [];
 
@@ -40,11 +39,10 @@ function tempRoot(): string {
   return root;
 }
 
-function openRuntime(databasePath: string, seedBuiltins = true): RuntimeStack {
+function openRuntime(databasePath: string): RuntimeStack {
   const database = new Database(databasePath);
   databases.push(database);
   const repository = new PersonalizationRepository(database, MANIFEST_SECRET);
-  if (seedBuiltins) repository.seedBuiltins(buildBuiltinPersonalizationDefinitions());
   return {
     database,
     repository,
@@ -210,6 +208,30 @@ describe('Personalization persisted UI-to-runtime happy paths', () => {
     const mounted = render(<App />);
     fireEvent.click(await screen.findByTestId('personalization-trigger'));
     await screen.findByRole('heading', { name: 'Personalization' });
+
+    fireEvent.click(screen.getByRole('button', { name: /^Agents/u }));
+    fireEvent.click(screen.getByRole('button', { name: 'New' }));
+
+    const agentEditor = await screen.findByRole('region', { name: 'Definition editor' });
+    fireEvent.change(within(agentEditor).getAllByLabelText('Name')[0]!, {
+      target: { value: 'Durable custom agent' },
+    });
+    fireEvent.change(within(agentEditor).getByLabelText('Role'), {
+      target: { value: 'Durable research agent' },
+    });
+    fireEvent.change(within(agentEditor).getByLabelText('Agent system instructions'), {
+      target: { value: 'Use the selected scenario workflow and preserve verifiable evidence.' },
+    });
+    fireEvent.click(within(agentEditor).getByRole('button', { name: 'Save new revision' }));
+
+    await waitFor(() => expect(initial.repository.get(CUSTOM_AGENT_ID)).toMatchObject({
+      kind: 'agent',
+      name: 'Durable custom agent',
+      role: 'Durable research agent',
+      revision: 2,
+    }));
+
+    fireEvent.click(screen.getByRole('button', { name: /^Scenarios/u }));
     fireEvent.click(screen.getByRole('button', { name: 'New' }));
 
     const editor = await screen.findByRole('region', { name: 'Definition editor' });
@@ -219,7 +241,10 @@ describe('Personalization persisted UI-to-runtime happy paths', () => {
     fireEvent.change(within(editor).getByLabelText('Description'), {
       target: { value: 'Created through the rendered personalization center.' },
     });
-    fireEvent.click(within(editor).getByRole('checkbox', { name: /General researcher/u }));
+    fireEvent.click(within(editor).getByRole('checkbox', { name: /^Durable custom agent/u }));
+    fireEvent.click(within(editor).getByRole('button', { name: 'Add step' }));
+    expect((within(editor).getByRole('combobox', { name: 'Executing agent' }) as HTMLSelectElement).value)
+      .toBe(CUSTOM_AGENT_ID);
     fireEvent.click(within(editor).getByRole('button', { name: 'Save new revision' }));
 
     await waitFor(() => expect(initial.repository.get(CUSTOM_SCENARIO_ID)).toMatchObject({
@@ -227,7 +252,11 @@ describe('Personalization persisted UI-to-runtime happy paths', () => {
       name: 'Durable custom conversation',
       description: 'Created through the rendered personalization center.',
       revision: 2,
-      agentIds: [BUILTIN_AGENT_ID],
+      agentIds: [CUSTOM_AGENT_ID],
+      workflow: [expect.objectContaining({
+        id: 'step-1',
+        agentId: CUSTOM_AGENT_ID,
+      })],
     }));
     fireEvent.click(within(definitionCard(CUSTOM_SCENARIO_ID)).getByRole('button', {
       name: 'Use in conversation',
@@ -257,7 +286,8 @@ describe('Personalization persisted UI-to-runtime happy paths', () => {
     if (!resolved?.ok) throw new Error('Custom scenario did not resolve in the chat bridge');
     expect(resolved.manifest.scenarioId).toBe(CUSTOM_SCENARIO_ID);
     expect(resolved.manifest.definitionRevisions[CUSTOM_SCENARIO_ID]).toBe(2);
-    expect(resolved.manifest.agentIds).toEqual([BUILTIN_AGENT_ID]);
+    expect(resolved.manifest.agentIds).toEqual([CUSTOM_AGENT_ID]);
+    expect(resolved.manifest.definitionRevisions[CUSTOM_AGENT_ID]).toBe(2);
     expect(await screen.findByText('Resolved custom scenario conversation.')).toBeDefined();
 
     mounted.unmount();
@@ -273,7 +303,8 @@ describe('Personalization persisted UI-to-runtime happy paths', () => {
     expect(restarted.repository.get(CUSTOM_SCENARIO_ID)).toMatchObject({
       name: 'Durable custom conversation',
       revision: 2,
-      agentIds: [BUILTIN_AGENT_ID],
+      agentIds: [CUSTOM_AGENT_ID],
+      workflow: [expect.objectContaining({ agentId: CUSTOM_AGENT_ID })],
     });
     const restartedResolution = restarted.runtime.resolveForAgent({
       contractVersion: 1,
@@ -293,7 +324,7 @@ describe('Personalization persisted UI-to-runtime happy paths', () => {
   it('saves Markdown Skill content through the signed extension service and reloads it after restart', async () => {
     const root = tempRoot();
     const databasePath = path.join(root, 'personalization.db');
-    const initial = openRuntime(databasePath, false);
+    const initial = openRuntime(databasePath);
     const evidence = new EvidenceEnvelopeService(EVIDENCE_SECRET);
     const extension = new PersonalizationExtensionService({
       definitions: initial.repository,
@@ -340,7 +371,7 @@ describe('Personalization persisted UI-to-runtime happy paths', () => {
     mounted.unmount();
     closeDatabase(initial.database);
 
-    const restarted = openRuntime(databasePath, false);
+    const restarted = openRuntime(databasePath);
     installRuntimeBridge(restarted);
     const restartedCenter = render(<App />);
     fireEvent.click(await screen.findByTestId('personalization-trigger'));

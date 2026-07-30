@@ -6,6 +6,7 @@
 import Database from 'better-sqlite3';
 import { SCHEMA_SQL } from './schema.js';
 import type { ChatMessage, ToolResult } from '../core/types.js';
+import { ArtifactContentSchema } from '../runtime/ArtifactRuntimeContract.js';
 import type { ExperimentMetadata } from '../runtime/ExperimentMetadataContract.js';
 
 export interface SessionRecord {
@@ -25,6 +26,26 @@ export interface MessageRecord {
   toolCallId: string | null;
   name: string | null;
   metadata: Record<string, unknown>;
+  createdAt: number;
+}
+
+export interface ArtifactCreateRecord {
+  id: string;
+  sessionId: string;
+  name: string;
+  type: string;
+  path?: string;
+  size?: string;
+  content?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ArtifactContentRecord {
+  id: string;
+  sessionId: string;
+  name: string;
+  type: string;
+  content: string;
   createdAt: number;
 }
 
@@ -186,6 +207,16 @@ export class PersistenceStore {
     this.db.exec(SCHEMA_SQL);
     this.migratePapersPdfText();
     this.migrateCollections();
+    this.migrateArtifactContent();
+  }
+
+  private migrateArtifactContent(): void {
+    const contentColumn = this.db.prepare(
+      "SELECT 1 FROM pragma_table_info('artifacts') WHERE name = 'content'",
+    ).get();
+    if (!contentColumn) {
+      this.db.exec('ALTER TABLE artifacts ADD COLUMN content TEXT;');
+    }
   }
 
   private migratePapersPdfText(): void {
@@ -2334,27 +2365,66 @@ export class PersistenceStore {
 
   // ─── Artifacts ──────────────────────────────────────────────
 
-  createArtifact(record: {
-    id: string;
-    sessionId: string;
-    name: string;
-    type: string;
-    path?: string;
-    size?: string;
-    metadata?: Record<string, unknown>;
-  }): void {
-    this.db.prepare(
-      'INSERT INTO artifacts (id, session_id, name, type, path, size, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-    ).run(
-      record.id,
-      record.sessionId,
-      record.name,
-      record.type,
-      record.path ?? null,
-      record.size ?? null,
-      JSON.stringify(record.metadata ?? {}),
-      Date.now(),
+  createArtifact(record: ArtifactCreateRecord): void {
+    this.createArtifacts([record]);
+  }
+
+  /**
+   * Atomically persists generated artifacts. A deterministic id may be replayed
+   * only when every persisted field is identical; conflicting content is never
+   * silently overwritten.
+   */
+  createArtifacts(records: ArtifactCreateRecord[]): void {
+    const select = this.db.prepare(
+      'SELECT session_id, name, type, path, size, content, metadata FROM artifacts WHERE id = ?',
     );
+    const insert = this.db.prepare(
+      'INSERT INTO artifacts (id, session_id, name, type, path, size, content, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    );
+    const persist = this.db.transaction((batch: ArtifactCreateRecord[]) => {
+      const createdAt = Date.now();
+      for (const record of batch) {
+        if (record.content !== undefined && !ArtifactContentSchema.safeParse(record.content).success) {
+          throw new Error('Artifact content is invalid');
+        }
+        const pathValue = record.path ?? null;
+        const sizeValue = record.size ?? null;
+        const contentValue = record.content ?? null;
+        const metadataValue = JSON.stringify(record.metadata ?? {});
+        const existing = select.get(record.id) as {
+          session_id: string;
+          name: string;
+          type: string;
+          path: string | null;
+          size: string | null;
+          content: string | null;
+          metadata: string;
+        } | undefined;
+        if (existing) {
+          const identical = existing.session_id === record.sessionId
+            && existing.name === record.name
+            && existing.type === record.type
+            && existing.path === pathValue
+            && existing.size === sizeValue
+            && existing.content === contentValue
+            && existing.metadata === metadataValue;
+          if (!identical) throw new Error('Artifact id conflicts with a different record');
+          continue;
+        }
+        insert.run(
+          record.id,
+          record.sessionId,
+          record.name,
+          record.type,
+          pathValue,
+          sizeValue,
+          contentValue,
+          metadataValue,
+          createdAt,
+        );
+      }
+    });
+    persist(records);
   }
 
   listArtifacts(sessionId: string): Array<{
@@ -2365,10 +2435,13 @@ export class PersistenceStore {
     path?: string;
     size?: string;
     metadata: Record<string, unknown>;
+    contentAvailable: boolean;
     createdAt: number;
   }> {
     const rows = this.db
-      .prepare('SELECT * FROM artifacts WHERE session_id = ? ORDER BY created_at DESC')
+      .prepare(`SELECT id, session_id, name, type, path, size, metadata, created_at,
+        content IS NOT NULL AS content_available
+        FROM artifacts WHERE session_id = ? ORDER BY created_at DESC`)
       .all(sessionId) as Record<string, unknown>[];
     return rows.map((row) => ({
       id: row.id as string,
@@ -2378,8 +2451,27 @@ export class PersistenceStore {
       path: (row.path as string | null) ?? undefined,
       size: (row.size as string | null) ?? undefined,
       metadata: JSON.parse((row.metadata as string) || '{}'),
+      contentAvailable: row.content_available === 1,
       createdAt: row.created_at as number,
     }));
+  }
+
+  getArtifactContent(artifactId: string, sessionId: string): ArtifactContentRecord | undefined {
+    const row = this.db.prepare(
+      `SELECT id, session_id, name, type, content, created_at
+       FROM artifacts WHERE id = ? AND session_id = ? AND content IS NOT NULL`,
+    ).get(artifactId, sessionId) as Record<string, unknown> | undefined;
+    if (!row) return undefined;
+    const content = ArtifactContentSchema.safeParse(row.content);
+    if (!content.success) return undefined;
+    return {
+      id: row.id as string,
+      sessionId: row.session_id as string,
+      name: row.name as string,
+      type: row.type as string,
+      content: content.data,
+      createdAt: row.created_at as number,
+    };
   }
 
   deleteArtifact(id: string): void {

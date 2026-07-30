@@ -357,6 +357,17 @@ export const ScenarioDefinitionSchema = DefinitionHeaderSchema.extend({
       path: ['workflow'],
     });
   }
+  if (value.output.plan && value.workflow.length > 0) {
+    const dependencyIds = new Set(value.workflow.flatMap((step) => step.dependsOn));
+    const terminalSteps = value.workflow.filter((step) => !dependencyIds.has(step.id));
+    if (terminalSteps.length !== 1) {
+      context.addIssue({
+        code: 'custom',
+        message: 'A scenario with an output plan must have exactly one final workflow step',
+        path: ['workflow'],
+      });
+    }
+  }
   if (value.capability === 'presentation_reserved') {
     const reservedBehaviorFields: Array<[boolean, keyof typeof value]> = [
       [value.enabled, 'enabled'],

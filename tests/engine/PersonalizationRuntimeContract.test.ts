@@ -288,6 +288,21 @@ describe('PersonalizationRuntimeContract', () => {
       ...common,
       workflow: [{ ...step, dependsOn: ['one'] }],
     }).success).toBe(false);
+    expect(ScenarioDefinitionSchema.safeParse({
+      ...common,
+      workflow: [
+        { ...step, id: 'left', dependsOn: [] },
+        { ...step, id: 'right', dependsOn: [] },
+      ],
+    }).success).toBe(false);
+    expect(ScenarioDefinitionSchema.safeParse({
+      ...common,
+      workflow: [
+        { ...step, id: 'left', dependsOn: [] },
+        { ...step, id: 'right', dependsOn: [] },
+        { ...step, id: 'final', dependsOn: ['left', 'right'] },
+      ],
+    }).success).toBe(true);
   });
 
   it('requires strict save envelopes and provides safe response recovery', () => {

@@ -90,6 +90,7 @@ interface ArtifactItem {
   sourceCapability?: FileCapabilityDescriptor;
   size?: string;
   createdAt: number;
+  contentAvailable: boolean;
 }
 const validArtifactTypes: ArtifactItemType[] = ['pdf', 'docx', 'xlsx', 'pptx', 'md', 'latex', 'other'];
 const DEFAULT_SCENARIO_ID = '';
@@ -609,6 +610,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
       size: a.size,
       sourceCapability: a.sourceCapability,
       createdAt: a.createdAt,
+      contentAvailable: a.contentAvailable,
     };
   }, []);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -641,14 +643,21 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
   const [dragOver, setDragOver] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [previewContent, setPreviewContent] = useState('');
+  const [previewTitle, setPreviewTitle] = useState('');
+  const [artifactError, setArtifactError] = useState('');
   const [activeRightPanelTab, setActiveRightPanelTab] =
     useState<RightPanelTab>('tasks');
   const [selectionMenu, setSelectionMenu] = useState<{ text: string; x: number; y: number } | null>(null);
 
-  const openPreview = useCallback((content: string) => {
+  const openPreview = useCallback((
+    content: string,
+    title = locale === 'zh' ? 'AI 生成预览' : 'AI-generated preview',
+  ) => {
     setPreviewContent(content);
+    setPreviewTitle(title);
+    setArtifactError('');
     setActiveRightPanelTab('artifacts');
-  }, []);
+  }, [locale]);
 
   const acceptGoalEvent = useCallback((goalId: string, sequence: number) => {
     if (activeGoalIdRef.current !== goalId) return false;
@@ -679,6 +688,8 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
     setHistoryReady(false);
     setArtifacts([]);
     setPreviewContent('');
+    setPreviewTitle('');
+    setArtifactError('');
     setIsLoading(false);
     setActiveGoalId(null);
     activeGoalIdRef.current = null;
@@ -693,6 +704,28 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
     activeSessionIdRef.current === sessionId
     && sessionGenerationRef.current === generation
   ), []);
+
+  const refreshArtifactsForSession = useCallback(async (
+    sessionId: string,
+    generation: number,
+  ) => {
+    const listArtifacts = window.metis?.listArtifacts;
+    if (!listArtifacts) return;
+    try {
+      const decoded = decodeArtifactListPayload(await listArtifacts(sessionId));
+      if (!isCurrentSessionGeneration(sessionId, generation)) return;
+      if (decoded.success) {
+        setArtifacts(decoded.items.map(normalizeArtifact));
+        setArtifactError('');
+      } else {
+        setArtifactError(locale === 'zh' ? '暂时无法加载本会话的生成物，请稍后重试。' : 'Artifacts could not be loaded. Please try again.');
+      }
+    } catch {
+      if (isCurrentSessionGeneration(sessionId, generation)) {
+        setArtifactError(locale === 'zh' ? '暂时无法加载本会话的生成物，请稍后重试。' : 'Artifacts could not be loaded. Please try again.');
+      }
+    }
+  }, [isCurrentSessionGeneration, locale, normalizeArtifact]);
 
   const isCurrentChatRequest = useCallback((request: {
     token: symbol;
@@ -900,6 +933,9 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
   }
 
   async function handleFileUpload() {
+    const sessionId = activeSessionIdRef.current;
+    const generation = sessionGenerationRef.current;
+    if (!sessionId) return;
     try {
       const picked = await window.metis?.selectFileCapability('artifact-attachment');
       if (!picked?.success) return;
@@ -910,10 +946,10 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
 
       const artifactId = `art_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const artifactType = inferArtifactType(fileName);
-      if (currentSessionId && window.metis?.createArtifact) {
+      if (window.metis?.createArtifact) {
         const result = await window.metis.createArtifact({
           id: artifactId,
-          sessionId: currentSessionId,
+          sessionId,
           name: fileName,
           type: artifactType,
           sourceCapabilityId: picked.capability.capabilityId,
@@ -923,6 +959,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
       } else {
         return;
       }
+      if (!isCurrentSessionGeneration(sessionId, generation)) return;
       setArtifacts((prev) => [{
         id: artifactId,
         name: fileName,
@@ -930,6 +967,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
         sourceCapability: picked.capability,
         size: '',
         createdAt: Date.now(),
+        contentAvailable: false,
       }, ...prev.filter((item) => item.id !== artifactId)]);
 
       setMessages((prev) => [...prev, {
@@ -940,6 +978,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
         timestamp: now(),
       }]);
     } catch (err: unknown) {
+      if (!isCurrentSessionGeneration(sessionId, generation)) return;
       setMessages((prev) => [...prev, {
         role: 'system',
         content: t('chat.importFailed', {
@@ -975,17 +1014,12 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
     if (!metis?.onArtifactCreated) return;
     const unsub = metis.onArtifactCreated(({ sessionId }) => {
       const generation = sessionGenerationRef.current;
-      if (sessionId === activeSessionIdRef.current && metis.listArtifacts) {
-        metis.listArtifacts(sessionId).then((payload) => {
-          if (isCurrentSessionGeneration(sessionId, generation)) {
-            const decoded = decodeArtifactListPayload(payload);
-            setArtifacts(decoded.success ? decoded.items.map(normalizeArtifact) : []);
-          }
-        }).catch(() => {});
+      if (sessionId === activeSessionIdRef.current) {
+        void refreshArtifactsForSession(sessionId, generation);
       }
     });
     return () => { unsub(); };
-  }, [isCurrentSessionGeneration, normalizeArtifact]);
+  }, [refreshArtifactsForSession]);
 
   // Load messages and artifacts when session changes
   useEffect(() => {
@@ -1027,17 +1061,8 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
     } else {
       setHistoryReady(true);
     }
-    if (metis?.listArtifacts) {
-      metis.listArtifacts(sessionId).then((payload) => {
-        if (isCurrentSessionGeneration(sessionId, generation)) {
-          const decoded = decodeArtifactListPayload(payload);
-          setArtifacts(decoded.success ? decoded.items.map(normalizeArtifact) : []);
-        }
-      }).catch(() => {
-        if (isCurrentSessionGeneration(sessionId, generation)) setArtifacts([]);
-      });
-    }
-  }, [currentSessionId, isCurrentSessionGeneration, normalizeArtifact, diagnosticMode, t]);
+    void refreshArtifactsForSession(sessionId, generation);
+  }, [currentSessionId, diagnosticMode, isCurrentSessionGeneration, refreshArtifactsForSession, t]);
 
   // Auto-scroll
   useEffect(() => {
@@ -1190,6 +1215,9 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
         if (response.answer.length > 200 || /^#|^\*|\|.*\||```/.test(response.answer)) {
           openPreview(response.answer);
         }
+      }
+      if (response.status === 'completed') {
+        void refreshArtifactsForSession(request.sessionId, request.generation);
       }
     } catch (err) {
       if (!isCurrentChatRequest(request)) return;
@@ -1547,6 +1575,9 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
           openPreview(response.answer);
         }
       }
+      if (response.status === 'completed') {
+        void refreshArtifactsForSession(request.sessionId, request.generation);
+      }
     } catch (err) {
       if (!isCurrentChatRequest(request)) return;
       setMessages((prev) => [...prev, {
@@ -1603,6 +1634,33 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
     : [];
 
   const rightPanelArtifacts = artifacts;
+
+  async function handleArtifactClick(
+    item: Pick<ArtifactItem, 'id' | 'name' | 'contentAvailable'>,
+  ) {
+    if (!item.contentAvailable) return;
+    const sessionId = activeSessionIdRef.current;
+    const generation = sessionGenerationRef.current;
+    const getArtifactContent = window.metis?.getArtifactContent;
+    if (!sessionId || !getArtifactContent) return;
+    setArtifactError('');
+    try {
+      const response = await getArtifactContent(sessionId, item.id);
+      if (!isCurrentSessionGeneration(sessionId, generation)) return;
+      if (!response.success || response.sessionId !== sessionId || response.id !== item.id) {
+        setPreviewContent('');
+        setPreviewTitle('');
+        setArtifactError(locale === 'zh' ? '无法打开这个生成物，请重新选择或稍后重试。' : 'This artifact could not be opened. Please try again.');
+        return;
+      }
+      openPreview(response.content, item.name);
+    } catch {
+      if (!isCurrentSessionGeneration(sessionId, generation)) return;
+      setPreviewContent('');
+      setPreviewTitle('');
+      setArtifactError(locale === 'zh' ? '无法打开这个生成物，请重新选择或稍后重试。' : 'This artifact could not be opened. Please try again.');
+    }
+  }
 
   // Build notes list from global store for the right panel
   const allNotes = useMetisStore((s) => s.notes);
@@ -1788,11 +1846,15 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
           onDrop={async (e) => {
             e.preventDefault();
             setDragOver(false);
+            const sessionId = activeSessionIdRef.current;
+            const generation = sessionGenerationRef.current;
+            if (!sessionId) return;
             // Import dropped bytes into the main-process managed attachment area;
             // renderer code never receives or forwards a local filesystem path.
             const files = e.dataTransfer.files;
             if (!files?.length) return;
             for (const file of Array.from(files)) {
+              if (!isCurrentSessionGeneration(sessionId, generation)) break;
               try {
                 if (file.size <= 0 || file.size > FILE_CAPABILITY_LIMITS.maxImportBytes) continue;
                 const imported = await window.metis?.importFileCapability({
@@ -1808,10 +1870,10 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
                   : `${(file.size / 1024).toFixed(1)}KB`;
                 const artifactId = `art_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
                 const artifactType = inferArtifactType(file.name);
-                if (currentSessionId && window.metis?.createArtifact) {
+                if (window.metis?.createArtifact) {
                   const result = await window.metis.createArtifact({
                     id: artifactId,
-                    sessionId: currentSessionId,
+                    sessionId,
                     name: file.name,
                     type: artifactType,
                     sourceCapabilityId: imported.capability.capabilityId,
@@ -1821,6 +1883,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
                 } else {
                   continue;
                 }
+                if (!isCurrentSessionGeneration(sessionId, generation)) break;
                 setArtifacts((prev) => [{
                   id: artifactId,
                   name: file.name,
@@ -1828,6 +1891,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
                   sourceCapability: imported.capability,
                   size: sizeStr,
                   createdAt: Date.now(),
+                  contentAvailable: false,
                 }, ...prev.filter((item) => item.id !== artifactId)]);
                 setMessages((prev) => [...prev, {
                   role: 'system',
@@ -1840,6 +1904,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
                   timestamp: now(),
                 }]);
               } catch (err: unknown) {
+                if (!isCurrentSessionGeneration(sessionId, generation)) break;
                 setMessages((prev) => [...prev, {
                   role: 'system',
                   content: t('chat.importFailed', {
@@ -1901,9 +1966,11 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
       artifacts={rightPanelArtifacts}
       notes={rightPanelNotes}
       previewContent={previewContent}
-      previewTitle={previewContent ? 'AI 生成预览' : undefined}
+      previewTitle={previewContent ? previewTitle : undefined}
+      artifactError={artifactError}
       uiMode={resolvedUIMode}
       embedded
+      onArtifactClick={(item) => void handleArtifactClick(item)}
       onTaskClick={(id) => {
         if (!activeGoalCard) return;
         const el = goalStepElementRefs.current.get(`${activeGoalCard.goalId}\u0000${id}`);

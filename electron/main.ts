@@ -165,6 +165,8 @@ import {
   GoalRefineRequestSchema,
 } from '../engine/runtime/GoalRuntimeContract.js';
 import {
+  decodeArtifactContentRequest,
+  decodeArtifactContentResponse,
   decodeArtifactCreateRequest,
   decodeArtifactCreatedNotification,
   decodeArtifactListResponse,
@@ -1691,6 +1693,7 @@ function setupIPC(): void {
         name: decoded.value.name,
         type: decoded.value.type,
         size: decoded.value.size,
+        contentAvailable: false,
         sourceCapability: source?.ok ? source.capability : undefined,
         createdAt,
       });
@@ -1721,6 +1724,7 @@ function setupIPC(): void {
           name: item.name,
           type: item.type,
           size: item.size,
+          contentAvailable: item.contentAvailable,
           sourceCapability: issued?.success ? issued.capability : undefined,
           createdAt: item.createdAt,
         };
@@ -1728,6 +1732,23 @@ function setupIPC(): void {
       return decodeArtifactListResponse({ success: true, items });
     } catch {
       return decodeArtifactListResponse(null);
+    }
+  });
+  ipcMain.handle('artifact:get-content', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const decoded = decodeArtifactContentRequest(rawRequest);
+      if (!decoded.ok || !store) return decodeArtifactContentResponse(null);
+      const artifact = store.getArtifactContent(
+        decoded.value.artifactId,
+        decoded.value.sessionId,
+      );
+      if (!artifact) {
+        return decodeArtifactContentResponse({ success: false, code: 'not_found' });
+      }
+      return decodeArtifactContentResponse({ success: true, ...artifact });
+    } catch {
+      return decodeArtifactContentResponse(null);
     }
   });
   ipcMain.handle('artifact:delete', (event, rawId: unknown) => {

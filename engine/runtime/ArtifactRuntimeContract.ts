@@ -14,6 +14,7 @@ export const ARTIFACT_RUNTIME_LIMITS = Object.freeze({
   rawNameChars: CHAT_RUNTIME_LIMITS.shortTextChars,
   sizeChars: 64,
   localPathChars: 32_767,
+  contentChars: 2_000_000,
 } as const);
 
 const UNSAFE_CONTROL_CHARACTERS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u; // eslint-disable-line no-control-regex
@@ -67,6 +68,7 @@ export const ArtifactTypeSchema = z.enum([
 ]);
 
 export const ArtifactSizeSchema = boundedControlFreeText(ARTIFACT_RUNTIME_LIMITS.sizeChars);
+export const ArtifactContentSchema = boundedControlFreeText(ARTIFACT_RUNTIME_LIMITS.contentChars);
 
 export const MainLocalPathSchema = boundedControlFreeText(ARTIFACT_RUNTIME_LIMITS.localPathChars)
   .min(1)
@@ -95,6 +97,7 @@ export const ArtifactListItemSchema = z.strictObject({
   type: ArtifactTypeSchema,
   size: ArtifactSizeSchema.optional(),
   sourceCapability: FileCapabilityDescriptorSchema.optional(),
+  contentAvailable: z.boolean(),
   createdAt: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
 });
 
@@ -107,6 +110,7 @@ export const ArtifactCreatedNotificationSchema = z.strictObject({
   type: ArtifactTypeSchema,
   size: ArtifactSizeSchema.optional(),
   sourceCapability: FileCapabilityDescriptorSchema.optional(),
+  contentAvailable: z.boolean(),
   createdAt: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
 });
 
@@ -118,6 +122,7 @@ export const ArtifactRecoverySchema = z.strictObject({
     'artifact_create_request_unavailable',
     'artifact_list_item_unavailable',
     'artifact_notification_unavailable',
+    'artifact_content_request_unavailable',
   ]),
 });
 
@@ -168,6 +173,54 @@ export function decodeArtifactCreatedNotification(
   );
 }
 
+export const ArtifactContentRequestSchema = z.strictObject({
+  artifactId: RuntimeIdSchema,
+  sessionId: RuntimeIdSchema,
+});
+
+export type ArtifactContentRequest = z.infer<typeof ArtifactContentRequestSchema>;
+
+export function decodeArtifactContentRequest(
+  input: unknown,
+): ArtifactDecodeResult<ArtifactContentRequest> {
+  return decodeWithRecovery(
+    ArtifactContentRequestSchema,
+    input,
+    'artifact_content_request_unavailable',
+  );
+}
+
+const ArtifactContentSuccessSchema = z.strictObject({
+  success: z.literal(true),
+  id: RuntimeIdSchema,
+  sessionId: RuntimeIdSchema,
+  name: ArtifactDisplayNameSchema,
+  type: ArtifactTypeSchema,
+  content: ArtifactContentSchema,
+  createdAt: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+});
+
+const ArtifactContentFailureSchema = z.strictObject({
+  success: z.literal(false),
+  code: z.enum(['not_found', 'artifact_content_unavailable']),
+});
+
+export const ArtifactContentResponseSchema = z.discriminatedUnion('success', [
+  ArtifactContentSuccessSchema,
+  ArtifactContentFailureSchema,
+]);
+
+export type ArtifactContentResponse = z.infer<typeof ArtifactContentResponseSchema>;
+
+export function createArtifactContentRecovery(): ArtifactContentResponse {
+  return { success: false, code: 'artifact_content_unavailable' };
+}
+
+export function decodeArtifactContentResponse(input: unknown): ArtifactContentResponse {
+  return parseWithoutThrow(ArtifactContentResponseSchema, input)
+    ?? createArtifactContentRecovery();
+}
+
 const ArtifactListSuccessSchema = z.strictObject({
   success: z.literal(true),
   items: z.array(ArtifactListItemSchema).max(ARTIFACT_RUNTIME_LIMITS.items),
@@ -213,6 +266,7 @@ export function decodeArtifactListPayload(input: unknown): ArtifactListResponse 
       type: record.type,
       size: record.size,
       sourceCapability: record.sourceCapability,
+      contentAvailable: record.contentAvailable ?? false,
       createdAt: record.createdAt,
     });
     if (!decoded.ok) return createArtifactListRecovery();

@@ -271,6 +271,11 @@ function validateManifest(raw: unknown): { manifest?: ResolvedRunManifest; order
     : { issues: topology.issues };
 }
 
+/** Returns the exact stable order used by the coordinator, or undefined for an invalid manifest. */
+export function resolveScenarioExecutionOrder(raw: unknown): string[] | undefined {
+  return validateManifest(raw).order;
+}
+
 export class ScenarioRunCoordinator {
   readonly #executor: ScenarioStepExecutor;
   readonly #now: () => number;

@@ -968,7 +968,7 @@ function DefinitionEditor({
         <OutputPlanEditor output={draft.output} onChange={(output) => setDraft({ ...draft, output })} zh={zh} />
         <div className="personalization-truth-lock" role="note"><strong>{zh ? '真实性底座自动生效' : 'Truth controls apply automatically'}</strong><span>{zh ? '证据封装、完整性报告、引用与来源状态不提供关闭开关。' : 'Evidence envelopes, integrity reports, citation checks, and source-state checks cannot be disabled here.'}</span></div>
         <div className="personalization-workflow">
-          <div className="personalization-workflow__header"><div><strong>{zh ? '工作流步骤' : 'Workflow steps'}</strong><p>{zh ? '依赖关系决定真实执行顺序；失败步骤会阻断其下游。' : 'Dependencies define execution order; failed steps block downstream work.'}</p></div><button type="button" onClick={addWorkflowStep}>{zh ? '添加步骤' : 'Add step'}</button></div>
+          <div className="personalization-workflow__header"><div><strong>{zh ? '工作流步骤' : 'Workflow steps'}</strong><p>{zh ? '依赖关系决定真实执行顺序；失败步骤会阻断其下游。启用输出计划时，请把所有分支汇入唯一的最终步骤。' : 'Dependencies define execution order; failed steps block downstream work. When an output plan is enabled, connect all branches to one final step.'}</p></div><button type="button" onClick={addWorkflowStep}>{zh ? '添加步骤' : 'Add step'}</button></div>
           {draft.workflow.map((step, index) => <article className="personalization-step" key={`${step.id}-${index}`}>
             <div className="personalization-step__title"><strong>{index + 1}. {step.name || step.id}</strong><button type="button" onClick={() => removeWorkflowStep(index)}>{zh ? '移除' : 'Remove'}</button></div>
             <div className="personalization-grid personalization-grid--2">

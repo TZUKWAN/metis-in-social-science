@@ -3166,6 +3166,302 @@ describe('ChatPage', () => {
     }
   });
 
+  it('refreshes persisted artifacts after a completed agent response', async () => {
+    resetStore();
+    const originalMetis = window.metis;
+    const listArtifacts = vi.fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        id: 'artifact-generated',
+        sessionId: 'session-refresh',
+        name: 'generated-analysis.md',
+        type: 'md',
+        contentAvailable: true,
+        createdAt: 2,
+      }]);
+    window.metis = {
+      listSessions: vi.fn().mockResolvedValue([{
+        id: 'session-refresh',
+        title: '刷新会话',
+        createdAt: 1,
+        lastActivity: 1,
+        messageCount: 0,
+      }]),
+      getMessages: vi.fn().mockResolvedValue([]),
+      listArtifacts,
+      agentChat: vi.fn().mockResolvedValue(completedAgentResponse('已完成')),
+    } as unknown as typeof window.metis;
+
+    try {
+      const { default: ChatPage } = await import('../../src/pages/ChatPage');
+      render(<ChatPage renderLayout={renderChatProjectShell} />);
+      await waitFor(() => expect(listArtifacts).toHaveBeenCalledWith('session-refresh'));
+      fireEvent.change(screen.getByPlaceholderText('提出一个研究问题...'), {
+        target: { value: '/chat 生成持久化成果' },
+      });
+      fireEvent.click(screen.getByText('发送'));
+      await screen.findByText('已完成');
+      await waitFor(() => expect(listArtifacts).toHaveBeenCalledTimes(2));
+      fireEvent.click(screen.getByRole('tab', { name: '生成物' }));
+      expect(await screen.findByRole('button', { name: 'generated-analysis.md' })).toBeDefined();
+    } finally {
+      window.metis = originalMetis;
+    }
+  });
+
+  it('reopens persisted inline artifact content using its artifact name', async () => {
+    resetStore();
+    const originalMetis = window.metis;
+    const getArtifactContent = vi.fn().mockResolvedValue({
+      success: true,
+      id: 'artifact-inline',
+      sessionId: 'session-inline',
+      name: 'saved-analysis.md',
+      type: 'md',
+      content: '# Reopened result\n\nPersisted body.',
+      createdAt: 2,
+    });
+    window.metis = {
+      listSessions: vi.fn().mockResolvedValue([{
+        id: 'session-inline',
+        title: '内容会话',
+        createdAt: 1,
+        lastActivity: 1,
+        messageCount: 0,
+      }]),
+      getMessages: vi.fn().mockResolvedValue([]),
+      listArtifacts: vi.fn().mockResolvedValue([{
+        id: 'artifact-inline',
+        sessionId: 'session-inline',
+        name: 'saved-analysis.md',
+        type: 'md',
+        contentAvailable: true,
+        createdAt: 2,
+      }]),
+      getArtifactContent,
+    } as unknown as typeof window.metis;
+
+    try {
+      const { default: ChatPage } = await import('../../src/pages/ChatPage');
+      const { container } = render(<ChatPage renderLayout={renderChatProjectShell} />);
+      fireEvent.click(screen.getByRole('tab', { name: '生成物' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'saved-analysis.md' }));
+      await waitFor(() => expect(getArtifactContent).toHaveBeenCalledWith('session-inline', 'artifact-inline'));
+      expect(await screen.findByRole('heading', { name: 'Reopened result' })).toBeDefined();
+      expect(container.querySelector('.artifact-preview-title')?.textContent).toBe('saved-analysis.md');
+    } finally {
+      window.metis = originalMetis;
+    }
+  });
+
+  it('drops a late artifact-content response after switching sessions', async () => {
+    resetStore();
+    const originalMetis = window.metis;
+    const contentA = deferred<{
+      success: true;
+      id: string;
+      sessionId: string;
+      name: string;
+      type: 'md';
+      content: string;
+      createdAt: number;
+    }>();
+    const getArtifactContent = vi.fn().mockReturnValue(contentA.promise);
+    window.metis = {
+      listSessions: vi.fn().mockResolvedValue([
+        { id: 'session-a', title: '会话 A', createdAt: 2, lastActivity: 2, messageCount: 0 },
+        { id: 'session-b', title: '会话 B', createdAt: 1, lastActivity: 1, messageCount: 0 },
+      ]),
+      getMessages: vi.fn().mockResolvedValue([]),
+      listArtifacts: vi.fn((sessionId: string) => Promise.resolve(sessionId === 'session-a' ? [{
+        id: 'artifact-a',
+        sessionId: 'session-a',
+        name: 'session-a.md',
+        type: 'md',
+        contentAvailable: true,
+        createdAt: 2,
+      }] : [])),
+      getArtifactContent,
+    } as unknown as typeof window.metis;
+
+    try {
+      const { default: ChatPage } = await import('../../src/pages/ChatPage');
+      render(<ChatPage renderLayout={renderChatProjectShell} />);
+      fireEvent.click(screen.getByRole('tab', { name: '生成物' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'session-a.md' }));
+      await waitFor(() => expect(getArtifactContent).toHaveBeenCalledTimes(1));
+      fireEvent.click(screen.getByText('会话 B'));
+
+      contentA.resolve({
+        success: true,
+        id: 'artifact-a',
+        sessionId: 'session-a',
+        name: 'session-a.md',
+        type: 'md',
+        content: '# Stale session A artifact',
+        createdAt: 2,
+      });
+      await act(async () => { await contentA.promise; });
+
+      expect(screen.queryByRole('heading', { name: 'Stale session A artifact' })).toBeNull();
+      expect(document.querySelector('.artifact-live-preview')).toBeNull();
+    } finally {
+      window.metis = originalMetis;
+    }
+  });
+
+  it('replaces a stale preview with a visible error when persisted content cannot be opened', async () => {
+    resetStore();
+    const originalMetis = window.metis;
+    const getArtifactContent = vi.fn()
+      .mockResolvedValueOnce({
+        success: true,
+        id: 'artifact-good',
+        sessionId: 'session-artifact-error',
+        name: 'good.md',
+        type: 'md',
+        content: '# Previously opened content',
+        createdAt: 2,
+      })
+      .mockResolvedValueOnce({ success: false, code: 'not_found' });
+    window.metis = makeMetisAPI({
+      listSessions: vi.fn().mockResolvedValue([{
+        id: 'session-artifact-error', title: '生成物错误', createdAt: 1, lastActivity: 1, messageCount: 0,
+      }]),
+      getMessages: vi.fn().mockResolvedValue([]),
+      listArtifacts: vi.fn().mockResolvedValue([
+        { id: 'artifact-good', sessionId: 'session-artifact-error', name: 'good.md', type: 'md', contentAvailable: true, createdAt: 2 },
+        { id: 'artifact-missing', sessionId: 'session-artifact-error', name: 'missing.md', type: 'md', contentAvailable: true, createdAt: 1 },
+      ]),
+      getArtifactContent,
+    });
+
+    try {
+      const { default: ChatPage } = await import('../../src/pages/ChatPage');
+      render(<ChatPage renderLayout={renderChatProjectShell} />);
+      fireEvent.click(screen.getByRole('tab', { name: '生成物' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'good.md' }));
+      expect(await screen.findByRole('heading', { name: 'Previously opened content' })).toBeDefined();
+      fireEvent.click(screen.getByRole('button', { name: 'missing.md' }));
+      expect(await screen.findByRole('alert')).toBeDefined();
+      expect(screen.queryByRole('heading', { name: 'Previously opened content' })).toBeNull();
+    } finally {
+      window.metis = originalMetis;
+    }
+  });
+
+  it('shows an explicit artifact-list error during session restore instead of silently clearing results', async () => {
+    resetStore();
+    const originalMetis = window.metis;
+    window.metis = makeMetisAPI({
+      listSessions: vi.fn().mockResolvedValue([{
+        id: 'session-list-error', title: '恢复失败', createdAt: 1, lastActivity: 1, messageCount: 0,
+      }]),
+      getMessages: vi.fn().mockResolvedValue([]),
+      listArtifacts: vi.fn().mockResolvedValue({
+        success: false,
+        code: 'artifact_list_unavailable',
+        items: [],
+      }),
+    });
+
+    try {
+      const { default: ChatPage } = await import('../../src/pages/ChatPage');
+      render(<ChatPage renderLayout={renderChatProjectShell} />);
+      fireEvent.click(screen.getByRole('tab', { name: '生成物' }));
+      expect(await screen.findByRole('alert')).toBeDefined();
+    } finally {
+      window.metis = originalMetis;
+    }
+  });
+
+  it('keeps a late file-picker result bound to its original session without mixing it into the new session UI', async () => {
+    resetStore();
+    const originalMetis = window.metis;
+    const selection = deferred<{ success: true; capability: FileCapabilityDescriptor }>();
+    const createArtifact = vi.fn().mockResolvedValue({ success: true, code: 'created' });
+    window.metis = makeMetisAPI({
+      listSessions: vi.fn().mockResolvedValue([
+        { id: 'session-upload-a', title: '上传会话 A', createdAt: 2, lastActivity: 2, messageCount: 0 },
+        { id: 'session-upload-b', title: '上传会话 B', createdAt: 1, lastActivity: 1, messageCount: 0 },
+      ]),
+      getMessages: vi.fn().mockResolvedValue([]),
+      listArtifacts: vi.fn().mockResolvedValue([]),
+      selectFileCapability: vi.fn().mockReturnValue(selection.promise),
+      createArtifact,
+    });
+
+    try {
+      const { default: ChatPage } = await import('../../src/pages/ChatPage');
+      const { container } = render(<ChatPage renderLayout={renderChatProjectShell} />);
+      await waitFor(() => expect(
+        container.querySelector('.chat-session-item.active')?.textContent,
+      ).toContain('上传会话 A'));
+      fireEvent.click(container.querySelector('.chat-upload-btn') as HTMLButtonElement);
+      fireEvent.click(await screen.findByText('上传会话 B'));
+      selection.resolve({
+        success: true,
+        capability: makePdfCapability({ displayName: 'late-picker.pdf' }),
+      });
+      await act(async () => { await selection.promise; });
+      await waitFor(() => expect(createArtifact).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: 'session-upload-a',
+        name: 'late-picker.pdf',
+      })));
+      fireEvent.click(screen.getByRole('tab', { name: '生成物' }));
+      expect(screen.queryByRole('button', { name: 'late-picker.pdf' })).toBeNull();
+    } finally {
+      window.metis = originalMetis;
+    }
+  });
+
+  it('keeps a late dropped-file result bound to its original session without mixing it into the new session UI', async () => {
+    resetStore();
+    const originalMetis = window.metis;
+    const imported = deferred<{ success: true; capability: FileCapabilityDescriptor }>();
+    const createArtifact = vi.fn().mockResolvedValue({ success: true, code: 'created' });
+    window.metis = makeMetisAPI({
+      listSessions: vi.fn().mockResolvedValue([
+        { id: 'session-drop-a', title: '拖放会话 A', createdAt: 2, lastActivity: 2, messageCount: 0 },
+        { id: 'session-drop-b', title: '拖放会话 B', createdAt: 1, lastActivity: 1, messageCount: 0 },
+      ]),
+      getMessages: vi.fn().mockResolvedValue([]),
+      listArtifacts: vi.fn().mockResolvedValue([]),
+      importFileCapability: vi.fn().mockReturnValue(imported.promise),
+      createArtifact,
+    });
+
+    try {
+      const { default: ChatPage } = await import('../../src/pages/ChatPage');
+      const { container } = render(<ChatPage renderLayout={renderChatProjectShell} />);
+      await waitFor(() => expect(
+        container.querySelector('.chat-session-item.active')?.textContent,
+      ).toContain('拖放会话 A'));
+      const file = new File(['late content'], 'late-drop.pdf', { type: 'application/pdf' });
+      Object.defineProperty(file, 'arrayBuffer', {
+        configurable: true,
+        value: vi.fn().mockResolvedValue(new TextEncoder().encode('late content').buffer),
+      });
+      fireEvent.drop(container.querySelector('.chat-input-area') as HTMLElement, {
+        dataTransfer: { files: [file] },
+      });
+      fireEvent.click(await screen.findByText('拖放会话 B'));
+      imported.resolve({
+        success: true,
+        capability: makePdfCapability({ displayName: 'late-drop.pdf' }),
+      });
+      await act(async () => { await imported.promise; });
+      await waitFor(() => expect(createArtifact).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: 'session-drop-a',
+        name: 'late-drop.pdf',
+      })));
+      fireEvent.click(screen.getByRole('tab', { name: '生成物' }));
+      expect(screen.queryByRole('button', { name: 'late-drop.pdf' })).toBeNull();
+    } finally {
+      window.metis = originalMetis;
+    }
+  });
+
   it('does not write a stale chat response or preview into a newly selected session', async () => {
     resetStore();
     const originalMetis = window.metis;
