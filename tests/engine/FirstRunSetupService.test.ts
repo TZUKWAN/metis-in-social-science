@@ -177,7 +177,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
-import { WorkspaceAgentsManager } from '../../engine/memory/WorkspaceAgentsManager.js';
+import {
+  WorkspaceAgentsManager,
+  workspaceProjectDirectory,
+} from '../../engine/memory/WorkspaceAgentsManager.js';
 
 let tmpDir: string;
 
@@ -190,7 +193,7 @@ afterEach(() => {
 });
 
 function readActiveSlot(projectId: string): number {
-  const ptrPath = path.join(tmpDir, 'projects', projectId, '.agents.ptr.json');
+  const ptrPath = path.join(workspaceProjectDirectory(tmpDir, projectId), '.agents.ptr.json');
   if (!fs.existsSync(ptrPath)) return 0;
   return JSON.parse(fs.readFileSync(ptrPath, 'utf-8')).slot;
 }
@@ -199,13 +202,14 @@ describe('TEST-471: Workspace dual-slot crash recovery', () => {
   it('ATTACK: pointer deletion → content recoverable from slot 0 or 1', () => {
     const mgr = new WorkspaceAgentsManager(tmpDir, 'crash-test');
     mgr.write('recoverable-content', 0);
-    const ptrPath = path.join(tmpDir, 'projects', 'crash-test', '.agents.ptr.json');
+    const projectDir = workspaceProjectDirectory(tmpDir, 'crash-test');
+    const ptrPath = path.join(projectDir, '.agents.ptr.json');
     fs.unlinkSync(ptrPath);
     // Without pointer, manager defaults to slot 0
     void mgr.read(); // trigger slot resolution
     // Content should be in either slot
-    const slot0Path = path.join(tmpDir, 'projects', 'crash-test', 'AGENTS.0.md');
-    const slot1Path = path.join(tmpDir, 'projects', 'crash-test', 'AGENTS.1.md');
+    const slot0Path = path.join(projectDir, 'AGENTS.0.md');
+    const slot1Path = path.join(projectDir, 'AGENTS.1.md');
     const hasContent = (fs.existsSync(slot0Path) && fs.readFileSync(slot0Path, 'utf-8') === 'recoverable-content')
       || (fs.existsSync(slot1Path) && fs.readFileSync(slot1Path, 'utf-8') === 'recoverable-content');
     expect(hasContent).toBe(true);
@@ -214,7 +218,7 @@ describe('TEST-471: Workspace dual-slot crash recovery', () => {
   it('ATTACK: pointer corrupt → no crash, graceful recovery', () => {
     const mgr = new WorkspaceAgentsManager(tmpDir, 'corrupt-ptr');
     mgr.write('test', 0);
-    const ptrPath = path.join(tmpDir, 'projects', 'corrupt-ptr', '.agents.ptr.json');
+    const ptrPath = path.join(workspaceProjectDirectory(tmpDir, 'corrupt-ptr'), '.agents.ptr.json');
     fs.writeFileSync(ptrPath, '{corrupt-json', 'utf-8');
     // Must not throw
     expect(() => mgr.read()).not.toThrow();
@@ -224,7 +228,7 @@ describe('TEST-471: Workspace dual-slot crash recovery', () => {
     const mgr = new WorkspaceAgentsManager(tmpDir, 'hash-attack');
     mgr.write('original', 0);
     const slot = readActiveSlot('hash-attack');
-    const contentPath = path.join(tmpDir, 'projects', 'hash-attack', `AGENTS.${slot}.md`);
+    const contentPath = path.join(workspaceProjectDirectory(tmpDir, 'hash-attack'), `AGENTS.${slot}.md`);
     fs.writeFileSync(contentPath, 'tampered', 'utf-8');
     const view = mgr.read();
     expect(view.externalConflict).toBe(true);
@@ -238,7 +242,7 @@ describe('TEST-471: Workspace dual-slot crash recovery', () => {
     mgr.write('v1', 0);
     // Tamper meta to cap boundary
     const slot = readActiveSlot('overflow');
-    const metaPath = path.join(tmpDir, 'projects', 'overflow', `.agents.meta.${slot}.json`);
+    const metaPath = path.join(workspaceProjectDirectory(tmpDir, 'overflow'), `.agents.meta.${slot}.json`);
     const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
     meta.version = Number.MAX_SAFE_INTEGER - 2;
     meta.contentHash = createHash('sha256').update('v1').digest('hex');

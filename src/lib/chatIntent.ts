@@ -7,8 +7,12 @@
  */
 
 export interface PendingChatIntent {
-  skillId: string;
+  skillId?: string;
+  scenarioId?: string;
+  projectId?: string;
+  sessionId?: string;
   message: string;
+  autoSend?: boolean;
 }
 
 const KEY = 'metis:pendingChatIntent';
@@ -30,10 +34,13 @@ export function consumePendingChatIntent(): PendingChatIntent | null {
     if (
       parsed &&
       typeof parsed === 'object' &&
-      'skillId' in parsed &&
       'message' in parsed &&
-      typeof (parsed as Record<string, unknown>).skillId === 'string' &&
-      typeof (parsed as Record<string, unknown>).message === 'string'
+      typeof (parsed as Record<string, unknown>).message === 'string' &&
+      (!('skillId' in parsed) || typeof (parsed as Record<string, unknown>).skillId === 'string') &&
+      (!('scenarioId' in parsed) || typeof (parsed as Record<string, unknown>).scenarioId === 'string') &&
+      (!('projectId' in parsed) || typeof (parsed as Record<string, unknown>).projectId === 'string') &&
+      (!('sessionId' in parsed) || typeof (parsed as Record<string, unknown>).sessionId === 'string') &&
+      (!('autoSend' in parsed) || typeof (parsed as Record<string, unknown>).autoSend === 'boolean')
     ) {
       return parsed as PendingChatIntent;
     }

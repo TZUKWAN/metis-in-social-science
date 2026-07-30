@@ -37,6 +37,13 @@ async function setup() {
   await act(async () => { fireEvent.change(document.getElementById('ca-title') as HTMLInputElement, { target: { value: 'T' } }); });
 }
 
+async function executeToApproved() {
+  await setup();
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: /执行验证/ })); });
+  await waitFor(() => expect(m.currentAffairsApprove).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(screen.getByRole('button', { name: /导出/ })).toBeDefined());
+}
+
 describe('source loading', () => {
   it('loads eligible sources', async () => { await renderPanel(); });
   it('shows error when all sources deleted', async () => {
@@ -82,47 +89,22 @@ describe('source review', () => {
 });
 
 describe('lifecycle', () => {
-  it('full cycle: select → execute → approve → export', async () => {
-    await setup();
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /执行验证/ })); });
-    await waitFor(() => expect(screen.getByRole('button', { name: /批准/ })).toBeDefined());
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /批准/ })); });
-    await waitFor(() => expect(screen.getByRole('button', { name: /导出/ })).toBeDefined());
+  it('full cycle: select → execute → automatic receipt → export', async () => {
+    await executeToApproved();
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /导出/ })); });
     await waitFor(() => expect(screen.getByText(/a1/)).toBeDefined());
   });
 
-  it('reject sends discard_draft IPC, transitions to rejected on ok', async () => {
-    await setup();
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /执行验证/ })); });
-    await waitFor(() => expect(screen.getByRole('button', { name: /拒绝/ })).toBeDefined());
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /拒绝/ })); });
-    await waitFor(() => {
-      expect(m.currentAffairsCancel).toHaveBeenCalledWith(
-        expect.objectContaining({ action: 'discard_draft' })
-      );
-      expect(screen.getByRole('button', { name: /重新开始/ })).toBeDefined();
-    });
+  it('does not render permission approval or rejection controls', async () => {
+    await executeToApproved();
+    expect(screen.queryByRole('button', { name: /批准/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /拒绝/ })).toBeNull();
+    expect(m.currentAffairsApprove).toHaveBeenCalledTimes(1);
   });
 
-  it('reject stays in phase when discard_draft IPC fails', async () => {
+  it('cancel after automatic receipt sends revoke_approval exact tuple', async () => {
     m.currentAffairsCancel.mockResolvedValueOnce({ ok: false, code: 'cancel_unavailable' });
-    await setup();
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /执行验证/ })); });
-    await waitFor(() => expect(screen.getByRole('button', { name: /拒绝/ })).toBeDefined());
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /拒绝/ })); });
-    await waitFor(() => expect(screen.getByText(/未能通知主进程/)).toBeDefined());
-    // Still in awaiting_approval — reject button still visible
-    expect(screen.getByRole('button', { name: /拒绝/ })).toBeDefined();
-  });
-
-  it('cancel after approve sends revoke_approval exact tuple', async () => {
-    m.currentAffairsCancel.mockResolvedValueOnce({ ok: false, code: 'cancel_unavailable' });
-    await setup();
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /执行验证/ })); });
-    await waitFor(() => expect(screen.getByRole('button', { name: /批准/ })).toBeDefined());
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /批准/ })); });
-    await waitFor(() => expect(screen.getByRole('button', { name: /取消/ })).toBeDefined());
+    await executeToApproved();
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /取消/ })); });
     await waitFor(() => {
       expect(m.currentAffairsCancel).toHaveBeenCalledWith(
@@ -148,12 +130,8 @@ describe('lifecycle', () => {
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('invalid manifest'));
   });
 
-  it('approve and export succeed with typed bridge', async () => {
-    await setup();
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /执行验证/ })); });
-    await waitFor(() => expect(screen.getByRole('button', { name: /批准/ })).toBeDefined());
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /批准/ })); });
-    await waitFor(() => expect(screen.getByRole('button', { name: /导出/ })).toBeDefined());
+  it('automatic receipt and export succeed with typed bridge', async () => {
+    await executeToApproved();
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /导出/ })); });
     await waitFor(() => expect(screen.getByText(/a1/)).toBeDefined());
     // Receipt is displayed
@@ -283,22 +261,16 @@ describe('malformed response recovery', () => {
     expect(screen.queryByRole('button', { name: /执行验证/ })).toBeNull();
   });
 
-  it('approve returning null stays in awaiting_approval', async () => {
+  it('automatic receipt returning null fails closed', async () => {
     m.currentAffairsApprove.mockResolvedValueOnce(null);
     await setup();
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /执行验证/ })); });
-    await waitFor(() => expect(screen.getByRole('button', { name: /批准/ })).toBeDefined());
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /批准/ })); });
-    // null → !result → !tok.done → returns early, no phase change
-    await waitFor(() => expect(screen.getByRole('button', { name: /批准/ })).toBeDefined());
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('内部收据签发失败'));
+    expect(screen.queryByRole('button', { name: /导出/ })).toBeNull();
   });
 
   it('export returning null falls back to approved phase', async () => {
-    await setup();
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /执行验证/ })); });
-    await waitFor(() => expect(screen.getByRole('button', { name: /批准/ })).toBeDefined());
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /批准/ })); });
-    await waitFor(() => expect(screen.getByRole('button', { name: /导出/ })).toBeDefined());
+    await executeToApproved();
     m.currentAffairsExport.mockResolvedValueOnce(null);
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /导出/ })); });
     // null → !result → !tok.done → setPhase('approved') via || short-circuit
@@ -306,13 +278,17 @@ describe('malformed response recovery', () => {
   });
 
   it('cancel returning null for discard_draft stays in phase', async () => {
+    let resolveApproval!: (value: unknown) => void;
+    m.currentAffairsApprove.mockReturnValueOnce(new Promise(resolve => { resolveApproval = resolve; }));
     m.currentAffairsCancel.mockResolvedValueOnce(null);
     await setup();
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /执行验证/ })); });
-    await waitFor(() => expect(screen.getByRole('button', { name: /取消/ })).toBeDefined());
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /取消/ })); });
+    await waitFor(() => expect(screen.getByRole('button', { name: /打断/ })).toBeDefined());
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /打断/ })); });
     // null → !result → setErrorMsg → return, no phase change
     await waitFor(() => expect(screen.getByText(/取消失败/)).toBeDefined());
+    await act(async () => { resolveApproval(A_OK('late')); await Promise.resolve(); });
+    expect(screen.queryByRole('button', { name: /导出/ })).toBeNull();
   });
 });
 
@@ -352,12 +328,14 @@ describe('unmount cleanup', () => {
   });
 });
 
-describe('reject / revoke exact discriminated request', () => {
-  it('reject sends exact discard_draft with only required fields', async () => {
+describe('interrupt / revoke exact discriminated request', () => {
+  it('interrupt during automatic receipt sends exact discard_draft and ignores late receipt', async () => {
+    let resolveApproval!: (value: unknown) => void;
+    m.currentAffairsApprove.mockReturnValueOnce(new Promise(resolve => { resolveApproval = resolve; }));
     await setup();
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /执行验证/ })); });
-    await waitFor(() => expect(screen.getByRole('button', { name: /拒绝/ })).toBeDefined());
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /拒绝/ })); });
+    await waitFor(() => expect(screen.getByRole('button', { name: /打断/ })).toBeDefined());
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /打断/ })); });
     await waitFor(() => {
       const call = m.currentAffairsCancel.mock.calls[0]?.[0];
       expect(call).toMatchObject({ action: 'discard_draft', version: 1 });
@@ -366,15 +344,12 @@ describe('reject / revoke exact discriminated request', () => {
       expect(call).not.toHaveProperty('profileId');
       expect(call).not.toHaveProperty('contentDigest');
     });
+    await act(async () => { resolveApproval(A_OK('late')); await Promise.resolve(); });
+    expect(screen.queryByRole('button', { name: /导出/ })).toBeNull();
   });
 
   it('revoke_approval sends exact tuple with receipt fields', async () => {
-    await setup();
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /执行验证/ })); });
-    await waitFor(() => expect(screen.getByRole('button', { name: /批准/ })).toBeDefined());
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /批准/ })); });
-    await waitFor(() => expect(screen.getByRole('button', { name: /取消/ })).toBeDefined());
-    // The second cancel call (first was reject test above)
+    await executeToApproved();
     const prevCount = m.currentAffairsCancel.mock.calls.length;
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /取消/ })); });
     await waitFor(() => {
@@ -390,17 +365,20 @@ describe('reject / revoke exact discriminated request', () => {
     });
   });
 
-  it('reject failure does not transition to rejected phase', async () => {
+  it('interrupt failure stays in automatic receipt phase', async () => {
+    let resolveApproval!: (value: unknown) => void;
+    m.currentAffairsApprove.mockReturnValueOnce(new Promise(resolve => { resolveApproval = resolve; }));
     m.currentAffairsCancel.mockResolvedValueOnce({ ok: false, code: 'cancel_unavailable' });
     await setup();
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /执行验证/ })); });
-    await waitFor(() => expect(screen.getByRole('button', { name: /拒绝/ })).toBeDefined());
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /拒绝/ })); });
-    // Phase stays in awaiting_approval — reject button still visible
+    await waitFor(() => expect(screen.getByRole('button', { name: /打断/ })).toBeDefined());
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /打断/ })); });
     await waitFor(() => {
-      expect(screen.getByText(/未能通知主进程/)).toBeDefined();
-      expect(screen.getByRole('button', { name: /拒绝/ })).toBeDefined();
+      expect(screen.getByText(/取消失败/)).toBeDefined();
+      expect(screen.getByRole('button', { name: /打断/ })).toBeDefined();
     });
+    await act(async () => { resolveApproval(A_OK('late')); await Promise.resolve(); });
+    expect(screen.queryByRole('button', { name: /导出/ })).toBeNull();
   });
 });
 

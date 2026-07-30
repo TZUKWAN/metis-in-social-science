@@ -121,6 +121,27 @@ describe('P0 owner-bound file capability registry', () => {
     }, OWNER_A).ok).toBe(true);
   });
 
+  it('binds a main-only purpose and rejects cross-purpose capability reuse without consuming it', () => {
+    const result = registry.issue({
+      path: filePath,
+      kind: 'file',
+      mime: 'application/pdf',
+      displayName: 'application.pdf',
+      operations: ['file'],
+      purpose: 'funding-template',
+    }, OWNER_A);
+    if (!result.success) throw new Error('Test capability issuance failed');
+    expect(JSON.stringify(result.capability)).not.toContain('"purpose"');
+    expect(registry.consume({
+      capabilityId: result.capability.capabilityId,
+      operation: 'file',
+    }, OWNER_A, 'personalization-skill-package').ok).toBe(false);
+    expect(registry.consume({
+      capabilityId: result.capability.capabilityId,
+      operation: 'file',
+    }, OWNER_A, 'funding-template').ok).toBe(true);
+  });
+
   it('rejects and prunes an expired grant', () => {
     const now = 1_700_000_000_000;
     vi.spyOn(Date, 'now').mockReturnValue(now);

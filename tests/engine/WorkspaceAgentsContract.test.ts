@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   WORKSPACE_AGENTS_LIMITS,
   WORKSPACE_AGENTS_FILENAME,
+  WORKSPACE_METIS_FILENAME,
+  LEGACY_WORKSPACE_AGENTS_FILENAME,
   WorkspaceAgentsContentSchema,
   WorkspaceAgentsWriteRequestSchema,
   WorkspaceAgentsMutationResultSchema,
@@ -18,7 +20,7 @@ import { hashWorkspaceAgentsContent } from '../../engine/memory/WorkspaceAgentsH
 // ─── Helpers ──────────────────────────────────────────────────
 
 function makeValidContent(): string {
-  return '# AGENTS.md\n\n项目级指令和上下文。\n- 规则一\n- 规则二\n';
+  return '# Metis.md\n\n项目级指令和上下文。\n- 规则一\n- 规则二\n';
 }
 
 function contentOfLength(n: number): string {
@@ -28,8 +30,10 @@ function contentOfLength(n: number): string {
 // ─── Constants ────────────────────────────────────────────────
 
 describe('workspace agents constants', () => {
-  it('uses AGENTS.md as the filename (not CLAUDE_MEMORY.md)', () => {
-    expect(WORKSPACE_AGENTS_FILENAME).toBe('AGENTS.md');
+  it('uses Metis.md publicly while retaining the legacy filename for migration', () => {
+    expect(WORKSPACE_METIS_FILENAME).toBe('Metis.md');
+    expect(WORKSPACE_AGENTS_FILENAME).toBe('Metis.md');
+    expect(LEGACY_WORKSPACE_AGENTS_FILENAME).toBe('AGENTS.md');
   });
 
   it('enforces a 50 000 character limit', () => {

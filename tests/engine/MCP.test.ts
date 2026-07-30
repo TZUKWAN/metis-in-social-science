@@ -99,6 +99,7 @@ describe('MCPClient', () => {
 
     expect(client.isConnected).toBe(true);
     expect(client.name).toBe('test-server');
+    expect(client.protocolVersion).toBe('2024-11-05');
 
     // Should have sent the initialized notification
     const notification = JSON.parse(transport.sentMessages[1]);
@@ -194,6 +195,30 @@ describe('MCPClient', () => {
     });
 
     await expect(connectPromise).rejects.toThrow('MCP initialization failed');
+    expect(client.protocolVersion).toBeNull();
+  });
+
+  it('treats an MCP tool result with isError=true as a failed call without echoing its content', async () => {
+    const { client, transport } = makeClient();
+    const connectPromise = client.connect();
+    await new Promise((r) => setTimeout(r, 10));
+    const initReq = JSON.parse(transport.sentMessages[0]);
+    transport.simulateMessage({
+      jsonrpc: '2.0', id: initReq.id,
+      result: { protocolVersion: '2024-11-05', capabilities: { tools: {} } },
+    });
+    await connectPromise;
+
+    const callPromise = client.callTool('read_file', {});
+    await new Promise((r) => setTimeout(r, 10));
+    const callReq = JSON.parse(transport.sentMessages[2]);
+    transport.simulateMessage({
+      jsonrpc: '2.0', id: callReq.id,
+      result: { content: [{ type: 'text', text: 'secret remote failure detail' }], isError: true },
+    });
+
+    await expect(callPromise).rejects.toThrow('MCP tool execution failed');
+    await expect(callPromise).rejects.not.toThrow('secret remote failure detail');
   });
 
   it('throws when not connected', async () => {
@@ -238,6 +263,7 @@ describe('MCPClient', () => {
     await client.close();
 
     expect(client.isConnected).toBe(false);
+    expect(client.protocolVersion).toBeNull();
   });
 });
 

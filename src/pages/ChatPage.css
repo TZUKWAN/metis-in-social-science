@@ -252,6 +252,27 @@
   cursor: not-allowed;
 }
 
+.chat-interrupt {
+  height: 36px;
+  padding: 8px 12px;
+  border: 1px solid var(--status-failed);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--status-failed);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.chat-interrupt:hover {
+  background: color-mix(in srgb, var(--status-failed) 10%, transparent);
+}
+
+.chat-interrupt:focus-visible {
+  outline: 2px solid var(--focus-ring-color);
+  outline-offset: 2px;
+}
+
 /* ─── Chat Sidebar (Left) ─────────────────────────── */
 
 .chat-sidebar {
@@ -350,4 +371,30 @@
   .message-content { border-color: ButtonBorder; }
   .chat-textarea { border-color: ButtonBorder; background: Canvas; color: CanvasText; }
   .chat-send { background: Highlight; color: HighlightText; }
+  .chat-interrupt { border-color: ButtonBorder; color: CanvasText; }
+}
+.chat-scenario-bar {
+  min-height: 44px;
+  padding: 7px 16px;
+  border-bottom: 1px solid var(--border-light);
+  background: color-mix(in srgb, var(--primary) 4%, var(--bg-card));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.chat-scenario-bar__identity { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.chat-scenario-bar__identity > span { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .08em; font-weight: 700; }
+.chat-scenario-bar select { min-width: 180px; max-width: 340px; padding: 5px 28px 5px 9px; border: 1px solid var(--border-light); border-radius: var(--radius); background: var(--bg-input); color: var(--text-primary); font-size: 12px; }
+.chat-scenario-bar select:focus-visible { outline: 2px solid var(--focus-ring-color); outline-offset: 2px; }
+.chat-scenario-bar__policy { color: var(--text-muted); font-size: 10px; text-align: right; }
+
+@media (max-width: 720px) {
+  .chat-scenario-bar { align-items: flex-start; flex-direction: column; gap: 4px; }
+  .chat-scenario-bar__policy { text-align: left; }
+}
+
+@media (forced-colors: active) {
+  .chat-scenario-bar { border-bottom-color: CanvasText; }
 }

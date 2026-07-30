@@ -787,6 +787,99 @@ button.tool-call-header { cursor: pointer; }
   color: var(--text-on-sidebar-hover);
 }
 
+/* Personalization is a first-class sidebar action, so its trigger styles
+   live with the shell instead of the lazily loaded Personalization page. */
+.sidebar-personalization-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px;
+  padding: 0 8px;
+}
+
+.sidebar-personalization-row .theme-toggle,
+.sidebar-personalization-row .personalization-trigger {
+  width: 100%;
+  min-width: 0;
+  justify-content: center;
+  margin: 0;
+}
+
+.personalization-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 6px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-on-sidebar-muted);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 500;
+  transition: background-color 0.12s, border-color 0.12s, color 0.12s;
+}
+
+.personalization-trigger:hover,
+.personalization-trigger.active {
+  color: var(--text-on-sidebar-hover);
+  background: var(--border-light);
+  border-color: color-mix(in srgb, var(--text-on-sidebar-muted) 45%, var(--border-light));
+}
+
+.personalization-trigger:focus-visible {
+  outline: 2px solid var(--focus-ring-color);
+  outline-offset: 2px;
+}
+
+@media (max-width: 700px) {
+  .sidebar {
+    width: 64px;
+  }
+
+  .sidebar-header {
+    padding: 16px 8px 12px;
+    text-align: center;
+  }
+
+  .app-title {
+    font-size: 13px;
+  }
+
+  .app-subtitle,
+  .nav-label,
+  .nav-badge,
+  .global-search-trigger span,
+  .global-search-trigger kbd,
+  .sidebar-personalization-row button span {
+    display: none;
+  }
+
+  .global-search-trigger,
+  .nav-item {
+    justify-content: center;
+  }
+
+  .global-search-trigger {
+    padding: 9px;
+  }
+
+  .nav-item {
+    padding: 10px 8px;
+  }
+
+  .sidebar-personalization-row {
+    grid-template-columns: 1fr;
+    gap: 5px;
+    padding: 0 8px;
+  }
+
+  .sidebar-personalization-row .theme-toggle,
+  .sidebar-personalization-row .personalization-trigger {
+    min-height: 34px;
+    padding: 7px;
+  }
+}
+
 /* ─── Global Search Trigger ─────────────────────── */
 
 .global-search-trigger {

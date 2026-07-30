@@ -14,6 +14,9 @@
   --setup-success: var(--status-completed, #2f855a);
   --setup-success-bg: var(--status-completed-bg, #f0fff4);
   min-height: 100svh;
+  width: 100%;
+  min-width: 0;
+  flex: 1 1 auto;
   padding: clamp(24px, 5vw, 64px) 20px;
   display: grid;
   place-items: center;

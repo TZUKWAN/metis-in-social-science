@@ -130,3 +130,12 @@ export function artifactKind(fileName) {
   if (lower.endsWith('.exe') && lower.includes('setup')) return 'nsis';
   return null;
 }
+
+export function artifactMatchesVersion(fileName, version, architecture = 'x64') {
+  const kind = artifactKind(fileName);
+  if (!kind || typeof version !== 'string' || typeof architecture !== 'string') return false;
+  const escapedVersion = version.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  const escapedArchitecture = architecture.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  const extension = kind === 'msi' ? 'msi' : 'exe';
+  return new RegExp(`-${escapedVersion}-${escapedArchitecture}\\.${extension}$`, 'iu').test(basename(fileName));
+}

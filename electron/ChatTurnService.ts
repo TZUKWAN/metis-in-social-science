@@ -1,6 +1,8 @@
 import type { AgentLoop } from '../engine/core/AgentLoop.js';
 import type { ChatMessage } from '../engine/core/types.js';
 import type { PersistenceStore } from '../engine/persistence/PersistenceStore.js';
+import type { FullAccessPolicy } from '../engine/runtime/PersonalizationRuntimeContract.js';
+import type { LiveSteeringSource } from '../engine/runtime/LiveSteeringContract.js';
 import {
   AgentResponseSchema,
   CHAT_RUNTIME_CONTRACT_VERSION,
@@ -26,6 +28,13 @@ interface RunPersistedChatTurnOptions {
   messages: ChatMessage[];
   requestId: string;
   skillPrompt?: string;
+  allowedTools?: string[];
+  maxTurns?: number;
+  taskContractHash?: string;
+  promptStackHash?: string;
+  fullAccess?: FullAccessPolicy;
+  signal?: AbortSignal;
+  liveSteering?: LiveSteeringSource;
   options?: ChatTurnOptions;
   isCurrentRuntime?: () => boolean;
 }
@@ -66,6 +75,13 @@ export async function runPersistedChatTurn({
   messages,
   requestId,
   skillPrompt,
+  allowedTools,
+  maxTurns,
+  taskContractHash,
+  promptStackHash,
+  fullAccess,
+  signal,
+  liveSteering,
   options,
   isCurrentRuntime,
 }: RunPersistedChatTurnOptions): Promise<ChatTurnResponse> {
@@ -89,13 +105,17 @@ export async function runPersistedChatTurn({
 
   const result = await agentLoop.run({
     messages,
-    maxTurns: 1,
+    maxTurns: maxTurns ?? 1,
+    allowedTools,
     sessionId,
     requestId,
-    taskContractHash: '',
-    promptStackHash: '',
+    taskContractHash: taskContractHash ?? '',
+    promptStackHash: promptStackHash ?? '',
     resumeFromCheckpoint: false,
     skillPrompt,
+    fullAccess,
+    signal,
+    liveSteering,
   });
 
   if (isCurrentRuntime && !isCurrentRuntime()) {

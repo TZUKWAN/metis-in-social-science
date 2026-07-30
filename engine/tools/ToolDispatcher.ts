@@ -129,19 +129,39 @@ export class ToolDispatcher {
     context: ToolContext,
   ): Promise<string> {
     return new Promise((resolve, reject) => {
+      let settled = false;
+      const signal = context.signal;
+      const cleanup = () => {
+        clearTimeout(timeoutId);
+        signal?.removeEventListener('abort', onAbort);
+      };
+      const settle = <T>(complete: (value: T) => void, value: T) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        complete(value);
+      };
+      const onAbort = () => {
+        settle(reject, new Error('Tool execution aborted'));
+      };
+
       const timeoutId = setTimeout(
-        () => reject(new Error(`Tool execution timeout (${TOOL_EXECUTION_TIMEOUT}s)`)),
+        () => settle(reject, new Error(`Tool execution timeout (${TOOL_EXECUTION_TIMEOUT}s)`)),
         TOOL_EXECUTION_TIMEOUT * 1000,
       );
-      handler(args, context)
-        .then((result) => {
-          clearTimeout(timeoutId);
-          resolve(result);
-        })
-        .catch((err) => {
-          clearTimeout(timeoutId);
-          reject(err);
-        });
+      signal?.addEventListener('abort', onAbort, { once: true });
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
+      try {
+        handler(args, context).then(
+          (result) => settle(resolve, result),
+          (error: unknown) => settle(reject, error),
+        );
+      } catch (error) {
+        settle(reject, error);
+      }
     });
   }
 

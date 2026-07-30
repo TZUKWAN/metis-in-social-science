@@ -36,6 +36,55 @@ export interface HITLRule {
   enabled: boolean;
 }
 
+export interface HardSafetyDecision {
+  allowed: boolean;
+  code: 'ok' | 'destructive_command';
+}
+
+/**
+ * Non-overridable safety boundary. Full Access removes per-action confirmation, not the
+ * platform's protection against commands whose primary purpose is destructive system or
+ * workspace mutation. Argument decoding and tool-specific containment remain additional
+ * independent layers in ToolDispatcher and the tool handlers.
+ */
+export function evaluateHardSafetyBoundary(
+  toolName: string,
+  args: Record<string, unknown>,
+): HardSafetyDecision {
+  if (toolName !== 'execute_command') return { allowed: true, code: 'ok' };
+
+  const command = String(args.command ?? '').trim().toLowerCase();
+  const argv = Array.isArray(args.args)
+    ? args.args.map((value) => String(value).trim().toLowerCase())
+    : [];
+  // Quotes are token separators for the purpose of safety matching. Keeping them in the
+  // string let `cmd /c "rmdir ..."` evade a `(?:^|\s)` command boundary.
+  const commandLine = [command, ...argv]
+    .join(' ')
+    .replace(/["'`]/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim();
+
+  const destructivePatterns = [
+    /(?:^|\s)rm\s+-[^\s]*r[^\s]*f(?:\s|$)/u,
+    /(?:^|\s)(?:del|erase)\s+\/(?:f|s|q)(?:\s|$)/u,
+    /(?:^|\s)(?:rd|rmdir)(?:\.exe)?\s+(?=[^\r\n;&|]*\/(?:s|q)(?:\s|$))[^\r\n;&|]*(?:\/s)(?:\s|$)/u,
+    /(?:^|\s)(?:remove-item|ri|rm|del|erase|rmdir)\b(?=[^\r\n;&|]*(?:-recurse|-r)(?:\s|$))[^\r\n;&|]*/u,
+    /(?:^|\s)(?:get-childitem|gci)\b(?=[^\r\n;&|]*(?:-recurse|-r)(?:\s|$))[^|]*\|[^\r\n;&|]*(?:remove-item|ri|rm|del|erase|rmdir)\b/u,
+    /(?:^|\s)(?:format-volume|clear-disk|initialize-disk|remove-partition|stop-computer|restart-computer)(?:\s|$)/u,
+    /(?:^|\s)(?:powershell|powershell\.exe|pwsh|pwsh\.exe)\b[^\r\n]*(?:-encodedcommand|-enc)(?:\s|$)/u,
+    /(?:^|\s)(?:invoke-expression|iex)(?:\s|$)/u,
+    /(?:^|\s)(?:format|mkfs(?:\.[a-z0-9]+)?|shutdown|reboot)(?:\s|$)/u,
+    /(?:^|\s)dd\s+if=/u,
+    /(?:^|\s)git\s+(?:reset\s+--hard|clean\s+-[^\s]*f|checkout\s+--\s+\.|restore\s+\.)(?:\s|$)/u,
+    />\s*\/(?:dev|etc|boot)(?:\/|\s|$)/u,
+  ];
+
+  return destructivePatterns.some((pattern) => pattern.test(commandLine))
+    ? { allowed: false, code: 'destructive_command' }
+    : { allowed: true, code: 'ok' };
+}
+
 // ─── Approval Store ───────────────────────────────────────────
 
 export class ApprovalStore {

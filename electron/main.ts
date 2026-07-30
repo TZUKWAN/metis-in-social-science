@@ -25,7 +25,7 @@ import fs from 'node:fs';
 import { spawnSync, exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import os from 'node:os';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   createLayoutAcceptanceMetadata,
   extractLayoutAcceptanceToken,
@@ -45,6 +45,8 @@ import { OpenAICompatProvider } from '../engine/providers/OpenAICompatProvider.j
 import { AgentLoop } from '../engine/core/AgentLoop.js';
 import { ToolRegistry } from '../engine/tools/ToolRegistry.js';
 import { ToolDispatcher } from '../engine/tools/ToolDispatcher.js';
+import { registerBuiltinTools } from '../engine/tools/index.js';
+import type { PersonalizationMcpToolRegistration } from './PersonalizationMcpToolBridge.js';
 import { HookBus } from '../engine/core/HookBus.js';
 import { ContextEngine } from '../engine/context/ContextEngine.js';
 import { EvidenceLedger } from '../engine/evidence/EvidenceLedger.js';
@@ -66,6 +68,64 @@ import { parseLatexLog } from '../engine/latex/LatexLogParser.js';
 import type { WorkflowDefinition, WorkflowHooks } from '../engine/workflow/types.js';
 import { MCPManager } from '../engine/mcp/MCPManager.js';
 import { SkillRegistry, registerDefaultSkills } from '../engine/skills/SkillRegistry.js';
+import { PersonalizationRepository } from '../engine/personalization/PersonalizationRepository.js';
+import { isFundingTemplateBuiltinDraftReady } from '../engine/personalization/FundingTemplateBuiltinDraft.js';
+import { PersonalizationRuntimeService } from './PersonalizationRuntimeService.js';
+import { projectMetisRulesFromWorkspace } from './ProjectMetisRulesBridge.js';
+import { EvidenceEnvelopeService } from './EvidenceEnvelopeService.js';
+import { PersonalizationSkillInstaller } from './PersonalizationSkillInstaller.js';
+import { PersonalizationMcpInstaller } from './PersonalizationMcpInstaller.js';
+import { ManagedPersonalizationMcpRuntime } from './ManagedPersonalizationMcpRuntime.js';
+import { PersonalizationMcpProbeRunner } from './PersonalizationMcpProbeRunner.js';
+import { PersonalizationMcpActivationService } from './PersonalizationMcpActivationService.js';
+import { GeneratedMcpActivationCoordinator } from './GeneratedMcpActivationCoordinator.js';
+import { PersonalizationMcpToolBridge } from './PersonalizationMcpToolBridge.js';
+import { McpBuilderService } from './McpBuilderService.js';
+import {
+  FilesystemMcpInstallationCompensator,
+  PersonalizationExtensionService,
+} from './PersonalizationExtensionService.js';
+import {
+  PersonalizationExtensionApplyRequestSchema,
+  PersonalizationExtensionIpcRequestSchema,
+  decodePersonalizationExtensionResponse,
+  type PersonalizationExtensionApplyRequest,
+  type PersonalizationExtensionIpcRequest,
+} from '../engine/runtime/PersonalizationExtensionContract.js';
+import { McpBuilderSpecificationSchema } from '../engine/runtime/McpInstallationContract.js';
+import {
+  McpActivationIpcRequestSchema,
+  McpActivationRequestSchema,
+  decodeMcpActivationResponse,
+  type McpActivationIpcRequest,
+  type McpActivationRequest,
+} from '../engine/runtime/McpActivationContract.js';
+import { PersonalizationBundleService } from './PersonalizationBundleService.js';
+import { PersonalizationBundleRepositorySink } from './PersonalizationBundleRepositorySink.js';
+import { PersonalizationBundleImportCoordinator } from './PersonalizationBundleImportCoordinator.js';
+import { PersonalizationBundleSkillRehydrationService } from './PersonalizationBundleSkillRehydrationService.js';
+import { PersonalizationBundleSkillAssetSource } from './PersonalizationBundleSkillAssetSource.js';
+import { PersonalizationSecretVault } from './PersonalizationSecretVault.js';
+import { FundingTemplateRepository } from './FundingTemplateRepository.js';
+import { FundingTemplateService } from './FundingTemplateService.js';
+import { FundingTemplateToolService } from './FundingTemplateToolService.js';
+import { FundingTemplateIpcService } from './FundingTemplateIpcService.js';
+import { decodeFundingTemplateRuntimeResponse } from '../engine/runtime/FundingTemplateRuntimeContract.js';
+import {
+  PERSONALIZATION_BUNDLE_LIMITS,
+  PersonalizationBundleSchema,
+  PersonalizationBundleExportIpcRequestSchema,
+  PersonalizationBundleImportIpcRequestSchema,
+  PersonalizationBundleIpcResponseSchema,
+} from '../engine/runtime/PersonalizationBundleContract.js';
+import {
+  PersonalizationSecretListRequestSchema,
+  PersonalizationSecretRemoveRequestSchema,
+  PersonalizationSecretSetRequestSchema,
+  decodePersonalizationSecretListResponse,
+  decodePersonalizationSecretRemoveResponse,
+  decodePersonalizationSecretSetResponse,
+} from '../engine/runtime/PersonalizationSecretContract.js';
 import { EvalRunner, suiteSummary } from '../engine/evals/EvalRunner.js';
 import { evaluateGate } from '../engine/evals/GateEvaluator.js';
 import type { EvalTaskSpec } from '../engine/evals/types.js';
@@ -73,6 +133,7 @@ import {
   createChatTurnErrorResponse,
   runPersistedChatTurn,
 } from './ChatTurnService.js';
+import { runPersistedScenarioWorkflow } from './ScenarioWorkflowService.js';
 import { isAuthorizedRendererMainFrame } from './RendererAuthorization.js';
 import { createSecureExternalOpenHandler } from './SecureExternalOpenHandler.js';
 import {
@@ -83,6 +144,12 @@ import {
   decodeStoredHistory,
   RuntimeIdSchema,
 } from '../engine/runtime/ChatRuntimeContract.js';
+import {
+  AgentControlRequestSchema,
+  InMemoryLiveSteeringQueue,
+  LIVE_STEERING_CONTRACT_VERSION,
+  decodeAgentControlResponse,
+} from '../engine/runtime/LiveSteeringContract.js';
 import {
   decodeGoalCreateResponse,
   decodeGoalListResponse,
@@ -298,7 +365,38 @@ let memoryManager: MemoryManager | null = null;
 let goalEngine: GoalEngine | null = null;
 let mcpManager: MCPManager | null = null;
 let skillRegistry: SkillRegistry | null = null;
+let personalizationRepository: PersonalizationRepository | null = null;
+let personalizationRuntime: PersonalizationRuntimeService | null = null;
+let evidenceEnvelopes: EvidenceEnvelopeService | null = null;
+let personalizationSkills: PersonalizationSkillInstaller | null = null;
+let personalizationMcp: PersonalizationMcpInstaller | null = null;
+let personalizationMcpRuntime: ManagedPersonalizationMcpRuntime | null = null;
+let personalizationMcpBridge: PersonalizationMcpToolBridge | null = null;
+let personalizationMcpActivation: PersonalizationMcpActivationService | null = null;
+let personalizationGeneratedMcpActivation: GeneratedMcpActivationCoordinator | null = null;
+let personalizationExtensions: PersonalizationExtensionService | null = null;
+let personalizationBundles: PersonalizationBundleService | null = null;
+let personalizationBundleSink: PersonalizationBundleRepositorySink | null = null;
+let personalizationBundleCoordinator: PersonalizationBundleImportCoordinator | null = null;
+let personalizationBundleSkillAssets: PersonalizationBundleSkillAssetSource | null = null;
+let personalizationSecretVault: PersonalizationSecretVault | null = null;
+let fundingTemplateRepository: FundingTemplateRepository | null = null;
+let fundingTemplateService: FundingTemplateService | null = null;
+let fundingTemplateTools: FundingTemplateToolService | null = null;
+const activeFundingToolScopes = new Map<string, {
+  ownerId: string;
+  projectId: string;
+  ownerWebContentsId: number;
+}>();
+const FUNDING_LOCAL_OWNER_ID = 'local-user' as const;
 let approvalStore: ApprovalStore | null = null;
+interface ActiveChatRun {
+  ownerWebContentsId: number;
+  controller: AbortController;
+  nextSequence: number;
+}
+const activeChatRuns = new Map<string, ActiveChatRun>();
+const liveSteeringQueue = new InMemoryLiveSteeringQueue();
 let experimentScriptAdapter: ExperimentScriptAdapter | null = null;
 let caReceiptSecret: Buffer | null = null; // Current Affairs HMAC signing key
 let caRuntime: import('./CurrentAffairsRuntimeService.js').CurrentAffairsRuntimeService | null = null;
@@ -402,11 +500,23 @@ function bumpWebContentsGeneration(wcId: number) {
   webContentsGenerations.set(wcId, (webContentsGenerations.get(wcId) ?? 0) + 1);
 }
 
+function cleanupActiveChatRuns(wcId: number) {
+  for (const [sessionId, run] of activeChatRuns) {
+    if (run.ownerWebContentsId !== wcId) continue;
+    run.controller.abort();
+    liveSteeringQueue.clear(sessionId);
+    activeChatRuns.delete(sessionId);
+    activeFundingToolScopes.delete(sessionId);
+  }
+}
+
 function cleanupWebContentsOwner(wcId: number) {
   webContentsGenerations.delete(wcId);
   firstRunSetup?.revokeWebContents(wcId);
   caRuntime?.clearOwner(String(wcId));
   caOwnerWindows.delete(String(wcId));
+  cleanupActiveChatRuns(wcId);
+  void personalizationMcpRuntime?.shutdownWebContents(wcId);
 }
 
 
@@ -475,6 +585,121 @@ export function executionOwnerFor(event: IpcMainInvokeEvent): ExecutionOwnerIden
     mainFrameProcessId: frame.processId,
     mainFrameRoutingId: frame.routingId,
   };
+}
+
+function managedMcpOwnerFor(event: IpcMainInvokeEvent) {
+  const frame = event.senderFrame;
+  if (!frame || frame !== event.sender.mainFrame) throw new Error('Managed MCP owner is unavailable');
+  return {
+    webContentsId: event.sender.id,
+    processId: frame.processId,
+    routingId: frame.routingId,
+    generation: webContentsGenerations.get(event.sender.id) ?? 0,
+  };
+}
+
+function canonicalPersonalizationJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalPersonalizationJson).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalPersonalizationJson(record[key])}`).join(',')}}`;
+}
+
+function bindPersonalizationExtensionRequest(
+  request: PersonalizationExtensionIpcRequest,
+  event: IpcMainInvokeEvent,
+): PersonalizationExtensionApplyRequest | undefined {
+  const owner = executionOwnerFor(event);
+  const operationId = request.operationId;
+  const runManifestDigest = createHash('sha256')
+    .update('metis:personalization-extension-ipc:v1\0')
+    .update(canonicalPersonalizationJson({ owner, request }))
+    .digest('hex');
+  const evidenceContext = {
+    sessionId: `personalization-${owner.webContentsId}`,
+    projectId: 'global',
+    operationId,
+    runManifestDigest,
+    observedAt: Date.now(),
+  };
+  const { operationId: _operationId, ...withoutOperationId } = request;
+  const internal = request.mode === 'mcp_requirements'
+    ? { ...withoutOperationId, operationId, evidenceContext }
+    : { ...withoutOperationId, evidenceContext };
+  void _operationId;
+  const parsed = PersonalizationExtensionApplyRequestSchema.safeParse(internal);
+  return parsed.success ? parsed.data : undefined;
+}
+
+function bindMcpActivationRequest(
+  request: McpActivationIpcRequest,
+  event: IpcMainInvokeEvent,
+): McpActivationRequest | undefined {
+  const owner = managedMcpOwnerFor(event);
+  const runManifestDigest = createHash('sha256')
+    .update('metis:personalization-mcp-activation-ipc:v1\0')
+    .update(canonicalPersonalizationJson({ owner, request }))
+    .digest('hex');
+  const parsed = McpActivationRequestSchema.safeParse({
+    contractVersion: 1,
+    definitionId: request.definitionId,
+    installationId: request.installationId,
+    expectedRevision: request.expectedRevision,
+    evidenceContext: {
+      sessionId: `personalization-${owner.webContentsId}-${owner.generation}`,
+      projectId: 'global',
+      operationId: request.operationId,
+      runManifestDigest,
+      observedAt: Date.now(),
+      owner,
+    },
+  });
+  return parsed.success ? parsed.data : undefined;
+}
+
+function writePersonalizationBundleFile(destination: string, bytes: Uint8Array): void {
+  const parent = path.dirname(path.resolve(destination));
+  const parentStat = fs.lstatSync(parent);
+  const parentReal = fs.realpathSync.native(parent);
+  if (!parentStat.isDirectory() || parentStat.isSymbolicLink()
+    || (process.platform === 'win32' ? parentReal.toLowerCase() !== parent.toLowerCase() : parentReal !== parent)) {
+    throw new Error('Unsafe bundle destination');
+  }
+  if (fs.existsSync(destination)) throw new Error('Bundle destination already exists');
+  const temporary = path.join(parent, `.metis-bundle-${randomUUID()}.tmp`);
+  let published = false;
+  try {
+    const fd = fs.openSync(temporary, 'wx', 0o600);
+    try { fs.writeFileSync(fd, bytes); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    fs.renameSync(temporary, destination);
+    published = true;
+    if (process.platform !== 'win32') {
+      const directory = fs.openSync(parent, 'r');
+      try { fs.fsyncSync(directory); } finally { fs.closeSync(directory); }
+    }
+  } finally {
+    if (!published && fs.existsSync(temporary)) fs.rmSync(temporary, { force: true });
+  }
+}
+
+function readPersonalizationBundleFile(source: string): Uint8Array {
+  const resolved = fs.realpathSync.native(path.resolve(source));
+  const lstat = fs.lstatSync(resolved);
+  if (!lstat.isFile() || lstat.isSymbolicLink() || lstat.size <= 0
+    || lstat.size > PERSONALIZATION_BUNDLE_LIMITS.encodedBytes) {
+    throw new Error('Unsafe personalization bundle');
+  }
+  const fd = fs.openSync(resolved, 'r');
+  try {
+    const before = fs.fstatSync(fd);
+    const bytes = fs.readFileSync(fd);
+    const after = fs.fstatSync(fd);
+    if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size
+      || before.mtimeMs !== after.mtimeMs || bytes.length !== after.size) {
+      throw new Error('Personalization bundle changed while being read');
+    }
+    return bytes;
+  } finally { fs.closeSync(fd); }
 }
 
 function nextTerminalId(): string {
@@ -623,10 +848,17 @@ function createAgentLoop(
   prov: OpenAICompatProvider,
   registry?: ToolRegistry,
   sharedApprovalStore?: ApprovalStore,
+  additionalRegistrations: readonly PersonalizationMcpToolRegistration[] = [],
 ): { agentLoop: AgentLoop; approvalStore: ApprovalStore } {
   const toolRegistry = registry ?? new ToolRegistry();
   const hooks = new HookBus();
   const dispatcher = new ToolDispatcher(toolRegistry, hooks);
+  registerBuiltinTools(toolRegistry, dispatcher);
+  fundingTemplateTools?.register(toolRegistry, dispatcher);
+  for (const registration of additionalRegistrations) {
+    toolRegistry.register(registration.spec);
+    dispatcher.registerHandler(registration.spec.name, registration.handler);
+  }
   const evidenceLedger = new EvidenceLedger();
   const approvalStore = sharedApprovalStore ?? new ApprovalStore();
   const behaviorRegistry = new BehaviorRegistry();
@@ -660,15 +892,31 @@ function createAgentLoop(
 }
 
 function buildRuntimeRegistry(): ToolRegistry {
+  return new ToolRegistry();
+}
+
+function builtinToolNames(): string[] {
   const registry = new ToolRegistry();
-  for (const tool of mcpManager?.getAllTools() ?? []) {
-    registry.register({
-      name: tool.name,
-      description: tool.description,
-      parameters: tool.inputSchema,
-    });
-  }
-  return registry;
+  registerBuiltinTools(registry, new ToolDispatcher(registry));
+  const names = registry.list().map((tool) => tool.name);
+  return fundingTemplateTools
+    ? [...names, ...fundingTemplateTools.getSpecs().map((tool) => tool.name)]
+    : names;
+}
+
+/**
+ * Exercise the same registration order used by createAgentLoop before a
+ * funding-template built-in may be seeded. Merely constructing the service is
+ * not proof that its tools can coexist in the real runtime registry.
+ */
+function auditFundingTemplateToolRegistration(
+  service: FundingTemplateToolService,
+): ReadonlySet<string> {
+  const registry = new ToolRegistry();
+  const dispatcher = new ToolDispatcher(registry);
+  registerBuiltinTools(registry, dispatcher);
+  service.register(registry, dispatcher);
+  return new Set(registry.list().map((tool) => tool.name));
 }
 
 function prepareProviderRuntime(context: SetupRuntimeBuildContext): PreparedSetupRuntime {
@@ -857,6 +1105,7 @@ function createWindow(): void {
     firstRunSetup?.revokeWebContents(mainWcId);
     caRuntime?.clearOwner(String(mainWcId));
     caOwnerWindows.delete(String(mainWcId));
+    cleanupActiveChatRuns(mainWcId);
   });
   mainWindow.webContents.on('render-process-gone', () => {
     cleanupWebContentsOwner(mainWcId);
@@ -1681,26 +1930,42 @@ function setupIPC(): void {
     execute: async (request, event) => {
       const window = BrowserWindow.fromWebContents(event.sender);
       if (!window || window.isDestroyed()) return createFileCapabilityFailure();
-      const filters = request.purpose === 'analysis-dataset'
+      const selectingSkillDirectory = request.purpose === 'personalization-skill-directory';
+      const filters = selectingSkillDirectory
+        ? undefined
+        : request.purpose === 'analysis-dataset'
         ? [
             { name: 'Research data', extensions: ['csv', 'tsv', 'json', 'jsonl', 'xlsx', 'xls', 'sav', 'dta'] },
             { name: 'All files', extensions: ['*'] },
           ]
+        : request.purpose === 'personalization-skill-package'
+          ? [
+              { name: 'Metis skill packages', extensions: ['zip'] },
+              { name: 'All files', extensions: ['*'] },
+            ]
+          : request.purpose === 'funding-template'
+            ? [
+                { name: 'Funding application templates', extensions: ['pdf', 'docx'] },
+              ]
         : [
             { name: 'Research files', extensions: ['pdf', 'docx', 'txt', 'md', 'tex', 'csv', 'json', 'xlsx', 'pptx', 'png', 'jpg', 'jpeg', 'webp', 'mp3', 'wav'] },
             { name: 'All files', extensions: ['*'] },
           ];
-      const selected = await dialog.showOpenDialog(window, {
-        properties: ['openFile'],
-        filters,
-      });
+      const selected = await dialog.showOpenDialog(window, selectingSkillDirectory
+        ? { properties: ['openDirectory'] }
+        : { properties: ['openFile'], filters });
       const selectedPath = selected.canceled ? undefined : selected.filePaths[0];
       if (!selectedPath) return createFileCapabilityFailure();
       const issued = fileCapabilities.issue({
         path: selectedPath,
-        kind: 'file',
-        mime: mimeForLocalFile(selectedPath),
-        operations: ['file', 'folder', 'read', 'extract'],
+        kind: selectingSkillDirectory ? 'folder' : 'file',
+        mime: selectingSkillDirectory ? 'inode/directory' : mimeForLocalFile(selectedPath),
+        operations: selectingSkillDirectory
+          ? ['folder']
+          : request.purpose === 'personalization-skill-package'
+            ? ['file']
+            : ['file', 'folder', 'read', 'extract'],
+        purpose: request.purpose,
       }, executionOwnerFor(event));
       return issued.success ? issued : createFileCapabilityFailure();
     },
@@ -1715,6 +1980,9 @@ function setupIPC(): void {
       return request ? decoded(request) : rejected();
     },
     execute: async (request, event) => {
+      if (request.purpose === 'personalization-skill-directory') {
+        return createFileCapabilityFailure();
+      }
       await fs.promises.mkdir(IMPORTS_DIR, { recursive: true });
       const token = randomUUID();
       const finalPath = path.join(IMPORTS_DIR, `${token}-${request.displayName}`);
@@ -1734,6 +2002,7 @@ function setupIPC(): void {
           mime: mimeForLocalFile(finalPath),
           displayName: request.displayName,
           operations: ['file', 'folder', 'read', 'extract'],
+          purpose: request.purpose,
         }, executionOwnerFor(event));
         if (issued.success) return issued;
         await fs.promises.rm(finalPath, { force: true });
@@ -2017,12 +2286,13 @@ function setupIPC(): void {
     } catch {
       return createChatTurnErrorResponse(requestId, 'error', 'unauthorized_renderer');
     }
-    if (!agentLoop || !store) {
+    if (!agentLoop || !provider || !store) {
       console.error('[Main] agent chat is unavailable');
       return createChatTurnErrorResponse(requestId, 'error', 'agent_not_initialized');
     }
     const requestRuntimeGeneration = runtimeGeneration;
     const requestAgentLoop = agentLoop;
+    const requestProvider = provider;
 
     const request = AgentChatRequestSchema.safeParse({
       version: CHAT_RUNTIME_CONTRACT_VERSION,
@@ -2030,6 +2300,12 @@ function setupIPC(): void {
       sessionId: rawSessionId,
       messages: rawMessages,
       skillId: rawSkillId,
+      scenarioId: typeof rawOptions === 'object' && rawOptions !== null
+        ? (rawOptions as { scenarioId?: unknown }).scenarioId
+        : undefined,
+      projectId: typeof rawOptions === 'object' && rawOptions !== null
+        ? (rawOptions as { projectId?: unknown }).projectId
+        : undefined,
       mode: typeof rawOptions === 'object' && rawOptions !== null
         ? (rawOptions as { mode?: unknown }).mode
         : undefined,
@@ -2037,7 +2313,7 @@ function setupIPC(): void {
     if (!request.success) {
       return createChatTurnErrorResponse(requestId, 'error', 'invalid_chat_request');
     }
-    const { sessionId, messages, skillId, mode } = request.data;
+    const { sessionId, messages, skillId, scenarioId, projectId, mode } = request.data;
 
     // Resolve skill prompt if skillId provided
     let skillPrompt: string | undefined;
@@ -2048,22 +2324,245 @@ function setupIPC(): void {
       }
     }
 
+    let allowedTools: string[] | undefined;
+    let maxTurns: number | undefined;
+    let taskContractHash: string | undefined;
+    let promptStackHash: string | undefined;
+    let fullAccess: import('../engine/runtime/PersonalizationRuntimeContract.js').FullAccessPolicy | undefined;
+    let resolvedManifest: import('../engine/runtime/PersonalizationRuntimeContract.js').ResolvedRunManifest | undefined;
+    let resolvedSystemPrompt: string | undefined;
+    if (personalizationRuntime && scenarioId) {
+      const effectiveProjectId = projectId ?? 'global';
+      let projectRulesId: string | undefined;
+      let projectRule: import('../engine/runtime/PersonalizationRuntimeContract.js').MetisRulesDefinition | undefined;
+      if (effectiveProjectId !== 'global') {
+        const workspaceManager = ensureWorkspaceManager(effectiveProjectId);
+        if (!workspaceManager) {
+          return createChatTurnErrorResponse(requestId, 'error', 'personalization_resolution_failed');
+        }
+        const projection = projectMetisRulesFromWorkspace(
+          { ...workspaceManager.read(), projectId: effectiveProjectId },
+          effectiveProjectId,
+        );
+        if (!projection.ok) {
+          return createChatTurnErrorResponse(requestId, 'error', 'personalization_resolution_failed');
+        }
+        projectRulesId = projection.projectRulesId;
+        projectRule = projection.definition;
+      }
+      const resolved = personalizationRuntime.resolveForAgent({
+        contractVersion: 1,
+        sessionId: sessionId.replace(/:/gu, '-'),
+        projectId: effectiveProjectId,
+        scenarioId,
+        projectRulesId,
+      }, projectRule);
+      if (!resolved?.ok) {
+        return createChatTurnErrorResponse(requestId, 'error', 'personalization_resolution_failed');
+      }
+      skillPrompt = [resolved.systemPrompt, skillPrompt].filter(Boolean).join('\n\n');
+      allowedTools = resolved.manifest.allowedTools;
+      maxTurns = resolved.manifest.maxTurns;
+      taskContractHash = resolved.manifest.manifestDigest;
+      promptStackHash = resolved.manifest.manifestDigest;
+      fullAccess = resolved.manifest.fullAccess;
+      resolvedManifest = resolved.manifest;
+      resolvedSystemPrompt = resolved.systemPrompt;
+    } else if (scenarioId) {
+      return createChatTurnErrorResponse(requestId, 'error', 'personalization_unavailable');
+    }
+
+    if (activeChatRuns.has(sessionId)) {
+      return createChatTurnErrorResponse(requestId, 'error', 'agent_run_active');
+    }
+    const activeRun: ActiveChatRun = {
+      ownerWebContentsId: event.sender.id,
+      controller: new AbortController(),
+      nextSequence: 0,
+    };
+    liveSteeringQueue.clear(sessionId);
+    activeChatRuns.set(sessionId, activeRun);
+    const fundingToolScope = {
+      ownerId: FUNDING_LOCAL_OWNER_ID,
+      projectId: projectId ?? 'global',
+      ownerWebContentsId: event.sender.id,
+    };
+    activeFundingToolScopes.set(sessionId, fundingToolScope);
+    if (allowedTools?.some((tool) => tool.startsWith('funding_template_'))) {
+      const scopeInstruction = [
+        'Funding-template tools are read-only and bound by Electron main to this run scope.',
+        `Use ownerId=${fundingToolScope.ownerId} and projectId=${fundingToolScope.projectId} exactly; never infer or replace them.`,
+      ].join('\n');
+      skillPrompt = [skillPrompt, scopeInstruction].filter(Boolean).join('\n\n');
+      resolvedSystemPrompt = [resolvedSystemPrompt, scopeInstruction].filter(Boolean).join('\n\n');
+    }
+
+    let mcpToolRun: import('./PersonalizationMcpToolBridge.js').PersonalizationMcpToolRun | undefined;
     try {
-      const response = await runPersistedChatTurn({
-        agentLoop: requestAgentLoop,
-        store,
-        sessionId,
-        messages,
-        requestId,
-        skillPrompt,
-        options: { mode },
-        isCurrentRuntime: () => runtimeGeneration === requestRuntimeGeneration,
-      });
+      let runAgentLoop = requestAgentLoop;
+      const availableTools = new Set(builtinToolNames());
+      if (resolvedManifest?.mcpIds.length) {
+        if (!personalizationMcpBridge) {
+          return createChatTurnErrorResponse(requestId, 'error', 'personalization_mcp_unavailable');
+        }
+        const prepared = await personalizationMcpBridge.prepare({
+          manifest: resolvedManifest,
+          owner: managedMcpOwnerFor(event),
+          sessionId: resolvedManifest.sessionId,
+          projectId: resolvedManifest.projectId,
+          reservedToolNames: [...availableTools],
+          signal: activeRun.controller.signal,
+        });
+        if (!prepared.ok) {
+          return createChatTurnErrorResponse(requestId, 'error', `personalization_mcp_${prepared.code}`);
+        }
+        mcpToolRun = prepared.run;
+        for (const name of mcpToolRun.toolNames) availableTools.add(name);
+        runAgentLoop = createAgentLoop(
+          requestProvider,
+          new ToolRegistry(),
+          approvalStore ?? undefined,
+          mcpToolRun.registrations,
+        ).agentLoop;
+      }
+      if (resolvedManifest?.allowedTools.some((tool) => !availableTools.has(tool))) {
+        return createChatTurnErrorResponse(requestId, 'error', 'personalization_tool_unavailable');
+      }
+      const response = resolvedManifest && resolvedManifest.workflow.length > 1 && resolvedSystemPrompt && personalizationRepository
+        ? await runPersistedScenarioWorkflow({
+            agentLoop: runAgentLoop,
+            store,
+            repository: personalizationRepository,
+            sessionId,
+            messages,
+            requestId,
+            manifest: resolvedManifest,
+            systemPrompt: resolvedSystemPrompt,
+            mode,
+            signal: activeRun.controller.signal,
+            liveSteering: liveSteeringQueue,
+            isCurrentRuntime: () => runtimeGeneration === requestRuntimeGeneration,
+          })
+        : await runPersistedChatTurn({
+            agentLoop: runAgentLoop,
+            store,
+            sessionId,
+            messages,
+            requestId,
+            skillPrompt,
+            allowedTools,
+            maxTurns,
+            taskContractHash,
+            promptStackHash,
+            fullAccess,
+            signal: activeRun.controller.signal,
+            liveSteering: liveSteeringQueue,
+            options: { mode },
+            isCurrentRuntime: () => runtimeGeneration === requestRuntimeGeneration,
+          });
 
       return response;
     } catch {
       console.error('[Main] agent chat failed');
       return createChatTurnErrorResponse(requestId, 'error', 'agent_chat_failed');
+    } finally {
+      await mcpToolRun?.close();
+      if (activeChatRuns.get(sessionId) === activeRun) {
+        activeChatRuns.delete(sessionId);
+        liveSteeringQueue.clear(sessionId);
+      }
+      activeFundingToolScopes.delete(sessionId);
+    }
+  });
+
+  ipcMain.handle('agent:control', (event, rawRequest: unknown) => {
+    let operationId = 'control-recovery';
+    try {
+      requireRendererMainFrame(event);
+      if (typeof rawRequest === 'object' && rawRequest !== null) {
+        const candidate = (rawRequest as { operationId?: unknown }).operationId;
+        if (typeof candidate === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u.test(candidate)) {
+          operationId = candidate;
+        }
+      }
+      const request = AgentControlRequestSchema.safeParse(rawRequest);
+      if (!request.success) {
+        return decodeAgentControlResponse({
+          ok: false,
+          contractVersion: LIVE_STEERING_CONTRACT_VERSION,
+          operationId,
+          code: 'invalid_request',
+        }, operationId);
+      }
+      operationId = request.data.operationId;
+      const run = activeChatRuns.get(request.data.sessionId);
+      if (!run) {
+        return decodeAgentControlResponse({
+          ok: false,
+          contractVersion: LIVE_STEERING_CONTRACT_VERSION,
+          operationId,
+          code: 'no_active_run',
+        }, operationId);
+      }
+      if (run.ownerWebContentsId !== event.sender.id) {
+        return decodeAgentControlResponse({
+          ok: false,
+          contractVersion: LIVE_STEERING_CONTRACT_VERSION,
+          operationId,
+          code: 'owner_mismatch',
+        }, operationId);
+      }
+      const sequence = run.nextSequence + 1;
+      try {
+        liveSteeringQueue.enqueue(request.data.action === 'instruction'
+          ? {
+              type: 'instruction',
+              id: `steer-${randomUUID()}`,
+              sessionId: request.data.sessionId,
+              sequence,
+              createdAt: Date.now(),
+              content: request.data.content,
+            }
+          : {
+              type: 'interrupt',
+              id: `interrupt-${randomUUID()}`,
+              sessionId: request.data.sessionId,
+              sequence,
+              createdAt: Date.now(),
+              reason: request.data.reason,
+            });
+      } catch {
+        return decodeAgentControlResponse({
+          ok: false,
+          contractVersion: LIVE_STEERING_CONTRACT_VERSION,
+          operationId,
+          code: 'queue_unavailable',
+        }, operationId);
+      }
+      run.nextSequence = sequence;
+      if (request.data.action === 'instruction') {
+        try {
+          store?.appendMessage(request.data.sessionId, 'user', request.data.content);
+        } catch (error) {
+          console.error('[Main] live steering persistence failed', error);
+        }
+      } else {
+        run.controller.abort();
+      }
+      return decodeAgentControlResponse({
+        ok: true,
+        contractVersion: LIVE_STEERING_CONTRACT_VERSION,
+        operationId,
+        action: request.data.action,
+        sequence,
+      }, operationId);
+    } catch {
+      return decodeAgentControlResponse({
+        ok: false,
+        contractVersion: LIVE_STEERING_CONTRACT_VERSION,
+        operationId,
+        code: 'queue_unavailable',
+      }, operationId);
     }
   });
 
@@ -2506,7 +3005,7 @@ function setupIPC(): void {
     }
   });
 
-  // ──   // ── Workspace Agents (AGENTS.md CAS-protected) ──────────
+  // ── Project Metis.md (CAS-protected; legacy AGENTS.md migration) ──
   // Manager registry keyed by strictly-validated projectId.
   // On startup: scan existing projects from DATA_DIR/projects/.
   const workspaceAgentsByProject = new Map<string, WorkspaceAgentsManager>();
@@ -2828,6 +3327,336 @@ function setupIPC(): void {
   });
 
   // ── MCP Servers ─────────────────────────────────────────
+  ipcMain.handle('fundingTemplate:invoke', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const repository = fundingTemplateRepository;
+      const service = fundingTemplateService;
+      if (!repository || !service || !researchRepository) {
+        return decodeFundingTemplateRuntimeResponse(null);
+      }
+      const owner = executionOwnerFor(event);
+      const ipc = new FundingTemplateIpcService({
+        repository,
+        service,
+        projectExists: (projectId) => Boolean(researchRepository?.getProject(projectId)),
+        consumeFundingFile: (capabilityId) => {
+          const resolved = fileCapabilities.consume(
+            { capabilityId, operation: 'file' },
+            owner,
+            'funding-template',
+          );
+          return resolved.ok
+            ? { filePath: resolved.resolvedPath, trustedRoot: path.dirname(resolved.resolvedPath) }
+            : null;
+        },
+      });
+      return decodeFundingTemplateRuntimeResponse(
+        await ipc.handle(FUNDING_LOCAL_OWNER_ID, rawRequest),
+      );
+    } catch {
+      return decodeFundingTemplateRuntimeResponse(null);
+    }
+  });
+
+  ipcMain.handle('personalization:list', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      return personalizationRuntime?.list(rawRequest) ?? { ok: true, definitions: [] };
+    } catch {
+      return { ok: true, definitions: [] };
+    }
+  });
+  ipcMain.handle('personalization:get', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      return personalizationRuntime?.get(rawRequest) ?? { ok: true, definition: null };
+    } catch {
+      return { ok: true, definition: null };
+    }
+  });
+  ipcMain.handle('personalization:save', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      return personalizationRuntime?.save(rawRequest) ?? { ok: false, code: 'io_error' };
+    } catch {
+      return { ok: false, code: 'invalid_request' };
+    }
+  });
+  ipcMain.handle('personalization:archive', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      return personalizationRuntime?.archive(rawRequest) ?? { ok: false, code: 'io_error' };
+    } catch {
+      return { ok: false, code: 'invalid_request' };
+    }
+  });
+  ipcMain.handle('personalization:fork', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      return personalizationRuntime?.fork(rawRequest) ?? { ok: false, code: 'io_error' };
+    } catch {
+      return { ok: false, code: 'invalid_request' };
+    }
+  });
+  ipcMain.handle('personalization:restore', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      return personalizationRuntime?.restore(rawRequest) ?? { ok: false, code: 'io_error' };
+    } catch {
+      return { ok: false, code: 'invalid_request' };
+    }
+  });
+
+  ipcMain.handle('personalization:versions', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      return personalizationRuntime?.versions(rawRequest) ?? { ok: true as const, versions: [] };
+    } catch {
+      return { ok: true as const, versions: [] };
+    }
+  });
+  ipcMain.handle('personalization:resolve', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      return personalizationRuntime?.resolve(rawRequest) ?? {
+        ok: false,
+        code: 'definition_corrupt',
+        issues: ['Personalization persistence is unavailable'],
+      };
+    } catch {
+      return { ok: false, code: 'definition_corrupt', issues: ['Invalid personalization request'] };
+    }
+  });
+
+  ipcMain.handle('personalization:extension:apply', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const publicRequest = PersonalizationExtensionIpcRequestSchema.safeParse(rawRequest);
+      if (!publicRequest.success || !personalizationExtensions) {
+        return decodePersonalizationExtensionResponse(null);
+      }
+      const request = bindPersonalizationExtensionRequest(publicRequest.data, event);
+      if (!request) return decodePersonalizationExtensionResponse(null);
+      const owner = executionOwnerFor(event);
+      if (request.mode === 'mcp_requirements' && request.runProbe) {
+        if (!personalizationGeneratedMcpActivation) return decodePersonalizationExtensionResponse(null);
+        const prepared = await personalizationExtensions.prepareGeneratedMcp(request);
+        if (!prepared.ok) return decodePersonalizationExtensionResponse(prepared.response);
+        const activated = await personalizationGeneratedMcpActivation.activate({
+          operationId: request.evidenceContext.operationId,
+          expectedRevision: request.expectedRevision,
+          pendingDefinition: prepared.definition,
+          installation: prepared.installation,
+          evidenceContext: { ...request.evidenceContext, owner },
+        });
+        if (!activated.ok) {
+          return decodePersonalizationExtensionResponse({
+            ok: false,
+            mode: 'mcp_requirements',
+            code: 'mcp_builder_failed',
+            detailCode: activated.code,
+            compensated: activated.compensated,
+          });
+        }
+        return decodePersonalizationExtensionResponse({
+          ok: true,
+          mode: 'mcp_requirements',
+          definition: activated.definition,
+          evidence: activated.evidence,
+          skillInstallation: null,
+          mcpInstallation: activated.installation,
+        });
+      }
+      const result = await personalizationExtensions.apply(request, {
+        resolveLocalSkillSource: (capabilityId) => {
+          const resolution = fileCapabilities.consumeMatching(capabilityId, owner, [
+            {
+              purpose: 'personalization-skill-package',
+              kind: 'file',
+              operation: 'file',
+            },
+            {
+              purpose: 'personalization-skill-directory',
+              kind: 'folder',
+              operation: 'folder',
+            },
+          ]);
+          return resolution.ok ? resolution.resolvedPath : undefined;
+        },
+      });
+      return decodePersonalizationExtensionResponse(result);
+    } catch {
+      return decodePersonalizationExtensionResponse(null);
+    }
+  });
+
+  ipcMain.handle('personalization:mcp:activate', async (event, rawRequest: unknown) => {
+    const publicRequest = McpActivationIpcRequestSchema.safeParse(rawRequest);
+    try {
+      requireRendererMainFrame(event);
+      if (!publicRequest.success || !personalizationMcpActivation) {
+        return decodeMcpActivationResponse(null);
+      }
+      const request = bindMcpActivationRequest(publicRequest.data, event);
+      if (!request) return decodeMcpActivationResponse(null);
+      return decodeMcpActivationResponse(
+        await personalizationMcpActivation.activate(request),
+      );
+    } catch {
+      return decodeMcpActivationResponse(null);
+    }
+  });
+
+  ipcMain.handle('personalization:bundle:export', async (event, rawRequest: unknown) => {
+    const parsed = PersonalizationBundleExportIpcRequestSchema.safeParse(rawRequest);
+    const operationId = parsed.success ? parsed.data.operationId : '00000000-0000-4000-8000-000000000000';
+    try {
+      const invokingWindow = requireRendererMainFrame(event);
+      if (!parsed.success) return PersonalizationBundleIpcResponseSchema.parse({ ok: false, operationId, code: 'invalid_request' });
+      if (!personalizationBundles || !personalizationRepository || !personalizationBundleSkillAssets) {
+        return PersonalizationBundleIpcResponseSchema.parse({ ok: false, operationId, code: 'service_unavailable' });
+      }
+      const exported = await personalizationBundles.exportBundle({
+        rootDefinitionIds: parsed.data.rootDefinitionIds,
+        assetMode: 'include_files',
+        createdBy: 'Local Metis user',
+      }, { get: (id) => personalizationRepository?.get(id, true) }, personalizationBundleSkillAssets);
+      const selected = await dialog.showSaveDialog(invokingWindow, {
+        title: 'Export Metis personalization bundle',
+        defaultPath: `metis-personalization-${new Date().toISOString().slice(0, 10)}.json`,
+        filters: [{ name: 'Metis personalization bundle', extensions: ['json'] }],
+        properties: ['createDirectory', 'showOverwriteConfirmation'],
+      });
+      if (selected.canceled || !selected.filePath) {
+        return PersonalizationBundleIpcResponseSchema.parse({ ok: false, operationId, code: 'cancelled' });
+      }
+      try { writePersonalizationBundleFile(selected.filePath, exported.bytes); } catch {
+        return PersonalizationBundleIpcResponseSchema.parse({ ok: false, operationId, code: 'write_failed' });
+      }
+      return PersonalizationBundleIpcResponseSchema.parse({
+        ok: true,
+        operationId,
+        action: 'exported',
+        bundleDigest: exported.bundle.manifest.bundleDigest,
+        definitionCount: exported.bundle.manifest.definitions.length,
+      });
+    } catch {
+      return PersonalizationBundleIpcResponseSchema.parse({ ok: false, operationId, code: 'export_failed' });
+    }
+  });
+
+  ipcMain.handle('personalization:bundle:import', async (event, rawRequest: unknown) => {
+    const parsed = PersonalizationBundleImportIpcRequestSchema.safeParse(rawRequest);
+    const operationId = parsed.success ? parsed.data.operationId : '00000000-0000-4000-8000-000000000000';
+    try {
+      const invokingWindow = requireRendererMainFrame(event);
+      if (!parsed.success) return PersonalizationBundleIpcResponseSchema.parse({ ok: false, operationId, code: 'invalid_request' });
+      if (!personalizationBundleCoordinator) {
+        return PersonalizationBundleIpcResponseSchema.parse({ ok: false, operationId, code: 'service_unavailable' });
+      }
+      const selected = await dialog.showOpenDialog(invokingWindow, {
+        title: 'Import Metis personalization bundle',
+        properties: ['openFile'],
+        filters: [{ name: 'Metis personalization bundle', extensions: ['json'] }],
+      });
+      const source = selected.canceled ? undefined : selected.filePaths[0];
+      if (!source) return PersonalizationBundleIpcResponseSchema.parse({ ok: false, operationId, code: 'cancelled' });
+      let bytes: Uint8Array;
+      try { bytes = readPersonalizationBundleFile(source); } catch {
+        return PersonalizationBundleIpcResponseSchema.parse({ ok: false, operationId, code: 'read_failed' });
+      }
+      const imported = await personalizationBundleCoordinator.importBundle(bytes);
+      if (!imported.ok) return PersonalizationBundleIpcResponseSchema.parse({ ok: false, operationId, code: 'import_failed' });
+      let definitionCount: number;
+      try {
+        definitionCount = PersonalizationBundleSchema.parse(
+          JSON.parse(Buffer.from(bytes).toString('utf8')) as unknown,
+        ).manifest.definitions.length;
+      } catch {
+        return PersonalizationBundleIpcResponseSchema.parse({ ok: false, operationId, code: 'import_failed' });
+      }
+      return PersonalizationBundleIpcResponseSchema.parse({
+        ok: true,
+        operationId,
+        action: 'imported',
+        bundleDigest: imported.bundleDigest,
+        definitionCount,
+      });
+    } catch {
+      return PersonalizationBundleIpcResponseSchema.parse({ ok: false, operationId, code: 'import_failed' });
+    }
+  });
+
+  ipcMain.handle('personalization:secrets:list', (event, rawRequest: unknown) => {
+    const parsed = PersonalizationSecretListRequestSchema.safeParse(rawRequest);
+    const operationId = parsed.success ? parsed.data.operationId : undefined;
+    try {
+      requireRendererMainFrame(event);
+      if (!parsed.success) return decodePersonalizationSecretListResponse(null, operationId);
+      if (!personalizationSecretVault) {
+        return decodePersonalizationSecretListResponse({
+          ok: false,
+          contractVersion: 1,
+          operationId: parsed.data.operationId,
+          code: 'storage_unavailable',
+        }, parsed.data.operationId);
+      }
+      return decodePersonalizationSecretListResponse(
+        personalizationSecretVault.list(parsed.data),
+        parsed.data.operationId,
+      );
+    } catch {
+      return decodePersonalizationSecretListResponse(null, operationId);
+    }
+  });
+
+  ipcMain.handle('personalization:secrets:set', async (event, rawRequest: unknown) => {
+    const parsed = PersonalizationSecretSetRequestSchema.safeParse(rawRequest);
+    const operationId = parsed.success ? parsed.data.operationId : undefined;
+    try {
+      requireRendererMainFrame(event);
+      if (!parsed.success) return decodePersonalizationSecretSetResponse(null, operationId);
+      if (!personalizationSecretVault) {
+        return decodePersonalizationSecretSetResponse({
+          ok: false,
+          contractVersion: 1,
+          operationId: parsed.data.operationId,
+          code: 'storage_unavailable',
+        }, parsed.data.operationId);
+      }
+      return decodePersonalizationSecretSetResponse(
+        await personalizationSecretVault.set(parsed.data),
+        parsed.data.operationId,
+      );
+    } catch {
+      return decodePersonalizationSecretSetResponse(null, operationId);
+    }
+  });
+
+  ipcMain.handle('personalization:secrets:remove', async (event, rawRequest: unknown) => {
+    const parsed = PersonalizationSecretRemoveRequestSchema.safeParse(rawRequest);
+    const operationId = parsed.success ? parsed.data.operationId : undefined;
+    try {
+      requireRendererMainFrame(event);
+      if (!parsed.success) return decodePersonalizationSecretRemoveResponse(null, operationId);
+      if (!personalizationSecretVault) {
+        return decodePersonalizationSecretRemoveResponse({
+          ok: false,
+          contractVersion: 1,
+          operationId: parsed.data.operationId,
+          code: 'storage_unavailable',
+        }, parsed.data.operationId);
+      }
+      return decodePersonalizationSecretRemoveResponse(
+        await personalizationSecretVault.remove(parsed.data),
+        parsed.data.operationId,
+      );
+    } catch {
+      return decodePersonalizationSecretRemoveResponse(null, operationId);
+    }
+  });
+
   ipcMain.handle('mcp:list', (event) => {
     try {
       requireRendererMainFrame(event);
@@ -3204,6 +4033,15 @@ app.whenReady().then(async () => {
   citationTruthReceipts = citationTruthSecret
     ? new CitationTruthReceiptService(citationTruthSecret)
     : null;
+  evidenceEnvelopes = citationTruthSecret
+    ? new EvidenceEnvelopeService(citationTruthSecret)
+    : null;
+  try {
+    personalizationSecretVault = new PersonalizationSecretVault(DATA_DIR, safeStorage);
+  } catch (error) {
+    personalizationSecretVault = null;
+    console.warn('[Main] Personalization secret vault unavailable:', (error as Error)?.message);
+  }
 
   // Load or create Current Affairs receipt signing secret
   caReceiptSecret = loadOrCreateCurrentAffairsReceiptSecret(DATA_DIR, safeStorage);
@@ -3238,27 +4076,182 @@ app.whenReady().then(async () => {
     confirmApproval: async (ctx) => {
       const win = caOwnerWindows.get(ctx.ownerSessionId);
       if (!win || win.isDestroyed()) { caOwnerWindows.delete(ctx.ownerSessionId); return false; }
-      try {
-        const { response } = await dialog.showMessageBox(win, {
-          type: 'question', title: 'Approve Research',
-          message: `Approve "${ctx.title}" for export?`,
-          detail: `Project: ${ctx.projectId}\nSources: ${ctx.sourceCount}\nFacts: ${ctx.factCount}\nDigest: ${ctx.contentDigest.slice(0,16)}…`,
-          buttons: ['Approve', 'Cancel'], defaultId: 1,
-        });
-        return response === 0;
-      } catch {
-        return false;
-      }
+      // Full Access removes per-action permission prompts. This callback still
+      // fail-closes on owner/window loss; the runtime performs repository and
+      // digest re-verification both before and after this automatic checkpoint,
+      // then issues the same signed, replay-protected receipt as before.
+      return true;
     },
   });
   if (!citationTruthReceipts) {
     console.warn('[Main] Citation truth key unavailable; verified deliverables and formal export are disabled.');
+  }
+  if (!evidenceEnvelopes) {
+    console.warn('[Main] Evidence-envelope signer unavailable; third-party Skill and MCP results are disabled.');
   }
 
   // Initialize persistence (graceful degradation if native module fails)
   try {
     store = new PersistenceStore(DB_PATH);
     setSharedStore(store);
+    try {
+      fundingTemplateRepository = new FundingTemplateRepository(DATA_DIR);
+      fundingTemplateService = new FundingTemplateService(fundingTemplateRepository);
+      const candidateFundingTemplateTools = new FundingTemplateToolService(fundingTemplateRepository, {
+        resolveScope: (context) => {
+          const scope = activeFundingToolScopes.get(context.sessionId);
+          return scope ? { ownerId: scope.ownerId, projectId: scope.projectId } : null;
+        },
+      });
+      const auditedToolIds = auditFundingTemplateToolRegistration(candidateFundingTemplateTools);
+      if (!isFundingTemplateBuiltinDraftReady(auditedToolIds)) {
+        throw new Error('Funding template ToolRegistry audit did not register both required tools');
+      }
+      fundingTemplateTools = candidateFundingTemplateTools;
+    } catch (error) {
+      fundingTemplateRepository = null;
+      fundingTemplateService = null;
+      fundingTemplateTools = null;
+      console.warn('[Main] Funding template services unavailable:', (error as Error)?.message);
+    }
+    personalizationRepository = new PersonalizationRepository(store.raw, citationTruthSecret ?? undefined);
+    personalizationRuntime = new PersonalizationRuntimeService(
+      personalizationRepository,
+      citationTruthSecret ?? undefined,
+    );
+    try {
+      personalizationBundles = new PersonalizationBundleService(path.join(DATA_DIR, 'personalization-bundles'));
+      personalizationBundleSink = new PersonalizationBundleRepositorySink(personalizationRepository);
+    } catch (error) {
+      personalizationBundles = null;
+      personalizationBundleSink = null;
+      console.warn('[Main] Personalization bundle service unavailable:', (error as Error)?.message);
+    }
+    try {
+      const skillRoot = path.join(DATA_DIR, 'personalization-skills');
+      const mcpRoot = path.join(DATA_DIR, 'personalization-mcp');
+      personalizationSkills = new PersonalizationSkillInstaller(skillRoot);
+      personalizationMcp = new PersonalizationMcpInstaller(mcpRoot);
+      if (!evidenceEnvelopes) throw new Error('Evidence signing is unavailable');
+      const extensionEvidence = evidenceEnvelopes;
+      const mcpBuilder = new McpBuilderService(personalizationMcp, {
+        createSpecification: async (input) => {
+          const activeProvider = provider;
+          if (!activeProvider) throw new Error('Provider is unavailable');
+          const response = await activeProvider.complete([
+            {
+              role: 'system',
+              content: [
+                'Return one JSON object only. Do not use Markdown fences.',
+                'Convert the requirement into the Metis MCP Builder DSL.',
+                'The root keys must be exactly: contractVersion, packageId, version, name, description, tools, environment.',
+                'Only echo, constant_json, and http_json implementations are allowed. Never include credentials; use environment secret references.',
+                `The packageId must be exactly ${input.requestedPackageId}.`,
+              ].join('\n'),
+            },
+            { role: 'user', content: input.requirement },
+          ], undefined, { temperature: 0, response_format: { type: 'json_object' } });
+          const raw = JSON.parse(response.content) as unknown;
+          return McpBuilderSpecificationSchema.parse(raw);
+        },
+      });
+      const mcpProbeRunner = new PersonalizationMcpProbeRunner({
+        resolve: (reference, context) => personalizationSecretVault?.resolve(reference, context),
+      });
+      try {
+        const activation = new PersonalizationMcpActivationService(mcpRoot, {
+          installer: personalizationMcp,
+          runner: mcpProbeRunner,
+          store: personalizationRepository,
+          evidence: extensionEvidence,
+        });
+        const recovered = await activation.recoverPending();
+        if (!recovered.ok) throw new Error('Pending MCP activation recovery did not complete');
+        const generatedActivation = new GeneratedMcpActivationCoordinator(mcpRoot, {
+          installer: personalizationMcp,
+          store: personalizationRepository,
+          activator: activation,
+        });
+        const generatedRecovered = await generatedActivation.recoverPending();
+        if (!generatedRecovered.ok) throw new Error('Pending generated MCP activation recovery did not complete');
+        personalizationMcpActivation = activation;
+        personalizationGeneratedMcpActivation = generatedActivation;
+      } catch (error) {
+        personalizationMcpActivation = null;
+        personalizationGeneratedMcpActivation = null;
+        console.warn('[Main] Personalization MCP activation unavailable:', (error as Error)?.message);
+      }
+      personalizationExtensions = new PersonalizationExtensionService({
+        definitions: {
+          get: (id) => personalizationRepository?.get(id, true),
+          save: (request) => personalizationRepository?.save(request) ?? { ok: false, code: 'io_error' },
+        },
+        evidence: extensionEvidence,
+        skills: personalizationSkills,
+        mcp: personalizationMcp,
+        mcpBuilder,
+        mcpProbeRunner,
+        mcpCompensator: new FilesystemMcpInstallationCompensator(mcpRoot),
+      });
+      try {
+        if (!personalizationBundles || !personalizationBundleSink) {
+          throw new Error('Base personalization bundle services are unavailable');
+        }
+        const bundleAssetRoot = path.join(DATA_DIR, 'personalization-bundles');
+        const rehydrationStagingRoot = path.join(DATA_DIR, 'personalization-bundle-skill-staging');
+        const receiptRoot = path.join(DATA_DIR, 'personalization-bundle-receipts');
+        const skillRehydrator = new PersonalizationBundleSkillRehydrationService(
+          bundleAssetRoot,
+          rehydrationStagingRoot,
+          personalizationSkills,
+        );
+        personalizationBundleSkillAssets = new PersonalizationBundleSkillAssetSource(
+          personalizationRepository,
+          personalizationSkills,
+        );
+        personalizationBundleCoordinator = new PersonalizationBundleImportCoordinator({
+          bundleService: personalizationBundles,
+          definitionSink: personalizationBundleSink,
+          skillRehydrator,
+          skillCompensator: personalizationSkills,
+          bundleAssetRoot,
+          receiptRoot,
+        });
+      } catch (error) {
+        personalizationBundleCoordinator = null;
+        personalizationBundleSkillAssets = null;
+        console.warn('[Main] Portable personalization bundles unavailable:', (error as Error)?.message);
+      }
+      personalizationMcpRuntime = new ManagedPersonalizationMcpRuntime(
+        personalizationMcp,
+        { resolve: (reference, context) => personalizationSecretVault?.resolve(reference, context) },
+        extensionEvidence,
+        {
+          runtimeSnapshotRoot: path.join(DATA_DIR, 'personalization-mcp-runtime'),
+          recoverStaleSnapshots: true,
+        },
+      );
+      personalizationMcpBridge = new PersonalizationMcpToolBridge({
+        runtime: personalizationMcpRuntime,
+        definitions: personalizationRepository,
+        descriptors: personalizationMcp,
+        evidenceSink: {
+          record: (envelope) => extensionEvidence.verify(envelope)
+            && Boolean(personalizationRepository?.recordEvidenceEnvelope(envelope)),
+        },
+      });
+    } catch (error) {
+      personalizationSkills = null;
+      personalizationMcp = null;
+      personalizationMcpRuntime = null;
+      personalizationMcpBridge = null;
+      personalizationMcpActivation = null;
+      personalizationGeneratedMcpActivation = null;
+      personalizationExtensions = null;
+      personalizationBundleCoordinator = null;
+      personalizationBundleSkillAssets = null;
+      console.warn('[Main] Personalization extension services unavailable:', (error as Error)?.message);
+    }
     researchRepository = new ResearchRepository(store.raw, (manifest, content) => {
       if (!researchRepository || !citationTruthReceipts) {
         return { receiptVerified: false, profileEnforced: false };
@@ -3294,6 +4287,22 @@ app.whenReady().then(async () => {
     }
     console.log('[Main] PersistenceStore initialized.');
   } catch (err: unknown) {
+    personalizationRepository = null;
+    personalizationRuntime = null;
+    personalizationSkills = null;
+    personalizationMcp = null;
+    personalizationMcpRuntime = null;
+    personalizationMcpBridge = null;
+    personalizationMcpActivation = null;
+    personalizationGeneratedMcpActivation = null;
+    personalizationExtensions = null;
+    personalizationBundles = null;
+    personalizationBundleSink = null;
+    personalizationBundleCoordinator = null;
+    personalizationBundleSkillAssets = null;
+    fundingTemplateRepository = null;
+    fundingTemplateService = null;
+    fundingTemplateTools = null;
     researchRepository = null;
     researchRuntime = null;
     researchMedia = null;
@@ -3364,6 +4373,7 @@ app.on('window-all-closed', () => {
   firstRunSetup?.dispose();
   firstRunSetup = null;
   mcpManager?.disconnectAll().catch(() => {});
+  void personalizationMcpRuntime?.shutdownAll();
   store?.close();
   store = null;
   researchRepository = null;
@@ -3387,6 +4397,7 @@ app.on('before-quit', () => {
   firstRunSetup?.dispose();
   firstRunSetup = null;
   mcpManager?.disconnectAll().catch(() => {});
+  void personalizationMcpRuntime?.shutdownAll();
   store?.close();
   store = null;
   researchRepository = null;

@@ -38,6 +38,7 @@ export class MCPClient {
   private readonly config: MCPServerConfig;
   private readonly transport: MCPTransport;
   private connected = false;
+  private negotiatedProtocolVersion: string | null = null;
   private pendingRequests = new Map<number, {
     resolve: (response: JsonRpcResponse) => void;
     reject: (error: Error) => void;
@@ -57,6 +58,11 @@ export class MCPClient {
     return this.connected;
   }
 
+  /** Protocol version returned by the server during the active initialization handshake. */
+  get protocolVersion(): string | null {
+    return this.negotiatedProtocolVersion;
+  }
+
   /**
    * Connect to the MCP server:
    * 1. Start the server process
@@ -65,6 +71,7 @@ export class MCPClient {
    */
   async connect(timeout = 30_000): Promise<void> {
     if (this.connected) return;
+    this.negotiatedProtocolVersion = null;
 
     // Set up message and lifecycle routing before launch so an early child-process
     // failure cannot be missed between start() and the initialize request.
@@ -95,6 +102,8 @@ export class MCPClient {
         );
       }
 
+      this.negotiatedProtocolVersion = extractProtocolVersion(response.result);
+
       // Send initialized notification
       const notification = makeNotification('notifications/initialized');
       this.sendNotification(notification);
@@ -102,6 +111,7 @@ export class MCPClient {
       this.connected = true;
     } catch (error) {
       this.connected = false;
+      this.negotiatedProtocolVersion = null;
       await this.transport.close().catch(() => {});
       throw error;
     }
@@ -140,6 +150,12 @@ export class MCPClient {
       throw new MCPError(response.error.code, response.error.message, response.error.data);
     }
 
+    if (isToolExecutionError(response.result)) {
+      // Tool content may contain credentials or remote diagnostics. Keep the
+      // client error fixed so callers cannot accidentally reflect it outward.
+      throw new MCPError(MCP_ERROR_CODES.TOOL_EXECUTION_ERROR, 'MCP tool execution failed');
+    }
+
     return extractToolResultText(response.result);
   }
 
@@ -149,6 +165,7 @@ export class MCPClient {
    * success and error paths of connect/testConnection).
    */
   async close(): Promise<void> {
+    this.negotiatedProtocolVersion = null;
     if (!this.connected && this.pendingRequests.size === 0) {
       // Already closed (or never started) — still ensure transport is torn down.
       await this.transport.close();
@@ -195,6 +212,7 @@ export class MCPClient {
 
   private handleTransportError(error: Error): void {
     this.connected = false;
+    this.negotiatedProtocolVersion = null;
     for (const [, pending] of this.pendingRequests) {
       clearTimeout(pending.timeout);
       pending.reject(error);
@@ -309,4 +327,17 @@ function extractToolResultText(result: unknown): string {
   }
 
   return JSON.stringify(result);
+}
+
+function extractProtocolVersion(result: unknown): string | null {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return null;
+  const version = (result as Record<string, unknown>).protocolVersion;
+  if (typeof version !== 'string' || version.length === 0 || version.length > 64) return null;
+  // eslint-disable-next-line no-control-regex -- protocol versions are single-line tokens
+  return /[\u0000-\u001f\u007f-\u009f]/u.test(version) ? null : version;
+}
+
+function isToolExecutionError(result: unknown): boolean {
+  return Boolean(result && typeof result === 'object' && !Array.isArray(result)
+    && (result as Record<string, unknown>).isError === true);
 }

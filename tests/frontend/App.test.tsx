@@ -81,6 +81,20 @@ describe('App', () => {
     expect(screen.getByRole('tab', { name: '对话' }).getAttribute('aria-selected')).toBe('true');
   });
 
+  it('opens Personalization from the bottom-left control beside the theme toggle', async () => {
+    resetStore();
+    setMockMetis({
+      listPersonalization: vi.fn().mockResolvedValue({ ok: true, definitions: [] }),
+    });
+    render(<App />);
+    const trigger = await screen.findByTestId('personalization-trigger');
+    const theme = screen.getByTitle('浅色');
+    expect(trigger.parentElement).toBe(theme.parentElement);
+    fireEvent.click(trigger);
+    expect(await screen.findByRole('heading', { name: '个性化' })).toBeDefined();
+    expect(screen.getByText('自动真实性层始终强制执行')).toBeDefined();
+  });
+
   it('composes converse mode as exactly one project shell with one chat region per column', async () => {
     resetStore();
     const { container } = render(<App />);
@@ -267,53 +281,20 @@ describe('App', () => {
     expect(screen.queryByTitle('切换终端')).toBeNull();
   });
 
-  it('redacts raw approval execution details in normal mode', async () => {
+  it('does not mount a permission approval queue in Full Access mode', async () => {
     resetStore();
-    setMockMetis({
-      getPendingApprovals: vi.fn().mockResolvedValue([{
+    const getPendingApprovals = vi.fn().mockResolvedValue([{
         requestId: 'approval-normal',
         action: 'run_analysis' as const,
         createdAt: 1700000000000,
-      }]),
-    });
+      }]);
+    setMockMetis({ getPendingApprovals });
 
     render(<App />);
-    const queueButton = await screen.findByRole('button', { name: '审批队列' });
-    fireEvent.click(queueButton);
-
-    // Normal mode: shows research-safe action label, no raw technical data
-    expect(screen.getByText('运行研究分析')).toBeTruthy();
-    expect(screen.queryByText('run_analysis')).toBeNull();
+    await waitFor(() => expect(screen.getByRole('button', { name: '研究项目' })).toBeTruthy());
+    expect(screen.queryByRole('button', { name: '审批队列' })).toBeNull();
     expect(screen.queryByText('approval-normal')).toBeNull();
-    expect(screen.queryByText('查看技术详情')).toBeNull();
-    // No tool data leakage
-    expect(screen.queryByText('execute_command')).toBeNull();
-    expect(screen.queryByText(/rm -rf/)).toBeNull();
-    expect(screen.queryByText(/HITL/)).toBeNull();
-  });
-
-  it('shows raw approval details only after diagnostic disclosure', async () => {
-    resetStore();
-    setDiagnosticMode('diagnostic');
-    setMockMetis({
-      getPendingApprovals: vi.fn().mockResolvedValue([{
-        requestId: 'approval-diagnostic',
-        action: 'run_analysis' as const,
-        createdAt: 1700000000000,
-      }]),
-    });
-
-    render(<App />);
-    fireEvent.click(await screen.findByRole('button', { name: '审批队列' }));
-    // Diagnostic mode: shows technical disclosure toggle
-    expect(screen.getByText('查看技术详情')).toBeTruthy();
-    // Raw action enum not visible before disclosure
-    expect(screen.queryByText('run_analysis')).toBeNull();
-
-    fireEvent.click(screen.getByText('查看技术详情'));
-    // After disclosure: raw technical fields visible
-    expect(screen.getByText('run_analysis')).toBeTruthy();
-    expect(screen.getByText('approval-diagnostic')).toBeTruthy();
+    expect(getPendingApprovals).not.toHaveBeenCalled();
   });
 
   it('exports backup as JSON download', () => {

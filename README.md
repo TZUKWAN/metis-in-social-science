@@ -2,383 +2,389 @@
 
 # Metis in Social Science
 
-### A local-first AI research workbench for literature, evidence, analysis, and writing
+### A local-first AI research workbench for social science, humanities, and evidence-grounded writing
 
-[![Release](https://img.shields.io/github/v/release/TZUKWAN/metis-in-social-science?include_prereleases&label=release)](https://github.com/TZUKWAN/metis-in-social-science/releases)
-[![Quality gates](https://github.com/TZUKWAN/metis-in-social-science/actions/workflows/ci.yml/badge.svg)](https://github.com/TZUKWAN/metis-in-social-science/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/license-Apache--2.0-9b4f2f)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Windows%20x64-3b5268)](https://github.com/TZUKWAN/metis-in-social-science/releases)
-[![Electron](https://img.shields.io/badge/Electron-41-59667a)](https://www.electronjs.org/)
-[![React](https://img.shields.io/badge/React-19-59667a)](https://react.dev/)
+[Download for Windows](https://github.com/TZUKWAN/metis-in-social-science/releases/latest) ·
+[Read the documentation](docs/PERSONALIZATION_GUIDE.md) ·
+[Report an issue](https://github.com/TZUKWAN/metis-in-social-science/issues)
 
 </div>
 
-Metis Research Workbench is an open-source desktop research environment designed for
-social-science work. It brings project organization, literature management, PDF
-reading, evidence capture, connected notes, research writing, experiment tracking,
-and AI-assisted workflows into one application.
-
-Research data is persisted locally in an embedded SQLite database. There is no Metis
-account or required Metis-hosted backend: you choose the OpenAI-compatible model
-provider, and only operations that use that provider send request content to the
-endpoint you configured.
-
-> **Current release: 0.1.0-alpha.1 (pre-release).** The Windows installers are not
-> Authenticode-signed, so Windows SmartScreen may display an unknown-publisher warning.
-> Verify the published SHA-256 checksum before installation. See the
-> [release notes](docs/RELEASE_NOTES_v0.1.0-alpha.1.md) for exact instructions.
-
-**Download:** use the
-[v0.1.0-alpha.1 GitHub Release](https://github.com/TZUKWAN/metis-in-social-science/releases/tag/v0.1.0-alpha.1)
-for the Windows installer and published checksums.
-
 ---
 
-## Screenshots
+Metis is a desktop research environment that brings AI conversation, source management,
+PDF reading, notes, analysis, writing, reproducible research workflows, and user-defined
+Agents into one coherent workspace.
 
-| Secure first-run provider setup | Project-scoped research notes in dark mode |
-|:---:|:---:|
-| ![Metis provider setup](docs/screenshots/provider-setup.png) | ![Metis research notes workspace](docs/screenshots/research-notes-dark.png) |
+It is not a chat window with a few academic prompts attached. Metis maintains projects,
+sources, sessions, artifacts, rules, tool connections, and execution state as first-class
+objects. The application can therefore carry a research task from question formation to
+evidence collection, analysis, drafting, revision, and export without forcing the user to
+move context between unrelated tools.
 
----
+The defining idea of the current version is simple:
 
-## Why Metis
+> Metis does not decide what kind of researcher you are. It gives you the system for
+> defining your own research scenarios, Agents, Skills, MCP services, workflows, memory,
+> and output contracts.
 
-Social-science researchers routinely juggle disconnected tools: a reference manager for
-citations, a separate app for notes, a browser tab for PDFs, a LaTeX editor for papers,
-and a spreadsheet for experiment parameters. Metis consolidates these into one
-cohesive workspace augmented by an AI agent that can read papers, summarize findings,
-draft sections, and execute multi-step research workflows on the researcher's behalf.
+## Product views
 
-**Designed for researchers, with a verifiable engineering core.**
+### Personalization Center
 
-- No Docker or self-hosted server is required for daily desktop use.
-- Bring your own OpenAI-compatible model endpoint and model name.
-- Papers, notes, projects, sessions, and artifacts remain in the local data directory.
-- Sensitive tool actions are mediated by explicit capabilities and approval gates.
-- Structured runtime contracts validate data at the renderer/main-process boundary.
+The Personalization Center starts empty. Every scenario is created or installed by the
+user, and every dependency is visible by name.
 
----
+![Personalization Center](docs/screenshots/personalization-center.png)
 
-## Core Modules
+### Scenario builder
 
-| Module | Description |
-|--------|-------------|
-| **Dashboard** | Overview of research activity, reading goals, and recent work |
-| **Chat** | Multi-session AI chat with Markdown rendering, code highlighting, tool-call cards, and skill-based prompting |
-| **Goal-Driven Workflows** | Define a research goal, auto-generate an execution plan, and run it step-by-step with pause / resume / retry |
-| **Paper Library** | Full CRUD for papers with BibTeX import, PDF attachment, tags, ratings, and reading status tracking |
-| **Collections** | Organize papers into thematic collections for systematic review |
-| **Knowledge Graph** | Visualize citation relationships and paper connections as an interactive graph |
-| **Research Timeline** | Track research activity over time with heatmaps and activity trends |
-| **LaTeX Editor** | Live preview with KaTeX math rendering, templates, citation integration, and real `pdflatex` compilation |
-| **PDF Reader** | In-app PDF viewer with text extraction, search, and outline navigation |
-| **Notes** | Markdown-aware research notes that link to papers and projects |
-| **Experiments** | Track experiments with parameters, metrics, and status across runs |
-| **Current-affairs research** | Review time-sensitive sources, bind approvals to verified source snapshots, preview the report, and export auditable artifacts |
-| **Evals** | Run automated evaluation suites against the AI agent with quality gates (dev / candidate / release) |
+Each scenario can combine Agents, Skills, MCP servers, `Metis.md` rules, a multi-step
+workflow, memory policy, output format, primary deliverable, supporting artifacts, and
+quality criteria.
 
----
+![Custom scenario builder](docs/screenshots/scenario-builder.png)
+
+### Research library
+
+PDFs, bibliographic records, collections, tags, reading status, and research artifacts
+remain connected to the same project and conversation context.
+
+![Paper library](docs/screenshots/paper-library.png)
+
+## What Metis can do
+
+### Work with an AI model as a research partner
+
+- Connect to an OpenAI-compatible model provider from the desktop setup screen.
+- Keep multiple research conversations and restore them after restart.
+- Send ordinary questions without selecting a scenario.
+- Select a user-created scenario when a task needs a specialized Agent and workflow.
+- Stream responses, stop an active run, regenerate an answer, and continue from the same
+  research context.
+- Turn generated Markdown into a live artifact preview instead of leaving it trapped in
+  the chat transcript.
+
+### Organize research as projects rather than loose messages
+
+- Create durable research projects with their own sources, notes, artifacts, and rules.
+- Switch between conversation, reading, analysis, and writing modes without losing the
+  active project.
+- Preserve sessions, messages, source metadata, and artifacts in a local SQLite database.
+- Keep project-level `Metis.md` instructions with the project rather than in a global
+  prompt that silently affects unrelated work.
+
+### Build and inspect a literature base
+
+- Maintain a searchable paper library with collections, tags, archives, and reading
+  status.
+- Import local PDFs and bibliographic material.
+- Read PDFs inside the workbench and move between papers and notes without leaving the
+  application.
+- Use DOI, Crossref, OpenAlex, Semantic Scholar, arXiv, RSS, Zotero, and related research
+  adapters where configured.
+- Track citation passports, triangulation, journal integrity signals, retractions, and
+  evidence provenance through the engine layer.
+
+### Read, annotate, analyze, and write in one workspace
+
+- Use the PDF reader for close reading and document inspection.
+- Keep durable notes with titles, body text, favorites, and project association.
+- Explore research material through graph, timeline, comparison, and experiment views.
+- Preview LaTeX-oriented output and maintain generated artifacts alongside their source
+  conversations.
+- Export library and research data through the available desktop export surfaces.
+
+## Personalization without presets
+
+Metis ships the editor and runtime, not a list of assumptions about what the user wants
+to write. A fresh installation contains no journal, thesis, funding, monograph, policy,
+or presentation scenario. The user decides which of those concepts should exist and how
+they should work.
+
+This is different from a prompt gallery. A Metis scenario is an executable configuration
+graph with versioned dependencies.
+
+### Scenarios
+
+A scenario defines the overall research mode. The editor exposes:
+
+- Name, description, enable state, and trigger phrases.
+- Scenario capability and Full Access execution policy.
+- Agent, Skill, MCP, and `Metis.md` bindings.
+- Ordered workflow steps and step dependencies.
+- Agent assignment, tools, Skills, MCP services, and turn budget for every step.
+- Memory scope, retained decisions, retained artifacts, and summary budget.
+- Output format and optional structured output schema.
+- Primary deliverable, supporting artifacts, and user-written quality criteria.
+
+The scenario is saved as a new revision. A running conversation receives a frozen
+manifest, so editing a scenario does not silently change an already-running task.
+
+### Agents
+
+An Agent is a reusable role that can be shared by several scenarios. Users can configure:
+
+- Role and system instructions.
+- Optional model preference.
+- Skills, tools, and MCP services.
+- Memory behavior and summary limits.
+- Output format, deliverable plan, and structured output requirements.
+- Maximum turns and retry policy.
+
+Agents are not hard-coded academic personas. A user may create a field interviewer, a
+statistical reviewer, an archival source critic, an editor, or any other role the work
+actually needs.
+
+### Skills in three modes
+
+Metis supports three ways to add a Skill:
+
+1. **Write Markdown directly** — edit a `SKILL.md`-style instruction document inside the
+   Personalization Center. This is the fastest path for users who do not want to build a
+   package.
+2. **Install a Skill package** — select a ZIP or directory containing instructions,
+   scripts, references, schemas, and other assets.
+3. **Install from a URL** — provide a GitHub or supported HTTPS source and let Metis
+   download and register the Skill.
+
+The visual Skill editor also exposes system instructions, tool and MCP bindings, turn
+budget, package entry, and structured input/output fields. Simple schemas are edited one
+field at a time; users do not need to hand-write JSON.
+
+### MCP in two modes
+
+MCP integration is available through two user-facing paths:
+
+1. **Describe the requirement** — write what the MCP must do and let the managed builder
+   create an installable local service.
+2. **Install from a URL** — provide a supported MCP repository or package URL and install
+   it into the managed runtime.
+
+Installed MCP definitions retain their source, exposed tools, environment references,
+and activation state. Secret values are stored separately and are not written into the
+definition or exported with a personalization bundle.
+
+### `Metis.md`
+
+`Metis.md` is the user-owned rule layer. Rules can be scoped globally, to a scenario, or
+to a project. Project rules are edited in the Personalization Center and are kept with the
+actual project workspace.
+
+Legacy `AGENTS.md` content is migrated without discarding the user's text. Existing
+project changes use conflict-aware writes so one project cannot silently overwrite the
+rules of another.
+
+### Import, export, history, and recovery
+
+- Export a selected definition together with its dependency graph.
+- Import a personalization bundle without exporting credentials.
+- Inspect immutable revision history.
+- Restore a prior user revision.
+- Archive definitions that are no longer needed.
+- Keep installed Skills and MCP assets associated with their definitions after restart.
+
+## Full Access, live control, and research integrity
+
+Metis is designed for uninterrupted work. In Full Access mode it does not stop before
+every tool action to request another confirmation. The user can instead guide the active
+task with a message or interrupt it at any time.
+
+Autonomy does not mean inventing research state. Evidence status, correction state,
+source identity, provenance, and publishability are computed by the runtime rather than
+accepted from editable scenario text. Those controls remain automatic and are shown in
+the Personalization Center as part of the system layer, not as switches a prompt can turn
+off.
+
+The practical separation is:
+
+| User controls | Metis runtime controls |
+| --- | --- |
+| Research behavior, roles, workflow, tools, memory, output, quality criteria | Execution snapshots, evidence envelopes, source state, correction state, provenance, integrity reports |
+| Which Skill or MCP to install and bind | How installed code is registered and how observed results are recorded |
+| When to steer, stop, edit, archive, or restore | Whether a run result may claim to be verified, corrected, or publishable |
+
+## Installation
+
+### Windows release
+
+Open the [latest GitHub Release](https://github.com/TZUKWAN/metis-in-social-science/releases/latest)
+and choose one of the published assets:
+
+- `Metis-Research-Workbench-Setup-<version>-x64.exe` — standard NSIS installer.
+- `Metis-Research-Workbench-<version>-x64.msi` — MSI package for managed Windows
+  environments.
+- The unpacked build, when provided, for portable inspection and testing.
+
+Alpha builds may be unsigned. Windows SmartScreen can therefore display an
+"unrecognized app" warning. Check the asset name and SHA-256 value shown in the release
+notes before continuing.
+
+### Build from source
+
+Requirements:
+
+- Windows 10 or Windows 11 for the packaged desktop target.
+- Node.js 22 or newer.
+- npm 10 or newer.
+- Git.
+
+```powershell
+git clone https://github.com/TZUKWAN/metis-in-social-science.git
+cd metis-in-social-science
+npm ci
+npm run build:electron
+npm start
+```
+
+For development:
+
+```powershell
+npm run dev:electron
+```
+
+For a local Windows package:
+
+```powershell
+npm run pack
+```
+
+The repository uses `better-sqlite3`, which has separate Node and Electron native ABIs.
+`npm test` rebuilds it for Node tests; `npm run build:electron` rebuilds it for the desktop
+runtime.
+
+## Configure a model provider
+
+On first launch Metis opens a centered setup screen. Enter:
+
+1. The base URL of an OpenAI-compatible API.
+2. The API key.
+3. The exact model name exposed by that service.
+
+![Provider setup](docs/screenshots/provider-setup.png)
+
+The key is handled by the Electron main process and stored with the operating system's
+secure storage support. It is not written into a personalization definition, exported
+bundle, or renderer-readable settings response.
+
+## Data and privacy
+
+Metis is local-first, not offline-only.
+
+Stored locally:
+
+- Projects, sessions, messages, notes, source metadata, artifacts, and personalization
+  definitions.
+- SQLite data and application configuration.
+- Installed Skill/MCP assets and project `Metis.md` files.
+- Receipt and integrity material used by the desktop runtime.
+
+Sent externally only when the related feature is used:
+
+- Conversation content and selected context to the configured model provider.
+- Bibliographic or identifier queries to services such as Crossref, OpenAlex, arXiv, or
+  Semantic Scholar.
+- Network requests made by an explicitly installed Skill or MCP service.
+
+Before using sensitive research material, review the privacy terms of the model provider
+and every third-party integration you enable.
 
 ## Architecture
 
-```
-+---------------------------------------------------------------+
-|                     Renderer (React 19)                        |
-|   Chat - Goal - Papers - Graph - Timeline - LaTeX - PDF - ...  |
-+---------------------------------------------------------------+
-|              IPC Bridge (contextBridge / preload)               |
-+---------------------------------------------------------------+
-|                     Main Process (Node.js)                      |
-|   AgentLoop - ToolRegistry - MCPManager - GoalEngine - ...     |
-+---------------------------------------------------------------+
-|                 Engine Layer (TypeScript, test-covered)         |
-|  +----------+ +-----------+ +-----------+ +--------------+     |
-|  | AgentLoop| | ToolDisp. | | ContextEng| | WorkflowEng  |     |
-|  +----------+ +-----------+ +-----------+ +--------------+     |
-|  +----------+ +-----------+ +-----------+ +--------------+     |
-|  |EvalRunner| |GoalEngine | | MemoryMgr | | MCPManager   |     |
-|  +----------+ +-----------+ +-----------+ +--------------+     |
-|  +----------+ +-----------+ +-----------+ +--------------+     |
-|  | SkillReg.| | HITLCore  | | Evidence  | | RAG / PDF    |     |
-|  +----------+ +-----------+ +-----------+ +--------------+     |
-+---------------------------------------------------------------+
-|             Persistence Layer (better-sqlite3, WAL mode)        |
-|   papers - notes - experiments - sessions - messages - ...     |
-+---------------------------------------------------------------+
+```text
+┌──────────────────────────────── Electron renderer ────────────────────────────────┐
+│ App shell · Projects · Chat · Library · PDF · Notes · Analysis · Personalization │
+└─────────────────────────────── strict preload bridge ─────────────────────────────┘
+                                        │
+┌──────────────────────────────── Electron main ───────────────────────────────────┐
+│ IPC validation · Provider · Persistence · Skill/MCP installers · File services   │
+│ Personalization runtime · Managed MCP runtime · Evidence and artifact services   │
+└───────────────────────────────────────┬───────────────────────────────────────────┘
+                                        │
+┌──────────────────────────────── Engine layer ────────────────────────────────────┐
+│ AgentLoop · Tool dispatcher · Workflows · Memory · Research adapters · Contracts │
+│ Versioned definitions · Run manifests · Evidence · Citation and source controls  │
+└───────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-The engine is a self-contained TypeScript library that can run independently of
-Electron. This separation keeps the agent logic
-testable in isolation via Vitest without spinning up a full desktop environment.
+The renderer never receives unrestricted Node.js access. Desktop capabilities cross a
+typed preload bridge, and long-running scenario execution is resolved in the main/engine
+layers from a saved definition revision.
 
----
+## Technology
 
-## Quick Start
+| Layer | Main technologies |
+| --- | --- |
+| Desktop | Electron 41 |
+| Interface | React 19, TypeScript 6, CSS design tokens |
+| Build | Vite 8, electron-builder |
+| Persistence | SQLite through better-sqlite3 |
+| Documents | PDF.js, KaTeX, Markdown rendering |
+| Agent runtime | OpenAI-compatible provider, tool dispatcher, MCP runtime |
+| Validation | Zod contracts across renderer, preload, main, and engine boundaries |
 
-### Prerequisites
+## Repository layout
 
-- **Node.js** 20 LTS or newer (developed on Node 25.6.0)
-- **npm** 10 or newer
-- **pdflatex** (optional, only for in-app LaTeX compilation) — install
-  [TeX Live](https://tug.org/texlive/) or [MiKTeX](https://miktex.org/)
-
-### Install from source
-
-```bash
-git clone https://github.com/TZUKWAN/metis-in-social-science.git
-cd metis-in-social-science
-npm install
+```text
+electron/                 Electron main process and desktop services
+engine/                   Agent, research, workflow, memory, and runtime contracts
+src/                      React application and visual design system
+src/personalization/      Personalization Center and supporting panels
+tests/                    Unit, integration, Electron, and frontend tests
+docs/                     Architecture, formats, guides, screenshots, release notes
+scripts/                  Build, release, packaging, and acceptance utilities
 ```
 
-### Development commands
+## Development quality gates
 
-```bash
-# Rebuild the native dependency for Electron.
-# Run this after install, after an Electron upgrade, or after running
-# Node-side tests (npm test rebuilds better-sqlite3 for Node ABI).
-npm run rebuild:electron
-
-# Start the Vite dev server and launch a visible Electron window.
-npm run dev:electron
-
-# Launch the already-built desktop application (no rebuild on launch).
-npm start
-
-# Run the full test suite (rebuilds for Node ABI, then runs Vitest).
-npm test
-
-# Lint with ESLint (flat config).
-npm run lint
-
-# Type-check app, engine, Node config, and Electron without emitting files.
+```powershell
 npm run typecheck
-
-# Build the production renderer/main-process output and rebuild native modules.
-npm run build
-```
-
-### Build a Windows installer
-
-```bash
-npm run dist
-```
-
-This runs the full release pipeline: source provenance, type-check, clean build,
-native rebuild, electron-builder packaging (NSIS + MSI), license/SBOM compliance,
-and release verification. Output lands in `release/`.
-
----
-
-## Configure Your AI Provider
-
-Metis connects to any **OpenAI-compatible** API. On first launch:
-
-1. Open **Settings**.
-2. Enter your **API Base URL** (for example, `https://api.openai.com/v1`).
-3. Enter your **API Key**.
-4. Enter your **Model** name (for example, `gpt-4o`).
-5. Click **Save**.
-
-The app validates the connection, encrypts the key with Electron `safeStorage`, and
-initializes the agent runtime. If secure OS-backed storage is unavailable, setup fails
-closed rather than persisting an unprotected key.
-All subsequent chat, goal execution, and eval runs use this provider.
-
----
-
-## Data Privacy and Sovereignty
-
-- **Local-first storage.** Research data — papers, notes, experiments, chat
-  transcripts, and settings — is stored under the application's user-data directory.
-  AI requests are sent only to the provider endpoint you configure.
-- **Bring-your-own provider.** The AI provider API key is stored encrypted with the
-  OS-native credential store and is transmitted only to the endpoint you configure.
-- **No required Metis cloud.** The desktop application does not require a Metis
-  account, cloud database, or hosted synchronization service.
-- **Secure by default.** File operations are sandboxed to allowed directories; shell
-  commands require human-in-the-loop approval; the renderer is isolated with
-  `contextIsolation` enabled and `nodeIntegration` disabled.
-
----
-
-## Security Model
-
-| Layer | Protection |
-|-------|-----------|
-| Renderer | `contextIsolation: true`, `nodeIntegration: false`, navigation locked to the app entry point |
-| File access | Path-traversal protection via an allow-listed read/write sandbox; symlink resolution before validation |
-| Shell commands | Restricted execution surface with capability checks and approval requirements |
-| Dangerous tools | Human-in-the-loop approval gate for `write_file`, `execute_command`, and similar operations |
-| API key storage | Encrypted with Electron `safeStorage`; setup refuses durable storage when encryption is unavailable |
-| External links | Validated IPC handler opens clean HTTPS links only; the renderer cannot navigate freely |
-
----
-
-## Engine Capabilities
-
-### AgentLoop
-Streaming chat with real-time token delivery, a bounded tool-use loop, skill prompt
-injection, and a hook system for extensibility.
-
-### Tool Ecosystem
-- **Built-in**: `read_file`, `write_file`, `execute_command`, `search_files`,
-  `web_search`, `read_pdf`
-- **MCP**: Connect external tool servers (filesystem, web search, databases) via the
-  Model Context Protocol
-- **Registry**: Dynamic tool registration with JSON-schema parameter validation
-
-### Workflow Engine
-Serial DAG execution with per-step AgentLoop invocation, pause / resume / retry / skip
-controls, and real-time progress streaming to the renderer.
-
-### Goal Engine
-Natural-language goal to auto-generated plan, with plan validation, decomposition,
-refinement via user feedback, and automatic archiving with memory extraction.
-
-### Eval System
-Pre-defined evaluation tasks (basic completion, tool use, constraint checking) with
-three quality-gate profiles — dev, candidate, and release — and results persisted to
-SQLite for trend tracking.
-
-### Memory System
-Project-scoped memory, conversation summaries, and cross-session key-decision
-extraction so the agent retains context across research sessions.
-
----
-
-## Tech Stack
-
-| Layer | Technology |
-|-------|-----------|
-| Desktop runtime | Electron 41 |
-| Frontend | React 19, Vite 8, TypeScript 6.0 |
-| State management | Zustand |
-| Styling | CSS Variables (light / dark themes) |
-| Internationalization | Custom hook-based (English / Chinese) |
-| Math rendering | KaTeX |
-| PDF rendering | pdfjs-dist |
-| Markdown | react-markdown, remark-gfm |
-| Code highlighting | Prism.js |
-| Terminal emulation | xterm.js |
-| Diagrams | React Flow |
-| Database | better-sqlite3 (WAL mode) |
-| Testing | Vitest 4, Testing Library |
-| Linting | ESLint 10 (flat config), typescript-eslint |
-
----
-
-## Testing
-
-```bash
-# Full suite
+npm run lint
 npm test
-
-# Single file
-npx vitest run tests/e2e/baseline.test.ts
-
-# With coverage
-npx vitest run --coverage
+npm run build:electron
 ```
 
-**Verified release baseline (2026-07-30): 3,271 tests passed across 186 test files, with zero
-failures, skips, or todos.** The baseline covers the engine, tools, persistence,
-security boundaries, memory, goals, MCP, renderer components, Electron contracts, and
-end-to-end workflows. The packaged Windows application also passed a nine-step desktop
-black-box flow covering navigation, PDF rendering, library import, note persistence,
-full process restart, backup export, and visible error recovery.
+The release workflow additionally produces provenance, dependency/license reports,
+package scans, and Windows assets. GUI acceptance uses disposable Electron profiles so
+development checks do not read or modify a normal user's projects or provider key.
 
----
+## Current limitations
 
-## Project Structure
-
-```
-metis-workbench/
-+- electron/           # Electron main process + preload bridge
-|   +- main.ts         # Window, IPC, provider init, lifecycle
-|   +- preload.ts      # Secure contextBridge IPC surface
-+- engine/             # Core TypeScript engine
-|   +- core/           # AgentLoop, types, hooks, secure storage
-|   +- tools/          # ToolRegistry, ToolDispatcher, built-in tools
-|   +- providers/      # OpenAI-compatible provider adapter
-|   +- workflow/       # WorkflowEngine, DAG execution
-|   +- goal/           # GoalEngine, GoalPlanner
-|   +- evals/          # EvalRunner, GateEvaluator
-|   +- memory/         # MemoryManager, project memory
-|   +- mcp/            # MCPManager, StdioTransport
-|   +- skills/         # SkillRegistry, default skills
-|   +- hitl/           # Human-in-the-loop approval system
-|   +- persistence/    # SQLite schema + PersistenceStore
-|   +- context/        # ContextEngine (token budget management)
-|   +- evidence/       # EvidenceLedger
-|   +- behavior/       # BehaviorRegistry
-|   +- runtime/        # IPC contracts and decoders
-|   +- artifacts/      # Artifact manifests
-|   +- export/         # Research export builder
-|   +- latex/          # LaTeX log parser
-|   +- writing/        # Current-affairs research services
-+- src/                # Renderer (React)
-|   +- pages/          # 12 page components
-|   +- components/     # Reusable UI components
-|   +- i18n/           # English / Chinese strings
-|   +- store.ts        # Zustand store
-|   +- App.tsx         # Root app + routing
-|   +- App.css         # Global styles + theme variables
-+- tests/              # Test suite
-+- docs/               # Documentation and architecture records
-+- build/              # Icons and build assets
-+- package.json
-```
-
----
-
-## Roadmap
-
-- [ ] Authenticode code signing for Windows installers
-- [ ] macOS (dmg) and Linux (AppImage) builds
-- [ ] Plugin SDK for custom tools and skills
-- [ ] Citation manager integration (Zotero, Mendeley)
-- [ ] Collaborative research workspaces (optional, local-network)
-- [ ] RAG-based semantic search across the paper library
-
----
+- This is an alpha release. Back up important research material before upgrading.
+- The packaged release currently targets Windows x64.
+- Installers may be unsigned and can trigger SmartScreen.
+- A compatible model API and the user's own provider credentials are required for AI
+  responses.
+- Metis deliberately ships without preconfigured research scenarios. Users must create
+  or import the configurations they want.
+- Presentation generation is not included as a built-in scenario. The product leaves
+  that design space open for a future user-defined layout system.
+- Some export workflows require external software, such as a TeX distribution.
 
 ## Contributing
 
-This project is in early alpha. Bug reports and focused pull requests are welcome.
-Before opening an issue, search the existing tracker; when reporting a defect, include
-the Metis version, Windows version, reproduction steps, expected behavior, and relevant
-logs with credentials and private research content removed.
+Contributions are welcome in the form of bug reports, reproducible examples,
+documentation improvements, interface refinements, new research adapters, Skills, MCP
+integrations, and runtime improvements.
 
-- [Open an issue](https://github.com/TZUKWAN/metis-in-social-science/issues/new)
-- [View releases](https://github.com/TZUKWAN/metis-in-social-science/releases)
+Before opening a pull request:
 
-### Development setup checklist
+1. Create a focused branch.
+2. Keep generated artifacts and local user data out of the commit.
+3. Run type checking and the relevant tests.
+4. Describe the user-visible behavior and how it was verified.
+5. Include screenshots for interface changes.
 
-1. `npm install`
-2. `npm run rebuild:electron` (critical — see the note below)
-3. `npm run typecheck` — confirm no type errors
-4. `npm test` — confirm the baseline passes
-5. `npm run dev:electron` — launch the dev build
-
-> **Native module note.** The `npm test` script rebuilds `better-sqlite3` for the
-> Node.js ABI. After running tests, you **must** run `npm run rebuild:electron`
-> before launching the Electron app again, otherwise SQLite will fail to load with
-> an `NODE_MODULE_VERSION` mismatch. This is expected behavior, not a bug.
-
----
+See [CONTRIBUTING.md](CONTRIBUTING.md) and
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for repository guidelines.
 
 ## License
 
 Metis in Social Science is licensed under the
-[Apache License 2.0](LICENSE). The `private` package flag prevents accidental npm
-publication; it does not restrict use under the repository license.
+[Apache License 2.0](LICENSE).
 
----
+## Project status
 
-## Acknowledgements
-
-Metis Research Workbench is built on outstanding open-source projects, including
-Electron, React, Vite, better-sqlite3, pdf.js, KaTeX, xterm.js, React Flow, and many
-others. Full third-party license information is bundled with each release
-(`LICENSES.chromium.html` and SBOM provenance under `release/evidence/`).
+Metis is under active development. The goal is a research workbench that is free enough
+to adapt to different scholars and structured enough to preserve evidence, context, and
+reproducibility across long projects.

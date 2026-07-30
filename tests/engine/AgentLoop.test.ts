@@ -34,6 +34,7 @@ class MultiTurnProvider extends BaseProvider {
   private callIndex = 0;
   private readonly responses: NormalizedResponse[];
   readonly receivedMessages: ChatMessage[][] = [];
+  readonly receivedToolNames: string[][] = [];
 
   constructor(responses: NormalizedResponse[]) {
     super();
@@ -56,7 +57,7 @@ class MultiTurnProvider extends BaseProvider {
 
   async complete(messages: ChatMessage[], tools?: ToolSpec[]): Promise<NormalizedResponse> {
     this.receivedMessages.push(messages.map((m) => ({ ...m })));
-    void tools;
+    this.receivedToolNames.push((tools ?? []).map((tool) => tool.name));
     const idx = Math.min(this.callIndex, this.responses.length - 1);
     this.callIndex++;
     return this.responses[idx];
@@ -150,6 +151,15 @@ describe('AgentLoop', () => {
     expect(result.turnsUsed).toBe(1);
     expect(result.toolResults).toHaveLength(0);
     expect(result.errors).toHaveLength(0);
+  });
+
+  it('treats an explicit empty scenario allowlist as no tools, not all tools', async () => {
+    const { loop, provider } = setupLoop([
+      { content: 'No tools required.', toolCalls: [], finishReason: 'stop', usage: makeUsage() },
+    ]);
+    const result = await loop.run(makeRequest({ allowedTools: [] }));
+    expect(result.status).toBe('completed');
+    expect(provider.receivedToolNames).toEqual([[]]);
   });
 
   it('dispatches tool calls and loops until completion', async () => {

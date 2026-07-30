@@ -19,6 +19,7 @@ import ProjectShell from '../../src/shell/ProjectShell.js';
 import type { ChatPageLayoutSlots } from '../../src/pages/ChatPage.js';
 import type { FileCapabilityDescriptor, FileCapabilityUseResult } from '../../engine/runtime/FileCapabilityContract.js';
 import type { PaperDownloadResult } from '../../engine/runtime/PaperRuntimeContract.js';
+import { buildBuiltinPersonalizationDefinitions } from '../fixtures/personalization/legacyBuiltinDefinitions.js';
 
 function makePdfCapability(overrides?: Partial<FileCapabilityDescriptor>): FileCapabilityDescriptor {
   const now = Date.now();
@@ -3247,8 +3248,12 @@ describe('ChatPage', () => {
         'session-regenerate',
         [expect.objectContaining({ role: 'user', content: '原始问题' })],
         undefined,
-        { mode: 'regenerate' },
+        expect.objectContaining({
+          mode: 'regenerate',
+          projectId: 'global',
+        }),
       ));
+      expect(Object.hasOwn(agentChat.mock.calls[0]?.[3] ?? {}, 'scenarioId')).toBe(false);
       await screen.findByText('替换后的回答');
       expect(screen.queryByText('旧回答')).toBeNull();
       expect(appendMessage).not.toHaveBeenCalled();
@@ -3298,8 +3303,12 @@ describe('ChatPage', () => {
           expect.objectContaining({ role: 'user', content: '请生成结构化分析' }),
         ]),
         undefined,
-        { mode: 'send' },
+        expect.objectContaining({
+          mode: 'send',
+          projectId: 'global',
+        }),
       );
+      expect(Object.hasOwn(agentChat.mock.calls[0]?.[3] ?? {}, 'scenarioId')).toBe(false);
 
       await waitFor(() => {
         const preview = container.querySelector('.artifact-live-preview');
@@ -3333,6 +3342,136 @@ describe('ChatPage', () => {
       expect(appendMessage).not.toHaveBeenCalled();
     } finally {
       window.metis = originalMetis;
+    }
+  });
+
+  it('allows live instructions and interruption while an agent run is active', async () => {
+    resetStore();
+    const originalMetis = window.metis;
+    const pending = deferred<unknown>();
+    const agentChat = vi.fn().mockReturnValue(pending.promise);
+    const agentControl = vi.fn().mockImplementation((request: { operationId: string; action: 'instruction' | 'interrupt' }) => Promise.resolve({
+      ok: true,
+      contractVersion: 1,
+      operationId: request.operationId,
+      action: request.action,
+      sequence: request.action === 'instruction' ? 1 : 2,
+    }));
+    window.metis = {
+      listSessions: vi.fn().mockResolvedValue([{
+        id: 'session-live',
+        createdAt: 1,
+        lastActivity: 1,
+        messageCount: 0,
+        metadata: { title: '实时引导' },
+      }]),
+      getMessages: vi.fn().mockResolvedValue([]),
+      listArtifacts: vi.fn().mockResolvedValue([]),
+      listSkills: vi.fn().mockResolvedValue([]),
+      getActiveSkill: vi.fn().mockResolvedValue({ active: null }),
+      agentChat,
+      agentControl,
+    } as unknown as typeof window.metis;
+
+    try {
+      const { default: ChatPage } = await import('../../src/pages/ChatPage');
+      render(<ChatPage renderLayout={renderChatProjectShell} />);
+      const initialInput = await screen.findByPlaceholderText('提出一个研究问题...');
+      fireEvent.change(initialInput, { target: { value: '/chat 启动长任务' } });
+      fireEvent.click(screen.getByText('发送'));
+      await waitFor(() => expect(agentChat).toHaveBeenCalledTimes(1));
+
+      const steeringInput = await screen.findByPlaceholderText('输入新指令，实时引导当前任务…');
+      expect((steeringInput as HTMLTextAreaElement).disabled).toBe(false);
+      fireEvent.change(steeringInput, { target: { value: '改为比较案例研究' } });
+      fireEvent.click(screen.getByText('引导'));
+      await waitFor(() => expect(agentControl).toHaveBeenCalledWith(expect.objectContaining({
+        contractVersion: 1,
+        sessionId: 'session-live',
+        action: 'instruction',
+        content: '改为比较案例研究',
+      })));
+      expect(screen.getByText('改为比较案例研究')).toBeDefined();
+
+      fireEvent.click(screen.getByRole('button', { name: '打断当前任务' }));
+      await waitFor(() => expect(agentControl).toHaveBeenCalledWith(expect.objectContaining({
+        contractVersion: 1,
+        sessionId: 'session-live',
+        action: 'interrupt',
+      })));
+      pending.resolve({
+        version: 1,
+        turnId: 'turn-live',
+        status: 'interrupted',
+        answer: '',
+        diagnostics: [{ severity: 'error', code: 'agent_interrupted' }],
+        citations: [],
+        events: [],
+      });
+      await waitFor(() => expect(screen.getByText('发送')).toBeDefined());
+    } finally {
+      window.metis = originalMetis;
+    }
+  });
+
+  it('selects a user-created scenario and binds it to the chat request', async () => {
+    resetStore();
+    window.localStorage.removeItem('metis:active-scenario-id');
+    const originalMetis = window.metis;
+    const agentChat = vi.fn().mockResolvedValue(completedAgentResponse('定性场景回答'));
+    const scenarios = buildBuiltinPersonalizationDefinitions().filter((definition) => (
+      definition.kind === 'scenario'
+      && ['builtin:scenarios/general-research', 'builtin:scenarios/article-qualitative'].includes(definition.id)
+    )).map((definition, index) => ({
+      ...definition,
+      id: index === 0 ? 'user:scenarios/general' : 'user:scenarios/qualitative',
+      name: index === 0 ? '我的研究场景' : '我的定性研究',
+      provenance: {
+        ...definition.provenance,
+        origin: 'user' as const,
+        parentId: null,
+        parentVersion: null,
+        locallyModified: true,
+      },
+    }));
+    window.metis = {
+      listSessions: vi.fn().mockResolvedValue([{
+        id: 'session-scenario',
+        createdAt: 1,
+        lastActivity: 1,
+        messageCount: 0,
+        metadata: { title: '场景选择' },
+      }]),
+      getMessages: vi.fn().mockResolvedValue([]),
+      listArtifacts: vi.fn().mockResolvedValue([]),
+      listSkills: vi.fn().mockResolvedValue([]),
+      getActiveSkill: vi.fn().mockResolvedValue({ active: null }),
+      listPersonalization: vi.fn().mockResolvedValue({ ok: true, definitions: scenarios }),
+      agentChat,
+    } as unknown as typeof window.metis;
+
+    try {
+      const { default: ChatPage } = await import('../../src/pages/ChatPage');
+      render(<ChatPage renderLayout={renderChatProjectShell} />);
+      const selector = await screen.findByRole('combobox', { name: '当前场景' });
+      fireEvent.change(selector, { target: { value: 'user:scenarios/qualitative' } });
+      const input = screen.getByPlaceholderText('提出一个研究问题...');
+      fireEvent.change(input, { target: { value: '/chat 设计一个定性研究' } });
+      fireEvent.click(screen.getByText('发送'));
+      await waitFor(() => expect(agentChat).toHaveBeenCalledWith(
+        'session-scenario',
+        expect.any(Array),
+        undefined,
+        expect.objectContaining({
+          mode: 'send',
+          scenarioId: 'user:scenarios/qualitative',
+          projectId: 'global',
+        }),
+      ));
+      expect(window.localStorage.getItem('metis:active-scenario-id')).toBe('user:scenarios/qualitative');
+    } finally {
+      window.metis = originalMetis;
+      window.localStorage.removeItem('metis:active-scenario-id');
     }
   });
 });

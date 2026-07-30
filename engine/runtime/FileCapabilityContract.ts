@@ -130,6 +130,9 @@ export const FileCapabilityPurposeSchema = z.enum([
   'artifact-attachment',
   'research-source',
   'analysis-dataset',
+  'personalization-skill-package',
+  'personalization-skill-directory',
+  'funding-template',
 ]);
 export type FileCapabilityPurpose = z.infer<typeof FileCapabilityPurposeSchema>;
 
@@ -152,6 +155,14 @@ export const FileCapabilityImportRequestSchema = z.strictObject({
   displayName: FileCapabilityDisplayNameSchema,
   mime: FileCapabilityMimeSchema,
   data: ImportedByteArraySchema,
+}).superRefine((value, context) => {
+  if (value.purpose === 'personalization-skill-directory') {
+    context.addIssue({
+      code: 'custom',
+      path: ['purpose'],
+      message: 'Directory capabilities cannot be created from imported file bytes',
+    });
+  }
 });
 export type FileCapabilityImportRequest = z.infer<typeof FileCapabilityImportRequestSchema>;
 

@@ -105,6 +105,8 @@
   --status-failed: #c53030;
   --status-failed-bg: #fff5f5;
   --status-danger: #c53030;
+  --danger: var(--status-failed);
+  --success: var(--status-completed);
 
   /* Evidence status */
   --evidence-verified: #2f855a;
@@ -197,6 +199,8 @@
   --status-failed: #fc8181;
   --status-failed-bg: rgba(252, 129, 129, 0.12);
   --status-danger: #fc8181;
+  --danger: var(--status-failed);
+  --success: var(--status-completed);
 
   --evidence-verified: #68d391;
   --evidence-pending: #f0bd84;

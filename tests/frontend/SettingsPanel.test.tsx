@@ -77,6 +77,7 @@ beforeEach(async () => {
       content: '',
       version: 0,
       contentHash: '',
+      projectId: 'test-project-001',
     }),
     setWorkspaceAgents: vi.fn().mockResolvedValue({
       success: true,
@@ -264,21 +265,31 @@ describe('SettingsPanel — test connection empty key rejection', () => {
   });
 });
 
-// ─── Workspace AGENTS.md tests ────────────────────────────────
+// ─── Project Metis.md tests ───────────────────────────────────
 
-describe('SettingsPanel — workspace AGENTS.md', () => {
+describe('SettingsPanel — project Metis.md compatibility entry', () => {
+  it('uses canonical English Metis.md naming in the compatibility UI', async () => {
+    useMetisStore.setState({ locale: 'en' });
+    await renderPanelSettled();
+    expect(screen.getByRole('heading', { name: 'Project Rules (Metis.md)' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Save Metis.md' })).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Save Agents' })).toBeNull();
+    expect(document.body.textContent).not.toContain('Agent workspace service');
+  });
+
   it('loads agents content on mount', async () => {
     mockMetis.getWorkspaceAgents.mockResolvedValue({
       exists: true,
-      content: '# AGENTS.md\n\nTest rules\n',
+      content: '# Metis.md\n\nTest rules\n',
       version: 2,
       contentHash: 'hash123',
+      projectId: 'test-project-001',
     });
     await renderPanelSettled();
     await waitFor(() => expect(mockMetis.getWorkspaceAgents).toHaveBeenCalled());
     const textarea = document.getElementById('agents-textarea') as HTMLTextAreaElement;
     await waitFor(() => {
-      expect(textarea.value).toContain('Test rules');
+    expect(textarea.value).toContain('Test rules');
     });
   });
 
@@ -288,6 +299,7 @@ describe('SettingsPanel — workspace AGENTS.md', () => {
       content: 'original',
       version: 3,
       contentHash: 'hash3',
+      projectId: 'test-project-001',
     });
     await renderPanelSettled();
     await waitFor(() => expect(mockMetis.getWorkspaceAgents).toHaveBeenCalled());
@@ -310,6 +322,7 @@ describe('SettingsPanel — workspace AGENTS.md', () => {
       content: 'original',
       version: 1,
       contentHash: 'hash1',
+      projectId: 'test-project-001',
     });
     mockMetis.setWorkspaceAgents.mockResolvedValue({
       success: false,
@@ -333,29 +346,36 @@ describe('SettingsPanel — workspace AGENTS.md', () => {
     });
   });
 
-  it('conflict: Keep Local resolves conflict without overwriting', async () => {
-    mockMetis.getWorkspaceAgents.mockResolvedValue({ exists: true, content: 'server', version: 2, contentHash: 'h2' });
-    mockMetis.setWorkspaceAgents.mockResolvedValue({ success: false, code: 'cas_conflict', currentVersion: 5, currentContentHash: 'h5' });
+  it('conflict: Keep Local Draft preserves content and rebases the next CAS save', async () => {
+    mockMetis.getWorkspaceAgents
+      .mockResolvedValueOnce({ exists: true, content: 'server', version: 2, contentHash: 'h2', projectId: 'test-project-001' })
+      .mockResolvedValueOnce({ exists: true, content: 'new disk', version: 5, contentHash: 'h5', projectId: 'test-project-001' });
+    mockMetis.setWorkspaceAgents
+      .mockResolvedValueOnce({ success: false, code: 'cas_conflict', currentVersion: 5, currentContentHash: 'h5' })
+      .mockResolvedValueOnce({ success: true, code: 'saved', version: 6, contentHash: 'h6' });
     await renderPanelSettled();
     await waitFor(() => expect(mockMetis.getWorkspaceAgents).toHaveBeenCalled());
     const textarea = document.getElementById('agents-textarea') as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: 'my local edit' } });
     fireEvent.click(screen.getByTestId('agents-save'));
-    await waitFor(() => expect(screen.getByText('保留我的')).toBeDefined());
-    fireEvent.click(screen.getByText('保留我的'));
+    await waitFor(() => expect(screen.getByText('保留本地')).toBeDefined());
+    fireEvent.click(screen.getByText('保留本地'));
     await waitFor(() => expect(textarea.value).toBe('my local edit'));
+    fireEvent.click(screen.getByTestId('agents-save'));
+    await waitFor(() => expect(mockMetis.setWorkspaceAgents).toHaveBeenCalledTimes(2));
+    expect(mockMetis.setWorkspaceAgents.mock.calls[1]).toEqual(['test-project-001', 'my local edit', 5]);
   });
 
-  it('conflict: Use Server replaces draft with server version', async () => {
-    mockMetis.getWorkspaceAgents.mockResolvedValue({ exists: true, content: 'server content', version: 5, contentHash: 'h5' });
+  it('conflict: Use Disk Version replaces draft with disk content', async () => {
+    mockMetis.getWorkspaceAgents.mockResolvedValue({ exists: true, content: 'server content', version: 5, contentHash: 'h5', projectId: 'test-project-001' });
     mockMetis.setWorkspaceAgents.mockResolvedValue({ success: false, code: 'cas_conflict', currentVersion: 5, currentContentHash: 'h5' });
     await renderPanelSettled();
     await waitFor(() => expect(mockMetis.getWorkspaceAgents).toHaveBeenCalled());
     const textarea = document.getElementById('agents-textarea') as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: 'my draft' } });
     fireEvent.click(screen.getByTestId('agents-save'));
-    await waitFor(() => expect(screen.getByText('采用服务器版本')).toBeDefined());
-    fireEvent.click(screen.getByText('采用服务器版本'));
+    await waitFor(() => expect(screen.getByText('采用磁盘版本')).toBeDefined());
+    fireEvent.click(screen.getByText('采用磁盘版本'));
     await waitFor(() => expect(textarea.value).toBe('server content'));
   });
 
@@ -373,7 +393,7 @@ describe('SettingsPanel — workspace AGENTS.md', () => {
   it('stale save response: A save pending → switch to B → resolve A, B unchanged', async () => {
     const { researchWorkspaceStore } = await import('../../src/research/researchWorkspaceStore');
     researchWorkspaceStore.setState({ activeProjectId: 'proj-A' });
-    mockMetis.getWorkspaceAgents.mockResolvedValue({ exists: true, content: 'A content', version: 1, contentHash: 'hA' });
+    mockMetis.getWorkspaceAgents.mockResolvedValue({ exists: true, content: 'A content', version: 1, contentHash: 'hA', projectId: 'proj-A' });
     await renderPanelSettled();
     await waitFor(() => expect(mockMetis.getWorkspaceAgents).toHaveBeenCalled());
 
@@ -388,7 +408,7 @@ describe('SettingsPanel — workspace AGENTS.md', () => {
     expect(mockMetis.setWorkspaceAgents).toHaveBeenCalled();
 
     // Switch to Project B — must reset save status to idle
-    mockMetis.getWorkspaceAgents.mockResolvedValue({ exists: true, content: 'B content', version: 2, contentHash: 'hB' });
+    mockMetis.getWorkspaceAgents.mockResolvedValue({ exists: true, content: 'B content', version: 2, contentHash: 'hB', projectId: 'proj-B' });
     await act(async () => { researchWorkspaceStore.setState({ activeProjectId: 'proj-B' }); await Promise.resolve(); });
     await waitFor(() => expect(textarea.value).toBe('B content'));
 
@@ -411,7 +431,7 @@ describe('SettingsPanel — workspace AGENTS.md', () => {
   });
 
   it('stale save response: A save pending → continue editing A → resolve, stays dirty with updated version', async () => {
-    mockMetis.getWorkspaceAgents.mockResolvedValue({ exists: true, content: 'A content', version: 1, contentHash: 'hA' });
+    mockMetis.getWorkspaceAgents.mockResolvedValue({ exists: true, content: 'A content', version: 1, contentHash: 'hA', projectId: 'test-project-001' });
     await renderPanelSettled();
     await waitFor(() => expect(mockMetis.getWorkspaceAgents).toHaveBeenCalled());
 
@@ -451,7 +471,7 @@ describe('SettingsPanel — workspace AGENTS.md', () => {
   });
 
   it('stale save response: two rapid saves, only latest completes', async () => {
-    mockMetis.getWorkspaceAgents.mockResolvedValue({ exists: true, content: 'content', version: 1, contentHash: 'h1' });
+    mockMetis.getWorkspaceAgents.mockResolvedValue({ exists: true, content: 'content', version: 1, contentHash: 'h1', projectId: 'test-project-001' });
     await renderPanelSettled();
     await waitFor(() => expect(mockMetis.getWorkspaceAgents).toHaveBeenCalled());
 
@@ -480,7 +500,7 @@ describe('SettingsPanel — workspace AGENTS.md', () => {
   it('stale save response: draft cache preserved when newer draft exists', async () => {
     const { researchWorkspaceStore } = await import('../../src/research/researchWorkspaceStore');
     researchWorkspaceStore.setState({ activeProjectId: 'proj-A' });
-    mockMetis.getWorkspaceAgents.mockResolvedValue({ exists: true, content: 'A content', version: 1, contentHash: 'hA' });
+    mockMetis.getWorkspaceAgents.mockResolvedValue({ exists: true, content: 'A content', version: 1, contentHash: 'hA', projectId: 'proj-A' });
     await renderPanelSettled();
     await waitFor(() => expect(mockMetis.getWorkspaceAgents).toHaveBeenCalled());
 
@@ -503,7 +523,13 @@ describe('SettingsPanel — workspace AGENTS.md', () => {
     await new Promise((r) => setTimeout(r, 20));
 
     // Now switch to project B, then back to A — draft should be clean (saved by save 2)
-    mockMetis.getWorkspaceAgents.mockResolvedValue({ exists: true, content: 'edit v2', version: 2, contentHash: 'h2' });
+    mockMetis.getWorkspaceAgents.mockImplementation((projectId: string) => Promise.resolve({
+      exists: true,
+      content: projectId === 'proj-A' ? 'edit v2' : 'B content',
+      version: 2,
+      contentHash: projectId === 'proj-A' ? 'h2' : 'hB',
+      projectId,
+    }));
     await act(async () => { researchWorkspaceStore.setState({ activeProjectId: 'proj-B' }); await Promise.resolve(); });
     await act(async () => { researchWorkspaceStore.setState({ activeProjectId: 'proj-A' }); await Promise.resolve(); });
     await waitFor(() => expect(textarea.value).toBe('edit v2'));
@@ -518,6 +544,47 @@ describe('SettingsPanel — workspace AGENTS.md', () => {
 });
 
 describe('SettingsPanel — project switch draft persistence', () => {
+  it('hides and blocks project A rules immediately while project B authorization is pending', async () => {
+    const { researchWorkspaceStore } = await import('../../src/research/researchWorkspaceStore');
+    researchWorkspaceStore.setState({ activeProjectId: 'proj-A' });
+    let resolveProjectB!: (view: {
+      exists: true;
+      content: string;
+      version: number;
+      contentHash: string;
+      projectId: string;
+    }) => void;
+    const projectBLoad = new Promise<{
+      exists: true;
+      content: string;
+      version: number;
+      contentHash: string;
+      projectId: string;
+    }>((resolve) => { resolveProjectB = resolve; });
+    mockMetis.getWorkspaceAgents.mockImplementation((projectId: string) => projectId === 'proj-A'
+      ? Promise.resolve({ exists: true, content: 'A private rules', version: 1, contentHash: 'hA', projectId })
+      : projectBLoad);
+
+    await renderPanelSettled();
+    const textarea = document.getElementById('agents-textarea') as HTMLTextAreaElement;
+    await waitFor(() => expect(textarea.value).toBe('A private rules'));
+
+    await act(async () => {
+      researchWorkspaceStore.setState({ activeProjectId: 'proj-B' });
+      await Promise.resolve();
+    });
+    expect(textarea.value).toBe('');
+    expect(textarea.disabled).toBe(true);
+    expect(screen.getByTestId('agents-save')).toHaveProperty('disabled', true);
+
+    await act(async () => {
+      resolveProjectB({ exists: true, content: 'B authorized rules', version: 2, contentHash: 'hB', projectId: 'proj-B' });
+      await projectBLoad;
+    });
+    await waitFor(() => expect(textarea.value).toBe('B authorized rules'));
+    expect(textarea.disabled).toBe(false);
+  });
+
   it('project switch: A dirty→B→A preserves drafts and B save does not write A content', async () => {
     const { researchWorkspaceStore } = await import('../../src/research/researchWorkspaceStore');
     // Project A: load and edit
@@ -734,7 +801,7 @@ describe('SettingsPanel — accessibility', () => {
   // ── FIX-METIS-490 red tests (must fail before a11y fixes) ──
 
   it('BUG#1 RED: agents alert container has tabIndex={-1} for focus()', async () => {
-    mockMetis.getWorkspaceAgents.mockResolvedValue({ exists: true, content: 'orig', version: 1, contentHash: 'h1' });
+    mockMetis.getWorkspaceAgents.mockResolvedValue({ exists: true, content: 'orig', version: 1, contentHash: 'h1', projectId: 'test-project-001' });
     mockMetis.setWorkspaceAgents.mockResolvedValue({ success: false, code: 'cas_conflict', currentVersion: 5, currentContentHash: 'h5' });
     await renderPanelSettled();
     await waitFor(() => expect(mockMetis.getWorkspaceAgents).toHaveBeenCalled());
@@ -767,7 +834,7 @@ describe('SettingsPanel — accessibility', () => {
   });
 
   it('BUG#3 GREEN: AGENTS conflict only in role="alert", no duplicate in status', async () => {
-    mockMetis.getWorkspaceAgents.mockResolvedValue({ exists: true, content: 'orig', version: 1, contentHash: 'h1' });
+    mockMetis.getWorkspaceAgents.mockResolvedValue({ exists: true, content: 'orig', version: 1, contentHash: 'h1', projectId: 'test-project-001' });
     mockMetis.setWorkspaceAgents.mockResolvedValue({ success: false, code: 'cas_conflict', currentVersion: 5, currentContentHash: 'h5' });
     await renderPanelSettled();
     await waitFor(() => expect(mockMetis.getWorkspaceAgents).toHaveBeenCalled());
@@ -790,25 +857,46 @@ describe('SettingsPanel — accessibility', () => {
 // ─── External conflict on load ─────────────────────────────────
 
 describe('SettingsPanel — external conflict on get', () => {
-  it('shows conflict immediately when getWorkspaceAgents returns externalConflict', async () => {
+  it('rejects a workspace response bound to a different project and never exposes its content', async () => {
+    mockMetis.getWorkspaceAgents.mockResolvedValue({
+      exists: true,
+      content: 'PROJECT-B-SECRET-MUST-NOT-ENTER-A',
+      version: 9,
+      contentHash: 'project-b-hash',
+      projectId: 'project-b',
+    });
+    await renderPanelSettled();
+
+    const textarea = document.getElementById('agents-textarea') as HTMLTextAreaElement;
+    await waitFor(() => expect(screen.getByTestId('agents-save').getAttribute('data-status')).toBe('error'));
+    expect(textarea.value).toBe('');
+    expect(textarea.disabled).toBe(true);
+    expect(screen.getByTestId('agents-save')).toHaveProperty('disabled', true);
+    expect(mockMetis.setWorkspaceAgents).not.toHaveBeenCalled();
+  });
+
+  it('blocks editing immediately when getWorkspaceAgents returns externalConflict', async () => {
     mockMetis.getWorkspaceAgents.mockResolvedValue({
       exists: true,
       content: '',
       version: 0,
       contentHash: '',
       externalConflict: true,
+      projectId: 'test-project-001',
     });
     await renderPanelSettled();
     await waitFor(() => expect(mockMetis.getWorkspaceAgents).toHaveBeenCalled());
 
-    // Status must be 'conflict' immediately
-    expect(screen.getByTestId('agents-save').getAttribute('data-status')).toBe('conflict');
+    // Integrity conflicts are not ordinary CAS conflicts and cannot be rebased in the renderer.
+    expect(screen.getByTestId('agents-save').getAttribute('data-status')).toBe('error');
     // Save button must be disabled
     const saveBtn = screen.getByTestId('agents-save') as HTMLButtonElement;
     expect(saveBtn.disabled).toBe(true);
     // Textarea should be empty (not loaded)
     const textarea = document.getElementById('agents-textarea') as HTMLTextAreaElement;
     expect(textarea.value).toBe('');
+    expect(textarea.disabled).toBe(true);
+    expect(screen.queryByTestId('agents-keep-local')).toBeNull();
   });
 
   it('project_not_found from setWorkspaceAgents shows error status', async () => {
@@ -817,6 +905,7 @@ describe('SettingsPanel — external conflict on get', () => {
       content: 'editable content',
       version: 1,
       contentHash: 'h1',
+      projectId: 'test-project-001',
     });
     mockMetis.setWorkspaceAgents.mockResolvedValue({
       success: false,
@@ -848,7 +937,7 @@ describe('SettingsPanel — stale auto-idle timer', () => {
     // to fake timers before the save that schedules the 2s idle timeout.
     const { researchWorkspaceStore } = await import('../../src/research/researchWorkspaceStore');
     researchWorkspaceStore.setState({ activeProjectId: 'proj-A' });
-    mockMetis.getWorkspaceAgents.mockResolvedValue({ exists: true, content: 'A', version: 1, contentHash: 'hA' });
+    mockMetis.getWorkspaceAgents.mockResolvedValue({ exists: true, content: 'A', version: 1, contentHash: 'hA', projectId: 'proj-A' });
     mockMetis.setWorkspaceAgents.mockResolvedValue({ success: true, code: 'saved', version: 2, contentHash: 'hA2' });
 
     await renderPanelSettled();
@@ -865,7 +954,7 @@ describe('SettingsPanel — stale auto-idle timer', () => {
     expect(screen.getByTestId('agents-save').getAttribute('data-status')).toBe('saved');
 
     // Switch to project B — timer from project A must NOT corrupt B
-    mockMetis.getWorkspaceAgents.mockResolvedValue({ exists: true, content: 'B', version: 1, contentHash: 'hB' });
+    mockMetis.getWorkspaceAgents.mockResolvedValue({ exists: true, content: 'B', version: 1, contentHash: 'hB', projectId: 'proj-B' });
     await act(async () => { researchWorkspaceStore.setState({ activeProjectId: 'proj-B' }); vi.advanceTimersByTime(500); });
     expect(textarea.value).toBe('B');
 
@@ -880,7 +969,7 @@ describe('SettingsPanel — stale auto-idle timer', () => {
 
   it('auto-idle timer does not fire when newer save superseded it', async () => {
     // Real timers for initial render, fake timers for save sequence
-    mockMetis.getWorkspaceAgents.mockResolvedValue({ exists: true, content: 'X', version: 1, contentHash: 'hX' });
+    mockMetis.getWorkspaceAgents.mockResolvedValue({ exists: true, content: 'X', version: 1, contentHash: 'hX', projectId: 'test-project-001' });
 
     await renderPanelSettled();
     await waitFor(() => expect(mockMetis.getWorkspaceAgents).toHaveBeenCalled());

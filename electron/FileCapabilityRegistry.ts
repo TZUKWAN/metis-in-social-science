@@ -4,12 +4,14 @@ import { randomBytes } from 'node:crypto';
 import {
   FileCapabilityDescriptorSchema,
   FileCapabilityIdSchema,
+  FileCapabilityPurposeSchema,
   createFileCapabilityFailure,
   decodeFileCapabilityUseRequest,
   type FileCapabilityDescriptor,
   type FileCapabilityFailure,
   type FileCapabilityKind,
   type FileCapabilityOperation,
+  type FileCapabilityPurpose,
   type FileCapabilityUseRequest,
 } from '../engine/runtime/FileCapabilityContract.js';
 import type { ExecutionOwnerIdentity } from './ExecutionCapabilityRegistry.js';
@@ -36,6 +38,8 @@ export interface IssueFileCapabilityInput {
   mime?: string;
   displayName?: string;
   operations: readonly FileCapabilityOperation[];
+  /** Main-process purpose binding. It is deliberately absent from the renderer descriptor. */
+  purpose?: FileCapabilityPurpose;
   ttlMs?: number;
 }
 
@@ -56,10 +60,17 @@ export type FileCapabilityResolution =
       failure: FileCapabilityFailure;
     };
 
+export interface BoundFileCapabilityRequirement {
+  purpose: FileCapabilityPurpose;
+  kind: FileCapabilityKind;
+  operation: FileCapabilityOperation;
+}
+
 interface FileCapabilityEntry {
   capability: FileCapabilityDescriptor;
   resolvedPath: string;
   ownerKey: string;
+  purpose: FileCapabilityPurpose | null;
 }
 
 function isBoundedInteger(value: number, minimum: number, maximum: number): boolean {
@@ -162,6 +173,7 @@ export class FileCapabilityRegistry {
       || input.path.length === 0
       || !path.isAbsolute(input.path)
       || !Array.isArray(input.operations)
+      || (input.purpose !== undefined && !FileCapabilityPurposeSchema.safeParse(input.purpose).success)
     ) {
       return createFileCapabilityFailure();
     }
@@ -208,24 +220,72 @@ export class FileCapabilityRegistry {
       capability: cloneCapability(parsed.data),
       resolvedPath,
       ownerKey,
+      purpose: input.purpose ?? null,
     };
     this.#entries.set(capabilityId, entry);
     return { success: true, capability: cloneCapability(entry.capability) };
   }
 
-  resolve(input: unknown, owner: ExecutionOwnerIdentity): FileCapabilityResolution {
-    return this.#resolve(input, owner, false);
+  resolve(
+    input: unknown,
+    owner: ExecutionOwnerIdentity,
+    expectedPurpose?: FileCapabilityPurpose,
+  ): FileCapabilityResolution {
+    return this.#resolve(input, owner, false, expectedPurpose);
   }
 
   /** One-shot authorization used for ingestion. A successful consume cannot be replayed. */
-  consume(input: unknown, owner: ExecutionOwnerIdentity): FileCapabilityResolution {
-    return this.#resolve(input, owner, true);
+  consume(
+    input: unknown,
+    owner: ExecutionOwnerIdentity,
+    expectedPurpose?: FileCapabilityPurpose,
+  ): FileCapabilityResolution {
+    return this.#resolve(input, owner, true, expectedPurpose);
+  }
+
+  /**
+   * Atomically consumes one capability against a trusted main-process mapping.
+   * The renderer supplies only the opaque ID; purpose, kind, and operation are
+   * selected from the stored grant in one lookup, never by sequential fallback.
+   */
+  consumeMatching(
+    capabilityId: unknown,
+    owner: ExecutionOwnerIdentity,
+    requirements: readonly BoundFileCapabilityRequirement[],
+  ): FileCapabilityResolution {
+    const parsedId = FileCapabilityIdSchema.safeParse(capabilityId);
+    const ownerKey = createOwnerKey(owner);
+    if (!parsedId.success || !ownerKey || requirements.length === 0) {
+      return { ok: false, failure: createFileCapabilityFailure() };
+    }
+    const entry = this.#entries.get(parsedId.data);
+    if (!entry || entry.ownerKey !== ownerKey || entry.capability.expiresAt <= Date.now()) {
+      return { ok: false, failure: createFileCapabilityFailure() };
+    }
+    const matches = requirements.filter((requirement) => (
+      FileCapabilityPurposeSchema.safeParse(requirement.purpose).success
+      && operationMatchesKind(requirement.kind, requirement.operation)
+      && entry.purpose === requirement.purpose
+      && entry.capability.kind === requirement.kind
+      && entry.capability.operations.length === 1
+      && entry.capability.operations[0] === requirement.operation
+    ));
+    if (matches.length !== 1) {
+      return { ok: false, failure: createFileCapabilityFailure() };
+    }
+    const match = matches[0];
+    if (!match) return { ok: false, failure: createFileCapabilityFailure() };
+    return this.#resolve({
+      capabilityId: parsedId.data,
+      operation: match.operation,
+    }, owner, true, match.purpose);
   }
 
   #resolve(
     input: unknown,
     owner: ExecutionOwnerIdentity,
     consume: boolean,
+    expectedPurpose?: FileCapabilityPurpose,
   ): FileCapabilityResolution {
     const decoded = decodeFileCapabilityUseRequest(input);
     if (!decoded.ok) return { ok: false, failure: decoded.failure };
@@ -241,6 +301,7 @@ export class FileCapabilityRegistry {
       || entry.capability.expiresAt <= now
       || !entry.capability.operations.includes(decoded.value.operation)
       || !operationMatchesKind(entry.capability.kind, decoded.value.operation)
+      || (expectedPurpose !== undefined && entry.purpose !== expectedPurpose)
     ) {
       return { ok: false, failure: createFileCapabilityFailure() };
     }

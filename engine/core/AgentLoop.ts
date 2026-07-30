@@ -50,8 +50,18 @@ import {
 } from '../runtime/ToolPresentationContract.js';
 import { ContextEngine } from '../context/ContextEngine.js';
 import { EvidenceLedger } from '../evidence/EvidenceLedger.js';
-import { ApprovalStore } from '../hitl/HITLCore.js';
+import { ApprovalStore, evaluateHardSafetyBoundary } from '../hitl/HITLCore.js';
 import { BehaviorRegistry, type BehaviorContext } from '../behavior/BehaviorRegistry.js';
+import {
+  FullAccessPolicySchema,
+  type FullAccessPolicy,
+} from '../runtime/PersonalizationRuntimeContract.js';
+import {
+  LiveSteeringEventSchema,
+  type LiveSteeringEvent,
+  type LiveSteeringInstruction,
+  type LiveSteeringSource,
+} from '../runtime/LiveSteeringContract.js';
 import {
   DEFAULT_MAX_TURNS,
   PER_TURN_TIMEOUT_MS,
@@ -107,6 +117,11 @@ interface RunContext {
   sessionId: string;
   maxTurns: number;
   allowedTools?: string[];
+  allowedToolPermissions?: string[];
+  fullAccess?: FullAccessPolicy;
+  signal?: AbortSignal;
+  liveSteering?: LiveSteeringSource;
+  lastSteeringSequence: number;
 }
 
 // ─── Sentinel: early-return signals from sub-methods ──────────
@@ -121,6 +136,20 @@ class LoopReturn {
 
 /** Signals that the current turn should be skipped (continue to next). */
 class LoopContinue {}
+
+/** Internal signal used to distinguish cancellation from provider failures. */
+class AgentInterruptedError extends Error {
+  constructor() {
+    super('Agent run interrupted');
+    this.name = 'AgentInterruptedError';
+  }
+}
+
+interface SteeringOutcome {
+  kind: 'none' | 'redirect' | 'interrupt' | 'invalid';
+  instructions: LiveSteeringInstruction[];
+  reason?: string;
+}
 
 type TurnOutcome = LoopReturn | LoopContinue | void;
 
@@ -210,6 +239,11 @@ export class AgentLoop {
   async run(request: AgentRunRequest): Promise<AgentRunResult> {
     const messages = [...request.messages];
 
+    const fullAccessResult = request.fullAccess === undefined
+      ? undefined
+      : FullAccessPolicySchema.safeParse(request.fullAccess);
+    const fullAccess = fullAccessResult?.success ? fullAccessResult.data : undefined;
+
     // Inject skill prompt as system message if provided
     if (request.skillPrompt) {
       const hasSystem = messages.some((m) => m.role === 'system');
@@ -245,7 +279,27 @@ export class AgentLoop {
       sessionId: request.sessionId,
       maxTurns: request.maxTurns,
       allowedTools: request.allowedTools,
+      allowedToolPermissions: request.allowedToolPermissions,
+      fullAccess,
+      signal: request.signal,
+      liveSteering: request.liveSteering,
+      lastSteeringSequence: 0,
     };
+
+    if (fullAccessResult && !fullAccessResult.success) {
+      ctx.errors.push('Invalid Full Access policy');
+      this.trace(ctx.traceEvents, 'agent.request_rejected', ctx.sessionId, {
+        code: 'invalid_full_access_policy',
+      });
+      return this.makeResult('error', '', ctx, 0);
+    }
+    if (request.signal !== undefined && !isAbortSignalLike(request.signal)) {
+      ctx.errors.push('Invalid cancellation signal');
+      this.trace(ctx.traceEvents, 'agent.request_rejected', ctx.sessionId, {
+        code: 'invalid_abort_signal',
+      });
+      return this.makeResult('error', '', ctx, 0);
+    }
 
     this.initSession(ctx, request.requestId);
 
@@ -296,6 +350,13 @@ export class AgentLoop {
    * or void to continue to the next iteration normally.
    */
   private async executeTurn(ctx: RunContext, turnIndex: number): Promise<TurnOutcome> {
+    const interruptedBeforeTurn = this.interruptIfRequested(ctx, turnIndex, 'before_turn');
+    if (interruptedBeforeTurn) return interruptedBeforeTurn;
+
+    const steeringBeforeTurn = await this.consumeLiveSteering(ctx, turnIndex, 'before_turn', true);
+    const steeringReturn = this.steeringOutcomeToReturn(ctx, steeringBeforeTurn, turnIndex);
+    if (steeringReturn) return steeringReturn;
+
     // Behavior gate
     const blocked = await this.checkBehaviorGate(ctx, turnIndex);
     if (blocked) return blocked;
@@ -323,9 +384,13 @@ export class AgentLoop {
     }
 
     // Call provider with overflow recovery
+    const interruptedBeforeModel = this.interruptIfRequested(ctx, turnIndex, 'before_model');
+    if (interruptedBeforeModel) return interruptedBeforeModel;
+
     const response = await this.callProviderWithRecovery(
       ctx, contextResult.messages, toolSchemas, temperature, turnIndex,
     );
+    if (response instanceof LoopReturn) return response;
     if (response instanceof LoopContinue) return response;
     // response is now NormalizedResponse
 
@@ -336,6 +401,22 @@ export class AgentLoop {
       finish_reason: response.finishReason,
     });
     mergeUsage(ctx.usageTotals, response.usage);
+
+    // A provider may not support cooperative cancellation. Re-check immediately after it
+    // returns and before its content is appended, so stale text can never become a fake final.
+    const interruptedAfterModel = this.interruptIfRequested(ctx, turnIndex + 1, 'after_model');
+    if (interruptedAfterModel) return interruptedAfterModel;
+
+    const steeringAfterModel = await this.consumeLiveSteering(ctx, turnIndex, 'after_model', true);
+    const steeringAfterModelReturn = this.steeringOutcomeToReturn(ctx, steeringAfterModel, turnIndex + 1);
+    if (steeringAfterModelReturn) return steeringAfterModelReturn;
+    if (steeringAfterModel.kind === 'redirect') {
+      this.trace(ctx.traceEvents, 'model.response_superseded', ctx.sessionId, {
+        turn: turnIndex + 1,
+        instruction_count: steeringAfterModel.instructions.length,
+      });
+      return new LoopContinue();
+    }
 
     // Loop detection
     const loopResult = this.checkLoopDetection(ctx, response, turnIndex);
@@ -384,10 +465,20 @@ export class AgentLoop {
     toolSchemas: ReturnType<ToolRegistry['schemas']>,
     temperature: number,
     turnIndex: number,
-  ): Promise<NormalizedResponse | LoopContinue> {
+  ): Promise<NormalizedResponse | LoopContinue | LoopReturn> {
     try {
-      return await this.callProvider(messages, toolSchemas, temperature, ctx.sessionId, turnIndex + 1);
+      return await this.callProvider(
+        messages,
+        toolSchemas,
+        temperature,
+        ctx.sessionId,
+        turnIndex + 1,
+        ctx.signal,
+      );
     } catch (err) {
+      if (err instanceof AgentInterruptedError) {
+        return this.interruptedReturn(ctx, turnIndex, 'during_model');
+      }
       const errorMsg = err instanceof Error ? err.message : String(err);
 
       if (isContextError(errorMsg)) {
@@ -409,7 +500,7 @@ export class AgentLoop {
     temperature: number,
     turnIndex: number,
     errorMsg: string,
-  ): Promise<NormalizedResponse | LoopContinue> {
+  ): Promise<NormalizedResponse | LoopContinue | LoopReturn> {
     this.trace(ctx.traceEvents, 'context.overflow', ctx.sessionId, {
       turn: turnIndex + 1,
       error: errorMsg,
@@ -421,8 +512,18 @@ export class AgentLoop {
 
     try {
       const tightResult = await this.contextEngine.build(messages, toolSchemas);
-      return await this.callProvider(tightResult.messages, toolSchemas, temperature, ctx.sessionId, turnIndex + 1);
+      return await this.callProvider(
+        tightResult.messages,
+        toolSchemas,
+        temperature,
+        ctx.sessionId,
+        turnIndex + 1,
+        ctx.signal,
+      );
     } catch (retryErr) {
+      if (retryErr instanceof AgentInterruptedError) {
+        return this.interruptedReturn(ctx, turnIndex, 'during_context_recovery');
+      }
       ctx.errors.push(
         `Turn ${turnIndex + 1} context overflow recovery failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`,
       );
@@ -489,7 +590,37 @@ export class AgentLoop {
    * Dispatch all tool calls from a response, serially.
    */
   private async dispatchToolCalls(ctx: RunContext, toolCalls: ToolCall[], turnIndex: number): Promise<TurnOutcome> {
-    for (const call of toolCalls) {
+    for (let callIndex = 0; callIndex < toolCalls.length; callIndex++) {
+      const call = toolCalls[callIndex];
+      if (!call) continue;
+
+      const interrupted = this.interruptIfRequested(ctx, turnIndex + 1, 'before_tool');
+      if (interrupted) {
+        this.appendPendingToolErrors(ctx, toolCalls.slice(callIndex), 'Agent run interrupted before tool execution');
+        return interrupted;
+      }
+
+      const steering = await this.consumeLiveSteering(ctx, turnIndex, 'before_tool', false);
+      if (steering.kind !== 'none') {
+        this.appendPendingToolErrors(
+          ctx,
+          toolCalls.slice(callIndex),
+          steering.kind === 'redirect'
+            ? 'Tool call superseded by live user steering'
+            : 'Agent run interrupted before tool execution',
+        );
+        if (steering.kind === 'redirect') {
+          this.appendSteeringInstructions(ctx, steering.instructions);
+          this.trace(ctx.traceEvents, 'tool.calls_superseded', ctx.sessionId, {
+            turn: turnIndex + 1,
+            pending_count: toolCalls.length - callIndex,
+          });
+          return new LoopContinue();
+        }
+        return this.steeringOutcomeToReturn(ctx, steering, turnIndex + 1)
+          ?? this.interruptedReturn(ctx, turnIndex + 1, 'invalid_live_steering');
+      }
+
       ctx.state.toolCallCount++;
 
       // Session tool limit
@@ -517,6 +648,44 @@ export class AgentLoop {
    */
   private async dispatchSingleTool(ctx: RunContext, call: ToolCall, turnIndex: number): Promise<LoopReturn | void> {
     const exhaustedKey = `${call.name}:${call.id}`;
+
+    // The provider-visible schema is not a security boundary: a faulty or hostile model can
+    // still return an arbitrary tool name. Enforce the run snapshot allowlist again here.
+    if (ctx.allowedTools !== undefined && !ctx.allowedTools.includes(call.name)) {
+      ctx.errors.push(`Unauthorized tool call blocked: ${call.name}`);
+      this.trace(ctx.traceEvents, 'tool.blocked_allowlist', ctx.sessionId, {
+        turn: turnIndex + 1,
+        tool_name: call.name,
+      });
+      this.appendToolError(ctx, call, 'Tool is not allowed by the active scenario');
+      return new LoopReturn(this.makeResult('interrupted', '', ctx, turnIndex + 1));
+    }
+
+    const requiredPermissions = this.registry.get(call.name)?.permissions ?? [];
+    if (
+      ctx.allowedToolPermissions !== undefined
+      && requiredPermissions.some((permission) => !ctx.allowedToolPermissions?.includes(permission))
+    ) {
+      ctx.errors.push(`Tool permission denied: ${call.name}`);
+      this.trace(ctx.traceEvents, 'tool.blocked_permission', ctx.sessionId, {
+        turn: turnIndex + 1,
+        tool_name: call.name,
+      });
+      this.appendToolError(ctx, call, 'Tool permission denied by the active scenario');
+      return new LoopReturn(this.makeResult('interrupted', '', ctx, turnIndex + 1));
+    }
+
+    const hardSafety = evaluateHardSafetyBoundary(call.name, call.arguments);
+    if (!hardSafety.allowed) {
+      ctx.errors.push(`Hard safety boundary blocked tool: ${call.name}`);
+      this.trace(ctx.traceEvents, 'tool.blocked_hard_safety', ctx.sessionId, {
+        turn: turnIndex + 1,
+        tool_name: call.name,
+        code: hardSafety.code,
+      });
+      this.appendToolError(ctx, call, 'Tool blocked by hard safety boundary');
+      return new LoopReturn(this.makeResult('interrupted', '', ctx, turnIndex + 1));
+    }
 
     // Exhausted retry check
     if (ctx.state.exhaustedRetryKeys.has(exhaustedKey)) {
@@ -547,6 +716,7 @@ export class AgentLoop {
       workspace: this.workspace,
       turnIndex,
       provider: this.provider,
+      signal: ctx.signal,
     };
 
     const toolResult = await this.dispatcher.dispatch(call, toolContext);
@@ -586,11 +756,21 @@ export class AgentLoop {
       status: toolResult.status,
       tool_call_id: call.id,
     });
+
+    return this.interruptIfRequested(ctx, turnIndex + 1, 'after_tool') ?? undefined;
   }
 
   // ─── HITL Approval ─────────────────────────────────────────
 
   private async checkHitlApproval(ctx: RunContext, call: ToolCall, turnIndex: number): Promise<LoopReturn | null> {
+    if (ctx.fullAccess?.perActionConfirmation === false) {
+      this.trace(ctx.traceEvents, 'hitl.skipped_full_access', ctx.sessionId, {
+        turn: turnIndex + 1,
+        tool_name: call.name,
+      });
+      return null;
+    }
+
     const approvalReq = this.approvalStore.checkRequired(call.name, call.arguments, ctx.sessionId);
     if (!approvalReq) return null;
 
@@ -610,6 +790,134 @@ export class AgentLoop {
   }
 
   // ─── Tool Error Helper ─────────────────────────────────────
+
+  private interruptIfRequested(
+    ctx: RunContext,
+    turnsUsed: number,
+    phase: string,
+  ): LoopReturn | null {
+    return ctx.signal?.aborted
+      ? this.interruptedReturn(ctx, turnsUsed, phase)
+      : null;
+  }
+
+  private interruptedReturn(ctx: RunContext, turnsUsed: number, phase: string): LoopReturn {
+    this.trace(ctx.traceEvents, 'agent.interrupted', ctx.sessionId, { phase });
+    return new LoopReturn(this.makeResult('interrupted', '', ctx, turnsUsed));
+  }
+
+  private async consumeLiveSteering(
+    ctx: RunContext,
+    turnIndex: number,
+    phase: string,
+    appendInstructions: boolean,
+  ): Promise<SteeringOutcome> {
+    if (!ctx.liveSteering) return { kind: 'none', instructions: [] };
+
+    let rawEvents: readonly unknown[];
+    try {
+      const drained = await ctx.liveSteering.drain({
+        sessionId: ctx.sessionId,
+        afterSequence: ctx.lastSteeringSequence,
+      });
+      if (!Array.isArray(drained) || drained.length > 100) {
+        throw new Error('Invalid steering batch');
+      }
+      rawEvents = drained;
+    } catch {
+      ctx.errors.push('Live steering source failed validation');
+      this.trace(ctx.traceEvents, 'steering.invalid', ctx.sessionId, {
+        turn: turnIndex + 1,
+        phase,
+        code: 'source_failure',
+      });
+      return { kind: 'invalid', instructions: [] };
+    }
+
+    const events: LiveSteeringEvent[] = [];
+    for (const rawEvent of rawEvents) {
+      const parsed = LiveSteeringEventSchema.safeParse(rawEvent);
+      if (
+        !parsed.success
+        || parsed.data.sessionId !== ctx.sessionId
+        || parsed.data.sequence <= ctx.lastSteeringSequence
+      ) {
+        ctx.errors.push('Live steering event failed validation');
+        this.trace(ctx.traceEvents, 'steering.invalid', ctx.sessionId, {
+          turn: turnIndex + 1,
+          phase,
+          code: 'event_invalid',
+        });
+        return { kind: 'invalid', instructions: [] };
+      }
+      ctx.lastSteeringSequence = parsed.data.sequence;
+      events.push(parsed.data);
+    }
+
+    const interrupt = events.find((event) => event.type === 'interrupt');
+    if (interrupt?.type === 'interrupt') {
+      this.trace(ctx.traceEvents, 'steering.interrupt', ctx.sessionId, {
+        turn: turnIndex + 1,
+        phase,
+        steering_id: interrupt.id,
+        sequence: interrupt.sequence,
+      });
+      return { kind: 'interrupt', instructions: [], reason: interrupt.reason };
+    }
+
+    const instructions = events.filter(
+      (event): event is LiveSteeringInstruction => event.type === 'instruction',
+    );
+    if (instructions.length === 0) return { kind: 'none', instructions: [] };
+
+    if (appendInstructions) this.appendSteeringInstructions(ctx, instructions);
+    this.trace(ctx.traceEvents, 'steering.applied', ctx.sessionId, {
+      turn: turnIndex + 1,
+      phase,
+      count: instructions.length,
+      last_sequence: ctx.lastSteeringSequence,
+    });
+    return { kind: 'redirect', instructions };
+  }
+
+  private steeringOutcomeToReturn(
+    ctx: RunContext,
+    outcome: SteeringOutcome,
+    turnsUsed: number,
+  ): LoopReturn | null {
+    if (outcome.kind === 'interrupt') {
+      return this.interruptedReturn(ctx, turnsUsed, 'live_steering');
+    }
+    if (outcome.kind === 'invalid') {
+      return this.interruptedReturn(ctx, turnsUsed, 'invalid_live_steering');
+    }
+    return null;
+  }
+
+  private appendSteeringInstructions(
+    ctx: RunContext,
+    instructions: readonly LiveSteeringInstruction[],
+  ): void {
+    for (const instruction of instructions) {
+      ctx.messages.push({
+        role: 'user',
+        content: instruction.content,
+        metadata: {
+          liveSteering: true,
+          steeringId: instruction.id,
+          sequence: instruction.sequence,
+        },
+      });
+    }
+  }
+
+  private appendPendingToolErrors(
+    ctx: RunContext,
+    calls: readonly ToolCall[],
+    error: string,
+  ): void {
+    for (const call of calls) this.appendToolError(ctx, call, error);
+  }
 
   private appendToolError(ctx: RunContext, call: ToolCall, error: string): void {
     const blockedResult: ToolResult = {
@@ -676,22 +984,27 @@ export class AgentLoop {
     temperature: number,
     sessionId: string,
     turn: number,
+    signal?: AbortSignal,
   ): Promise<NormalizedResponse> {
     const caps = this.provider.capabilities();
     const perTurnTimeout = computePerTurnTimeout(caps.maxOutputTokens);
     const params: Record<string, unknown> = {
       temperature,
       timeout: perTurnTimeout,
+      ...(signal ? { signal } : {}),
     };
 
     // WORKAROUND: Electron main process can hang when iterating an async generator
     // that performs network I/O (observed with Electron v42 / V8). Use the
     // non-streaming complete() path for streaming-capable models and simulate
     // stream chunks from the result so the rest of the pipeline remains unchanged.
-    const response = await this.provider.complete(
-      messages,
-      tools.length > 0 ? tools as unknown as ToolSpec[] : undefined,
-      params,
+    const response = await waitForAbortable(
+      this.provider.complete(
+        messages,
+        tools.length > 0 ? tools as unknown as ToolSpec[] : undefined,
+        params,
+      ),
+      signal,
     );
 
     // Simulate streaming: emit the whole content as one chunk, then a finish chunk.
@@ -785,7 +1098,7 @@ export class AgentLoop {
   }
 
   private getAllowedToolNames(ctx: RunContext): string[] {
-    const base = ctx.allowedTools && ctx.allowedTools.length > 0
+    const base = ctx.allowedTools !== undefined
       ? ctx.allowedTools
       : this.registry.list().map((spec) => spec.name);
     // The recovery sentinel must be a valid enum value at the boundary.
@@ -820,6 +1133,34 @@ export class AgentLoop {
  * Compute per-turn timeout based on model's max output tokens.
  * Base 90s + 25s per 1K output tokens, clamped to [120, 600].
  */
+function isAbortSignalLike(value: unknown): value is AbortSignal {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Partial<AbortSignal>;
+  return typeof candidate.aborted === 'boolean'
+    && typeof candidate.addEventListener === 'function'
+    && typeof candidate.removeEventListener === 'function';
+}
+
+async function waitForAbortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) throw new AgentInterruptedError();
+
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new AgentInterruptedError());
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
 function computePerTurnTimeout(maxOutputTokens: number): number {
   if (maxOutputTokens <= 0) return PER_TURN_TIMEOUT_MS;
   const calculated = 90_000 + Math.floor(maxOutputTokens / 1000) * 25_000;

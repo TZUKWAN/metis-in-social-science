@@ -5,6 +5,8 @@
  */
 
 import type { BaseProvider } from '../providers/BaseProvider.js';
+import type { FullAccessPolicy } from '../runtime/PersonalizationRuntimeContract.js';
+import type { LiveSteeringSource } from '../runtime/LiveSteeringContract.js';
 
 // ─── Tool System ──────────────────────────────────────────────
 
@@ -74,6 +76,15 @@ export interface AgentRunRequest {
   requestId: string;
   /** Optional skill system prompt to inject at the start of messages */
   skillPrompt?: string;
+  /**
+   * Run-scoped Full Access policy resolved from the immutable scenario snapshot.
+   * AgentLoop validates this object at runtime before it can bypass HITL prompts.
+   */
+  fullAccess?: FullAccessPolicy;
+  /** Cooperative cancellation for a live run. Aborted runs return `interrupted`. */
+  signal?: AbortSignal;
+  /** Optional strict source of live user instructions and interrupt commands. */
+  liveSteering?: LiveSteeringSource;
 }
 
 export interface AgentRunResult {
@@ -162,6 +173,8 @@ export interface ToolContext {
   turnIndex: number;
   /** Optional LLM provider available to tools for semantic tasks. */
   provider?: BaseProvider;
+  /** Cooperative cancellation signal for handlers that support interruption. */
+  signal?: AbortSignal;
 }
 
 // ─── Tracing ──────────────────────────────────────────────────

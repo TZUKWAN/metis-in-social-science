@@ -9,6 +9,7 @@ import 'prismjs/components/prism-json';
 import 'prismjs/components/prism-markdown';
 import 'prismjs/components/prism-latex';
 import { useTranslation } from '../i18n';
+import { researchWorkspaceStore, useResearchWorkspaceStore } from '../research/researchWorkspaceStore';
 import { consumePendingChatIntent } from '../lib/chatIntent.js';
 import { PaperclipIcon, TerminalIcon } from '../components/Icons';
 import GoalCardInline, { type GoalCardData } from '../components/GoalCardInline';
@@ -46,6 +47,7 @@ import {
   decodeSessionUpdateRequest,
   type SessionListItem,
 } from '../../engine/runtime/SessionRuntimeContract';
+import type { ScenarioDefinition } from '../../engine/runtime/PersonalizationRuntimeContract';
 
 // ─── Types ────────────────────────────────────────────────────
 
@@ -90,6 +92,8 @@ interface ArtifactItem {
   createdAt: number;
 }
 const validArtifactTypes: ArtifactItemType[] = ['pdf', 'docx', 'xlsx', 'pptx', 'md', 'latex', 'other'];
+const DEFAULT_SCENARIO_ID = '';
+const ACTIVE_SCENARIO_KEY = 'metis:active-scenario-id';
 
 // ─── Timestamp helper (avoids Date.now() in render) ───────────
 
@@ -566,9 +570,10 @@ export interface ChatPageLayoutSlots {
 export interface ChatPageProps {
   renderLayout: (slots: ChatPageLayoutSlots) => ReactNode;
   uiMode?: UIMode;
+  intentRevision?: number;
 }
 
-export default function ChatPage({ renderLayout, uiMode }: ChatPageProps) {
+export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: ChatPageProps) {
   const { t, locale } = useTranslation();
   const resolvedUIMode = uiMode ?? getDiagnosticMode();
   const diagnosticMode = resolvedUIMode === 'diagnostic';
@@ -577,6 +582,7 @@ export default function ChatPage({ renderLayout, uiMode }: ChatPageProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [historyReady, setHistoryReady] = useState(false);
   const [artifacts, setArtifacts] = useState<ArtifactItem[]>([]);
 
   const normalizeArtifact = useCallback((a: ArtifactListItem): ArtifactItem => {
@@ -597,11 +603,16 @@ export default function ChatPage({ renderLayout, uiMode }: ChatPageProps) {
     token: symbol;
     sessionId: string;
     generation: number;
+    projectId: string;
   } | null>(null);
 
   // Skills
   const [skills, setSkills] = useState<Array<{ id: string; name: string; description: string; category: string }>>([]);
   const [activeSkillId, setActiveSkillId] = useState<string | null>(null);
+  const [scenarios, setScenarios] = useState<ScenarioDefinition[]>([]);
+  const [activeScenarioId, setActiveScenarioId] = useState(DEFAULT_SCENARIO_ID);
+  const activeResearchProjectId = useResearchWorkspaceStore((state) => state.activeProjectId);
+  const currentProjectId = activeResearchProjectId ?? 'global';
 
   // Goal integration
   const [activeGoalId, setActiveGoalId] = useState<string | null>(null);
@@ -649,6 +660,7 @@ export default function ChatPage({ renderLayout, uiMode }: ChatPageProps) {
     activeChatRequestRef.current = null;
     setCurrentSessionId(sessionId);
     setMessages([]);
+    setHistoryReady(false);
     setArtifacts([]);
     setPreviewContent('');
     setIsLoading(false);
@@ -670,10 +682,20 @@ export default function ChatPage({ renderLayout, uiMode }: ChatPageProps) {
     token: symbol;
     sessionId: string;
     generation: number;
+    projectId: string;
   }) => (
     activeChatRequestRef.current?.token === request.token
     && isCurrentSessionGeneration(request.sessionId, request.generation)
+    && (researchWorkspaceStore.getState().activeProjectId ?? 'global') === request.projectId
   ), [isCurrentSessionGeneration]);
+
+  // A project change invalidates the renderer-side owner of any in-flight
+  // response. The main-process request keeps its original project snapshot,
+  // while this view becomes ready for a new project-scoped request.
+  useEffect(() => {
+    activeChatRequestRef.current = null;
+    setIsLoading(false);
+  }, [currentProjectId]);
 
   // P0-2: "Ask Metis about this selection" — detect text selection in the messages area.
   useEffect(() => {
@@ -727,18 +749,32 @@ export default function ChatPage({ renderLayout, uiMode }: ChatPageProps) {
     }
   }, [diagnosticMode]);
 
-  // Consume cross-page chat intent (e.g., "AI Review" from paper detail)
+  // Load executable scenarios for every UI mode. The selected scenario is
+  // revalidated by preload and main; localStorage only remembers the user's
+  // preference and is never an authority boundary.
   useEffect(() => {
-    if (skills.length === 0 || !currentSessionId) return;
-    const intent = consumePendingChatIntent();
-    if (!intent) return;
-    if (skills.some((s) => s.id === intent.skillId)) {
-      setActiveSkillId(intent.skillId);
-      window.metis?.setActiveSkill?.(intent.skillId).catch(() => {});
-    }
-    setInput(intent.message);
-    inputRef.current?.focus();
-  }, [skills, currentSessionId]);
+    let cancelled = false;
+    const metis = window.metis;
+    if (!metis?.listPersonalization) return () => { cancelled = true; };
+    metis.listPersonalization({ contractVersion: 1, kind: 'scenario', includeDisabled: false })
+      .then((response) => {
+        if (cancelled) return;
+        const available = response.definitions.filter((definition): definition is ScenarioDefinition => (
+          definition.kind === 'scenario'
+          && definition.enabled
+          && definition.capability !== 'presentation_reserved'
+          && definition.provenance.origin !== 'builtin'
+        ));
+        setScenarios(available);
+        let remembered = DEFAULT_SCENARIO_ID;
+        try { remembered = window.localStorage.getItem(ACTIVE_SCENARIO_KEY) ?? DEFAULT_SCENARIO_ID; } catch { /* use factory default */ }
+        setActiveScenarioId(available.some((scenario) => scenario.id === remembered)
+          ? remembered
+          : (available[0]?.id ?? DEFAULT_SCENARIO_ID));
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
 
   // Helper: create a new session (defined before useEffect that calls it)
   async function createNewSession() {
@@ -963,9 +999,15 @@ export default function ChatPage({ renderLayout, uiMode }: ChatPageProps) {
             timestamp: now(),
           };
         }));
+        setHistoryReady(true);
       }).catch(() => {
-        if (isCurrentSessionGeneration(sessionId, generation)) setMessages([]);
+        if (isCurrentSessionGeneration(sessionId, generation)) {
+          setMessages([]);
+          setHistoryReady(true);
+        }
       });
+    } else {
+      setHistoryReady(true);
     }
     if (metis?.listArtifacts) {
       metis.listArtifacts(sessionId).then((payload) => {
@@ -1085,11 +1127,12 @@ export default function ChatPage({ renderLayout, uiMode }: ChatPageProps) {
 
   // ─── Normal chat flow (extracted from old handleSend) ──────
 
-  async function handleChatFlow(content: string) {
+  async function handleChatFlow(content: string, scenarioId = activeScenarioId) {
     const request = {
       token: Symbol('chat-request'),
       sessionId: currentSessionId,
       generation: sessionGenerationRef.current,
+      projectId: currentProjectId,
     };
     activeChatRequestRef.current = request;
     setIsLoading(true);
@@ -1107,7 +1150,7 @@ export default function ChatPage({ renderLayout, uiMode }: ChatPageProps) {
         request.sessionId,
         history,
         activeSkillId ?? undefined,
-        { mode: 'send' },
+        { mode: 'send', ...(scenarioId ? { scenarioId } : {}), projectId: request.projectId },
       ));
       if (!isCurrentChatRequest(request)) return;
 
@@ -1295,9 +1338,59 @@ export default function ChatPage({ renderLayout, uiMode }: ChatPageProps) {
 
   // ─── Send message (router) ────────────────────────────────
 
-  async function handleSend(overrideContent?: string) {
+  async function handleLiveInstruction(content: string) {
+    const metis = window.metis;
+    if (!metis?.agentControl) {
+      setMessages((prev) => [...prev, {
+        role: 'system',
+        content: presentExecutionError('live_steering_unavailable', locale, resolvedUIMode),
+        timestamp: now(),
+      }]);
+      return;
+    }
+    const response = await metis.agentControl({
+      contractVersion: 1,
+      operationId: `steer-${crypto.randomUUID()}`,
+      sessionId: currentSessionId,
+      action: 'instruction',
+      content,
+    });
+    if (!response.ok) {
+      setMessages((prev) => [...prev, {
+        role: 'system',
+        content: presentExecutionError(response.code, locale, resolvedUIMode),
+        timestamp: now(),
+      }]);
+      return;
+    }
+    setMessages((prev) => [...prev, { role: 'user', content, timestamp: now() }]);
+    setInput('');
+  }
+
+  async function handleInterrupt() {
+    const response = await window.metis?.agentControl?.({
+      contractVersion: 1,
+      operationId: `interrupt-${crypto.randomUUID()}`,
+      sessionId: currentSessionId,
+      action: 'interrupt',
+      reason: locale === 'zh' ? '用户主动打断当前任务' : 'User interrupted the current run',
+    });
+    if (!response?.ok) {
+      setMessages((prev) => [...prev, {
+        role: 'system',
+        content: presentExecutionError(response?.code ?? 'live_interrupt_unavailable', locale, resolvedUIMode),
+        timestamp: now(),
+      }]);
+    }
+  }
+
+  async function handleSend(overrideContent?: string, scenarioOverride?: string) {
     const raw = stripEmoji((overrideContent || input).trim());
-    if (!raw || isLoading) return;
+    if (!raw) return;
+    if (isLoading) {
+      await handleLiveInstruction(raw);
+      return;
+    }
 
     // Force plain chat with prefix
     const forceChat = raw.startsWith('/chat ') || raw.startsWith('? ');
@@ -1317,9 +1410,66 @@ export default function ChatPage({ renderLayout, uiMode }: ChatPageProps) {
     } else if (hasActiveGoal && !forceChat) {
       await handleInterjection(content);
     } else {
-      await handleChatFlow(content);
+      await handleChatFlow(content, scenarioOverride ?? activeScenarioId);
     }
   }
+
+  // Consume a cross-page handoff only after the target session history and the
+  // authoritative scenario list are both ready. Full Access launch intents may
+  // auto-send once; ordinary paper/note intents remain editable drafts.
+  useEffect(() => {
+    if (!currentSessionId || !historyReady || scenarios.length === 0) return;
+    const intent = consumePendingChatIntent();
+    if (!intent) return;
+    const rejectHandoff = (english: string, chinese: string) => {
+      setMessages((previous) => [...previous, {
+        role: 'system',
+        content: locale === 'zh' ? chinese : english,
+        timestamp: now(),
+      }]);
+    };
+    if (intent.projectId && intent.projectId !== currentProjectId) {
+      rejectHandoff(
+        'Scenario handoff rejected: the active project changed before launch.',
+        '场景交接已拒绝：启动前活动项目已经改变。',
+      );
+      return;
+    }
+    if (intent.sessionId && intent.sessionId !== currentSessionId) {
+      rejectHandoff(
+        'Scenario handoff rejected: the active conversation changed before launch.',
+        '场景交接已拒绝：启动前活动会话已经改变。',
+      );
+      return;
+    }
+    if (intent.skillId && skills.some((skill) => skill.id === intent.skillId)) {
+      setActiveSkillId(intent.skillId);
+      window.metis?.setActiveSkill?.(intent.skillId).catch(() => {});
+    }
+    if (intent.scenarioId && !scenarios.some((scenario) => scenario.id === intent.scenarioId)) {
+      rejectHandoff(
+        'Scenario handoff rejected: the requested scenario is unavailable or disabled.',
+        '场景交接已拒绝：所请求的场景不可用或已禁用。',
+      );
+      return;
+    }
+    const requestedScenario = intent.scenarioId ?? activeScenarioId;
+    if (requestedScenario !== activeScenarioId) {
+      setActiveScenarioId(requestedScenario);
+    }
+    if (intent.scenarioId) {
+      try { window.localStorage.setItem(ACTIVE_SCENARIO_KEY, requestedScenario); } catch { /* preference only */ }
+    }
+    if (intent.autoSend) {
+      void handleSend(intent.message, requestedScenario);
+    } else {
+      setInput(intent.message);
+      inputRef.current?.focus();
+    }
+    // handleSend intentionally consumes the state snapshot guarded by
+    // historyReady; re-subscribing to its function identity would replay work.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeScenarioId, currentProjectId, currentSessionId, historyReady, intentRevision, locale, scenarios, skills]);
 
   // Regenerate last assistant response
   async function handleRegenerate() {
@@ -1331,6 +1481,7 @@ export default function ChatPage({ renderLayout, uiMode }: ChatPageProps) {
       token: Symbol('regenerate-request'),
       sessionId: currentSessionId,
       generation: sessionGenerationRef.current,
+      projectId: currentProjectId,
     };
     activeChatRequestRef.current = request;
     setMessages(history);
@@ -1344,7 +1495,7 @@ export default function ChatPage({ renderLayout, uiMode }: ChatPageProps) {
         request.sessionId,
         history.map((m) => ({ role: (m.role === 'tool' || m.role === 'goal') ? 'assistant' : m.role, content: m.content })),
         activeSkillId ?? undefined,
-        { mode: 'regenerate' },
+        { mode: 'regenerate', ...(activeScenarioId ? { scenarioId: activeScenarioId } : {}), projectId: request.projectId },
       ));
       if (!isCurrentChatRequest(request)) return;
 
@@ -1454,6 +1605,24 @@ export default function ChatPage({ renderLayout, uiMode }: ChatPageProps) {
 
   const workspace = (
     <div className="chat-main">
+        <div className="chat-scenario-bar" data-testid="chat-scenario-controls">
+          <div className="chat-scenario-bar__identity">
+            <span>{locale === 'zh' ? '场景' : 'Scenario'}</span>
+            <select
+              aria-label={locale === 'zh' ? '当前场景' : 'Active scenario'}
+              value={activeScenarioId}
+              onChange={(event) => {
+                const id = event.target.value;
+                setActiveScenarioId(id);
+                try { window.localStorage.setItem(ACTIVE_SCENARIO_KEY, id); } catch { /* preference persistence is best-effort */ }
+              }}
+            >
+              {scenarios.length === 0 && <option value="">{locale === 'zh' ? '未选择自定义场景' : 'No custom scenario selected'}</option>}
+              {scenarios.map((scenario) => <option key={scenario.id} value={scenario.id}>{scenario.name}</option>)}
+            </select>
+          </div>
+          <span className="chat-scenario-bar__policy">Full Access · {locale === 'zh' ? '可随时引导或打断 · 真实性自动执行' : 'live steering · automatic truth controls'}</span>
+        </div>
         {diagnosticMode && skills.length > 0 && (
           <div
             data-testid="diagnostic-skill-controls"
@@ -1667,17 +1836,24 @@ export default function ChatPage({ renderLayout, uiMode }: ChatPageProps) {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={t('chat.placeholder')}
+            placeholder={isLoading
+              ? (locale === 'zh' ? '输入新指令，实时引导当前任务…' : 'Send a new instruction to steer the active run…')
+              : t('chat.placeholder')}
             className="chat-textarea"
             rows={1}
-            disabled={isLoading}
           />
+          {isLoading && <button
+            type="button"
+            onClick={() => void handleInterrupt()}
+            className="chat-interrupt"
+            aria-label={locale === 'zh' ? '打断当前任务' : 'Interrupt active run'}
+          >{locale === 'zh' ? '打断' : 'Stop'}</button>}
           <button
             onClick={() => handleSend()}
             className="chat-send"
-            disabled={!input.trim() || isLoading}
+            disabled={!input.trim()}
           >
-            {t('common.send')}
+            {isLoading ? (locale === 'zh' ? '引导' : 'Steer') : t('common.send')}
           </button>
         </div>
         {diagnosticMode && (

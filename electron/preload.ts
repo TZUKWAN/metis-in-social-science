@@ -8,11 +8,13 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { inspectExternalNavigationUrl } from '../engine/security/ExternalNavigation.js';
 import {
+  AgentChatOptionsSchema,
   decodeAgentResponse,
   decodeGoalLiveEvent,
   decodeHistoryItems,
   decodeStoredHistoryEntry,
   RuntimeIdSchema,
+  type AgentChatOptions,
   type GoalLiveEvent,
 } from '../engine/runtime/ChatRuntimeContract.js';
 import {
@@ -46,6 +48,7 @@ import {
   decodeFileCapabilitySelectionResult,
   decodeFileCapabilityUseRequest,
   decodeFileCapabilityUseResult,
+  type FileCapabilityPurpose,
 } from '../engine/runtime/FileCapabilityContract.js';
 import {
   createLatexCompileRecovery,
@@ -147,6 +150,67 @@ import {
   decodeExportResult,
   type ExportRequest,
 } from '../engine/runtime/ExportRuntimeContract.js';
+import {
+  PersonalizationDeleteRequestSchema,
+  PersonalizationForkRequestSchema,
+  PersonalizationGetRequestSchema,
+  PersonalizationListRequestSchema,
+  PersonalizationResolveRequestSchema,
+  PersonalizationRestoreRequestSchema,
+  PersonalizationVersionsRequestSchema,
+  PersonalizationSaveRequestSchema,
+  decodePersonalizationGetResponse,
+  decodePersonalizationListResponse,
+  decodePersonalizationMutationResult,
+  decodePersonalizationResolveResponse,
+  decodePersonalizationVersionsResponse,
+  type PersonalizationDeleteRequest,
+  type PersonalizationForkRequest,
+  type PersonalizationGetRequest,
+  type PersonalizationListRequest,
+  type PersonalizationResolveRequest,
+  type PersonalizationRestoreRequest,
+  type PersonalizationVersionsRequest,
+  type PersonalizationSaveRequest,
+} from '../engine/runtime/PersonalizationRuntimeContract.js';
+import {
+  PersonalizationExtensionIpcRequestSchema,
+  decodePersonalizationExtensionResponse,
+  type PersonalizationExtensionIpcRequest,
+} from '../engine/runtime/PersonalizationExtensionContract.js';
+import {
+  PersonalizationBundleExportIpcRequestSchema,
+  PersonalizationBundleImportIpcRequestSchema,
+  decodePersonalizationBundleIpcResponse,
+  type PersonalizationBundleExportIpcRequest,
+  type PersonalizationBundleImportIpcRequest,
+} from '../engine/runtime/PersonalizationBundleContract.js';
+import {
+  PersonalizationSecretListRequestSchema,
+  PersonalizationSecretRemoveRequestSchema,
+  PersonalizationSecretSetRequestSchema,
+  decodePersonalizationSecretListResponse,
+  decodePersonalizationSecretRemoveResponse,
+  decodePersonalizationSecretSetResponse,
+  type PersonalizationSecretListRequest,
+  type PersonalizationSecretRemoveRequest,
+  type PersonalizationSecretSetRequest,
+} from '../engine/runtime/PersonalizationSecretContract.js';
+import {
+  FundingTemplateIpcRequestSchema,
+  decodeFundingTemplateRuntimeResponse,
+  type FundingTemplateIpcRequest,
+} from '../engine/runtime/FundingTemplateRuntimeContract.js';
+import {
+  McpActivationIpcRequestSchema,
+  decodeMcpActivationResponse,
+  type McpActivationIpcRequest,
+} from '../engine/runtime/McpActivationContract.js';
+import {
+  AgentControlRequestSchema,
+  decodeAgentControlResponse,
+  type AgentControlRequest,
+} from '../engine/runtime/LiveSteeringContract.js';
 import {
   TerminalCreateRequestSchema,
   TerminalDataEventSchema,
@@ -543,7 +607,7 @@ const api = {
   },
 
   // ── Shell ────────────────────────────────────────────────
-  selectFileCapability: async (purpose: unknown) => {
+  selectFileCapability: async (purpose: FileCapabilityPurpose) => {
     const request = decodeFileCapabilitySelectionRequest({ purpose });
     if (!request) return createFileCapabilityFailure();
     return decodeFileCapabilitySelectionResult(
@@ -589,8 +653,19 @@ const api = {
 
   // ── Agent ──────────────────────────────────────────────
   agentStatus: () => ipcRenderer.invoke('agent:status'),
-  agentChat: async (sessionId: string, messages: unknown[], skillId: string | undefined, options: { mode: 'send' | 'regenerate' }) =>
-    decodeAgentResponse(await ipcRenderer.invoke('agent:chat', sessionId, messages, skillId, options)),
+  agentChat: async (sessionId: string, messages: unknown[], skillId: string | undefined, rawOptions: AgentChatOptions) => {
+    const options = AgentChatOptionsSchema.safeParse(rawOptions);
+    if (!options.success) return decodeAgentResponse(null);
+    return decodeAgentResponse(await ipcRenderer.invoke('agent:chat', sessionId, messages, skillId, options.data));
+  },
+  agentControl: async (rawRequest: AgentControlRequest) => {
+    const request = AgentControlRequestSchema.safeParse(rawRequest);
+    if (!request.success) return decodeAgentControlResponse(null);
+    return decodeAgentControlResponse(
+      await ipcRenderer.invoke('agent:control', request.data),
+      request.data.operationId,
+    );
+  },
 
   // ── Papers ─────────────────────────────────────────────
   listPapers: async () => decodeLibraryPaperList(await ipcRenderer.invoke('paper:list')),
@@ -727,7 +802,7 @@ const api = {
     return decodeProjectMemoryMutationResult(await ipcRenderer.invoke('memory:setProject', request));
   },
 
-  // ── Workspace Agents (AGENTS.md CAS-protected) ─────────
+  // ── Project Metis.md (CAS-protected compatibility API) ──
   getWorkspaceAgents: async (projectId: string) => {
     const request = decodeWorkspaceAgentsGetRequest({ projectId });
     if (!request) return createWorkspaceAgentsViewEmpty();
@@ -810,7 +885,112 @@ const api = {
   setActiveSkill: (id: string | null) => ipcRenderer.invoke('skill:setActive', id),
   getActiveSkill: () => ipcRenderer.invoke('skill:getActive'),
 
+  listPersonalization: async (rawRequest: PersonalizationListRequest) => {
+    const request = PersonalizationListRequestSchema.safeParse(rawRequest);
+    if (!request.success) return { ok: true as const, definitions: [] };
+    return decodePersonalizationListResponse(await ipcRenderer.invoke('personalization:list', request.data));
+  },
+  getPersonalization: async (rawRequest: PersonalizationGetRequest) => {
+    const request = PersonalizationGetRequestSchema.safeParse(rawRequest);
+    if (!request.success) return { ok: true as const, definition: null };
+    return decodePersonalizationGetResponse(await ipcRenderer.invoke('personalization:get', request.data));
+  },
+  savePersonalization: async (rawRequest: PersonalizationSaveRequest) => {
+    const request = PersonalizationSaveRequestSchema.safeParse(rawRequest);
+    if (!request.success) return { ok: false as const, code: 'invalid_request' as const };
+    return decodePersonalizationMutationResult(await ipcRenderer.invoke('personalization:save', request.data));
+  },
+  archivePersonalization: async (rawRequest: PersonalizationDeleteRequest) => {
+    const request = PersonalizationDeleteRequestSchema.safeParse(rawRequest);
+    if (!request.success) return { ok: false as const, code: 'invalid_request' as const };
+    return decodePersonalizationMutationResult(await ipcRenderer.invoke('personalization:archive', request.data));
+  },
+  forkPersonalization: async (rawRequest: PersonalizationForkRequest) => {
+    const request = PersonalizationForkRequestSchema.safeParse(rawRequest);
+    if (!request.success) return { ok: false as const, code: 'invalid_request' as const };
+    return decodePersonalizationMutationResult(await ipcRenderer.invoke('personalization:fork', request.data));
+  },
+  restorePersonalization: async (rawRequest: PersonalizationRestoreRequest) => {
+    const request = PersonalizationRestoreRequestSchema.safeParse(rawRequest);
+    if (!request.success) return { ok: false as const, code: 'invalid_request' as const };
+    return decodePersonalizationMutationResult(await ipcRenderer.invoke('personalization:restore', request.data));
+  },
+  listPersonalizationVersions: async (rawRequest: PersonalizationVersionsRequest) => {
+    const request = PersonalizationVersionsRequestSchema.safeParse(rawRequest);
+    if (!request.success) return { ok: true as const, versions: [] };
+    return decodePersonalizationVersionsResponse(await ipcRenderer.invoke('personalization:versions', request.data));
+  },
+  resolvePersonalization: async (rawRequest: PersonalizationResolveRequest) => {
+    const request = PersonalizationResolveRequestSchema.safeParse(rawRequest);
+    if (!request.success) {
+      return { ok: false as const, code: 'definition_corrupt' as const, issues: ['Invalid personalization request'] };
+    }
+    return decodePersonalizationResolveResponse(await ipcRenderer.invoke('personalization:resolve', request.data));
+  },
+
   // ── HITL Approval ──────────────────────────────────────
+  applyPersonalizationExtension: async (rawRequest: PersonalizationExtensionIpcRequest) => {
+    const request = PersonalizationExtensionIpcRequestSchema.safeParse(rawRequest);
+    if (!request.success) return decodePersonalizationExtensionResponse(null);
+    return decodePersonalizationExtensionResponse(
+      await ipcRenderer.invoke('personalization:extension:apply', request.data),
+    );
+  },
+
+  activatePersonalizationMcp: async (rawRequest: McpActivationIpcRequest) => {
+    const request = McpActivationIpcRequestSchema.safeParse(rawRequest);
+    if (!request.success) return decodeMcpActivationResponse(null);
+    return decodeMcpActivationResponse(
+      await ipcRenderer.invoke('personalization:mcp:activate', request.data),
+    );
+  },
+
+  exportPersonalizationBundle: async (rawRequest: PersonalizationBundleExportIpcRequest) => {
+    const request = PersonalizationBundleExportIpcRequestSchema.safeParse(rawRequest);
+    if (!request.success) return decodePersonalizationBundleIpcResponse(null);
+    return decodePersonalizationBundleIpcResponse(
+      await ipcRenderer.invoke('personalization:bundle:export', request.data),
+    );
+  },
+  importPersonalizationBundle: async (rawRequest: PersonalizationBundleImportIpcRequest) => {
+    const request = PersonalizationBundleImportIpcRequestSchema.safeParse(rawRequest);
+    if (!request.success) return decodePersonalizationBundleIpcResponse(null);
+    return decodePersonalizationBundleIpcResponse(
+      await ipcRenderer.invoke('personalization:bundle:import', request.data),
+    );
+  },
+  listPersonalizationSecrets: async (rawRequest: PersonalizationSecretListRequest) => {
+    const request = PersonalizationSecretListRequestSchema.safeParse(rawRequest);
+    if (!request.success) return decodePersonalizationSecretListResponse(null);
+    return decodePersonalizationSecretListResponse(
+      await ipcRenderer.invoke('personalization:secrets:list', request.data),
+      request.data.operationId,
+    );
+  },
+  setPersonalizationSecret: async (rawRequest: PersonalizationSecretSetRequest) => {
+    const request = PersonalizationSecretSetRequestSchema.safeParse(rawRequest);
+    if (!request.success) return decodePersonalizationSecretSetResponse(null);
+    return decodePersonalizationSecretSetResponse(
+      await ipcRenderer.invoke('personalization:secrets:set', request.data),
+      request.data.operationId,
+    );
+  },
+  removePersonalizationSecret: async (rawRequest: PersonalizationSecretRemoveRequest) => {
+    const request = PersonalizationSecretRemoveRequestSchema.safeParse(rawRequest);
+    if (!request.success) return decodePersonalizationSecretRemoveResponse(null);
+    return decodePersonalizationSecretRemoveResponse(
+      await ipcRenderer.invoke('personalization:secrets:remove', request.data),
+      request.data.operationId,
+    );
+  },
+  fundingTemplate: async (rawRequest: FundingTemplateIpcRequest) => {
+    const request = FundingTemplateIpcRequestSchema.safeParse(rawRequest);
+    if (!request.success) return decodeFundingTemplateRuntimeResponse(null);
+    return decodeFundingTemplateRuntimeResponse(
+      await ipcRenderer.invoke('fundingTemplate:invoke', request.data),
+    );
+  },
+
   onApprovalRequired: (callback: (request: ApprovalRequestView) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, rawRequest: unknown) => {
       const request = decodeApprovalRequestView(rawRequest);

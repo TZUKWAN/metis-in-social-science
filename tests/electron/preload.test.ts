@@ -7,6 +7,29 @@ import type {
   CurrentAffairsListSourcesRequest,
   SourceReviewRequest,
 } from '../../engine/runtime/CurrentAffairsRuntimeContract.js';
+import type {
+  PersonalizationDeleteRequest,
+  PersonalizationForkRequest,
+  PersonalizationGetRequest,
+  PersonalizationListRequest,
+  PersonalizationResolveRequest,
+  PersonalizationRestoreRequest,
+  PersonalizationVersionsRequest,
+  PersonalizationSaveRequest,
+} from '../../engine/runtime/PersonalizationRuntimeContract.js';
+import type { AgentControlRequest } from '../../engine/runtime/LiveSteeringContract.js';
+import type { PersonalizationExtensionIpcRequest } from '../../engine/runtime/PersonalizationExtensionContract.js';
+import type {
+  PersonalizationBundleExportIpcRequest,
+  PersonalizationBundleImportIpcRequest,
+} from '../../engine/runtime/PersonalizationBundleContract.js';
+import type {
+  PersonalizationSecretListRequest,
+  PersonalizationSecretRemoveRequest,
+  PersonalizationSecretSetRequest,
+} from '../../engine/runtime/PersonalizationSecretContract.js';
+import type { FundingTemplateIpcRequest } from '../../engine/runtime/FundingTemplateRuntimeContract.js';
+import type { McpActivationIpcRequest } from '../../engine/runtime/McpActivationContract.js';
 
 const electronMocks = vi.hoisted(() => ({
   exposeInMainWorld: vi.fn(),
@@ -55,6 +78,7 @@ async function loadExposedAPI() {
       skillId: string | undefined,
       options: { mode: 'send' | 'regenerate' },
     ): Promise<unknown>;
+    agentControl(request: AgentControlRequest): Promise<unknown>;
     executeGoal(goalId: string): Promise<unknown>;
     createGoal(description: string, context?: string): Promise<unknown>;
     generatePlan(goalId: string): Promise<unknown>;
@@ -76,12 +100,408 @@ async function loadExposedAPI() {
     currentAffairsCancel(raw: CurrentAffairsCancelRequest): Promise<unknown>;
     currentAffairsReviewSource(raw: SourceReviewRequest): Promise<unknown>;
     currentAffairsListSources(raw: CurrentAffairsListSourcesRequest): Promise<unknown>;
+    listPersonalization(raw: PersonalizationListRequest): Promise<unknown>;
+    getPersonalization(raw: PersonalizationGetRequest): Promise<unknown>;
+    savePersonalization(raw: PersonalizationSaveRequest): Promise<unknown>;
+    archivePersonalization(raw: PersonalizationDeleteRequest): Promise<unknown>;
+    forkPersonalization(raw: PersonalizationForkRequest): Promise<unknown>;
+    restorePersonalization(raw: PersonalizationRestoreRequest): Promise<unknown>;
+    listPersonalizationVersions(raw: PersonalizationVersionsRequest): Promise<unknown>;
+    resolvePersonalization(raw: PersonalizationResolveRequest): Promise<unknown>;
+    applyPersonalizationExtension(raw: PersonalizationExtensionIpcRequest): Promise<unknown>;
+    activatePersonalizationMcp(raw: McpActivationIpcRequest): Promise<unknown>;
+    exportPersonalizationBundle(raw: PersonalizationBundleExportIpcRequest): Promise<unknown>;
+    importPersonalizationBundle(raw: PersonalizationBundleImportIpcRequest): Promise<unknown>;
+    listPersonalizationSecrets(raw: PersonalizationSecretListRequest): Promise<unknown>;
+    setPersonalizationSecret(raw: PersonalizationSecretSetRequest): Promise<unknown>;
+    removePersonalizationSecret(raw: PersonalizationSecretRemoveRequest): Promise<unknown>;
+    fundingTemplate(raw: FundingTemplateIpcRequest): Promise<unknown>;
   };
 }
 
 beforeEach(() => {
   vi.resetModules();
   vi.clearAllMocks();
+});
+
+describe('preload personalization boundary', () => {
+  it('rejects malformed requests without IPC', async () => {
+    const api = await loadExposedAPI();
+    const malformed = {} as PersonalizationSaveRequest;
+    await expect(api.savePersonalization(malformed)).resolves.toEqual({ ok: false, code: 'invalid_request' });
+    expect(electronMocks.invoke.mock.calls.some(([channel]) => channel === 'personalization:save')).toBe(false);
+  });
+
+  it('forwards a strict list request and decodes the response', async () => {
+    electronMocks.invoke.mockResolvedValueOnce({ ok: true, definitions: [] });
+    const api = await loadExposedAPI();
+    const request: PersonalizationListRequest = {
+      contractVersion: 1,
+      kind: 'skill',
+      includeDisabled: true,
+    };
+    await expect(api.listPersonalization(request)).resolves.toEqual({ ok: true, definitions: [] });
+    expect(electronMocks.invoke).toHaveBeenCalledWith('personalization:list', request);
+  });
+
+  it('drops malformed main-process responses', async () => {
+    electronMocks.invoke.mockResolvedValueOnce({ ok: true, definitions: [{ __leak: 'secret' }] });
+    const api = await loadExposedAPI();
+    await expect(api.listPersonalization({ contractVersion: 1, includeDisabled: false }))
+      .resolves.toEqual({ ok: true, definitions: [] });
+  });
+
+  it('forwards a valid factory fork and rejects unsafe targets', async () => {
+    electronMocks.invoke.mockResolvedValueOnce({
+      ok: false,
+      code: 'not_found',
+    });
+    const api = await loadExposedAPI();
+    const request: PersonalizationForkRequest = {
+      contractVersion: 1,
+      sourceId: 'builtin:skills/literature-review',
+      targetId: 'user:skills/my-review',
+      author: 'Researcher',
+    };
+    await expect(api.forkPersonalization(request)).resolves.toEqual({ ok: false, code: 'not_found' });
+    expect(electronMocks.invoke).toHaveBeenCalledWith('personalization:fork', request);
+
+    electronMocks.invoke.mockClear();
+    await expect(api.forkPersonalization({
+      ...request,
+      targetId: 'builtin:skills/overwrite',
+    })).resolves.toEqual({ ok: false, code: 'invalid_request' });
+    expect(electronMocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it('rejects malformed extension and bundle requests without IPC', async () => {
+    const api = await loadExposedAPI();
+    await expect(api.applyPersonalizationExtension({ mode: 'skill_package' } as PersonalizationExtensionIpcRequest))
+      .resolves.toEqual({
+        ok: false,
+        mode: null,
+        code: 'invalid_request',
+        detailCode: 'invalid_response',
+        compensated: false,
+      });
+    await expect(api.exportPersonalizationBundle({} as PersonalizationBundleExportIpcRequest))
+      .resolves.toEqual({
+        ok: false,
+        operationId: '00000000-0000-4000-8000-000000000000',
+        code: 'invalid_request',
+      });
+    await expect(api.importPersonalizationBundle({} as PersonalizationBundleImportIpcRequest))
+      .resolves.toEqual({
+        ok: false,
+        operationId: '00000000-0000-4000-8000-000000000000',
+        code: 'invalid_request',
+      });
+    expect(electronMocks.invoke.mock.calls.some(([channel]) => String(channel).startsWith('personalization:extension'))).toBe(false);
+    expect(electronMocks.invoke.mock.calls.some(([channel]) => String(channel).startsWith('personalization:bundle'))).toBe(false);
+  });
+
+  it('rejects owner/evidence injection and malformed MCP activation before IPC', async () => {
+    const api = await loadExposedAPI();
+    const result = await api.activatePersonalizationMcp({
+      contractVersion: 1,
+      operationId: '12121212-1212-4212-8212-121212121212',
+      definitionId: 'url:mcp/reference-manager',
+      installationId: `mcp_${'a'.repeat(32)}`,
+      expectedRevision: 1,
+      owner: { webContentsId: 999 },
+    } as McpActivationIpcRequest);
+    expect(result).toMatchObject({ ok: false, code: 'invalid_response' });
+    expect(electronMocks.invoke.mock.calls.some(([channel]) => channel === 'personalization:mcp:activate')).toBe(false);
+  });
+
+  it('rejects generated MCP activation before IPC so it cannot bypass the generated transaction coordinator', async () => {
+    const api = await loadExposedAPI();
+    const result = await api.activatePersonalizationMcp({
+      contractVersion: 1,
+      operationId: '12121212-1212-4212-8212-121212121213',
+      definitionId: 'generated:mcp/builder-output',
+      installationId: `mcp_${'a'.repeat(32)}`,
+      expectedRevision: 1,
+    } as McpActivationIpcRequest);
+    expect(result).toMatchObject({ ok: false, code: 'invalid_response' });
+    expect(electronMocks.invoke.mock.calls.some(([channel]) => channel === 'personalization:mcp:activate')).toBe(false);
+  });
+
+  it('forwards a strict MCP activation and suppresses malformed main responses', async () => {
+    const request: McpActivationIpcRequest = {
+      contractVersion: 1,
+      operationId: '13131313-1313-4313-8313-131313131313',
+      definitionId: 'url:mcp/reference-manager',
+      installationId: `mcp_${'b'.repeat(32)}`,
+      expectedRevision: 1,
+    };
+    electronMocks.invoke.mockResolvedValueOnce({
+      ok: true,
+      contractVersion: 1,
+      operationId: request.operationId,
+      definition: { id: request.definitionId },
+      installation: { installationId: request.installationId },
+      evidence: {},
+      localPath: 'C:\\private\\mcp',
+    });
+    const api = await loadExposedAPI();
+    await expect(api.activatePersonalizationMcp(request)).resolves.toMatchObject({
+      ok: false,
+      code: 'invalid_response',
+    });
+    expect(electronMocks.invoke).toHaveBeenCalledWith('personalization:mcp:activate', request);
+  });
+
+  it('forwards a strict Markdown extension request and drops malformed main responses', async () => {
+    const request: PersonalizationExtensionIpcRequest = {
+      contractVersion: 1,
+      mode: 'skill_markdown',
+      operationId: '11111111-1111-4111-8111-111111111111',
+      expectedRevision: 0,
+      id: 'user:skills/causal-review',
+      name: 'Causal review',
+      description: 'Review causal evidence.',
+      author: 'Local user',
+      version: '1.0.0',
+      markdown: '# Causal review\n\nUse traceable evidence.',
+      toolIds: [],
+      mcpIds: [],
+      tags: ['review'],
+      maxTurns: 12,
+      inputSchema: null,
+      outputSchema: null,
+    };
+    electronMocks.invoke.mockResolvedValueOnce({ ok: true, definition: { id: request.id }, localPath: 'C:\\secret' });
+    const api = await loadExposedAPI();
+    await expect(api.applyPersonalizationExtension(request)).resolves.toEqual({
+      ok: false,
+      mode: null,
+      code: 'invalid_request',
+      detailCode: 'invalid_response',
+      compensated: false,
+    });
+    expect(electronMocks.invoke).toHaveBeenCalledWith('personalization:extension:apply', request);
+  });
+
+  it('forwards strict bundle export and import requests and decodes responses', async () => {
+    const exportRequest: PersonalizationBundleExportIpcRequest = {
+      contractVersion: 1,
+      operationId: '22222222-2222-4222-8222-222222222222',
+      rootDefinitionIds: ['user:scenarios/my-research'],
+    };
+    const importRequest: PersonalizationBundleImportIpcRequest = {
+      contractVersion: 1,
+      operationId: '33333333-3333-4333-8333-333333333333',
+    };
+    electronMocks.invoke
+      .mockResolvedValueOnce({
+        ok: true,
+        operationId: exportRequest.operationId,
+        action: 'exported',
+        bundleDigest: 'a'.repeat(64),
+        definitionCount: 3,
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        operationId: importRequest.operationId,
+        action: 'imported',
+        bundleDigest: 'b'.repeat(64),
+        definitionCount: 3,
+      });
+    const api = await loadExposedAPI();
+    await expect(api.exportPersonalizationBundle(exportRequest)).resolves.toMatchObject({ ok: true, action: 'exported' });
+    await expect(api.importPersonalizationBundle(importRequest)).resolves.toMatchObject({ ok: true, action: 'imported' });
+    expect(electronMocks.invoke).toHaveBeenNthCalledWith(1, 'personalization:bundle:export', exportRequest);
+    expect(electronMocks.invoke).toHaveBeenNthCalledWith(2, 'personalization:bundle:import', importRequest);
+  });
+
+  it('keeps secret values write-only and returns metadata-only responses', async () => {
+    const setRequest: PersonalizationSecretSetRequest = {
+      contractVersion: 1,
+      operationId: '44444444-4444-4444-8444-444444444444',
+      expectedRevision: 0,
+      name: 'ZOTERO_API_KEY',
+      value: 'renderer-write-only-secret',
+    };
+    const listRequest: PersonalizationSecretListRequest = {
+      contractVersion: 1,
+      operationId: '55555555-5555-4555-8555-555555555555',
+    };
+    electronMocks.invoke
+      .mockResolvedValueOnce({
+        ok: true,
+        contractVersion: 1,
+        operationId: setRequest.operationId,
+        revision: 1,
+        secret: { name: 'ZOTERO_API_KEY', createdAt: 10, updatedAt: 10 },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        contractVersion: 1,
+        operationId: listRequest.operationId,
+        revision: 1,
+        secrets: [{ name: 'ZOTERO_API_KEY', createdAt: 10, updatedAt: 10 }],
+      });
+    const api = await loadExposedAPI();
+    const saved = await api.setPersonalizationSecret(setRequest);
+    const listed = await api.listPersonalizationSecrets(listRequest);
+    expect(electronMocks.invoke).toHaveBeenNthCalledWith(1, 'personalization:secrets:set', setRequest);
+    expect(electronMocks.invoke).toHaveBeenNthCalledWith(2, 'personalization:secrets:list', listRequest);
+    expect(JSON.stringify(saved)).not.toContain(setRequest.value);
+    expect(JSON.stringify(listed)).not.toContain(setRequest.value);
+    expect(listed).toMatchObject({ ok: true, revision: 1, secrets: [{ name: 'ZOTERO_API_KEY' }] });
+  });
+
+  it('rejects malformed secret requests and strips leaked plaintext from malformed responses', async () => {
+    const api = await loadExposedAPI();
+    await expect(api.setPersonalizationSecret({
+      contractVersion: 1,
+      operationId: '66666666-6666-4666-8666-666666666666',
+      expectedRevision: 0,
+      name: 'PATH',
+      value: 'forbidden',
+    } as PersonalizationSecretSetRequest)).resolves.toMatchObject({ ok: false, code: 'invalid_request' });
+    expect(electronMocks.invoke).not.toHaveBeenCalled();
+
+    const request: PersonalizationSecretListRequest = {
+      contractVersion: 1,
+      operationId: '77777777-7777-4777-8777-777777777777',
+    };
+    electronMocks.invoke.mockResolvedValueOnce({
+      ok: true,
+      contractVersion: 1,
+      operationId: request.operationId,
+      revision: 1,
+      secrets: [{ name: 'ZOTERO_API_KEY', createdAt: 1, updatedAt: 1, value: 'leak' }],
+    });
+    await expect(api.listPersonalizationSecrets(request)).resolves.toEqual({
+      ok: false,
+      contractVersion: 1,
+      operationId: request.operationId,
+      code: 'invalid_request',
+    });
+  });
+
+  it('rejects malformed funding-template requests before IPC', async () => {
+    const api = await loadExposedAPI();
+    const result = await api.fundingTemplate({
+      contractVersion: 1,
+      operationId: '88888888-8888-4888-8888-888888888888',
+      action: 'import',
+      projectId: 'project-a',
+      templateId: 'user:funding-a',
+      fileCapabilityId: `fc_${'a'.repeat(32)}`,
+      capabilityUse: 'consume_once',
+      expectedTemplateRevision: 0,
+      expectedActiveVersion: null,
+      expectedActiveDigest: null,
+      localPath: 'C:\\private\\template.pdf',
+    } as FundingTemplateIpcRequest);
+    expect(result).toMatchObject({ ok: false, action: 'list', code: 'response_invalid' });
+    expect(electronMocks.invoke.mock.calls.some(([channel]) => channel === 'fundingTemplate:invoke')).toBe(false);
+  });
+
+  it('forwards a strict funding list request and decodes a safe response', async () => {
+    const request: FundingTemplateIpcRequest = {
+      contractVersion: 1,
+      operationId: '99999999-9999-4999-8999-999999999999',
+      action: 'list',
+      projectId: 'project-a',
+      includeArchived: false,
+    };
+    electronMocks.invoke.mockResolvedValueOnce({
+      ok: true,
+      contractVersion: 1,
+      operationId: request.operationId,
+      action: 'list',
+      ownerId: 'local-user',
+      projectId: 'project-a',
+      templates: [],
+    });
+    const api = await loadExposedAPI();
+    await expect(api.fundingTemplate(request)).resolves.toMatchObject({ ok: true, action: 'list', templates: [] });
+    expect(electronMocks.invoke).toHaveBeenCalledWith('fundingTemplate:invoke', request);
+  });
+
+  it('suppresses path and prose injection from malformed funding responses', async () => {
+    const request: FundingTemplateIpcRequest = {
+      contractVersion: 1,
+      operationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      action: 'list',
+      projectId: 'project-a',
+      includeArchived: false,
+    };
+    electronMocks.invoke.mockResolvedValueOnce({
+      ok: true,
+      contractVersion: 1,
+      operationId: request.operationId,
+      action: 'list',
+      ownerId: 'local-user',
+      projectId: 'project-a',
+      templates: [],
+      localPath: 'C:\\private\\funding.pdf',
+      sourceText: 'private applicant content',
+    });
+    const api = await loadExposedAPI();
+    const result = await api.fundingTemplate(request);
+    expect(result).toMatchObject({ ok: false, action: 'list', code: 'response_invalid' });
+    expect(JSON.stringify(result)).not.toContain('private');
+    expect(JSON.stringify(result)).not.toContain('applicant');
+  });
+});
+
+describe('preload live steering boundary', () => {
+  it('rejects malformed control requests without IPC', async () => {
+    const api = await loadExposedAPI();
+    await expect(api.agentControl({ action: 'instruction' } as AgentControlRequest)).resolves.toMatchObject({
+      ok: false,
+      code: 'queue_unavailable',
+    });
+    expect(electronMocks.invoke.mock.calls.some(([channel]) => channel === 'agent:control')).toBe(false);
+  });
+
+  it('forwards a strict instruction and decodes the echoed result', async () => {
+    const request: AgentControlRequest = {
+      contractVersion: 1,
+      operationId: 'steer-1',
+      sessionId: 'session-1',
+      action: 'instruction',
+      content: 'Focus on the causal mechanism.',
+    };
+    electronMocks.invoke.mockResolvedValueOnce({
+      ok: true,
+      contractVersion: 1,
+      operationId: 'steer-1',
+      action: 'instruction',
+      sequence: 1,
+    });
+    const api = await loadExposedAPI();
+    await expect(api.agentControl(request)).resolves.toEqual({
+      ok: true,
+      contractVersion: 1,
+      operationId: 'steer-1',
+      action: 'instruction',
+      sequence: 1,
+    });
+    expect(electronMocks.invoke).toHaveBeenCalledWith('agent:control', request);
+  });
+
+  it('drops malformed main-process control responses', async () => {
+    electronMocks.invoke.mockResolvedValueOnce({ ok: true, action: 'interrupt', sequence: 1, secret: 'leak' });
+    const api = await loadExposedAPI();
+    await expect(api.agentControl({
+      contractVersion: 1,
+      operationId: 'interrupt-1',
+      sessionId: 'session-1',
+      action: 'interrupt',
+      reason: 'Stop now',
+    })).resolves.toEqual({
+      ok: false,
+      contractVersion: 1,
+      operationId: 'interrupt-1',
+      code: 'queue_unavailable',
+    });
+  });
 });
 
 describe('preload acceptance bridge', () => {
@@ -732,6 +1152,24 @@ describe('preload runtime-schema boundary', () => {
     expect(JSON.stringify(result)).not.toContain('response-secret-marker');
   });
 
+  it('rejects a renderer-forged projectRulesId before invoking agent:chat IPC', async () => {
+    const api = await loadExposedAPI();
+    const result = await api.agentChat(
+      'project-rule-forgery-session',
+      [{ role: 'user', content: 'question' }],
+      undefined,
+      {
+        mode: 'send',
+        projectId: 'project-integrity',
+        scenarioId: 'builtin:scenarios/general-research',
+        projectRulesId: 'user:projects/project-integrity/metis-md',
+      } as never,
+    );
+
+    expect(result).toMatchObject({ version: 1, status: 'unknown', answer: '' });
+    expect(electronMocks.invoke.mock.calls.some(([channel]) => channel === 'agent:chat')).toBe(false);
+  });
+
   it('drops malformed Goal live events before invoking renderer callbacks', async () => {
     const api = await loadExposedAPI();
     const callback = vi.fn();
@@ -825,12 +1263,12 @@ describe('preload runtime-schema boundary', () => {
   });
 });
 
-// ─── Workspace Agents preload boundary ───────────────────────────
+// ─── Project Metis.md preload compatibility boundary ─────────────
 // Every test that sets up mockResolvedValueOnce must call
 // electronMocks.invoke.mockReset() FIRST to prevent queue leakage
 // across tests (clearAllMocks does not reset implementations).
 
-describe('preload workspace agents — contract parity', () => {
+describe('preload project Metis.md — authoritative contract parity', () => {
   // ── Reject invalid projectIds (no IPC) ──────────────────────
 
   it('getWorkspaceAgents: path traversal rejected, no IPC', async () => {
@@ -889,13 +1327,13 @@ describe('preload workspace agents — contract parity', () => {
   it('getWorkspaceAgents: hyphenated projectId accepted (was rejected by old regex)', async () => {
     electronMocks.invoke.mockReset();
     electronMocks.invoke.mockResolvedValueOnce({
-      exists: true, content: '# AGENTS\n', version: 3,
+      exists: true, content: '# Metis.md\n', version: 3,
       contentHash: 'c'.repeat(64), projectId: 'test-project-001',
     });
     const api = await loadExposedAPI();
     const view = await api.getWorkspaceAgents('test-project-001');
     expect(view.exists).toBe(true);
-    expect(view.content).toBe('# AGENTS\n');
+    expect(view.content).toBe('# Metis.md\n');
     expect(view.version).toBe(3);
   });
 
@@ -922,6 +1360,44 @@ describe('preload workspace agents — contract parity', () => {
       ([c]: [string]) => c === 'workspace:agents:set',
     );
     expect(calls.length).toBe(0);
+  });
+
+  it.each(['\u0000', '\u0001', '\u007f', '\u0085'])(
+    'setWorkspaceAgents rejects forbidden C0/C1 content %j before IPC',
+    async (control) => {
+      electronMocks.invoke.mockReset();
+      const api = await loadExposedAPI();
+      const result = await api.setWorkspaceAgents('project_rules', `# Metis.md\n${control}`, 0);
+      expect(result).toEqual({ success: false, code: 'content_invalid' });
+      expect(electronMocks.invoke).not.toHaveBeenCalledWith('workspace:agents:set', expect.anything());
+    },
+  );
+
+  it('setWorkspaceAgents accepts exactly 50,000 characters and forwards only the authoritative tuple', async () => {
+    electronMocks.invoke.mockReset();
+    electronMocks.invoke.mockResolvedValueOnce({
+      success: true,
+      code: 'saved',
+      version: 1,
+      contentHash: 'e'.repeat(64),
+    });
+    const api = await loadExposedAPI();
+    const content = 'x'.repeat(50_000);
+    const result = await api.setWorkspaceAgents('project_rules', content, 0);
+    expect(result).toMatchObject({ success: true, version: 1 });
+    expect(electronMocks.invoke).toHaveBeenCalledWith('workspace:agents:set', {
+      projectId: 'project_rules',
+      content,
+      expectedVersion: 0,
+    });
+  });
+
+  it('setWorkspaceAgents rejects 50,001 characters before IPC', async () => {
+    electronMocks.invoke.mockReset();
+    const api = await loadExposedAPI();
+    const result = await api.setWorkspaceAgents('project_rules', 'x'.repeat(50_001), 0);
+    expect(result).toEqual({ success: false, code: 'content_invalid' });
+    expect(electronMocks.invoke).not.toHaveBeenCalledWith('workspace:agents:set', expect.anything());
   });
 
   it('setWorkspaceAgents passes through project_not_found from main', async () => {

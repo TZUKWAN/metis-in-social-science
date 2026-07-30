@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -179,5 +179,54 @@ describe('runPersistedChatTurn', () => {
     expect(store.getMessages('session-1')).toEqual([
       { role: 'user', content: 'question' },
     ]);
+  });
+
+  it('passes the frozen scenario prompt, tool allowlist and manifest bindings to AgentLoop', async () => {
+    const run = vi.fn().mockResolvedValue({
+      status: 'completed' as const,
+      finalText: 'scenario answer',
+      finalVerified: true,
+      messages: [] as ChatMessage[],
+      turnsUsed: 1,
+      toolResults: [],
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      errors: [],
+      traceEvents: [],
+    });
+    const controller = new AbortController();
+    const liveSteering = { drain: vi.fn().mockReturnValue([]) };
+    const fullAccess = {
+      mode: 'full_access' as const,
+      perActionConfirmation: false as const,
+      liveSteering: true as const,
+      silentCheckpoints: true,
+      rollbackOnFailure: false,
+      persistAcrossRestart: true,
+    };
+    await runPersistedChatTurn({
+      agentLoop: { run },
+      store,
+      sessionId: 'session-1',
+      messages: [{ role: 'user', content: 'question' }],
+      requestId: 'chat-personalized',
+      skillPrompt: 'resolved scenario prompt',
+      allowedTools: [],
+      maxTurns: 7,
+      taskContractHash: 'a'.repeat(64),
+      promptStackHash: 'b'.repeat(64),
+      fullAccess,
+      signal: controller.signal,
+      liveSteering,
+    });
+    expect(run).toHaveBeenCalledWith(expect.objectContaining({
+      skillPrompt: 'resolved scenario prompt',
+      allowedTools: [],
+      maxTurns: 7,
+      taskContractHash: 'a'.repeat(64),
+      promptStackHash: 'b'.repeat(64),
+      fullAccess,
+      signal: controller.signal,
+      liveSteering,
+    }));
   });
 });

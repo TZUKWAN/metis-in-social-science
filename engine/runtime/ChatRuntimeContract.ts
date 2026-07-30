@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { PersonalizationIdSchema, PersonalizationLocalIdSchema } from './PersonalizationRuntimeContract.js';
 
 export const CHAT_RUNTIME_CONTRACT_VERSION = 1 as const;
 export const LEGACY_GOAL_MARKER_PREFIX = '__GOAL_CARD__';
@@ -117,10 +118,19 @@ export const AgentChatRequestSchema = z.strictObject({
   sessionId: RuntimeIdSchema,
   messages: z.array(ProviderMessageSchema).min(1).max(CHAT_RUNTIME_LIMITS.historyItems),
   skillId: RuntimeIdSchema.optional(),
+  scenarioId: PersonalizationIdSchema.optional(),
+  projectId: PersonalizationLocalIdSchema.optional(),
   mode: z.enum(['send', 'regenerate']),
 });
 
+export const AgentChatOptionsSchema = z.strictObject({
+  mode: z.enum(['send', 'regenerate']),
+  scenarioId: PersonalizationIdSchema.optional(),
+  projectId: PersonalizationLocalIdSchema.optional(),
+});
+
 export type AgentChatRequest = z.infer<typeof AgentChatRequestSchema>;
+export type AgentChatOptions = z.infer<typeof AgentChatOptionsSchema>;
 
 const AgentStatusInputSchema = z.unknown().transform((value) => (
   normalizeKnownValue(value, KNOWN_AGENT_STATUSES)

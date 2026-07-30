@@ -7,7 +7,7 @@
  *  - 测试连接走真实 setupProbe（使用已存 key receipt 或新 key，非空 key）
  *  - 保存走 setupSave → SecureStorage → provider/agent reinit
  *  - theme 选择包裹 transactional setTheme（IPC 失败回滚）
- *  - workspace AGENTS.md 编辑区（CAS 版本检测，非 CLAUDE_MEMORY.md）
+ *  - project Metis.md 编辑区（CAS 版本检测，非 CLAUDE_MEMORY.md）
  *  - a11y：label/live-region/键盘/focus
  *  - 保留备份/导入/MCP/HITL/诊断模式全部既有功能
  *
@@ -24,6 +24,7 @@ import { WarningIcon } from './Icons';
 import type { UIMode } from '../../engine/capabilities/DiagnosticMode';
 import {
   WORKSPACE_AGENTS_LIMITS,
+  WorkspaceAgentsContentSchema,
   type WorkspaceAgentsMutationResult,
 } from '../../engine/runtime/WorkspaceAgentsContract';
 import type {
@@ -68,7 +69,7 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
   const [providerSaveStatus, setProviderSaveStatus] = useState<ProviderSaveStatus>('idle');
   const [providerSaveMessage, setProviderSaveMessage] = useState('');
 
-  // ─── Workspace AGENTS.md (CAS) ───────────────────────────────
+  // ─── Project Metis.md (CAS) ──────────────────────────────────
   const [agentsContent, setAgentsContent] = useState('');
   const [agentsVersion, setAgentsVersion] = useState(0);
   const [serverContent, setServerContent] = useState('');
@@ -76,6 +77,8 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
   const [agentsDirty, setAgentsDirty] = useState(false);
   const [agentsSaveStatus, setAgentsSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'conflict' | 'error'>('idle');
   const [agentsSaveMessage, setAgentsSaveMessage] = useState('');
+  const [agentsProjectId, setAgentsProjectId] = useState<string | null>(null);
+  const [agentsBlocked, setAgentsBlocked] = useState(true);
   const agentsTextareaRef = useRef<HTMLTextAreaElement>(null);
   const agentsAlertRef = useRef<HTMLDivElement>(null);
   // Ref for stale-closure-safe status reads in setTimeout
@@ -95,7 +98,8 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
   const providerTestErrorRef = useRef<HTMLDivElement>(null);
 
   const activeProjectId = useResearchWorkspaceStore((s) => s.activeProjectId);
-  const agentsDisabled = !activeProjectId;
+  const agentsBoundToActiveProject = Boolean(activeProjectId && agentsProjectId === activeProjectId);
+  const agentsDisabled = !agentsBoundToActiveProject || agentsBlocked;
   // Per-project draft cache: preserves unsaved edits when switching projects
   const draftCache = useRef<Map<string, { content: string; version: number; dirty: boolean }>>(new Map());
   const previousProjectIdRef = useRef<string | null>(activeProjectId);
@@ -154,7 +158,7 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
     }).catch(() => { /* ignore */ });
   }, []);
 
-  // ─── Load workspace agents on project change ──────────────────
+  // ─── Load project Metis.md on project change ──────────────────
   useEffect(() => {
     const previousId = previousProjectIdRef.current;
     const nextId = activeProjectId ?? null;
@@ -162,6 +166,7 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
 
     // Save draft to PREVIOUS project id (not the new one)
     if (previousId && previousId !== nextId) {
+      agentsRequestSeq.current += 1;
       const snap = latestAgentsStateRef.current;
       if (snap.dirty) {
         draftCache.current.set(previousId, { content: snap.content, version: snap.version, dirty: true });
@@ -174,9 +179,22 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
 
     let cancelled = false;
 
+    queueMicrotask(() => {
+      if (cancelled || researchWorkspaceStore.getState().activeProjectId !== nextId) return;
+      setAgentsProjectId(nextId);
+      setAgentsBlocked(true);
+      setAgentsContent('');
+      setAgentsVersion(0);
+      setServerContent('');
+      setServerVersion(0);
+      setAgentsDirty(false);
+    });
+
     if (!nextId) {
       queueMicrotask(() => {
         if (!cancelled) {
+          setAgentsProjectId(null);
+          setAgentsBlocked(true);
           setAgentsContent(''); setAgentsVersion(0); setServerContent(''); setServerVersion(0); setAgentsDirty(false);
         }
       });
@@ -184,21 +202,44 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
     }
 
     const metis = window.metis;
-    if (!metis?.getWorkspaceAgents) return () => { cancelled = true; };
+    if (!metis?.getWorkspaceAgents) {
+      queueMicrotask(() => {
+        if (cancelled || researchWorkspaceStore.getState().activeProjectId !== nextId) return;
+        setAgentsSaveStatus('error');
+        setAgentsSaveMessage(tRef.current('settings.agentsSaveUnavailable'));
+      });
+      return () => { cancelled = true; };
+    }
 
     metis.getWorkspaceAgents(nextId).then((view) => {
-      if (cancelled) return;
+      if (cancelled || researchWorkspaceStore.getState().activeProjectId !== nextId) return;
+      if (view.projectId !== nextId || !WorkspaceAgentsContentSchema.safeParse(view.content).success) {
+        setAgentsProjectId(nextId);
+        setAgentsBlocked(true);
+        setAgentsContent('');
+        setAgentsVersion(0);
+        setServerContent('');
+        setServerVersion(0);
+        setAgentsDirty(false);
+        setAgentsSaveStatus('error');
+        setAgentsSaveMessage(tRef.current('settings.agentsResponseMismatch'));
+        return;
+      }
       if (view.externalConflict) {
+        setAgentsProjectId(nextId);
+        setAgentsBlocked(true);
         // External conflict detected — show immediately, block save
         setAgentsContent('');
         setAgentsVersion(0);
         setAgentsDirty(false);
         setServerContent('');
         setServerVersion(0);
-        setAgentsSaveStatus('conflict');
-        setAgentsSaveMessage(tRef.current('settings.agentsConflict'));
+        setAgentsSaveStatus('error');
+        setAgentsSaveMessage(tRef.current('settings.agentsIntegrityConflict'));
         return;
       }
+      setAgentsProjectId(nextId);
+      setAgentsBlocked(false);
       setServerContent(view.content);
       setServerVersion(view.version);
       const cached = draftCache.current.get(nextId);
@@ -211,7 +252,18 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
         setAgentsVersion(view.version);
         setAgentsDirty(false);
       }
-    }).catch(() => {});
+    }).catch(() => {
+      if (cancelled || researchWorkspaceStore.getState().activeProjectId !== nextId) return;
+      setAgentsProjectId(nextId);
+      setAgentsBlocked(true);
+      setAgentsContent('');
+      setAgentsVersion(0);
+      setServerContent('');
+      setServerVersion(0);
+      setAgentsDirty(false);
+      setAgentsSaveStatus('error');
+      setAgentsSaveMessage(tRef.current('settings.agentsSaveUnavailable'));
+    });
 
     return () => { cancelled = true; };
   }, [activeProjectId]);
@@ -363,23 +415,39 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
     setProviderSaveMessage('');
   };
 
-  // ─── Save workspace AGENTS.md (CAS) ──────────────────────────
+  // ─── Save project Metis.md (CAS) ─────────────────────────────
   const handleResolveConflictKeepLocal = () => {
+    const projectId = researchWorkspaceStore.getState().activeProjectId;
+    if (!projectId || agentsProjectId !== projectId || agentsBlocked) return;
+    const dirty = agentsContent !== serverContent;
+    setAgentsVersion(serverVersion);
+    setAgentsDirty(dirty);
     setAgentsSaveStatus('idle');
     setAgentsSaveMessage('');
+    latestAgentsStateRef.current = { content: agentsContent, version: serverVersion, dirty };
+    if (projectId) {
+      draftCache.current.set(projectId, { content: agentsContent, version: serverVersion, dirty });
+    }
+    agentsTextareaRef.current?.focus();
   };
 
   const handleResolveConflictUseServer = () => {
+    const projectId = researchWorkspaceStore.getState().activeProjectId;
+    if (!projectId || agentsProjectId !== projectId || agentsBlocked) return;
     setAgentsContent(serverContent);
     setAgentsVersion(serverVersion);
     setAgentsDirty(false);
     setAgentsSaveStatus('idle');
     setAgentsSaveMessage('');
+    latestAgentsStateRef.current = { content: serverContent, version: serverVersion, dirty: false };
+    if (projectId) draftCache.current.delete(projectId);
+    agentsTextareaRef.current?.focus();
   };
 
   const handleSaveAgents = async () => {
     const snapshotProjectId = researchWorkspaceStore.getState().activeProjectId;
-    if (!snapshotProjectId) {
+    if (!snapshotProjectId || agentsProjectId !== snapshotProjectId || agentsBlocked
+      || !WorkspaceAgentsContentSchema.safeParse(latestAgentsStateRef.current.content).success) {
       setAgentsSaveStatus('error');
       setAgentsSaveMessage(t('settings.agentsNoProject'));
       return;
@@ -471,14 +539,32 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
           const serverView = await metis.getWorkspaceAgents(snapshotProjectId);
           // Re-check staleness after the reload
           if (seq === agentsRequestSeq.current && researchWorkspaceStore.getState().activeProjectId === snapshotProjectId) {
+            if (serverView.projectId !== snapshotProjectId
+              || !WorkspaceAgentsContentSchema.safeParse(serverView.content).success) {
+              setAgentsBlocked(true);
+              setAgentsSaveStatus('error');
+              setAgentsSaveMessage(t('settings.agentsResponseMismatch'));
+              return;
+            }
+            if (serverView.externalConflict) {
+              setAgentsBlocked(true);
+              setAgentsSaveStatus('error');
+              setAgentsSaveMessage(t('settings.agentsIntegrityConflict'));
+              return;
+            }
             setServerContent(serverView.content);
             setServerVersion(serverView.version);
           }
         }
       } else {
         if (seq === agentsRequestSeq.current && researchWorkspaceStore.getState().activeProjectId === snapshotProjectId) {
+          if (result.code === 'project_not_found' || result.code === 'external_conflict') setAgentsBlocked(true);
           setAgentsSaveStatus('error');
-          setAgentsSaveMessage(t('settings.agentsSaveFailed'));
+          setAgentsSaveMessage(result.code === 'project_not_found'
+            ? t('settings.agentsNoProject')
+            : result.code === 'external_conflict'
+              ? t('settings.agentsIntegrityConflict')
+              : t('settings.agentsSaveFailed'));
         }
       }
     } catch {
@@ -505,7 +591,8 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
     }, 2000);
   };
 
-  const agentsCharCount = agentsContent.length;
+  const displayedAgentsContent = agentsBoundToActiveProject ? agentsContent : '';
+  const agentsCharCount = displayedAgentsContent.length;
   const agentsOverLimit = agentsCharCount > WORKSPACE_AGENTS_LIMITS.maxChars;
 
   // ─── Theme change (transactional via store) ──────────────────
@@ -722,7 +809,7 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
         </div>
       </div>
 
-      {/* Workspace AGENTS.md — CAS protected */}
+      {/* Project Metis.md — CAS protected */}
       <div className="settings-group">
         <h3>{t('settings.workspaceAgents')}</h3>
         <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>
@@ -733,12 +820,12 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
           {agentsSaveStatus === 'conflict' && <div style={{ fontSize: 12, color: 'var(--status-failed)', fontWeight: 500 }}>{agentsSaveMessage}</div>}
           {agentsSaveStatus === 'error' && <div style={{ fontSize: 12, color: 'var(--status-failed)', fontWeight: 500 }}>{agentsSaveMessage}</div>}
         </div>
-        {agentsDisabled && <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>{t('settings.agentsNoProject')}</div>}
+        {!activeProjectId && <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>{t('settings.agentsNoProject')}</div>}
 
         <textarea
           ref={agentsTextareaRef}
           id="agents-textarea"
-          value={agentsDisabled ? '' : agentsContent}
+          value={displayedAgentsContent}
           onChange={(e) => { setAgentsContent(e.target.value); setAgentsDirty(true); setAgentsSaveStatus('idle'); }}
           rows={10}
           className="settings-input"

@@ -2,7 +2,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { WorkspaceAgentsManager } from '../../engine/memory/WorkspaceAgentsManager.js';
+import {
+  WorkspaceAgentsManager,
+  workspaceProjectDirectory,
+} from '../../engine/memory/WorkspaceAgentsManager.js';
 import { hashWorkspaceAgentsContent } from '../../engine/memory/WorkspaceAgentsHash.js';
 
 let trustedBase: string;
@@ -22,6 +25,14 @@ function newManager(base = trustedBase, proj = projectId) {
   return new WorkspaceAgentsManager(base, proj);
 }
 
+function projectDirectory(base = trustedBase, proj = projectId) {
+  return workspaceProjectDirectory(base, proj);
+}
+
+function legacyProjectDirectory(base = trustedBase, proj = projectId) {
+  return path.join(base, 'projects', proj);
+}
+
 function writeAndRead(content: string, expectedVersion: number, mgr = newManager()) {
   const r = mgr.write(content, expectedVersion);
   expect(r.success).toBe(true);
@@ -30,7 +41,7 @@ function writeAndRead(content: string, expectedVersion: number, mgr = newManager
 
 // ── Helper: create valid meta + content at a given slot ────────
 function seedSlot(slot: 0 | 1, content: string, version: number, base = trustedBase, proj = projectId) {
-  const projDir = path.join(base, 'projects', proj);
+  const projDir = workspaceProjectDirectory(base, proj);
   fs.mkdirSync(projDir, { recursive: true });
   const contentPath = path.join(projDir, `AGENTS.${slot}.md`);
   const metaPath = path.join(projDir, `.agents.meta.${slot}.json`);
@@ -66,6 +77,72 @@ describe('WorkspaceAgentsManager regression', () => {
     expect(view.exists).toBe(false);
     expect(view.content).toBe('');
     expect(view.version).toBe(0);
+  });
+
+  it('reads a legacy AGENTS.md losslessly before the first migration save', () => {
+    const projectDir = legacyProjectDirectory();
+    fs.mkdirSync(projectDir, { recursive: true });
+    const legacy = '# AGENTS.md\n\n保留旧项目的每一个字节。\n';
+    fs.writeFileSync(path.join(projectDir, 'AGENTS.md'), legacy, 'utf8');
+    const view = newManager().read();
+    expect(view).toMatchObject({ exists: true, content: legacy, version: 0 });
+    expect(view.contentHash).toBe(hashWorkspaceAgentsContent(legacy));
+  });
+
+  it('migrates AGENTS.md to Metis.md with an immutable backup and receipt on save', () => {
+    const legacyProjectDir = legacyProjectDirectory();
+    fs.mkdirSync(legacyProjectDir, { recursive: true });
+    const legacy = '# Legacy\n\nKeep this content.\n';
+    const updated = '# Metis.md\n\nKeep this content.\n\nAdd a project rule.\n';
+    fs.writeFileSync(path.join(legacyProjectDir, 'AGENTS.md'), legacy, 'utf8');
+    const manager = newManager();
+    const result = manager.write(updated, 0);
+    expect(result).toMatchObject({ success: true, code: 'saved', version: 1 });
+    const projectDir = manager.workspaceRoot;
+    expect(fs.readFileSync(path.join(projectDir, 'Metis.md'), 'utf8')).toBe(updated);
+    expect(fs.readFileSync(path.join(projectDir, 'AGENTS.md.pre-metis-v1.bak'), 'utf8')).toBe(legacy);
+    const receipt = JSON.parse(fs.readFileSync(path.join(projectDir, '.metis-rules-migration.v1.json'), 'utf8'));
+    expect(receipt).toEqual({
+      format: 'metis-rules-migration',
+      version: 1,
+      projectId,
+      source: 'AGENTS.md',
+      target: 'Metis.md',
+      sourceSha256: hashWorkspaceAgentsContent(legacy),
+    });
+    expect(newManager().read()).toMatchObject({ content: updated, version: 1 });
+  });
+
+  it('fails closed when legacy AGENTS.md and canonical Metis.md disagree before migration', () => {
+    const projectDir = legacyProjectDirectory();
+    fs.mkdirSync(projectDir, { recursive: true });
+    fs.writeFileSync(path.join(projectDir, 'AGENTS.md'), '# Legacy', 'utf8');
+    fs.writeFileSync(path.join(projectDir, 'Metis.md'), '# Canonical', 'utf8');
+    const manager = newManager();
+    expect(manager.read()).toMatchObject({ externalConflict: true, content: '# Canonical', version: 0 });
+    expect(manager.write('# Never merge silently', 0)).toMatchObject({ success: false, code: 'external_conflict' });
+  });
+
+  it('updates the public Metis.md mirror on every successful CAS revision', () => {
+    const manager = newManager();
+    expect(manager.write('# v1', 0).success).toBe(true);
+    expect(manager.write('# v2', 1).success).toBe(true);
+    const projectDir = manager.workspaceRoot;
+    expect(fs.readFileSync(path.join(projectDir, 'Metis.md'), 'utf8')).toBe('# v2');
+    expect(manager.read()).toMatchObject({ content: '# v2', version: 2 });
+  });
+
+  it('rejects a forged migration receipt or mismatched legacy backup', () => {
+    const legacyProjectDir = legacyProjectDirectory();
+    fs.mkdirSync(legacyProjectDir, { recursive: true });
+    fs.writeFileSync(path.join(legacyProjectDir, 'AGENTS.md'), '# Legacy', 'utf8');
+    fs.writeFileSync(path.join(legacyProjectDir, 'AGENTS.md.pre-metis-v1.bak'), '# Forged backup', 'utf8');
+    fs.writeFileSync(path.join(legacyProjectDir, '.metis-rules-migration.v1.json'), JSON.stringify({ verified: true }), 'utf8');
+    const manager = newManager();
+    expect(manager.write('# New', 0)).toMatchObject({ success: false, code: 'external_conflict' });
+    const projectDir = manager.workspaceRoot;
+    expect(fs.existsSync(path.join(projectDir, 'Metis.md'))).toBe(false);
+    expect(fs.readFileSync(path.join(projectDir, 'AGENTS.md'), 'utf8')).toBe('# Legacy');
   });
 
   it('supports multiple sequential writes', () => {
@@ -126,8 +203,8 @@ describe('WorkspaceAgentsManager regression', () => {
   it('detects externalConflict when meta is missing but content exists', () => {
     const mgr = newManager();
     mgr.write('# content', 0);
-    const slot = JSON.parse(fs.readFileSync(path.join(trustedBase, 'projects', projectId, '.agents.ptr.json'), 'utf8')).slot;
-    fs.unlinkSync(path.join(trustedBase, 'projects', projectId, `.agents.meta.${slot}.json`));
+    const slot = JSON.parse(fs.readFileSync(path.join(projectDirectory(), '.agents.ptr.json'), 'utf8')).slot;
+    fs.unlinkSync(path.join(projectDirectory(), `.agents.meta.${slot}.json`));
     const view = newManager().read();
     expect(view.exists).toBe(true);
     expect(view.externalConflict).toBe(true);
@@ -136,8 +213,8 @@ describe('WorkspaceAgentsManager regression', () => {
   it('detects externalConflict when content hash does not match meta', () => {
     const mgr = newManager();
     mgr.write('# original', 0);
-    const slot = JSON.parse(fs.readFileSync(path.join(trustedBase, 'projects', projectId, '.agents.ptr.json'), 'utf8')).slot;
-    const contentPath = path.join(trustedBase, 'projects', projectId, `AGENTS.${slot}.md`);
+    const slot = JSON.parse(fs.readFileSync(path.join(projectDirectory(), '.agents.ptr.json'), 'utf8')).slot;
+    const contentPath = path.join(projectDirectory(), `AGENTS.${slot}.md`);
     fs.writeFileSync(contentPath, '# tampered', 'utf-8');
     const view = newManager().read();
     expect(view.externalConflict).toBe(true);
@@ -148,7 +225,7 @@ describe('WorkspaceAgentsManager regression', () => {
     const mgr = newManager();
     mgr.write('# v1', 0);
     mgr.write('# v2', 1);
-    fs.writeFileSync(path.join(trustedBase, 'projects', projectId, '.agents.ptr.json'), 'garbage');
+    fs.writeFileSync(path.join(projectDirectory(), '.agents.ptr.json'), 'garbage');
     const mgr2 = newManager();
     const view = mgr2.read();
     expect(view.exists).toBe(true);
@@ -159,7 +236,7 @@ describe('WorkspaceAgentsManager regression', () => {
   it('recovers from missing pointer file', () => {
     const mgr = newManager();
     mgr.write('# content', 0);
-    fs.unlinkSync(path.join(trustedBase, 'projects', projectId, '.agents.ptr.json'));
+    fs.unlinkSync(path.join(projectDirectory(), '.agents.ptr.json'));
     const view = newManager().read();
     expect(view.exists).toBe(true);
     expect(view.content).toBe('# content');
@@ -170,7 +247,7 @@ describe('WorkspaceAgentsManager regression', () => {
     mgr.write('# v1', 0);
     mgr.write('# v2', 1);
     // Force pointer to old slot
-    fs.writeFileSync(path.join(trustedBase, 'projects', projectId, '.agents.ptr.json'), JSON.stringify({ slot: 0 }));
+    fs.writeFileSync(path.join(projectDirectory(), '.agents.ptr.json'), JSON.stringify({ slot: 0 }));
     const view = newManager().read();
     // Both slots valid but slot 1 has higher version → should pick higher
     expect(view.version).toBe(2);
@@ -180,8 +257,8 @@ describe('WorkspaceAgentsManager regression', () => {
   it('statSync failure on mtime/size cross-check returns externalConflict', () => {
     const mgr = newManager();
     mgr.write('# content', 0);
-    const slot = JSON.parse(fs.readFileSync(path.join(trustedBase, 'projects', projectId, '.agents.ptr.json'), 'utf8')).slot;
-    const contentPath = path.join(trustedBase, 'projects', projectId, `AGENTS.${slot}.md`);
+    const slot = JSON.parse(fs.readFileSync(path.join(projectDirectory(), '.agents.ptr.json'), 'utf8')).slot;
+    const contentPath = path.join(projectDirectory(), `AGENTS.${slot}.md`);
     expect(fs.existsSync(contentPath)).toBe(true);
     // Spy statSync to throw (mtime/size cross-check path)
     const orig = fs.statSync;
@@ -199,8 +276,8 @@ describe('WorkspaceAgentsManager regression', () => {
   it('lstatSync EACCES on content path → externalConflict, not empty', () => {
     const mgr = newManager();
     mgr.write('# content', 0);
-    const slot = JSON.parse(fs.readFileSync(path.join(trustedBase, 'projects', projectId, '.agents.ptr.json'), 'utf8')).slot;
-    const contentPath = path.join(trustedBase, 'projects', projectId, `AGENTS.${slot}.md`);
+    const slot = JSON.parse(fs.readFileSync(path.join(projectDirectory(), '.agents.ptr.json'), 'utf8')).slot;
+    const contentPath = path.join(projectDirectory(), `AGENTS.${slot}.md`);
     expect(fs.existsSync(contentPath)).toBe(true);
     const orig = fs.lstatSync;
     vi.spyOn(fs, 'lstatSync').mockImplementation((p: fs.PathLike, _options?: Parameters<typeof fs.statSync>[1]) => {
@@ -219,8 +296,8 @@ describe('WorkspaceAgentsManager regression', () => {
   it('lstatSync EACCES on meta path → externalConflict', () => {
     const mgr = newManager();
     mgr.write('# content', 0);
-    const slot = JSON.parse(fs.readFileSync(path.join(trustedBase, 'projects', projectId, '.agents.ptr.json'), 'utf8')).slot;
-    const metaPath = path.join(trustedBase, 'projects', projectId, `.agents.meta.${slot}.json`);
+    const slot = JSON.parse(fs.readFileSync(path.join(projectDirectory(), '.agents.ptr.json'), 'utf8')).slot;
+    const metaPath = path.join(projectDirectory(), `.agents.meta.${slot}.json`);
     expect(fs.existsSync(metaPath)).toBe(true);
     const orig = fs.lstatSync;
     vi.spyOn(fs, 'lstatSync').mockImplementation((p: fs.PathLike, _options?: Parameters<typeof fs.statSync>[1]) => {
@@ -236,7 +313,7 @@ describe('WorkspaceAgentsManager regression', () => {
 
   // ── Same version, different real hash on both slots ────────────
   it('both slots valid with same version different hash → externalConflict', () => {
-    const projDir = path.join(trustedBase, 'projects', projectId);
+    const projDir = projectDirectory();
     fs.mkdirSync(projDir, { recursive: true });
     const a = seedSlot(0, '# content A', 1);
     const b = seedSlot(1, '# content B', 1);
@@ -301,8 +378,8 @@ describe('WorkspaceAgentsManager regression', () => {
   it('rejects slot where lstat reports content as symlink', () => {
     const mgr = newManager();
     mgr.write('# content', 0);
-    const slot = JSON.parse(fs.readFileSync(path.join(trustedBase, 'projects', projectId, '.agents.ptr.json'), 'utf8')).slot;
-    const contentPath = path.join(trustedBase, 'projects', projectId, `AGENTS.${slot}.md`);
+    const slot = JSON.parse(fs.readFileSync(path.join(projectDirectory(), '.agents.ptr.json'), 'utf8')).slot;
+    const contentPath = path.join(projectDirectory(), `AGENTS.${slot}.md`);
     // Spy lstatSync: return a Stats object with isSymbolicLink()=true for the content path
     const orig = fs.lstatSync;
     vi.spyOn(fs, 'lstatSync').mockImplementation((p: fs.PathLike, _options?: Parameters<typeof fs.statSync>[1]) => {
@@ -323,8 +400,8 @@ describe('WorkspaceAgentsManager regression', () => {
   it('rejects slot where lstat reports meta as symlink', () => {
     const mgr = newManager();
     mgr.write('# content', 0);
-    const slot = JSON.parse(fs.readFileSync(path.join(trustedBase, 'projects', projectId, '.agents.ptr.json'), 'utf8')).slot;
-    const metaPath = path.join(trustedBase, 'projects', projectId, `.agents.meta.${slot}.json`);
+    const slot = JSON.parse(fs.readFileSync(path.join(projectDirectory(), '.agents.ptr.json'), 'utf8')).slot;
+    const metaPath = path.join(projectDirectory(), `.agents.meta.${slot}.json`);
     const orig = fs.lstatSync;
     vi.spyOn(fs, 'lstatSync').mockImplementation((p: fs.PathLike, _options?: Parameters<typeof fs.statSync>[1]) => {
       const s = orig(p, _options);
@@ -345,7 +422,7 @@ describe('WorkspaceAgentsManager regression', () => {
     const mgr = newManager();
     // First write succeeds — creates projects/project-id
     mgr.write('# initial', 0);
-    const projDir = path.join(trustedBase, 'projects', projectId);
+    const projDir = mgr.workspaceRoot;
     const outsideTarget = path.join(trustedBase, 'outside-target');
     fs.mkdirSync(outsideTarget);
     // Replace workspaceRoot with a junction pointing outside
@@ -367,8 +444,8 @@ describe('WorkspaceAgentsManager regression', () => {
   it('rejects write when version exceeds safe limit', () => {
     const mgr = newManager();
     mgr.write('# v1', 0);
-    const slot = JSON.parse(fs.readFileSync(path.join(trustedBase, 'projects', projectId, '.agents.ptr.json'), 'utf8')).slot;
-    const metaPath = path.join(trustedBase, 'projects', projectId, `.agents.meta.${slot}.json`);
+    const slot = JSON.parse(fs.readFileSync(path.join(projectDirectory(), '.agents.ptr.json'), 'utf8')).slot;
+    const metaPath = path.join(projectDirectory(), `.agents.meta.${slot}.json`);
     const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
     meta.version = 9007199254740991; // MAX_SAFE_INTEGER
     fs.writeFileSync(metaPath, JSON.stringify(meta));
@@ -400,6 +477,56 @@ describe('WorkspaceAgentsManager regression', () => {
     const viewAfter = newManager().read();
     expect(viewAfter.version).toBe(viewBefore.version);
     expect(viewAfter.content).toBe(viewBefore.content);
+  });
+
+  it('pointer commit failure removes the prepared higher generation and preserves Metis.md', () => {
+    const manager = newManager();
+    expect(manager.write('# committed', 0).success).toBe(true);
+    const before = manager.read();
+    const projectDir = manager.workspaceRoot;
+    const originalRename = fs.renameSync;
+    let failed = false;
+    vi.spyOn(fs, 'renameSync').mockImplementation((source: fs.PathLike, destination: fs.PathLike) => {
+      if (!failed && String(destination).endsWith('.agents.ptr.json')) {
+        failed = true;
+        throw new Error('simulated pointer commit failure');
+      }
+      return originalRename(source, destination);
+    });
+    expect(manager.write('# uncommitted', 1)).toMatchObject({ success: false, code: 'io_error' });
+    vi.restoreAllMocks();
+    expect(newManager().read()).toMatchObject({
+      content: before.content,
+      version: before.version,
+      contentHash: before.contentHash,
+    });
+    expect(fs.readFileSync(path.join(projectDir, 'Metis.md'), 'utf8')).toBe('# committed');
+    const metas = [0, 1].map((slot) => path.join(projectDir, `.agents.meta.${slot}.json`))
+      .filter((file) => fs.existsSync(file))
+      .map((file) => JSON.parse(fs.readFileSync(file, 'utf8')) as { version: number });
+    expect(metas.every((meta) => meta.version <= before.version)).toBe(true);
+  });
+
+  it('Metis.md publish failure rolls back the prepared higher generation', () => {
+    const manager = newManager();
+    expect(manager.write('# committed', 0).success).toBe(true);
+    const before = manager.read();
+    const originalRename = fs.renameSync;
+    let failed = false;
+    vi.spyOn(fs, 'renameSync').mockImplementation((source: fs.PathLike, destination: fs.PathLike) => {
+      if (!failed && String(destination).endsWith(`${path.sep}Metis.md`)) {
+        failed = true;
+        throw new Error('simulated Metis.md publish failure');
+      }
+      return originalRename(source, destination);
+    });
+    expect(manager.write('# uncommitted', 1)).toMatchObject({ success: false, code: 'io_error' });
+    vi.restoreAllMocks();
+    expect(newManager().read()).toMatchObject({
+      content: before.content,
+      version: before.version,
+      contentHash: before.contentHash,
+    });
   });
 
   // ── TOCTOU: root swap between Phase A content and Phase B pointer ─

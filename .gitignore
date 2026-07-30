@@ -1,50 +1,60 @@
-# Dependencies and build output
-node_modules/
-dist/
-dist-ssr/
-dist-electron/
-electron/dist-electron/
-release/
-
-# Logs and local runtime state
-logs/
+# Logs
+logs
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
-*.local
-.vite.pid
+lerna-debug.log*
 
-# Editor and operating-system files
+node_modules
+dist
+dist-ssr
+dist-electron
+electron/dist-electron
+/release/
+*.local
+
+# Editor directories and files
 .vscode/*
 !.vscode/extensions.json
-.idea/
+.idea
 .DS_Store
-Thumbs.db
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
 
-# Test, coverage, and acceptance artifacts
-coverage/
-test_screenshots/
-screenshots/
+# Test / coverage artifacts
+coverage
+test_screenshots
+screenshots
 !docs/screenshots/
 docs/screenshots/*
 !docs/screenshots/provider-setup.png
 !docs/screenshots/research-notes-dark.png
-test-results/
-run-logs/
-artifacts/
-.layout-acceptance-paths
-.audit/
+!docs/screenshots/personalization-center.png
+!docs/screenshots/scenario-builder.png
+!docs/screenshots/paper-library.png
+/test-results/
+/run-logs/
+/artifacts/
+/.layout-acceptance-paths
+/*-2026-06-11.png
+/AUDIT*.md
+/SWARM*.md
+/RESEARCH_*.md
+/TEST_ISSUES.md
+/DESIGN_METIS_*.md
+/design-direction.md
+/压缩待处理.md
 __pycache__/
 *.py[cod]
+.vite.pid
+.audit/
 
-# Credentials and real-provider traces
+# Local secrets and real-provider acceptance artifacts
 .env
 .env.*
 !.env.example
@@ -54,11 +64,25 @@ __pycache__/
 .e2e-resp.json
 .e2e-bad.json
 .e2e-bad-resp.json
+scripts/cdp-test.py
+scripts/e2e-user-flow.py
+scripts/e2e-real-provider.cjs
+scripts/real-model-acceptance.cjs
+/scripts/live-503-*
+docs/METIS_REAL_MODEL_RESULTS.json
+docs/METIS_REAL_E2E_SESSION.json
 
-# Local databases and WAL files; never commit user research data
+# Research / generated reports (keep markdown, ignore auxiliary outputs)
+# SQLite database files (Metis uses better-sqlite3) — never commit user data
 *.db
 *.db-shm
 *.db-wal
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+
+# Local Codex acceptance evidence (hashes/locations are recorded in CODEX_STATE.md)
+/artifacts/acceptance/
+
+# Local resumable agent state is operational metadata, not product source.
+/.codex/CODEX_STATE.md

@@ -1,13 +1,13 @@
 import { z } from 'zod';
 
 /**
- * WorkspaceAgentsContract — AGENTS.md 专用 runtime contract.
+ * WorkspaceAgentsContract — Metis.md runtime contract with legacy AGENTS.md migration support.
  *
  * Replaces the generic CLAUDE_MEMORY.md path with a purpose-built,
  * CAS-protected workspace agents file. Key differences from the old
  * MemoryRuntimeContract project-memory path:
  *
- *  - File name is AGENTS.md (not CLAUDE_MEMORY.md).
+ *  - The public canonical file is Metis.md; legacy AGENTS.md remains an import-only migration source.
  *  - Hard limit 50 000 characters (aligned with UI maxLength).
  *  - Rejects C0 and C1 control characters (except \t \n \r).
  *  - Compare-And-Swap via version + content hash to detect concurrent writes.
@@ -18,7 +18,10 @@ export const WORKSPACE_AGENTS_LIMITS = Object.freeze({
   maxChars: 50_000,
 } as const);
 
-export const WORKSPACE_AGENTS_FILENAME = 'AGENTS.md';
+export const WORKSPACE_METIS_FILENAME = 'Metis.md';
+export const LEGACY_WORKSPACE_AGENTS_FILENAME = 'AGENTS.md';
+/** @deprecated Use WORKSPACE_METIS_FILENAME. Kept as a source-compatible alias. */
+export const WORKSPACE_AGENTS_FILENAME = WORKSPACE_METIS_FILENAME;
 
 // ─── Control-character rejection ──────────────────────────────
 //

@@ -143,6 +143,27 @@ export default function CurrentAffairsPanel({ projectId }: { projectId: string }
   }, [jsonInput, available]);
 
   // ── Execute ─────────────────────────────────────────────────
+  const issueAutomaticReceipt = useCallback(async (nextCtx: { wf: string; pf: string; mv: number; cd: string; ssd: string }) => {
+    const opId = `a-${crypto.randomUUID()}`;
+    const tok = newOp(15_000, '内部收据签发超时');
+    try {
+      const req = { version: 1 as const, operationId: opId, projectId, workflowId: nextCtx.wf, profileId: nextCtx.pf, manifestVersion: nextCtx.mv, contentDigest: nextCtx.cd, sourceSnapshotDigest: nextCtx.ssd };
+      const result = await window.metis?.currentAffairsApprove?.(req);
+      if (!result) {
+        if (tok.done()) { setErrorMsg('内部收据签发失败'); setPhase('error'); }
+        return false;
+      }
+      if (!tok.done()) return false;
+      if (!result.ok) { setErrorMsg(result.code); setPhase('error'); return false; }
+      setReceipt({ receiptId: result.receipt.receiptId, nonce: result.receipt.nonce });
+      setPhase('approved');
+      return true;
+    } catch (error) {
+      if (tok.done()) { setErrorMsg(error instanceof Error ? error.message : '内部收据签发失败'); setPhase('error'); }
+      return false;
+    }
+  }, [projectId, newOp]);
+
   const execute = useCallback(async () => {
     if (!selectedIds.length) { setErrorMsg('请至少选择一个来源'); return; }
     if (!title.trim()) { setErrorMsg('请输入标题'); return; }
@@ -154,48 +175,28 @@ export default function CurrentAffairsPanel({ projectId }: { projectId: string }
       const result = await window.metis?.currentAffairsResearch?.(req);
       if (!result || !tok.done()) return;
       if (!result.ok) { setErrorMsg(result.errors.join('; ')); setPhase('error'); return; }
-      setCtx({ wf: req.workflowId, pf: req.profileId, mv: req.manifestVersion, cd: result.contentDigest, ssd: result.sourceSnapshotDigest });
+      const nextCtx = { wf: req.workflowId, pf: req.profileId, mv: req.manifestVersion, cd: result.contentDigest, ssd: result.sourceSnapshotDigest };
+      setCtx(nextCtx);
       if (result.preview?.sections) setPv(result.preview.sections);
       if (result.errors.length) setErrorMsg(result.errors.join('; '));
-      setPhase(result.readyForApproval ? 'awaiting_approval' : 'error');
+      if (result.readyForApproval) {
+        setPhase('awaiting_approval');
+        await issueAutomaticReceipt(nextCtx);
+      } else {
+        setPhase('error');
+      }
     } catch (e) { if (tok.done()) { setErrorMsg(e instanceof Error ? e.message : '失败'); setPhase('error'); } }
-  }, [projectId, title, selectedIds, newOp]);
+  }, [projectId, title, selectedIds, newOp, issueAutomaticReceipt]);
 
   // ── Approve ─────────────────────────────────────────────────
-  const approve = useCallback(async () => {
-    if (!ctx) { setErrorMsg('缺少上下文'); return; }
-    const opId = `a-${crypto.randomUUID()}`;
-    const tok = newOp(15_000, '审批超时');
-    setErrorMsg('');
-    try {
-      const req = { version: 1 as const, operationId: opId, projectId, workflowId: ctx.wf, profileId: ctx.pf, manifestVersion: ctx.mv, contentDigest: ctx.cd, sourceSnapshotDigest: ctx.ssd };
-      const result = await window.metis?.currentAffairsApprove?.(req);
-      if (!result || !tok.done()) return;
-      if (!result.ok) { setErrorMsg(result.code); setPhase('error'); return; }
-      setReceipt({ receiptId: result.receipt.receiptId, nonce: result.receipt.nonce }); setPhase('approved');
-    } catch (e) { if (tok.done()) { setErrorMsg(e instanceof Error ? e.message : '审批失败'); setPhase('error'); } }
-  }, [projectId, ctx, newOp]);
-
-  // ── Reject — send discard_draft IPC, only transition on ok ──
-  const reject = useCallback(async () => {
-    if (ctx) {
-      const opId = `j-${crypto.randomUUID()}`;
-      try {
-        const result = await window.metis?.currentAffairsCancel?.({ action: 'discard_draft' as const, version: 1 as const, operationId: opId, projectId, workflowId: ctx.wf });
-        if (result && result.ok) {
-          setPhase('rejected'); setReceipt(null); return;
-        }
-      } catch { /* IPC failed — stay in current phase */ }
-      setErrorMsg('拒绝操作未能通知主进程'); return;
-    }
-    setPhase('rejected'); setReceipt(null);
-  }, [projectId, ctx]);
-
   // ── Cancel ──────────────────────────────────────────────────
   const cancel = useCallback(async () => {
     if (!ctx) { setPhase('cancelled'); return; }
     // Without receipt: discard_draft (awaiting_approval phase)
     if (!receipt?.receiptId) {
+      // Invalidate the in-flight automatic receipt request before discarding the
+      // draft so a late response cannot resurrect a cancelled workflow.
+      activeToken.current?.invalidate();
       const opId = `c-${crypto.randomUUID()}`;
       try {
         const result = await window.metis?.currentAffairsCancel?.({ action: 'discard_draft' as const, version: 1 as const, operationId: opId, projectId, workflowId: ctx.wf });
@@ -225,7 +226,7 @@ export default function CurrentAffairsPanel({ projectId }: { projectId: string }
 
   // ── Export ──────────────────────────────────────────────────
   const doExport = useCallback(async () => {
-    if (!ctx || !receipt) { setErrorMsg('请先批准'); return; }
+    if (!ctx || !receipt) { setErrorMsg('内部收据尚未签发'); return; }
     const opId = `e-${crypto.randomUUID()}`;
     const tok = newOp(30_000, '导出超时');
     setPhase('exporting'); setErrorMsg('');
@@ -240,13 +241,13 @@ export default function CurrentAffairsPanel({ projectId }: { projectId: string }
 
   // ── Render ──────────────────────────────────────────────────
   const showBar = phase !== 'idle' && phase !== 'loading';
-  const labels: Record<Phase, string> = { idle: '', loading: '加载…', executing: '执行中…', awaiting_approval: '等待审批', approved: '已批准', rejected: '已拒绝', exporting: '导出中…', exported: '导出完成', cancelled: '已取消', error: '出错' };
+  const labels: Record<Phase, string> = { idle: '', loading: '加载…', executing: '执行中…', awaiting_approval: '自动真实性复核中', approved: '内部收据已签发', rejected: '已拒绝', exporting: '导出中…', exported: '导出完成', cancelled: '已取消', error: '出错' };
 
   return (<div className="ca-panel" role="region" aria-label="时政研究工作流">
     <h2>时政研究</h2>
     {showBar && <div className="ca-phase-bar" role="status" aria-live="polite"><span className={`ca-phase-dot ca-phase--${phase}`} aria-hidden="true" /><span>{labels[phase]}</span>
       <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-        {phase === 'awaiting_approval' && <><button className="ca-btn ca-btn--primary ca-btn--sm" onClick={approve}>批准</button><button className="ca-btn ca-btn--danger ca-btn--sm" onClick={reject}>拒绝</button><button className="ca-btn ca-btn--sm" onClick={cancel}>取消</button></>}
+        {phase === 'awaiting_approval' && <><span className="ca-auto-receipt">正在自动复核来源并签发内部收据…</span><button className="ca-btn ca-btn--sm" onClick={cancel}>打断</button></>}
         {phase === 'approved' && <><button className="ca-btn ca-btn--primary ca-btn--sm" onClick={doExport}>导出</button><button className="ca-btn ca-btn--sm" onClick={cancel}>取消</button></>}
         {(phase === 'error' || phase === 'rejected' || phase === 'cancelled' || phase === 'exported') && <button className="ca-btn ca-btn--sm" onClick={recover}>重新开始</button>}
       </div>

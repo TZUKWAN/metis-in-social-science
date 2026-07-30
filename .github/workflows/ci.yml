@@ -19,7 +19,7 @@ jobs:
   quality:
     name: Audit, type-check, and lint
     runs-on: windows-2022
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -37,15 +37,15 @@ jobs:
   tests:
     name: Tests (${{ matrix.group }})
     runs-on: windows-2022
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include:
           - group: engine-library
             paths: engine
-          - group: engine-integration
-            paths: tests/engine tests/evals tests/lib tests/utils
+          - group: engine-integration-security
+            paths: tests/engine tests/evals tests/lib tests/utils tests/integration tests/security tests/docs
           - group: frontend
             paths: tests/frontend
           - group: electron-and-e2e
@@ -66,7 +66,7 @@ jobs:
     name: Electron production build
     needs: quality
     runs-on: windows-2022
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5

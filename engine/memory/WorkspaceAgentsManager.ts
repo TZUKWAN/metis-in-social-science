@@ -1,5 +1,5 @@
 /**
- * WorkspaceAgentsManager — AGENTS.md 专用 CAS-protected service.
+ * WorkspaceAgentsManager — Metis.md CAS-protected service with lossless legacy AGENTS.md migration.
  *
  * Atomic dual-slot architecture:
  *  - Two content slots: AGENTS.0.md / AGENTS.1.md
@@ -16,9 +16,11 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   WorkspaceAgentsContentSchema,
+  WORKSPACE_METIS_FILENAME,
+  LEGACY_WORKSPACE_AGENTS_FILENAME,
   createWorkspaceAgentsFailure,
   createWorkspaceAgentsCASConflict,
   type WorkspaceAgentsView,
@@ -27,6 +29,16 @@ import {
 import { hashWorkspaceAgentsContent } from './WorkspaceAgentsHash.js';
 
 const MAX_ALLOWED_VERSION = Number.MAX_SAFE_INTEGER - 1;
+const PROJECT_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
+
+export function workspaceProjectDirectoryName(projectId: string): string {
+  if (!PROJECT_ID_PATTERN.test(projectId)) throw new Error('Invalid projectId');
+  return createHash('sha256').update(projectId, 'utf8').digest('hex');
+}
+
+export function workspaceProjectDirectory(trustedBase: string, projectId: string): string {
+  return path.join(trustedBase, 'project-rules', workspaceProjectDirectoryName(projectId));
+}
 
 interface AgentsMeta {
   version: number;
@@ -53,6 +65,10 @@ export class WorkspaceAgentsManager {
   private readonly metaPaths: [string, string];
   private readonly lockPath: string;
   private readonly ptrPath: string;
+  private readonly canonicalRulesPath: string;
+  private readonly legacyRulesPath: string;
+  private readonly legacyBackupPath: string;
+  private readonly migrationReceiptPath: string;
   /** Canonical realpath of trustedBase — used as a containment anchor for
    *  all pre-mkdir ancestor checks to prevent TOCTOU junction traversal. */
   private readonly canonicalTrustedBase: string;
@@ -63,10 +79,11 @@ export class WorkspaceAgentsManager {
   /**
    * @param trustedBase  Trusted base directory (e.g., Electron userData)
    * @param projectId   Validated project identifier — directory is derived as
-   *                     `<trustedBase>/projects/<projectId>` to isolate projects.
+   *                     `<trustedBase>/project-rules/<sha256(projectId)>` to
+   *                     isolate case-distinct IDs on Windows.
    */
   constructor(trustedBase: string, projectId: string) {
-    if (!projectId || typeof projectId !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(projectId)) {
+    if (!projectId || typeof projectId !== 'string' || !PROJECT_ID_PATTERN.test(projectId)) {
       throw new Error('Invalid projectId');
     }
     this.projectId = projectId;
@@ -81,7 +98,9 @@ export class WorkspaceAgentsManager {
       if (err instanceof Error && err.message.includes('Workspace root')) throw err;
       throw new Error(`Trusted base path invalid: ${String(err)}`, { cause: err });
     }
-    const dataDir = path.join(trustedBase, 'projects', projectId);
+    const projectsRoot = path.join(trustedBase, 'projects');
+    const dataDir = workspaceProjectDirectory(trustedBase, projectId);
+    this.migrateLegacyProjectDirectory(projectsRoot, projectId, dataDir);
 
     let resolved: string;
     try {
@@ -116,7 +135,9 @@ export class WorkspaceAgentsManager {
     }
     this.workspaceRoot = resolved;
 
-    // Slot paths
+    // Keep the proven legacy slot names so existing projects migrate without
+    // copying or rewriting trusted content. The public contract and UI expose
+    // this document as Metis.md; these backend files are implementation detail.
     this.contentPaths = [
       path.join(resolved, 'AGENTS.0.md'),
       path.join(resolved, 'AGENTS.1.md'),
@@ -127,6 +148,71 @@ export class WorkspaceAgentsManager {
     ];
     this.lockPath = path.join(resolved, '.agents.lock');
     this.ptrPath = path.join(resolved, '.agents.ptr.json');
+    this.canonicalRulesPath = path.join(resolved, WORKSPACE_METIS_FILENAME);
+    this.legacyRulesPath = path.join(resolved, LEGACY_WORKSPACE_AGENTS_FILENAME);
+    this.legacyBackupPath = path.join(resolved, `${LEGACY_WORKSPACE_AGENTS_FILENAME}.pre-metis-v1.bak`);
+    this.migrationReceiptPath = path.join(resolved, '.metis-rules-migration.v1.json');
+  }
+
+  /**
+   * Older builds used the raw project ID as a Windows directory name.  Move an
+   * exact-case legacy entry into its digest-derived namespace before use.  An
+   * aliased spelling (case-only or trailing-dot) is never allowed to claim the
+   * legacy directory, which prevents two SQLite project IDs from sharing one
+   * filesystem rule surface on case-insensitive filesystems.
+   */
+  private migrateLegacyProjectDirectory(projectsRoot: string, projectId: string, dataDir: string): void {
+    if (!fs.existsSync(projectsRoot)) return;
+    try {
+      const projectsStat = fs.lstatSync(projectsRoot);
+      if (!projectsStat.isDirectory() || projectsStat.isSymbolicLink() || this.isJunction(projectsStat, projectsRoot)) {
+        throw new Error('Workspace projects root must be a real directory');
+      }
+      const projectsReal = fs.realpathSync(projectsRoot);
+      if (!projectsReal.startsWith(this.canonicalTrustedBase + path.sep)) {
+        throw new Error('Workspace projects root escaped trusted base');
+      }
+      const exactLegacy = fs.readdirSync(projectsRoot, { withFileTypes: true })
+        .find((entry) => entry.name === projectId);
+      if (!exactLegacy) return;
+      const legacyDir = path.join(projectsRoot, exactLegacy.name);
+      if (fs.existsSync(dataDir)) throw new Error('Legacy and canonical project rule directories both exist');
+      const legacyStat = fs.lstatSync(legacyDir);
+      if (!exactLegacy.isDirectory() || legacyStat.isSymbolicLink() || this.isJunction(legacyStat, legacyDir)) {
+        throw new Error('Legacy project rule directory is unsafe');
+      }
+      const legacyReal = fs.realpathSync(legacyDir);
+      if (!legacyReal.startsWith(this.canonicalTrustedBase + path.sep)) {
+        throw new Error('Legacy project rule directory escaped trusted base');
+      }
+      const canonicalParent = path.dirname(dataDir);
+      if (!fs.existsSync(canonicalParent)) fs.mkdirSync(canonicalParent, { recursive: false, mode: 0o700 });
+      const canonicalParentStat = fs.lstatSync(canonicalParent);
+      if (!canonicalParentStat.isDirectory() || canonicalParentStat.isSymbolicLink()
+        || this.isJunction(canonicalParentStat, canonicalParent)) {
+        throw new Error('Canonical project rule root is unsafe');
+      }
+      const canonicalParentReal = fs.realpathSync(canonicalParent);
+      if (!canonicalParentReal.startsWith(this.canonicalTrustedBase + path.sep)) {
+        throw new Error('Canonical project rule root escaped trusted base');
+      }
+      let renamed = false;
+      try {
+        fs.renameSync(legacyDir, dataDir);
+        renamed = true;
+        if (process.platform !== 'win32') {
+          const fd = fs.openSync(projectsRoot, 'r');
+          try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+        }
+      } catch (error) {
+        if (renamed && fs.existsSync(dataDir) && !fs.existsSync(legacyDir)) {
+          try { fs.renameSync(dataDir, legacyDir); } catch { /* fail closed below */ }
+        }
+        throw error;
+      }
+    } catch (error) {
+      throw new Error(`Project rule directory migration failed: ${String(error)}`, { cause: error });
+    }
   }
 
   /** Detect Windows junction/reparse point */
@@ -214,7 +300,8 @@ export class WorkspaceAgentsManager {
     // ── No valid slots ──────────────────────────────────────
     if (valid.length === 0) {
       if (!hasAnyFile) {
-        return { exists: false, content: '', version: 0, contentHash: '', projectId: this.projectId };
+        return this.readPublicRuleSurface()
+          ?? { exists: false, content: '', version: 0, contentHash: '', projectId: this.projectId };
       }
       // Files exist but neither validates → external conflict
       return { exists: true, content: '', version: 0, contentHash: '', externalConflict: true, projectId: this.projectId };
@@ -223,7 +310,9 @@ export class WorkspaceAgentsManager {
     // ── Exactly one valid slot ──────────────────────────────
     if (valid.length === 1) {
       const v = valid[0]!;
-      return { exists: true, content: v.content, version: v.version, contentHash: v.contentHash, projectId: this.projectId };
+      return this.withPublicSurfaceIntegrity({
+        exists: true, content: v.content, version: v.version, contentHash: v.contentHash, projectId: this.projectId,
+      });
     }
 
     // ── Both slots valid ────────────────────────────────────
@@ -232,7 +321,9 @@ export class WorkspaceAgentsManager {
     // Different versions → highest wins (recovery)
     if (a.version !== b.version) {
       const winner = a.version > b.version ? a : b;
-      return { exists: true, content: winner.content, version: winner.version, contentHash: winner.contentHash, projectId: this.projectId };
+      return this.withPublicSurfaceIntegrity({
+        exists: true, content: winner.content, version: winner.version, contentHash: winner.contentHash, projectId: this.projectId,
+      });
     }
 
     // Same version, different hash → fork detected → externalConflict
@@ -244,9 +335,40 @@ export class WorkspaceAgentsManager {
     const ptr = this.readPtr();
     if (ptr && valid.some(v => v.slot === ptr.slot)) {
       const preferred = valid.find(v => v.slot === ptr.slot)!;
-      return { exists: true, content: preferred.content, version: preferred.version, contentHash: preferred.contentHash, projectId: this.projectId };
+      return this.withPublicSurfaceIntegrity({
+        exists: true, content: preferred.content, version: preferred.version, contentHash: preferred.contentHash, projectId: this.projectId,
+      });
     }
-    return { exists: true, content: a.content, version: a.version, contentHash: a.contentHash, projectId: this.projectId };
+    return this.withPublicSurfaceIntegrity({
+      exists: true, content: a.content, version: a.version, contentHash: a.contentHash, projectId: this.projectId,
+    });
+  }
+
+  private withPublicSurfaceIntegrity(view: WorkspaceAgentsView): WorkspaceAgentsView {
+    const canonical = this.readSafePublicFile(this.canonicalRulesPath);
+    const legacy = this.readSafePublicFile(this.legacyRulesPath);
+    const backup = this.readSafePublicFile(this.legacyBackupPath);
+    if (canonical === null || legacy === null || backup === null) return { ...view, externalConflict: true };
+    if (canonical !== undefined && hashWorkspaceAgentsContent(canonical) !== view.contentHash) {
+      return { ...view, externalConflict: true };
+    }
+    if (canonical === undefined) {
+      if (legacy === undefined || hashWorkspaceAgentsContent(legacy) !== view.contentHash
+        || backup !== undefined || fs.existsSync(this.migrationReceiptPath)) {
+        return { ...view, externalConflict: true };
+      }
+      return view;
+    }
+    if (legacy === undefined) {
+      if (backup !== undefined || fs.existsSync(this.migrationReceiptPath)) {
+        return { ...view, externalConflict: true };
+      }
+      return view;
+    }
+    if (backup !== legacy || this.validateMigrationReceipt(hashWorkspaceAgentsContent(legacy)) !== 'valid') {
+      return { ...view, externalConflict: true };
+    }
+    return view;
   }
 
   /** Independently evaluate one slot: content schema → meta → hash → version → mtime/size.
@@ -392,6 +514,9 @@ export class WorkspaceAgentsManager {
       return createWorkspaceAgentsCASConflict(current.version, current.contentHash);
     }
 
+    const canonicalTemp = this.prepareCanonicalRuleSurface(content, current);
+    if (!canonicalTemp) return { success: false, code: 'external_conflict' as const };
+
     const newHash = hashWorkspaceAgentsContent(content);
     const newVersion = current.version + 1;
     const meta: AgentsMeta = {
@@ -486,7 +611,35 @@ export class WorkspaceAgentsManager {
       }
     } catch {
       try { if (fs.existsSync(ptrTmp)) fs.unlinkSync(ptrTmp); } catch { /* ignore */ }
+      try { if (fs.existsSync(canonicalTemp)) fs.unlinkSync(canonicalTemp); } catch { /* ignore */ }
+      try { if (fs.existsSync(targetContentPath)) fs.unlinkSync(targetContentPath); } catch { /* ignore */ }
+      try { if (fs.existsSync(targetMetaPath)) fs.unlinkSync(targetMetaPath); } catch { /* ignore */ }
       // Pointer NOT updated → old slot still active → complete old state intact
+      return createWorkspaceAgentsFailure('io_error');
+    }
+
+    try {
+      fs.renameSync(canonicalTemp, this.canonicalRulesPath);
+      if (process.platform !== 'win32') {
+        const dirFd = fs.openSync(dir, 'r');
+        try { fs.fsyncSync(dirFd); } finally { fs.closeSync(dirFd); }
+      }
+    } catch {
+      try { if (fs.existsSync(canonicalTemp)) fs.unlinkSync(canonicalTemp); } catch { /* ignore */ }
+      // The internal commit cannot remain newer than the public Metis.md
+      // surface. Remove the just-written inactive generation so read()
+      // deterministically recovers the previous complete state.
+      try { if (fs.existsSync(targetContentPath)) fs.unlinkSync(targetContentPath); } catch { /* ignore */ }
+      try { if (fs.existsSync(targetMetaPath)) fs.unlinkSync(targetMetaPath); } catch { /* ignore */ }
+      try {
+        if (ptr) {
+          const rollback = `${this.ptrPath}.${randomUUID()}.rollback`;
+          fs.writeFileSync(rollback, JSON.stringify(ptr), { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+          fs.renameSync(rollback, this.ptrPath);
+        } else if (fs.existsSync(this.ptrPath)) {
+          fs.unlinkSync(this.ptrPath);
+        }
+      } catch { /* read() still ignores a pointer to an absent generation */ }
       return createWorkspaceAgentsFailure('io_error');
     }
 
@@ -498,6 +651,128 @@ export class WorkspaceAgentsManager {
     };
     } finally {
       this.releaseLock();
+    }
+  }
+
+  /** Read the canonical public Metis.md file, falling back to legacy
+   *  AGENTS.md only when no dual-slot generation exists. If both public
+   *  files exist with different bytes, fail closed instead of silently
+   *  merging or choosing one. */
+  private readPublicRuleSurface(): WorkspaceAgentsView | null {
+    const canonical = this.readSafePublicFile(this.canonicalRulesPath);
+    const legacy = this.readSafePublicFile(this.legacyRulesPath);
+    if (canonical === undefined && legacy === undefined) return null;
+    if (canonical === null || legacy === null) {
+      return { exists: true, content: '', version: 0, contentHash: '', externalConflict: true, projectId: this.projectId };
+    }
+    if (canonical !== undefined && legacy !== undefined && canonical !== legacy) {
+      return {
+        exists: true,
+        content: canonical,
+        version: 0,
+        contentHash: hashWorkspaceAgentsContent(canonical),
+        externalConflict: true,
+        projectId: this.projectId,
+      };
+    }
+    const content = canonical ?? legacy;
+    if (content === undefined) return null;
+    return {
+      exists: true,
+      content,
+      version: 0,
+      contentHash: hashWorkspaceAgentsContent(content),
+      projectId: this.projectId,
+    };
+  }
+
+  private readSafePublicFile(filePath: string): string | undefined | null {
+    try {
+      const stat = fs.lstatSync(filePath);
+      if (!stat.isFile() || stat.isSymbolicLink() || this.isJunction(stat, filePath)) return null;
+      const real = fs.realpathSync(filePath);
+      const relative = path.relative(this.workspaceRoot, real);
+      if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
+      const content = fs.readFileSync(real, 'utf8');
+      return WorkspaceAgentsContentSchema.safeParse(content).success ? content : null;
+    } catch (error) {
+      return (error as { code?: string }).code === 'ENOENT' ? undefined : null;
+    }
+  }
+
+  /** Prepare an fsynced canonical Metis.md generation before committing the
+   *  dual-slot pointer. Legacy AGENTS.md is copied once as an immutable
+   *  backup and accompanied by a bounded migration receipt. */
+  private prepareCanonicalRuleSurface(content: string, current: WorkspaceAgentsView): string | null {
+    try {
+      const canonical = this.readSafePublicFile(this.canonicalRulesPath);
+      const legacy = this.readSafePublicFile(this.legacyRulesPath);
+      if (canonical === null || legacy === null) return null;
+      if (canonical !== undefined && hashWorkspaceAgentsContent(canonical) !== current.contentHash) return null;
+      if (canonical === undefined && legacy !== undefined
+        && hashWorkspaceAgentsContent(legacy) !== current.contentHash) return null;
+
+      if (legacy !== undefined) {
+        const backup = this.readSafePublicFile(this.legacyBackupPath);
+        if (backup === null || (backup !== undefined && backup !== legacy)) return null;
+        if (backup === undefined) {
+          fs.writeFileSync(this.legacyBackupPath, legacy, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+          const backupFd = fs.openSync(this.legacyBackupPath, 'r+');
+          try { fs.fsyncSync(backupFd); } finally { fs.closeSync(backupFd); }
+        }
+        const sourceSha256 = hashWorkspaceAgentsContent(legacy);
+        const receiptState = this.validateMigrationReceipt(sourceSha256);
+        if (receiptState === 'invalid') return null;
+        if (receiptState === 'absent') {
+        const receipt = JSON.stringify({
+          format: 'metis-rules-migration',
+          version: 1,
+          projectId: this.projectId,
+          source: LEGACY_WORKSPACE_AGENTS_FILENAME,
+          target: WORKSPACE_METIS_FILENAME,
+          sourceSha256,
+        }, null, 2) + '\n';
+        fs.writeFileSync(this.migrationReceiptPath, receipt, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+        const receiptFd = fs.openSync(this.migrationReceiptPath, 'r+');
+        try { fs.fsyncSync(receiptFd); } finally { fs.closeSync(receiptFd); }
+        }
+      }
+
+      const temp = `${this.canonicalRulesPath}.${randomUUID()}.tmp`;
+      fs.writeFileSync(temp, content, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+      const fd = fs.openSync(temp, 'r+');
+      try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+      return temp;
+    } catch {
+      try {
+        for (const entry of fs.readdirSync(this.workspaceRoot)) {
+          if (entry.startsWith(`${WORKSPACE_METIS_FILENAME}.`) && entry.endsWith('.tmp')) {
+            fs.unlinkSync(path.join(this.workspaceRoot, entry));
+          }
+        }
+      } catch { /* best-effort cleanup */ }
+      return null;
+    }
+  }
+
+  private validateMigrationReceipt(expectedSourceSha256: string): 'absent' | 'valid' | 'invalid' {
+    try {
+      const stat = fs.lstatSync(this.migrationReceiptPath);
+      if (!stat.isFile() || stat.isSymbolicLink() || this.isJunction(stat, this.migrationReceiptPath)) return 'invalid';
+      const real = fs.realpathSync(this.migrationReceiptPath);
+      const relative = path.relative(this.workspaceRoot, real);
+      if (relative.startsWith('..') || path.isAbsolute(relative)) return 'invalid';
+      const parsed = JSON.parse(fs.readFileSync(real, 'utf8')) as Record<string, unknown>;
+      return Object.keys(parsed).sort().join(',') === 'format,projectId,source,sourceSha256,target,version'
+        && parsed.format === 'metis-rules-migration'
+        && parsed.version === 1
+        && parsed.projectId === this.projectId
+        && parsed.source === LEGACY_WORKSPACE_AGENTS_FILENAME
+        && parsed.target === WORKSPACE_METIS_FILENAME
+        && parsed.sourceSha256 === expectedSourceSha256
+        ? 'valid' : 'invalid';
+    } catch (error) {
+      return (error as { code?: string }).code === 'ENOENT' ? 'absent' : 'invalid';
     }
   }
 

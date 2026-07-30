@@ -3,8 +3,7 @@
  *
  * Retains the original project memory semantics (CLAUDE_MEMORY.md via
  * memory:getProject / memory:setProject IPC). This is separate from the
- * new WorkspaceAgentsManager (AGENTS.md CAS-protected) which lives in
- * the main SettingsPanel provider/agents area.
+ * CAS-protected project Metis.md manager in the main SettingsPanel.
  */
 
 import { useState, useEffect, useRef } from 'react';

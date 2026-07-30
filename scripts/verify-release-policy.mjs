@@ -1,10 +1,12 @@
-import { existsSync, lstatSync } from 'node:fs';
-import { basename, resolve } from 'node:path';
+import { existsSync, lstatSync, readdirSync, unlinkSync } from 'node:fs';
+import { basename, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   artifactKind,
+  artifactMatchesVersion,
   evidenceRoot,
   fail,
+  inventoryDigest,
   packageMetadata,
   projectRoot,
   provenanceRoot,
@@ -15,6 +17,7 @@ import {
   utcNow,
   writeJson,
 } from './release-lib.mjs';
+import { scanPackagedTree } from './release-package-scan-lib.mjs';
 
 const policyPath = resolve(projectRoot, 'build', 'release-policy.json');
 const packageManifestPath = resolve(provenanceRoot, 'package-manifest.json');
@@ -47,7 +50,7 @@ export function validateArtifactSet(artifacts, windowsPolicy, metadata, inspectF
   for (const artifact of artifacts) {
     const kind = artifactKind(artifact.path);
     if (kind) seenKinds.add(kind);
-    if (!artifact.path.includes(metadata.version)) {
+    if (!artifactMatchesVersion(artifact.path, metadata.version)) {
       issues.push({ code: 'artifact_version_mismatch', artifact: artifact.path });
     }
     if (!artifact.path.toLowerCase().includes('-x64.')) {
@@ -73,6 +76,78 @@ export function validateArtifactSet(artifacts, windowsPolicy, metadata, inspectF
   return issues;
 }
 
+function sameFileInventory(left, right) {
+  return Array.isArray(left) && Array.isArray(right) && left.length === right.length
+    && left.every((file, index) => file?.path === right[index]?.path
+      && file?.size === right[index]?.size && file?.sha256 === right[index]?.sha256);
+}
+
+export function validatePackageScan(scan, expected, inspectFile) {
+  const issues = [];
+  if (!scan || scan.schemaVersion !== 3) return [{ code: 'package_scan_schema_invalid' }];
+  if (!isSha256(scan.sourceManifestSha256)
+    || scan.sourceManifestSha256 !== expected?.sourceManifestSha256) {
+    issues.push({ code: 'package_scan_source_mismatch' });
+  }
+  if (!isSha256(scan.releasePolicySha256)
+    || scan.releasePolicySha256 !== expected?.releasePolicySha256) {
+    issues.push({ code: 'package_scan_policy_mismatch' });
+  }
+  if (!Array.isArray(scan.findings) || scan.findings.length > 0) {
+    issues.push({ code: 'package_scan_failed', findingCount: scan.findings?.length ?? null });
+  }
+  const asarScan = scan.asarScan;
+  const physicalTree = scan.physicalTree;
+  if (!asarScan || !Number.isSafeInteger(asarScan.listedEntries) || asarScan.listedEntries <= 0
+    || !Number.isSafeInteger(asarScan.scannedFiles) || asarScan.scannedFiles <= 0
+    || !Number.isSafeInteger(asarScan.directories) || asarScan.directories < 0
+    || asarScan.listedEntries !== asarScan.scannedFiles + asarScan.directories
+    || !physicalTree || !Number.isSafeInteger(physicalTree.listedEntries) || physicalTree.listedEntries <= 0
+    || !Number.isSafeInteger(physicalTree.scannedFiles) || physicalTree.scannedFiles <= 0
+    || !Number.isSafeInteger(physicalTree.directories) || physicalTree.directories < 0
+    || physicalTree.listedEntries !== physicalTree.scannedFiles + physicalTree.directories
+    || !isSha256(physicalTree.treeSha256)
+    || scan.scannedFiles !== asarScan.scannedFiles + physicalTree.scannedFiles
+    || scan.scannedDirectories !== asarScan.directories + physicalTree.directories) {
+    issues.push({ code: 'package_scan_coverage_invalid' });
+  }
+  if (!expected || scan.unpackedRoot !== expected.unpackedRoot) {
+    issues.push({ code: 'package_scan_unpacked_root_mismatch' });
+  }
+  if (!expected?.physicalTree || !physicalTree
+    || physicalTree.listedEntries !== expected.physicalTree.listedEntries
+    || physicalTree.scannedFiles !== expected.physicalTree.scannedFiles
+    || physicalTree.directories !== expected.physicalTree.directories
+    || physicalTree.treeSha256 !== expected.physicalTree.treeSha256) {
+    issues.push({ code: 'package_scan_tree_mismatch' });
+  }
+  const archive = scan.archive;
+  if (!archive || archive.path !== expected?.archivePath || !Number.isSafeInteger(archive.size)
+    || archive.size <= 0 || !isSha256(archive.sha256)) {
+    issues.push({ code: 'package_scan_archive_manifest_invalid' });
+  } else {
+    const actual = inspectFile(archive.path);
+    if (!actual.exists || !actual.isFile || actual.size !== archive.size || actual.sha256 !== archive.sha256) {
+      issues.push({ code: 'package_scan_archive_mismatch' });
+    }
+  }
+  const scannedInstallers = scan.installers;
+  const installerFiles = scannedInstallers?.files;
+  if (!scannedInstallers || !sameFileInventory(installerFiles, expected?.installers)
+    || !isSha256(scannedInstallers.treeSha256)
+    || scannedInstallers.treeSha256 !== inventoryDigest(installerFiles ?? [])) {
+    issues.push({ code: 'package_scan_installer_manifest_mismatch' });
+  } else {
+    for (const installer of installerFiles) {
+      const actual = inspectFile(installer.path);
+      if (!actual.exists || !actual.isFile || actual.size !== installer.size || actual.sha256 !== installer.sha256) {
+        issues.push({ code: 'package_scan_installer_mismatch', artifact: installer.path });
+      }
+    }
+  }
+  return issues;
+}
+
 export function readAuthenticode(artifacts) {
   const quotedPaths = artifacts.map((artifact) => {
     const absolute = resolve(projectRoot, artifact.path);
@@ -86,9 +161,7 @@ export function readAuthenticode(artifacts) {
     '  $signerThumbprint=if($signature.SignerCertificate){[string]$signature.SignerCertificate.Thumbprint}else{$null}',
     '  $timestampSubject=if($signature.TimeStamperCertificate){[string]$signature.TimeStamperCertificate.Subject}else{$null}',
     '  [pscustomobject]@{',
-    '    path=$path',
     '    status=[string]$signature.Status',
-    '    statusMessage=[string]$signature.StatusMessage',
     '    signerSubject=$signerSubject',
     '    signerThumbprint=$signerThumbprint',
     '    timestampSubject=$timestampSubject',
@@ -99,8 +172,11 @@ export function readAuthenticode(artifacts) {
   const result = run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script]);
   const parsed = JSON.parse(result.stdout || '[]');
   return (Array.isArray(parsed) ? parsed : [parsed]).map((record, index) => ({
-    ...record,
-    path: artifacts[index]?.path || record.path,
+    path: artifacts[index]?.path ?? null,
+    status: typeof record?.status === 'string' ? record.status : 'Unknown',
+    signerSubject: typeof record?.signerSubject === 'string' ? record.signerSubject : null,
+    signerThumbprint: typeof record?.signerThumbprint === 'string' ? record.signerThumbprint : null,
+    timestampSubject: typeof record?.timestampSubject === 'string' ? record.timestampSubject : null,
   }));
 }
 
@@ -112,6 +188,7 @@ function validatePolicy(policy, metadata) {
 }
 
 export function main() {
+  if (existsSync(verificationPath)) unlinkSync(verificationPath);
   for (const required of [policyPath, packageManifestPath, scanPath, licenseInventoryPath, sbomPath]) {
     if (!existsSync(required)) fail(`Missing release verification input: ${required}`);
   }
@@ -126,7 +203,32 @@ export function main() {
   const sbom = readJson(sbomPath);
   const issues = [];
 
-  if (!Array.isArray(scan.findings) || scan.findings.length > 0) issues.push({ code: 'package_scan_failed', findingCount: scan.findings?.length ?? null });
+  const unpackedRoots = readdirSync(releaseRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && entry.name.endsWith('-unpacked'));
+  if (unpackedRoots.length !== 1) fail(`Expected exactly one current unpacked application; found ${unpackedRoots.length}.`);
+  const unpackedAbsolute = resolve(releaseRoot, unpackedRoots[0].name);
+  const unpackedRelative = relative(projectRoot, unpackedAbsolute).split(sep).join('/');
+  const physicalTree = scanPackagedTree(unpackedAbsolute);
+  const expectedScan = {
+    unpackedRoot: unpackedRelative,
+    archivePath: `${unpackedRelative}/resources/app.asar`,
+    physicalTree,
+    installers: packaged?.packages?.files ?? [],
+    sourceManifestSha256: packaged?.sourceManifestSha256,
+    releasePolicySha256: sha256File(policyPath),
+  };
+
+  issues.push(...validatePackageScan(scan, expectedScan, (relativePath) => {
+    const absolute = resolve(projectRoot, relativePath);
+    if (!existsSync(absolute)) return { exists: false, isFile: false, size: 0, sha256: null };
+    const stat = lstatSync(absolute);
+    return {
+      exists: true,
+      isFile: stat.isFile() && !stat.isSymbolicLink(),
+      size: stat.size,
+      sha256: stat.isFile() ? sha256File(absolute) : null,
+    };
+  }));
   if (!Array.isArray(licenses.packages) || licenses.packages.length === 0) issues.push({ code: 'license_inventory_empty' });
   if (policy.release?.allowMissingLicenses === false) {
     for (const item of licenses.packages || []) {
@@ -163,7 +265,17 @@ export function main() {
       sha256: artifact.sha256,
     })),
     signatures,
-    packageScan: { scannedFiles: scan.scannedFiles, findings: scan.findings.length },
+    packageScan: {
+      scannedFiles: scan.scannedFiles,
+      scannedDirectories: scan.scannedDirectories,
+      asarScannedFiles: scan.asarScan?.scannedFiles ?? null,
+      sourceManifestSha256: scan.sourceManifestSha256 ?? null,
+      releasePolicySha256: scan.releasePolicySha256 ?? null,
+      physicalTreeSha256: scan.physicalTree?.treeSha256 ?? null,
+      archiveSha256: scan.archive?.sha256 ?? null,
+      installerTreeSha256: scan.installers?.treeSha256 ?? null,
+      findings: Array.isArray(scan.findings) ? scan.findings.length : null,
+    },
     compliance: { packages: licenses.packages.length, sbomComponents: sbom.components.length },
     issues,
     passed: issues.length === 0,

@@ -1,7 +1,7 @@
 {
   "name": "metis-workbench",
   "private": true,
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.2",
   "description": "AI-powered research workbench for literature, notes, analysis, writing, and reproducible research workflows.",
   "author": "Metis",
   "license": "Apache-2.0",
@@ -42,7 +42,6 @@
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
-    "@xterm/addon-web-links": "^0.12.0",
     "@xterm/xterm": "^6.0.0",
     "better-sqlite3": "^12.10.0",
     "csv-parse": "^6.2.1",
@@ -58,8 +57,6 @@
     "reactflow": "^11.11.4",
     "recharts": "^3.8.1",
     "remark-gfm": "^4.0.1",
-    "xterm": "^5.3.0",
-    "xterm-addon-fit": "^0.8.0",
     "zod": "^4.4.3",
     "zustand": "^5.0.14"
   },
@@ -72,21 +69,18 @@
       "output": "release"
     },
     "files": [
+      "LICENSE",
       "dist/**/*",
       "dist-electron/**/*",
       "node_modules/better-sqlite3/**/*",
       "node_modules/node-pty/**/*",
+      "!**/*.map",
+      "!**/*.{ts,tsx,mts,cts,tsbuildinfo}",
+      "!**/{test,tests,__tests__,fixtures,example,examples}{,/**/*}",
+      "!**/{test,spec}.{js,cjs,mjs,ts,tsx,mts,cts}",
       "!node_modules/node-pty/src/**/*",
-      "!node_modules/node-pty/lib/**/*.map",
-      "!dist-electron/**/*.map",
       "!**/*.test.*",
       "!**/*.spec.*"
-    ],
-    "extraResources": [
-      {
-        "from": "node_modules/better-sqlite3",
-        "to": "node_modules/better-sqlite3"
-      }
     ],
     "mac": {
       "target": [
@@ -152,6 +146,7 @@
     }
   },
   "devDependencies": {
+    "@electron/asar": "^3.4.1",
     "@eslint/js": "^10.0.1",
     "@tailwindcss/vite": "^4.3.0",
     "@testing-library/react": "^16.3.2",
@@ -165,7 +160,7 @@
     "@vitest/coverage-v8": "^4.1.8",
     "concurrently": "^10.0.3",
     "electron": "41.10.3",
-    "electron-builder": "^26.15.0",
+    "electron-builder": "^26.15.7",
     "eslint": "^10.3.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
@@ -177,5 +172,9 @@
     "vite": "^8.0.12",
     "vitest": "^4.1.8",
     "wait-on": "^9.0.10"
+  },
+  "overrides": {
+    "brace-expansion@^1.0.0": "1.1.18",
+    "brace-expansion@^2.0.0": "2.1.4"
   }
 }

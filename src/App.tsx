@@ -1,7 +1,6 @@
 ﻿import { useState, useEffect, Suspense, lazy } from 'react'
 import './App.css'
 import ChatPage from './pages/ChatPage'
-import ApprovalQueue from './components/ApprovalQueue'
 import { useTranslation } from './i18n'
 import type { Page, TopLevelEntry, ThemeMode } from './store'
 import { useMetisStore } from './store'
@@ -13,6 +12,7 @@ import { getTopLevelNav } from './shell/navConfig'
 import { getDiagnosticMode, setDiagnosticMode, type UIMode } from '../engine/capabilities/DiagnosticMode'
 import type { FirstRunSetupClient } from './components/FirstRunWizard'
 import { useResearchWorkspaceStore } from './research/researchWorkspaceStore'
+import { setPendingChatIntent } from './lib/chatIntent'
 
 // 鈹€鈹€鈹€ Lazy-loaded pages to reduce initial bundle size 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
@@ -33,6 +33,7 @@ const ProjectWorkspaceSidebar = lazy(() => import('./research/ProjectWorkspaceSi
 const ResearchInspectorPanels = lazy(() => import('./research/ResearchInspectorPanels'));
 const ResearchExportCenter = lazy(() => import('./export/ResearchExportCenter'));
 const ScenarioLauncher = lazy(() => import('./research/ScenarioLauncher'));
+const PersonalizationCenter = lazy(() => import('./personalization/PersonalizationCenter'));
 import SettingsPanel from './components/SettingsPanel';
 
 const firstRunSetupClient: FirstRunSetupClient = {
@@ -306,7 +307,7 @@ function EvalsPage() {
   )
 }
 function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const initialLocation = legacyPageToEntry(initialPage);
   const [currentEntry, setCurrentEntry] = useState<TopLevelEntry>(initialLocation.entry)
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(initialLocation.mode)
@@ -317,6 +318,8 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
   const [projectRightCollapsed, setProjectRightCollapsed] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
+  const [personalizationOpen, setPersonalizationOpen] = useState(false)
+  const [chatIntentRevision, setChatIntentRevision] = useState(0)
   const [setupState, setSetupState] = useState<'checking' | 'required' | 'ready'>('checking')
   const [setupInitialConfig, setSetupInitialConfig] = useState<{ baseUrl?: string; model?: string }>({})
   const isHydrated = useMetisStore((s) => s.isHydrated)
@@ -345,7 +348,6 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
     })
   }, [])
 
-  // HITL approval state
   // Hydrate from SQLite on mount
   useEffect(() => {
     const metis = window.metis
@@ -429,14 +431,27 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
 
   function navigateLegacy(page: Page) {
     const location = legacyPageToEntry(page);
+    setPersonalizationOpen(false);
     setCurrentEntry(location.entry);
     setWorkspaceMode(location.mode);
     setStandalonePage(resolveStandalonePage(page, uiMode === 'diagnostic'));
   }
 
   function navigateWorkspaceMode(mode: WorkspaceMode) {
+    setPersonalizationOpen(false);
     setStandalonePage(null);
     setWorkspaceMode(mode);
+  }
+
+  function activatePersonalizationScenario(scenarioId: string) {
+    setPendingChatIntent({
+      scenarioId,
+      projectId: activeResearchProjectId ?? 'global',
+      message: '',
+      autoSend: false,
+    });
+    setChatIntentRevision((revision) => revision + 1);
+    navigateWorkspaceMode('converse');
   }
 
   function projectShellStateProps() {
@@ -472,6 +487,9 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
   }
 
   function renderPage() {
+    if (personalizationOpen) {
+      return <PersonalizationCenter onActivateScenario={activatePersonalizationScenario} />;
+    }
     const standalone = renderStandalonePage();
     if (standalone) return standalone;
     if (currentEntry === 'settings') {
@@ -484,6 +502,7 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
     return (
       <ChatPage
         uiMode={uiMode}
+        intentRevision={chatIntentRevision}
         renderLayout={({ leftPanel, workspace, rightPanel }) => {
           const isConversation = workspaceMode === 'converse';
           return (
@@ -506,7 +525,12 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
                     )}
                   </div>
                 ),
-                plan: <ScenarioLauncher projectId={activeResearchProjectId ?? undefined} />,
+                plan: (
+                  <ScenarioLauncher
+                    projectId={activeResearchProjectId ?? undefined}
+                    onOpenPersonalization={() => { setPersonalizationOpen(true); setStandalonePage(null); }}
+                  />
+                ),
                 evidence: <ResearchInspectorPanels />,
               }}
               workspaceClassName={isConversation ? 'shell-workspace--chat' : undefined}
@@ -570,9 +594,9 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
             {NAV_ITEMS.map((item) => (
               <li key={item.id}>
                 <button
-                  className={`nav-item ${currentEntry === item.id ? 'active' : ''}`}
-                  onClick={() => setCurrentEntry(item.id)}
-                  aria-current={currentEntry === item.id ? 'page' : undefined}
+                  className={`nav-item ${!personalizationOpen && currentEntry === item.id ? 'active' : ''}`}
+                  onClick={() => { setPersonalizationOpen(false); setCurrentEntry(item.id); }}
+                  aria-current={!personalizationOpen && currentEntry === item.id ? 'page' : undefined}
                   data-nav-id={item.id}
                 >
                   <span className="nav-icon">{item.icon}</span>
@@ -585,28 +609,44 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
             ))}
           </ul>
           <div style={{ marginTop: 'auto', paddingBottom: 8 }}>
-            <ThemeToggle />
+            <div className="sidebar-personalization-row">
+              <ThemeToggle />
+              <button
+                className={`personalization-trigger ${personalizationOpen ? 'active' : ''}`}
+                onClick={() => { setPersonalizationOpen(true); setStandalonePage(null); }}
+                aria-current={personalizationOpen ? 'page' : undefined}
+                title={locale === 'zh' ? '个性化' : 'Personalization'}
+                data-testid="personalization-trigger"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <line x1="4" y1="6" x2="20" y2="6" /><circle cx="9" cy="6" r="2" />
+                  <line x1="4" y1="12" x2="20" y2="12" /><circle cx="15" cy="12" r="2" />
+                  <line x1="4" y1="18" x2="20" y2="18" /><circle cx="11" cy="18" r="2" />
+                </svg>
+                <span>{locale === 'zh' ? '个性化' : 'Personalize'}</span>
+              </button>
+            </div>
             <button
               className="nav-item"
               onClick={() => setShortcutsOpen(true)}
               title={t('shortcuts.title')}
               style={{ width: '100%', justifyContent: 'center', marginTop: 8, fontSize: 12 }}
             >
-              <span style={{ opacity: 0.8 }}>? {t('shortcuts.title')}</span>
+              <span className="nav-icon" aria-hidden="true" style={{ opacity: 0.8 }}>?</span>
+              <span className="nav-label" style={{ opacity: 0.8 }}>{t('shortcuts.title')}</span>
             </button>
           </div>
         </nav>
       <main className="main-content">
         <ErrorBoundary
           showDetails={uiMode === 'diagnostic'}
-          onReset={() => { setCurrentEntry('projects'); setWorkspaceMode('converse'); setStandalonePage(null); }}
+          onReset={() => { setPersonalizationOpen(false); setCurrentEntry('projects'); setWorkspaceMode('converse'); setStandalonePage(null); }}
         >
           <Suspense fallback={<div className="hydration-loading"><div className="hydration-spinner" /><p>{t('common.loading')}</p></div>}>
             {renderPage()}
           </Suspense>
         </ErrorBoundary>
       </main>
-      <ApprovalQueue uiMode={uiMode} />
       {searchOpen && (
         <GlobalSearch
           onNavigate={navigateLegacy}
