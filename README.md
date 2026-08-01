@@ -2,327 +2,259 @@
 
 # Metis in Social Science
 
-### A local-first AI research workbench for social science, humanities, and evidence-grounded writing
+# 本地优先的 AI 科研工作台
 
-Local-first. Project-centered. Fully user-defined. Metis brings AI conversation,
-source management, PDF reading, notes, analysis, reproducible research workflows,
-and user-defined Agents into one coherent desktop workspace.
+为人文、社会科学与一切以证据为基础的研究写作而生
 
-[Download for Windows](https://github.com/TZUKWAN/metis-in-social-science/releases/latest) ·
-[Read the personalization guide](docs/PERSONALIZATION_GUIDE.md) ·
-[Report an issue](https://github.com/TZUKWAN/metis-in-social-science/issues) ·
-[Release notes](docs/RELEASE_NOTES_v0.1.0-alpha.2.md)
+把 AI 对话、文献管理、PDF 阅读、笔记、分析、可复现的研究工作流，
+以及完全由你定义的智能体，整合进同一个桌面工作区。
+
+[Windows 下载](https://github.com/TZUKWAN/metis-in-social-science/releases/latest) ·
+[英文文档 / English README](README.en.md) ·
+[个人化指南](docs/PERSONALIZATION_GUIDE.md) ·
+[更新日志](docs/RELEASE_NOTES_v0.1.0-alpha.2.md) ·
+[问题反馈](https://github.com/TZUKWAN/metis-in-social-science/issues)
 
 </div>
 
 ---
 
-## 中文介绍
+## Metis 是什么
 
-**Metis** 是一款**本地优先（local-first）**的桌面 AI 科研工作台，面向人文、
-社会科学以及一切以证据为基础的研究写作场景。它不是"一个聊天框加几个学术提示词"，
-而是一个把项目、来源、会话、产物、规则、工具连接与执行状态都当作一等对象来管理的
-完整研究环境。
+Metis 是一款**本地优先（local-first）**的桌面 AI 科研工作台。它不是"一个聊天框加几个
+学术提示词"，而是一个完整的研究环境——把**项目、来源、会话、产物、规则、工具连接、
+执行状态**都当作一等对象来管理。
 
-一次安装，一台电脑，从问题形成到证据收集、分析、起草、修订、导出，**无需在互不相连的
-工具之间反复搬运上下文**。研究数据与个人化配置默认保存在本地，由你完全掌控。
+一次安装，一台电脑，从问题形成到证据收集、分析、起草、修订、导出，**全程无需在互不相连
+的工具之间反复搬运上下文**。你的研究数据与个人化配置默认保存在本地，由你完全掌控。
 
-### 为什么选择 Metis
+这一版的核心理念只有一句话：
 
-- **零预设，完全自定义**：开箱即带五个空的定义区（场景、智能体、技能、MCP、Metis.md）。
-  Metis 不替你决定"你是什么类型的研究者"，而是提供一套系统，让你定义属于自己的研究场景、
-  智能体、技能、MCP 服务、工作流、记忆策略与输出契约。
-- **本地优先，隐私可控**：项目、会话、笔记、产物、个人化定义全部保存在本地 SQLite 与磁盘。
-  只有当你主动使用某项功能时，内容才会发送到你配置的模型服务商。
-- **可执行的研究场景**：一个 Metis 场景不是一段提示词，而是一张带版本依赖的可执行配置图。
-  运行中的会话拿到的是冻结快照，编辑定义不会悄悄改变正在执行的任务。
-- **研究诚信内建**：证据状态、来源身份、修订状态、出处与可发布性由运行时计算，不受可编辑的
-  场景或智能体文本影响——自动控制，无法被提示词关闭。
-- **一站式工作区**：对话、文献库、PDF 阅读、笔记、图谱、时间线、对比、实验视图、LaTeX 预览、
-  产物管理、导出，全部在同一个项目上下文里。
+> Metis 不替你决定"你是什么类型的研究者"。它提供一套系统，让你定义属于自己的研究场景、
+> 智能体、技能、MCP 服务、工作流、记忆策略与输出契约。
 
-### 核心功能一览
+---
 
-| 功能区 | 说明 |
+## 为什么选择 Metis
+
+### 零预设，完全自定义
+
+开箱即带五个空的定义区：场景、智能体、技能、MCP、Metis.md 规则。Metis 不预置任何期刊、
+学位论文、基金、专著、政策或演示工作流。你决定哪些概念该存在、该怎么运作。
+
+Metis 交付的是**编辑器和运行时**，而不是一堆对你研究方式的假设。
+
+### 本地优先，隐私可控
+
+项目、会话、笔记、产物、个人化定义全部保存在本地 SQLite 与磁盘。只有当你主动使用某项
+功能时，内容才会离开你的机器——比如你主动向配置好的模型服务商发送一个问题。
+
+API 密钥由 Electron 主进程处理，存入操作系统的安全存储，**绝不**写进个人化定义、导出
+的 bundle，或渲染进程可读取的设置响应里。
+
+### 可执行的研究场景，不是提示词画廊
+
+一个 Metis 场景不是一段提示词，而是一张**带版本依赖的可执行配置图**。运行中的会话拿到
+的是冻结快照（frozen manifest），编辑定义只会影响未来的运行，不会悄悄改变正在执行的
+任务。
+
+### 研究诚信内建，无法被提示词绕过
+
+证据状态、来源身份、修订状态、出处、可发布性——这些都由运行时计算，而非由可编辑的场景
+或智能体文本声明。这些控制始终保持自动，是系统层的一部分，**不是提示词能关闭的开关**。
+
+| 你掌控的 | Metis 运行时掌控的 |
 | --- | --- |
-| 个人化中心 | 用户自建场景 / 智能体 / 技能 / MCP / Metis.md，全部空状态起步 |
-| 对话与智能体 | OpenAI 兼容模型、多会话、流式响应、场景绑定、实时引导与打断 |
-| 文献库 | PDF 导入、DOI/Crossref/OpenAlex/arXiv/Zotero 适配、集合、标签、阅读状态 |
-| PDF 阅读 | 应用内阅读器，论文与笔记之间无缝切换 |
-| 笔记与分析 | 持久笔记、图谱、时间线、对比、实验视图 |
-| 产物与导出 | Markdown 实时预览成产物、LaTeX 导出、库与研究数据导出 |
-| 完整访问 | 免逐步确认的自主执行，支持运行中实时引导与中断 |
+| 研究行为、角色、工作流、工具、记忆、输出、质量标准 | 执行快照、证据信封、来源状态、修订状态、出处、诚信报告 |
+| 安装并绑定哪个技能或 MCP | 已安装代码如何注册、观测结果如何记录 |
+| 何时引导、停止、编辑、归档、恢复 | 一次运行结果能否宣称"已验证/已修正/可发布" |
 
-[查看个人化中心截图](#personalization-center) ·
-[查看场景编辑器截图](#scenario-builder) ·
-[查看文献库截图](#research-library) ·
-[继续阅读英文完整文档](#what-is-metis)
+### 一站式工作区，端到端
+
+对话、文献库、PDF 阅读、笔记、图谱、时间线、对比视图、实验视图、LaTeX 预览、产物管理、
+导出——全部在同一个项目上下文里。
 
 ---
 
-## What is Metis
+## 核心功能一览
 
-Metis is a desktop research environment that brings AI conversation, source management,
-PDF reading, notes, analysis, writing, reproducible research workflows, and user-defined
-Agents into one coherent workspace.
+### 个人化中心
 
-The defining idea of the current version is simple:
+个人化中心从空状态起步。每一个场景都由你创建或安装，每一个依赖都按名可见。五个用户自有
+的定义区：**场景、智能体、技能、MCP、Metis.md**。
 
-> Metis does not decide what kind of researcher you are. It gives you the system for
-> defining your own research scenarios, Agents, Skills, MCP services, workflows, memory,
-> and output contracts.
+![个人化中心](docs/screenshots/personalization-center.png)
 
-It is not a chat window with a few academic prompts attached. Metis maintains projects,
-sources, sessions, artifacts, rules, tool connections, and execution state as first-class
-objects. The application can therefore carry a research task from question formation to
-evidence collection, analysis, drafting, revision, and export without forcing the user to
-move context between unrelated tools.
+### 场景编辑器
 
-### Why Metis
+每个场景可以组合智能体、技能、MCP 服务、Metis.md 规则、多步工作流、记忆策略、输出格式、
+主交付物、支撑产物与质量标准。
 
-- **Zero-preset personalization.** A fresh install contains no journal, thesis, funding,
-  monograph, policy, or presentation scenario. You decide which of those concepts should
-  exist and how they should work. Metis ships the editor and the runtime, not a list of
-  assumptions about what you want to write.
-- **Local-first, not offline-only.** Projects, sessions, notes, artifacts, and
-  personalization definitions are stored locally in SQLite and on disk. Content leaves your
-  machine only when a feature you actively use requires it (for example, a question sent to
-  your configured model provider).
-- **Executable scenarios, not prompt galleries.** A Metis scenario is a versioned
-  configuration graph with explicit dependencies. A running conversation receives a frozen
-  manifest, so editing a scenario affects a future run, not the task that is already in
-  flight.
-- **Research integrity built in.** Evidence status, source identity, correction state,
-  provenance, and publishability are computed by the runtime rather than accepted from
-  editable scenario text. Those controls stay automatic and cannot be turned off by a prompt.
-- **One workspace, end to end.** Conversation, library, PDF reading, notes, graph, timeline,
-  comparison, experiment views, LaTeX preview, artifact management, and export all live
-  inside the same project context.
+![场景编辑器](docs/screenshots/scenario-builder.png)
+
+### 文献库
+
+PDF、书目记录、集合、标签、阅读状态、研究产物，始终与同一个项目和会话上下文保持关联。
+
+![文献库](docs/screenshots/paper-library.png)
+
+### 首屏模型配置
+
+首次启动时，Metis 打开一个居中的配置界面，让你连接一个 OpenAI 兼容的模型服务商。
+
+![模型配置](docs/screenshots/provider-setup.png)
+
+### 暗色主题笔记
+
+持久笔记保留标题、正文、收藏与项目归属。学术设计系统提供配套的明、暗双主题。
+
+![暗色主题笔记](docs/screenshots/research-notes-dark.png)
 
 ---
 
-## Product views
+## Metis 能做什么
 
-### Personalization Center
+### 把 AI 模型当作研究伙伴
 
-The Personalization Center starts empty. Every scenario is created or installed by the
-user, and every dependency is visible by name. Five user-owned definition areas are
-available: Scenarios, Agents, Skills, MCP, and `Metis.md`.
+- 连接任意 OpenAI 兼容的模型服务商，从桌面配置界面一键填入。
+- 保留多个研究会话，重启后可恢复。
+- 不选场景也能直接发问，处理日常问题。
+- 需要专业智能体和工作流时，选用你自建的场景。
+- 流式响应、停止运行中任务、重新生成回答，并在同一研究上下文里继续。
+- 把生成的 Markdown 变成**实时产物预览**，而不是让它困在聊天记录里。
 
-![Personalization Center](docs/screenshots/personalization-center.png)
+### 把研究组织成项目，而不是零散消息
 
-### Scenario builder
+- 创建持久的研究项目，各自拥有来源、笔记、产物和规则。
+- 在对话、阅读、分析、写作模式之间切换，不丢失当前项目。
+- 会话、消息、来源元数据、产物保存在本地 SQLite 数据库。
+- 把项目级的 `Metis.md` 指令与项目绑定，而不是放进一个悄悄影响无关工作的全局提示。
 
-Each scenario can combine Agents, Skills, MCP servers, `Metis.md` rules, a multi-step
-workflow, memory policy, output format, primary deliverable, supporting artifacts, and
-quality criteria.
+### 构建并审视文献库
 
-![Custom scenario builder](docs/screenshots/scenario-builder.png)
+- 维护可检索的论文库，支持集合、标签、归档、阅读状态。
+- 导入本地 PDF 与书目材料。
+- 在工作台内阅读 PDF，在论文与笔记之间无缝切换，无需离开应用。
+- 在已配置的情况下，使用 DOI、Crossref、OpenAlex、Semantic Scholar、arXiv、RSS、Zotero
+  等研究适配器。
+- 通过引擎层追踪引用护照、三角验证、期刊诚信信号、撤稿、证据出处。
 
-### Research library
+### 在同一工作区阅读、标注、分析、写作
 
-PDFs, bibliographic records, collections, tags, reading status, and research artifacts
-remain connected to the same project and conversation context.
-
-![Paper library](docs/screenshots/paper-library.png)
-
-### First-run provider setup
-
-On first launch Metis opens a centered setup screen where you connect an OpenAI-compatible
-model provider. The API key is handled by the Electron main process and stored with the
-operating system's secure storage support.
-
-![Provider setup](docs/screenshots/provider-setup.png)
-
-### Notes in dark theme
-
-Durable notes keep their title, body, favorites, and project association. The academic
-design system ships with matching light and dark themes.
-
-![Research notes in dark theme](docs/screenshots/research-notes-dark.png)
+- 用 PDF 阅读器进行细读与文档检视。
+- 保留持久笔记，含标题、正文、收藏、项目归属。
+- 通过图谱、时间线、对比、实验视图探索研究材料。
+- 预览面向 LaTeX 的输出，把生成的产物与它的源会话一并保存。
+- 通过可用的桌面导出界面，导出文献库与研究数据。
 
 ---
 
-## What Metis can do
+## 个人化：不预设，只赋能
 
-### Work with an AI model as a research partner
+### 场景
 
-- Connect to an OpenAI-compatible model provider from the desktop setup screen.
-- Keep multiple research conversations and restore them after restart.
-- Send ordinary questions without selecting a scenario.
-- Select a user-created scenario when a task needs a specialized Agent and workflow.
-- Stream responses, stop an active run, regenerate an answer, and continue from the same
-  research context.
-- Turn generated Markdown into a live artifact preview instead of leaving it trapped in the
-  chat transcript.
+场景定义整体研究模式。编辑器暴露：
 
-### Organize research as projects rather than loose messages
+- 名称、描述、启用状态、触发短语。
+- 场景能力与 Full Access 执行策略。
+- 智能体、技能、MCP、Metis.md 绑定。
+- 有序的工作流步骤与步骤依赖。
+- 每一步的智能体分配、工具、技能、MCP 服务与轮次预算。
+- 记忆范围、保留的决策、保留的产物、摘要预算。
+- 输出格式与可选的结构化输出 schema。
+- 主交付物、支撑产物、你撰写的质量标准。
 
-- Create durable research projects with their own sources, notes, artifacts, and rules.
-- Switch between conversation, reading, analysis, and writing modes without losing the
-  active project.
-- Preserve sessions, messages, source metadata, and artifacts in a local SQLite database.
-- Keep project-level `Metis.md` instructions with the project rather than in a global
-  prompt that silently affects unrelated work.
+场景保存为新的修订版本。运行中的会话拿到的是冻结 manifest，编辑场景不会悄悄改变正在
+运行的任务。
 
-### Build and inspect a literature base
+### 智能体
 
-- Maintain a searchable paper library with collections, tags, archives, and reading status.
-- Import local PDFs and bibliographic material.
-- Read PDFs inside the workbench and move between papers and notes without leaving the
-  application.
-- Use DOI, Crossref, OpenAlex, Semantic Scholar, arXiv, RSS, Zotero, and related research
-  adapters where configured.
-- Track citation passports, triangulation, journal integrity signals, retractions, and
-  evidence provenance through the engine layer.
+智能体是可复用的角色，能被多个场景共享。用户可配置：
 
-### Read, annotate, analyze, and write in one workspace
+- 角色与系统指令。
+- 可选的模型偏好。
+- 技能、工具、MCP 服务。
+- 记忆行为与摘要上限。
+- 输出格式、交付物计划、结构化输出要求。
+- 最大轮次与重试策略。
 
-- Use the PDF reader for close reading and document inspection.
-- Keep durable notes with titles, body text, favorites, and project association.
-- Explore research material through graph, timeline, comparison, and experiment views.
-- Preview LaTeX-oriented output and maintain generated artifacts alongside their source
-  conversations.
-- Export library and research data through the available desktop export surfaces.
+智能体不是写死的学术人设。你可以创建田野访谈员、统计审稿人、档案来源批评者、编辑，或
+任何你的工作真正需要的角色。
 
----
+### 技能的三种模式
 
-## Personalization without presets
+Metis 支持三种添加技能的方式：
 
-Metis ships the editor and runtime, not a list of assumptions about what the user wants to
-write. A fresh installation contains no journal, thesis, funding, monograph, policy, or
-presentation scenario. The user decides which of those concepts should exist and how they
-should work.
+1. **直接编写 Markdown**——在个人化中心内编辑一份 `SKILL.md` 式的指令文档。这是不想
+   打包的用户最快的路径。
+2. **安装技能包**——选择一个含指令、脚本、参考资料、schema 和其它资源的 ZIP 或目录。
+3. **从 URL 安装**——提供一个 GitHub 或支持的 HTTPS 源，让 Metis 下载并注册该技能。
 
-This is different from a prompt gallery. A Metis scenario is an executable configuration
-graph with versioned dependencies.
+可视化技能编辑器还暴露系统指令、工具与 MCP 绑定、轮次预算、包入口、结构化输入输出
+字段。简单 schema 逐字段编辑，用户无需手写 JSON。
 
-### Scenarios
+### MCP 的两种模式
 
-A scenario defines the overall research mode. The editor exposes:
+MCP 集成有两条用户可见的路径：
 
-- Name, description, enable state, and trigger phrases.
-- Scenario capability and Full Access execution policy.
-- Agent, Skill, MCP, and `Metis.md` bindings.
-- Ordered workflow steps and step dependencies.
-- Agent assignment, tools, Skills, MCP services, and turn budget for every step.
-- Memory scope, retained decisions, retained artifacts, and summary budget.
-- Output format and optional structured output schema.
-- Primary deliverable, supporting artifacts, and user-written quality criteria.
+1. **描述需求**——写下这个 MCP 必须做什么，让托管构建器生成一个可安装的本地服务。
+2. **从 URL 安装**——提供一个支持的 MCP 仓库或包 URL，安装进托管运行时。
 
-The scenario is saved as a new revision. A running conversation receives a frozen manifest,
-so editing a scenario does not silently change an already-running task.
+已安装的 MCP 定义保留其来源、暴露的工具、环境引用与激活状态。密钥值单独存储，**不**写
+进定义，也**不**随个人化 bundle 导出。
 
-### Agents
+### Metis.md
 
-An Agent is a reusable role that can be shared by several scenarios. Users can configure:
+Metis.md 是用户自有的规则层。规则可设为全局、场景级或项目级。项目规则在个人化中心
+编辑，与实际的项目工作区绑定。
 
-- Role and system instructions.
-- Optional model preference.
-- Skills, tools, and MCP services.
-- Memory behavior and summary limits.
-- Output format, deliverable plan, and structured output requirements.
-- Maximum turns and retry policy.
+既有的 `AGENTS.md` 内容会被迁移，不会丢弃你的文本。已有的项目改动使用冲突感知写入，
+一个项目不会悄悄覆盖另一个项目的规则。
 
-Agents are not hard-coded academic personas. A user may create a field interviewer, a
-statistical reviewer, an archival source critic, an editor, or any other role the work
-actually needs.
+### 导入、导出、历史与恢复
 
-### Skills in three modes
-
-Metis supports three ways to add a Skill:
-
-1. **Write Markdown directly** — edit a `SKILL.md`-style instruction document inside the
-   Personalization Center. This is the fastest path for users who do not want to build a
-   package.
-2. **Install a Skill package** — select a ZIP or directory containing instructions,
-   scripts, references, schemas, and other assets.
-3. **Install from a URL** — provide a GitHub or supported HTTPS source and let Metis
-   download and register the Skill.
-
-The visual Skill editor also exposes system instructions, tool and MCP bindings, turn
-budget, package entry, and structured input/output fields. Simple schemas are edited one
-field at a time; users do not need to hand-write JSON.
-
-### MCP in two modes
-
-MCP integration is available through two user-facing paths:
-
-1. **Describe the requirement** — write what the MCP must do and let the managed builder
-   create an installable local service.
-2. **Install from a URL** — provide a supported MCP repository or package URL and install
-   it into the managed runtime.
-
-Installed MCP definitions retain their source, exposed tools, environment references, and
-activation state. Secret values are stored separately and are not written into the
-definition or exported with a personalization bundle.
-
-### `Metis.md`
-
-`Metis.md` is the user-owned rule layer. Rules can be scoped globally, to a scenario, or to
-a project. Project rules are edited in the Personalization Center and are kept with the
-actual project workspace.
-
-Legacy `AGENTS.md` content is migrated without discarding the user's text. Existing project
-changes use conflict-aware writes so one project cannot silently overwrite the rules of
-another.
-
-### Import, export, history, and recovery
-
-- Export a selected definition together with its dependency graph.
-- Import a personalization bundle without exporting credentials.
-- Inspect immutable revision history.
-- Restore a prior user revision.
-- Archive definitions that are no longer needed.
-- Keep installed Skills and MCP assets associated with their definitions after restart.
+- 导出选定的定义及其依赖图。
+- 导入个人化 bundle 时不含凭据。
+- 审视不可变的修订历史。
+- 恢复此前的用户修订。
+- 归档不再需要的定义。
+- 重启后，已安装的技能与 MCP 资产仍与其定义关联。
 
 ---
 
-## Full Access, live control, and research integrity
+## Full Access、实时控制与研究诚信
 
-Metis is designed for uninterrupted work. In Full Access mode it does not stop before every
-tool action to request another confirmation. The user can instead guide the active task with
-a message or interrupt it at any time.
+Metis 为不间断的工作而设计。在 Full Access 模式下，它不会在每一个工具动作前停下来要
+确认。用户可以改为用一条消息引导正在执行的任务，或随时打断它。
 
-Autonomy does not mean inventing research state. Evidence status, correction state, source
-identity, provenance, and publishability are computed by the runtime rather than accepted
-from editable scenario text. Those controls remain automatic and are shown in the
-Personalization Center as part of the system layer, not as switches a prompt can turn off.
-
-The practical separation is:
-
-| User controls | Metis runtime controls |
-| --- | --- |
-| Research behavior, roles, workflow, tools, memory, output, quality criteria | Execution snapshots, evidence envelopes, source state, correction state, provenance, integrity reports |
-| Which Skill or MCP to install and bind | How installed code is registered and how observed results are recorded |
-| When to steer, stop, edit, archive, or restore | Whether a run result may claim to be verified, corrected, or publishable |
+自主，不等于捏造研究状态。证据状态、修订状态、来源身份、出处、可发布性都由运行时计算，
+而非由可编辑的场景文本声明。这些控制始终保持自动，在个人化中心作为系统层的一部分展示，
+**不是提示词能关闭的开关**。
 
 ---
 
-## Installation
+## 安装
 
-### Windows release
+### Windows 版本
 
-Open the [latest GitHub Release](https://github.com/TZUKWAN/metis-in-social-science/releases/latest)
-and choose one of the published assets:
+打开[最新 GitHub Release](https://github.com/TZUKWAN/metis-in-social-science/releases/latest)，
+从发布的资产中选择：
 
-- `Metis-Research-Workbench-Setup-<version>-x64.exe` — standard NSIS installer.
-- `Metis-Research-Workbench-<version>-x64.msi` — MSI package for managed Windows
-  environments.
-- The unpacked build, when provided, for portable inspection and testing.
+- `Metis-Research-Workbench-Setup-<版本>-x64.exe`——标准 NSIS 安装程序。
+- `Metis-Research-Workbench-<版本>-x64.msi`——面向受管 Windows 环境的 MSI 包。
+- 解包版（如提供），便于便携检视与测试。
 
-Alpha builds may be unsigned. Windows SmartScreen can therefore display an "unrecognized
-app" warning. Check the asset name and SHA-256 value shown in the release notes before
-continuing.
+Alpha 安装包可能未签名。Windows SmartScreen 因此可能显示"无法识别的应用"警告。继续前，
+请核对资产名称与更新日志里展示的 SHA-256 值。
 
-### Build from source
+### 从源码构建
 
-Requirements:
+要求：
 
-- Windows 10 or Windows 11 for the packaged desktop target.
-- Node.js 22 or newer.
-- npm 10 or newer.
-- Git.
+- Windows 10 或 Windows 11（打包桌面目标）。
+- Node.js 22 或更高。
+- npm 10 或更高。
+- Git。
 
 ```powershell
 git clone https://github.com/TZUKWAN/metis-in-social-science.git
@@ -332,111 +264,105 @@ npm run build:electron
 npm start
 ```
 
-For development:
+开发模式：
 
 ```powershell
 npm run dev:electron
 ```
 
-For a local Windows package:
+本地 Windows 打包：
 
 ```powershell
 npm run pack
 ```
 
-The repository uses `better-sqlite3`, which has separate Node and Electron native ABIs.
-`npm test` rebuilds it for Node tests; `npm run build:electron` rebuilds it for the desktop
-runtime.
+仓库使用 `better-sqlite3`，它有独立的 Node 与 Electron 原生 ABI。`npm test` 为 Node
+测试重建；`npm run build:electron` 为桌面运行时重建。
 
 ---
 
-## Configure a model provider
+## 配置模型服务商
 
-On first launch Metis opens a centered setup screen. Enter:
+首次启动时，Metis 打开一个居中的配置界面。填入：
 
-1. The base URL of an OpenAI-compatible API.
-2. The API key.
-3. The exact model name exposed by that service.
+1. OpenAI 兼容 API 的 base URL。
+2. API 密钥。
+3. 该服务暴露的确切模型名。
 
-![Provider setup](docs/screenshots/provider-setup.png)
+![模型配置](docs/screenshots/provider-setup.png)
 
-The key is handled by the Electron main process and stored with the operating system's
-secure storage support. It is not written into a personalization definition, exported
-bundle, or renderer-readable settings response.
-
----
-
-## Data and privacy
-
-Metis is local-first, not offline-only.
-
-Stored locally:
-
-- Projects, sessions, messages, notes, source metadata, artifacts, and personalization
-  definitions.
-- SQLite data and application configuration.
-- Installed Skill/MCP assets and project `Metis.md` files.
-- Receipt and integrity material used by the desktop runtime.
-
-Sent externally only when the related feature is used:
-
-- Conversation content and selected context to the configured model provider.
-- Bibliographic or identifier queries to services such as Crossref, OpenAlex, arXiv, or
-  Semantic Scholar.
-- Network requests made by an explicitly installed Skill or MCP service.
-
-Before using sensitive research material, review the privacy terms of the model provider and
-every third-party integration you enable.
+密钥由 Electron 主进程处理，存入操作系统的安全存储。它不会写进个人化定义、导出的
+bundle，或渲染进程可读取的设置响应。
 
 ---
 
-## Architecture
+## 数据与隐私
+
+Metis 是本地优先，不是只能离线。
+
+**本地保存：**
+
+- 项目、会话、消息、笔记、来源元数据、产物、个人化定义。
+- SQLite 数据与应用配置。
+- 已安装的技能/MCP 资产与项目 Metis.md 文件。
+- 桌面运行时使用的回执与诚信材料。
+
+**仅在使用相关功能时才外发：**
+
+- 会话内容与所选上下文，发往配置好的模型服务商。
+- 书目或标识符查询，发往 Crossref、OpenAlex、arXiv、Semantic Scholar 等服务。
+- 你显式安装的技能或 MCP 服务发起的网络请求。
+
+使用敏感研究材料前，请审阅模型服务商与每一个你启用的第三方集成的隐私条款。
+
+---
+
+## 架构
 
 ```text
-+------------------------------- Electron renderer -------------------------------+
-| App shell - Projects - Chat - Library - PDF - Notes - Analysis - Personalization|
-+------------------------------ strict preload bridge -----------------------------+
++------------------------------- Electron 渲染层 -------------------------------+
+| 应用外壳 - 项目 - 对话 - 文献库 - PDF - 笔记 - 分析 - 个人化                    |
++------------------------------ 严格的 preload 桥 ------------------------------+
                                         |
-+-------------------------------- Electron main ---------------------------------+
-| IPC validation - Provider - Persistence - Skill/MCP installers - File services |
-| Personalization runtime - Managed MCP runtime - Evidence and artifact services |
++-------------------------------- Electron 主进程 -------------------------------+
+| IPC 校验 - 模型 - 持久化 - 技能/MCP 安装器 - 文件服务                          |
+| 个人化运行时 - 托管 MCP 运行时 - 证据与产物服务                                |
 +---------------------------------------+----------------------------------------+
                                         |
-+--------------------------------- Engine layer ---------------------------------+
-| AgentLoop - Tool dispatcher - Workflows - Memory - Research adapters - Contracts|
-| Versioned definitions - Run manifests - Evidence - Citation and source controls|
-+--------------------------------------------------------------------------------+
++--------------------------------- 引擎层 --------------------------------------+
+| AgentLoop - 工具分发器 - 工作流 - 记忆 - 研究适配器 - 契约                      |
+| 版本化定义 - 运行 manifest - 证据 - 引用与来源控制                              |
++------------------------------------------------------------------------------+
 ```
 
-The renderer never receives unrestricted Node.js access. Desktop capabilities cross a typed
-preload bridge, and long-running scenario execution is resolved in the main/engine layers
-from a saved definition revision.
+渲染层永远不会获得不受限的 Node.js 访问。桌面能力跨越一个类型化的 preload 桥，长时运行的
+场景执行在主进程/引擎层从已保存的定义修订中解析。
 
-## Technology
+## 技术栈
 
-| Layer | Main technologies |
+| 层 | 主要技术 |
 | --- | --- |
-| Desktop | Electron 41 |
-| Interface | React 19, TypeScript 6, CSS design tokens |
-| Build | Vite 8, electron-builder |
-| Persistence | SQLite through better-sqlite3 |
-| Documents | PDF.js, KaTeX, Markdown rendering |
-| Agent runtime | OpenAI-compatible provider, tool dispatcher, MCP runtime |
-| Validation | Zod contracts across renderer, preload, main, and engine boundaries |
+| 桌面 | Electron 41 |
+| 界面 | React 19, TypeScript 6, CSS 设计令牌 |
+| 构建 | Vite 8, electron-builder |
+| 持久化 | 经由 better-sqlite3 的 SQLite |
+| 文档 | PDF.js, KaTeX, Markdown 渲染 |
+| 智能体运行时 | OpenAI 兼容服务商、工具分发器、MCP 运行时 |
+| 校验 | 跨渲染层、preload、主进程、引擎边界的 Zod 契约 |
 
-## Repository layout
+## 仓库结构
 
 ```text
-electron/                 Electron main process and desktop services
-engine/                   Agent, research, workflow, memory, and runtime contracts
-src/                      React application and visual design system
-src/personalization/      Personalization Center and supporting panels
-tests/                    Unit, integration, Electron, and frontend tests
-docs/                     Architecture, formats, guides, screenshots, release notes
-scripts/                  Build, release, packaging, and acceptance utilities
+electron/                 Electron 主进程与桌面服务
+engine/                   智能体、研究、工作流、记忆与运行时契约
+src/                      React 应用与视觉设计系统
+src/personalization/      个人化中心及支撑面板
+tests/                    单元、集成、Electron 与前端测试
+docs/                     架构、格式、指南、截图、更新日志
+scripts/                  构建、发布、打包与验收工具
 ```
 
-## Development quality gates
+## 开发质量门禁
 
 ```powershell
 npm run typecheck
@@ -445,47 +371,43 @@ npm test
 npm run build:electron
 ```
 
-The release workflow additionally produces provenance, dependency/license reports, package
-scans, and Windows assets. GUI acceptance uses disposable Electron profiles so development
-checks do not read or modify a normal user's projects or provider key.
+发布工作流额外产出溯源、依赖/许可证报告、包扫描与 Windows 资产。GUI 验收使用一次性
+Electron 配置，确保开发检查不会读取或修改普通用户的项目或模型密钥。
 
-## Current limitations
+## 当前限制
 
-- This is an alpha release. Back up important research material before upgrading.
-- The packaged release currently targets Windows x64.
-- Installers may be unsigned and can trigger SmartScreen.
-- A compatible model API and the user's own provider credentials are required for AI
-  responses.
-- Metis deliberately ships without preconfigured research scenarios. Users must create or
-  import the configurations they want.
-- Presentation generation is not included as a built-in scenario. The product leaves that
-  design space open for a future user-defined layout system.
-- Some export workflows require external software, such as a TeX distribution.
+- 这是 alpha 版本。升级前请备份重要研究材料。
+- 打包版当前面向 Windows x64。
+- 安装包可能未签名，可能触发 SmartScreen。
+- AI 响应需要兼容的模型 API 与用户自有的服务商凭据。
+- Metis 刻意不附带预置研究场景。用户必须创建或导入所需的配置。
+- 演示文稿生成未作为内建场景。产品把该设计空间留给未来的用户自定义版式系统。
+- 部分导出工作流需要外部软件，如 TeX 发行版。
 
-## Contributing
+## 贡献
 
-Contributions are welcome in the form of bug reports, reproducible examples, documentation
-improvements, interface refinements, new research adapters, Skills, MCP integrations, and
-runtime improvements.
+欢迎以 bug 报告、可复现实例、文档改进、界面打磨、新研究适配器、技能、MCP 集成与运行时
+改进的形式贡献。
 
-Before opening a pull request:
+开 pull request 前：
 
-1. Create a focused branch.
-2. Keep generated artifacts and local user data out of the commit.
-3. Run type checking and the relevant tests.
-4. Describe the user-visible behavior and how it was verified.
-5. Include screenshots for interface changes.
+1. 创建聚焦的分支。
+2. 不要把生成的产物和本地用户数据放进提交。
+3. 运行类型检查与相关测试。
+4. 描述用户可见的行为以及如何验证。
+5. 界面改动附截图。
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) and
-[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for repository guidelines.
+仓库指南见 [CONTRIBUTING.md](CONTRIBUTING.md) 与 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。
 
-## License
+## 许可证
 
-Metis in Social Science is licensed under the
-[Apache License 2.0](LICENSE).
+Metis in Social Science 基于 [Apache 许可证 2.0](LICENSE) 授权。
 
-## Project status
+## 项目状态
 
-Metis is under active development. The goal is a research workbench that is free enough to
-adapt to different scholars and structured enough to preserve evidence, context, and
-reproducibility across long projects.
+Metis 处于活跃开发中。目标是打造一个足够自由、能适应不同学者，又足够结构化、能在漫长
+项目中保全证据、上下文与可复现性的研究工作台。
+
+---
+
+英文版文档见 [English README](README.en.md)。
