@@ -250,7 +250,7 @@ describe('Full Access production chain attacks', () => {
     const controlHandler = main.match(/ipcMain\.handle\('agent:control',[\s\S]*?ipcMain\.handle\('agent:status'/u)?.[0] ?? '';
 
     expect(app).toContain('setPendingChatIntent({');
-    expect(app).toContain('autoSend: true');
+    expect(app).toContain('autoSend: false');
     expect(chatPage).toContain('await handleLiveInstruction(raw)');
     expect(chatPage).toContain("action: 'interrupt'");
     expect(preload).toContain("ipcRenderer.invoke('agent:chat'");
@@ -366,6 +366,7 @@ describe('Full Access production chain attacks', () => {
     const repository = {
       getRecoverableScenarioRun: vi.fn(() => undefined),
       saveScenarioRunRecord: vi.fn((record: unknown) => { checkpoints.push(record); return record; }),
+      listCompletedScenarioRunRecords: vi.fn(() => []),
     } as unknown as Parameters<typeof runPersistedScenarioWorkflow>[0]['repository'];
 
     const result = await within(runPersistedScenarioWorkflow({

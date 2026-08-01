@@ -12,6 +12,7 @@ import { buildBuiltinPersonalizationDefinitions } from '../fixtures/personalizat
 import {
   FUNDING_TEMPLATE_GET_ACTIVE_TOOL_NAME,
   FUNDING_TEMPLATE_GET_DIFF_TOOL_NAME,
+  FUNDING_TEMPLATE_LIST_TOOL_NAME,
 } from '../../engine/runtime/FundingTemplateRuntimeContract.js';
 import { ToolDispatcher } from '../../engine/tools/ToolDispatcher.js';
 import { ToolRegistry } from '../../engine/tools/ToolRegistry.js';
@@ -340,13 +341,14 @@ describe('funding built-in activation and reserved presentation attacks', () => 
     const unregisteredService = new FundingTemplateToolService(setup.repository, {
       resolveScope: () => ({ ownerId: LOCAL_OWNER, projectId: PROJECT }),
     });
-    expect(unregisteredService.getSpecs()).toHaveLength(2);
+    expect(unregisteredService.getSpecs()).toHaveLength(3);
     const toolRegistry = new ToolRegistry();
     const registeredIds = new Set(toolRegistry.list().map((tool) => tool.name));
     expect(isFundingTemplateBuiltinDraftReady(registeredIds)).toBe(false);
+    expect(toolRegistry.has(FUNDING_TEMPLATE_LIST_TOOL_NAME)).toBe(false);
     expect(toolRegistry.has(FUNDING_TEMPLATE_GET_ACTIVE_TOOL_NAME)).toBe(false);
     expect(toolRegistry.has(FUNDING_TEMPLATE_GET_DIFF_TOOL_NAME)).toBe(false);
-    expect(unregisteredService.getSpecs()).toHaveLength(2);
+    expect(unregisteredService.getSpecs()).toHaveLength(3);
 
     const definitions = buildBuiltinPersonalizationDefinitions({
       fundingTemplateRegisteredToolIds: registeredIds,

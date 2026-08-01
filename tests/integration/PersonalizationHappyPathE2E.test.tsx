@@ -377,7 +377,8 @@ describe('Personalization persisted UI-to-runtime happy paths', () => {
     fireEvent.click(await screen.findByTestId('personalization-trigger'));
     await screen.findByRole('heading', { name: 'Personalization' });
     fireEvent.click(await screen.findByRole('button', { name: /^Skills/u }));
-    await screen.findByText('Durable Markdown Skill');
+    await waitFor(() => expect(definitionCard(CUSTOM_SKILL_ID)).toBeDefined());
+    expect(within(definitionCard(CUSTOM_SKILL_ID)).getByText('Durable Markdown Skill')).toBeDefined();
     expect(restarted.repository.get(CUSTOM_SKILL_ID)).toMatchObject({
       revision: 2,
       sourceMode: 'markdown',

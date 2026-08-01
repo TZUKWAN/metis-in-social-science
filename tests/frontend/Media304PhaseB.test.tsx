@@ -299,6 +299,7 @@ describe('MEDIA-304 Phase B — capability contract (audit A)', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /导入图片来源|Import image source/ }));
     await waitFor(() => expect(metis.selectFileCapability).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByRole('form')).toBeDefined());
     expect(screen.getByText(secondCapability.displayName)).toBeDefined();
 
     await act(async () => {
