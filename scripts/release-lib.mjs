@@ -51,6 +51,10 @@ export function run(command, args, options = {}) {
     encoding: 'utf8',
     windowsHide: true,
     maxBuffer: 32 * 1024 * 1024,
+    // On Windows, npm (and other batch wrappers) ship as .cmd files. Node cannot
+    // spawn a .cmd directly without a shell and returns EINVAL, so route batch
+    // commands through cmd.exe. Plain executables such as git are unaffected.
+    shell: process.platform === 'win32' && /\.(?:cmd|bat)$/iu.test(command),
     ...options,
   });
   if (result.error) fail(`${command} failed to start: ${result.error.message}`);
