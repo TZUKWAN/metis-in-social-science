@@ -10,6 +10,7 @@ import { formatCitation, type CitationFormat } from '../utils/citations.js';
 import { searchPapers, getPaperRecommendations, recommendationToPlain, type SemanticScholarPaper, type CitationEdge } from '@engine/research/SemanticScholarClient.js';
 import { resolveDoi } from '@engine/research/DoiResolver.js';
 import { resolveArxiv } from '@engine/research/ArxivResolver.js';
+import { importFromUrl } from '@engine/research/WebImport.js';
 import { fetchRssFeed, type RssFeedEntry } from '@engine/research/RssFeedResolver.js';
 import { setPendingChatIntent } from '../lib/chatIntent.js';
 import type { UIMode } from '../../engine/capabilities/DiagnosticMode.js';
@@ -740,6 +741,44 @@ export default function PapersPage({ onNavigate, uiMode = 'normal' }: PapersPage
 
     const doi = extractDoi(importText);
     const arxivId = extractArxivId(importText);
+
+    // URL branch: import a web page (paper landing page, blog post, etc.)
+    // via citation meta-tag extraction. Runs before DOI/arXiv resolution so a
+    // pasted paper URL still resolves through Crossref enrichment.
+    if (/^https?:\/\//i.test(importText.trim())) {
+      setImportResolving(true);
+      try {
+        const result = await importFromUrl(importText.trim());
+        const paper: PaperItem = {
+          id: generatePaperId(),
+          title: result.title || t('papers.untitled'),
+          authors: result.authors,
+          year: result.year || new Date().getFullYear(),
+          venue: result.venue,
+          abstract: result.abstract,
+          doi: result.doi,
+          arxivId: result.arxivId,
+          url: result.url,
+          tags: [],
+          notes: '',
+          readStatus: 'unread',
+          rating: 0,
+          referenceIds: [],
+          addedAt: generateTimestamp(),
+        };
+        const { paper: saved, merged } = await addPaper(paper);
+        notifyMerge(saved, merged);
+        if (!merged) {
+          setImportNotice(t('papers.importSuccess'));
+        }
+        setImportText('');
+      } catch (err) {
+        setImportError(presentPapersError('import', err instanceof Error ? err.message : String(err), locale, uiMode));
+      } finally {
+        setImportResolving(false);
+      }
+      return;
+    }
 
     if (arxivId && !doi) {
       setImportResolving(true);
