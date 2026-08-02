@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { parallelExecutor, type ParallelBranch } from './ParallelStepExecutor.js';
+import { parallelExecutor, type ParallelBranch, type ParallelMergeResult } from './ParallelStepExecutor.js';
 import type { ScenarioStepExecutionInput } from './ScenarioRunCoordinator.js';
 
 const baseInput: ScenarioStepExecutionInput = {
@@ -30,7 +30,7 @@ describe('parallelExecutor', () => {
     };
     const start = Date.now();
     const exec = parallelExecutor([slow, fast]);
-    const result = await exec(baseInput);
+    const result = await exec(baseInput) as ParallelMergeResult;
     const elapsed = Date.now() - start;
     expect(result.ok).toBe(true);
     expect(result.branches.slow).toMatchObject({ value: 'slow-result' });
@@ -47,7 +47,7 @@ describe('parallelExecutor', () => {
       { key: 'good', executor: async () => ({ ok: true, value: 1 }) },
       { key: 'bad', executor: async () => ({ ok: false, code: 'branch_failed', message: 'boom' }) },
     ];
-    const result = await parallelExecutor(branches)(baseInput);
+    const result = await parallelExecutor(branches)(baseInput) as ParallelMergeResult;
     expect(result.ok).toBe(true);
     expect(result.branches.good).toMatchObject({ value: 1 });
     expect(result.failedBranches).toEqual([{ key: 'bad', code: 'branch_failed', message: 'boom' }]);
@@ -58,7 +58,7 @@ describe('parallelExecutor', () => {
       { key: 'good', executor: async () => ({ ok: true }) },
       { key: 'bad', executor: async () => { throw new Error('crash'); } },
     ];
-    const result = await parallelExecutor(branches, { requireAll: true })(baseInput);
+    const result = await parallelExecutor(branches, { requireAll: true })(baseInput) as ParallelMergeResult;
     expect(result.ok).toBe(false);
     expect(result.failedBranches[0]?.key).toBe('bad');
     expect(result.failedBranches[0]?.message).toBe('crash');
@@ -81,7 +81,7 @@ describe('parallelExecutor', () => {
       { key: 'throws', executor: async () => { throw new Error('oops'); } },
       { key: 'survives', executor: spy },
     ];
-    const result = await parallelExecutor(branches)(baseInput);
+    const result = await parallelExecutor(branches)(baseInput) as ParallelMergeResult;
     // The other branch still ran despite the throw.
     expect(spy).toHaveBeenCalled();
     expect(result.failedBranches[0]?.key).toBe('throws');
