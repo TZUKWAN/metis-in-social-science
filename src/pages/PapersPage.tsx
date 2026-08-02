@@ -2,6 +2,7 @@ import { useState, useRef, useMemo, useCallback, useEffect } from 'react';
 import SearchInput from '../components/SearchInput';
 import ConfirmDialog from '../components/ConfirmDialog';
 import { IntegrityBadge } from '../components/IntegrityBadge';
+import { TriangulationStatus } from '../components/TriangulationStatus';
 import { useMetisStore, filterPapers, findSimilarPapers, suggestTags } from '../store';
 import type { ReadStatus, PaperItem, MetisState } from '../store';
 import { useTranslation } from '../i18n';
@@ -2300,6 +2301,11 @@ export default function PapersPage({ onNavigate, uiMode = 'normal' }: PapersPage
                     {relatedOpen ? t('common.close') : t('common.open')}
                   </button>
                 </div>
+                {selected?.doi && (
+                  <div style={{ marginTop: 8 }}>
+                    <TriangulationStatus doi={selected.doi} />
+                  </div>
+                )}
                 {relatedOpen && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>

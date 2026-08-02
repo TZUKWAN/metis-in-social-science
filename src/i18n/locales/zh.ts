@@ -628,6 +628,11 @@ const zh: Locale = {
     aiReview: 'AI 审稿',
     checkCitations: '校验引用',
     loadMore: '显示更多（{shown} / {total}）',
+    triangulate: '跨源验证',
+    triangulating: '验证中...',
+    triangulateRefresh: '重新验证',
+    triangulateRetry: '重试',
+    triangulateError: '验证失败',
   },
 
   // ─── 文集页 ────────────────────────────────────────────────

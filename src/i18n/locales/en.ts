@@ -626,6 +626,11 @@ const en = {
     aiReview: 'AI Review',
     checkCitations: 'Check Citations',
     loadMore: 'Show more ({shown} of {total})',
+    triangulate: 'Verify across sources',
+    triangulating: 'Verifying...',
+    triangulateRefresh: 'Re-verify',
+    triangulateRetry: 'Retry',
+    triangulateError: 'Verification failed',
   },
 
   // ─── Collections Page ───────────────────────────────────────
