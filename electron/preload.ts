@@ -890,6 +890,20 @@ const api = {
     return () => { ipcRenderer.removeListener('goal:progress', handler); };
   },
 
+  // ── Chat streaming ───────────────────────────────────────
+  onChatStreamChunk: (callback: (data: { sessionId?: string; content: string; isFinished: boolean }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: unknown) => {
+      const chunk = data as { sessionId?: string; content?: string; isFinished?: boolean };
+      callback({
+        sessionId: chunk.sessionId,
+        content: chunk.content ?? '',
+        isFinished: chunk.isFinished ?? false,
+      });
+    };
+    ipcRenderer.on('chat:stream-chunk', handler);
+    return () => { ipcRenderer.removeListener('chat:stream-chunk', handler); };
+  },
+
   // ── MCP Servers ────────────────────────────────────────
   listMCPServers: () => ipcRenderer.invoke('mcp:list'),
   addMCPServer: (_config: { id: string; name: string; command: string; args: string[]; env: Record<string, string>; enabled: boolean }) =>

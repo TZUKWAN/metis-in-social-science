@@ -994,41 +994,77 @@ export class AgentLoop {
       ...(signal ? { signal } : {}),
     };
 
-    // WORKAROUND: Electron main process can hang when iterating an async generator
-    // that performs network I/O (observed with Electron v42 / V8). Use the
-    // non-streaming complete() path for streaming-capable models and simulate
-    // stream chunks from the result so the rest of the pipeline remains unchanged.
-    const response = await waitForAbortable(
-      this.provider.complete(
+    // Prefer real streaming when the provider supports it: iterate completeStream
+    // and emit each chunk as it arrives. Fall back to complete() on failure (e.g.
+    // Electron main async-generator hang) and simulate the same chunk sequence.
+    let usedRealStream = false;
+    let finalContent = '';
+    let finalReasoning: string | undefined;
+    let finalToolCalls: ToolCall[] = [];
+    let finalFinishReason = 'stop';
+    let finalUsage: import('./types.js').ProviderUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+
+    try {
+      for await (const chunk of this.provider.completeStream(
         messages,
         tools.length > 0 ? tools as unknown as ToolSpec[] : undefined,
         params,
-      ),
-      signal,
-    );
+      )) {
+        usedRealStream = true;
+        finalContent += chunk.content ?? '';
+        if (chunk.reasoning) finalReasoning = (finalReasoning ?? '') + chunk.reasoning;
+        if (chunk.toolCalls) finalToolCalls = [...finalToolCalls, ...chunk.toolCalls];
+        if (chunk.isFinished && chunk.usage) finalUsage = chunk.usage;
+        await this.hooks.emitAsync('model.stream_chunk', {
+          sessionId,
+          turn,
+          content: chunk.content ?? '',
+          isFinished: chunk.isFinished,
+        } as unknown as HookContext);
+      }
+      // Infer finishReason from tool calls presence (normalized shape).
+      if (finalToolCalls.length > 0) finalFinishReason = 'tool_calls';
+    } catch {
+      // Streaming failed (e.g. Electron async generator hang) — fall back to complete().
+      usedRealStream = false;
+    }
 
-    // Simulate streaming: emit the whole content as one chunk, then a finish chunk.
-    await this.hooks.emitAsync('model.stream_chunk', {
-      sessionId,
-      turn,
-      content: response.content,
-      isFinished: false,
-    } as unknown as HookContext);
-
-    await this.hooks.emitAsync('model.stream_chunk', {
-      sessionId,
-      turn,
-      content: '',
-      isFinished: true,
-    } as unknown as HookContext);
+    if (!usedRealStream) {
+      const response = await waitForAbortable(
+        this.provider.complete(
+          messages,
+          tools.length > 0 ? tools as unknown as ToolSpec[] : undefined,
+          params,
+        ),
+        signal,
+      );
+      finalContent = response.content;
+      finalReasoning = response.reasoning;
+      finalToolCalls = response.toolCalls;
+      finalFinishReason = response.finishReason;
+      finalUsage = response.usage;
+      // Simulate streaming for the fallback path.
+      await this.hooks.emitAsync('model.stream_chunk', {
+        sessionId,
+        turn,
+        content: response.content,
+        isFinished: false,
+      } as unknown as HookContext);
+      await this.hooks.emitAsync('model.stream_chunk', {
+        sessionId,
+        turn,
+        content: '',
+        isFinished: true,
+      } as unknown as HookContext);
+    }
 
     return {
-      content: response.content,
-      reasoning: response.reasoning,
-      toolCalls: response.toolCalls,
-      finishReason: response.finishReason,
-      usage: response.usage,
-      raw: { streamed: true },
+      content: finalContent,
+      reasoning: finalReasoning,
+      toolCalls: finalToolCalls,
+      finishReason: finalFinishReason,
+      usage: finalUsage,
+      raw: { streamed: usedRealStream },
     };
   }
 
