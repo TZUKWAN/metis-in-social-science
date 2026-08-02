@@ -33,7 +33,7 @@ describe('multi_agent_orchestrate tool', () => {
       errors: [],
     });
     const handler = createMultiAgentHandler({ agentLoop: {} as never });
-    const result = await handler({ task: 'Write a lit review on RAG.' });
+    const result = await handler({ task: 'Write a lit review on RAG.' }, {} as never);
     expect(result).toContain('completed');
     expect(result).toContain('Synthesized review draft.');
     expect(result).toContain('coordinator→researcher');
@@ -43,13 +43,13 @@ describe('multi_agent_orchestrate tool', () => {
   it('surfaces orchestrator errors as a structured failure string', async () => {
     executeMock.mockRejectedValue(new Error('provider down'));
     const handler = createMultiAgentHandler({ agentLoop: {} as never });
-    const result = await handler({ task: 'do something' });
+    const result = await handler({ task: 'do something' }, {} as never);
     expect(result).toContain('provider down');
   });
 
   it('rejects an empty task', async () => {
     const handler = createMultiAgentHandler({ agentLoop: {} as never });
-    const result = await handler({ task: '   ' });
+    const result = await handler({ task: '   ' }, {} as never);
     expect(result).toContain('No task');
     expect(executeMock).not.toHaveBeenCalled();
   });
@@ -57,9 +57,29 @@ describe('multi_agent_orchestrate tool', () => {
   it('forwards agent sequence and maxRounds', async () => {
     executeMock.mockResolvedValue({ status: 'completed', finalOutput: 'ok', totalTurns: 1, handoffs: [], errors: [] });
     const handler = createMultiAgentHandler({ agentLoop: {} as never });
-    await handler({ task: 'task', agents: ['researcher', 'writer'], maxRounds: 2 });
+    await handler({ task: 'task', agents: ['researcher', 'writer'], maxRounds: 2 }, {} as never);
     const call = executeMock.mock.calls[0]![1] as { agentSequence?: string[]; maxRounds?: number };
     expect(call.agentSequence).toEqual(['researcher', 'writer']);
     expect(call.maxRounds).toBe(2);
+  });
+
+  it('every agent template references only tools that exist in the builtin registry', async () => {
+    // Build the real builtin tool name set (same path as registerBuiltinTools).
+    const { ToolRegistry } = await import('../ToolRegistry.js');
+    const { ToolDispatcher } = await import('../ToolDispatcher.js');
+    const { registerBuiltinTools } = await import('../index.js');
+    const registry = new ToolRegistry();
+    const dispatcher = new ToolDispatcher(registry);
+    registerBuiltinTools(registry, dispatcher);
+    const realNames = new Set(registry.list().map((t) => t.name));
+
+    const { DEFAULT_AGENT_TEMPLATES } = await import('../../multiagent/MultiAgentOrchestrator.js');
+    const missing: string[] = [];
+    for (const agent of Object.values(DEFAULT_AGENT_TEMPLATES)) {
+      for (const toolName of agent.allowedTools ?? []) {
+        if (!realNames.has(toolName)) missing.push(`${agent.id}→${toolName}`);
+      }
+    }
+    expect(missing).toEqual([]);
   });
 });

@@ -1,14 +1,12 @@
 /**
  * Multi-Agent Orchestrator — collaborative agent architecture.
  *
- * STATUS: UNWIRED / EXPERIMENTAL.
- * This module is a complete multi-agent orchestration implementation (role
- * templates, serial + parallel execution, handoff messages) but is currently
- * not imported by any production code path — neither electron/ nor src/ use
- * it, and the production scenario runtime (ScenarioRunCoordinator) drives
- * multi-step workflows directly. It is retained as a reference implementation
- * for a future true multi-agent routing feature. Do not assume it affects
- * runtime behavior; if you wire it up, add the integration tests here.
+ * STATUS: WIRED via multi_agent_orchestrate tool.
+ * This module is activated as a builtin tool (engine/tools/builtin/MultiAgentTool)
+ * so the chat agent can delegate tasks to a coordinated specialist sequence.
+ * The production scenario runtime (ScenarioRunCoordinator) drives multi-step
+ * workflows directly; this orchestrator is an alternative for ad-hoc
+ * multi-agent delegation from a chat turn.
  *
  * Enables multiple specialized agents to collaborate on research tasks.
  * Agents communicate through a shared message bus and coordinated by the orchestrator.
@@ -95,8 +93,8 @@ export const DEFAULT_AGENT_TEMPLATES: Record<string, AgentDefinition> = {
 4. Compile comprehensive literature summaries
 
 Focus on thoroughness and accuracy. Always cite your sources.
-Use arxiv_search and read_pdf tools to gather information.`,
-    allowedTools: ['arxiv_search', 'read_pdf', 'parse_bibtex', 'search_web'],
+Use arxiv_search, search_papers, rag_search and read_pdf tools to gather information.`,
+    allowedTools: ['arxiv_search', 'read_pdf', 'parse_bibtex', 'search_papers', 'rag_search'],
     maxTurns: 15,
     description: 'Searches and analyzes academic literature',
   },
