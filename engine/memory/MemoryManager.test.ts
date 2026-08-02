@@ -77,6 +77,20 @@ describe('MemoryManager', () => {
     expect(manager.buildMemoryContext()).toBe('');
   });
 
+  it('includes recorded key decisions in the memory context', () => {
+    manager.recordKeyDecision('Adopted TF-IDF smoothing for small libraries');
+    const context = manager.buildMemoryContext();
+    expect(context).toContain('Key Decisions');
+    expect(context).toContain('TF-IDF smoothing');
+  });
+
+  it('includes project memory in the context when saved', () => {
+    manager.saveProjectMemory('# Notes\n- Prefer concise answers');
+    const context = manager.buildMemoryContext();
+    expect(context).toContain('Project Memory');
+    expect(context).toContain('concise answers');
+  });
+
   it('general set/get/delete works', () => {
     manager.set('foo', 'bar', 'test');
     expect(manager.get('foo')).toBe('bar');

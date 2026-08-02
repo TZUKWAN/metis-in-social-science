@@ -105,13 +105,11 @@ export class MemoryManager {
    * 构建注入 AgentLoop system prompt 的记忆上下文。
    * 包含 project memory + 最近的关键决策 + 用户偏好。
    *
-   * STATUS: UNWIRED INJECTION ENTRY.
-   * This method assembles the three-tier memory context but is not yet called
-   * by any production AgentLoop integration point (grep finds only tests).
-   * recordKeyDecision() below IS wired (via GoalEngine.executeGoal), so
-   * decisions are recorded; they are just not yet injected back into prompts
-   * until this method is connected to the system-prompt builder. The scenario
-   * runtime currently builds its own memory context separately
+   * STATUS: WIRED.
+   * The Electron main process appends this context to the skillPrompt /
+   * resolvedSystemPrompt before each chat turn, so recorded key decisions,
+   * project memory, and user preferences now flow back into the agent. The
+   * scenario runtime additionally builds its own per-step context
    * (ScenarioWorkflowService.scenarioMemoryContext).
    */
   buildMemoryContext(): string {

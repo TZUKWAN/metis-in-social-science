@@ -2510,6 +2510,20 @@ function setupIPC(): void {
       resolvedSystemPrompt = [resolvedSystemPrompt, scopeInstruction].filter(Boolean).join('\n\n');
     }
 
+    // Inject the project memory context (key decisions, project memory, user
+    // preferences) so the agent carries cross-session continuity. Previously
+    // MemoryManager.recordKeyDecision was wired but buildMemoryContext was not
+    // consumed by any prompt — decisions were recorded but never fed back.
+    try {
+      const memoryContext = memoryManager?.buildMemoryContext();
+      if (memoryContext && memoryContext.trim()) {
+        skillPrompt = [skillPrompt, memoryContext].filter(Boolean).join('\n\n');
+        resolvedSystemPrompt = [resolvedSystemPrompt, memoryContext].filter(Boolean).join('\n\n');
+      }
+    } catch {
+      // Memory injection must never break a chat turn.
+    }
+
     let mcpToolRun: import('./PersonalizationMcpToolBridge.js').PersonalizationMcpToolRun | undefined;
     try {
       let runAgentLoop = requestAgentLoop;
