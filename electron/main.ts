@@ -42,6 +42,7 @@ import * as pty from 'node-pty';
 import { PersistenceStore, setSharedStore } from '../engine/persistence/PersistenceStore.js';
 import { BackupService } from './BackupService.js';
 import { UpdateCheckerService } from './UpdateCheckerService.js';
+import { AutoUpdaterService } from './AutoUpdaterService.js';
 import { ResearchRepository } from '../engine/persistence/ResearchRepository.js';
 import { OpenAICompatProvider } from '../engine/providers/OpenAICompatProvider.js';
 import { AgentLoop } from '../engine/core/AgentLoop.js';
@@ -361,6 +362,9 @@ let store: PersistenceStore | null = null;
 let backupService: BackupService | null = null;
 let backupTimer: NodeJS.Timeout | null = null;
 let updateChecker: UpdateCheckerService | null = null;
+let autoUpdaterService: AutoUpdaterService | null = null;
+// Latest auto-update event, kept for the renderer to query on demand.
+let lastUpdateEvent: { type: string; version?: string; percent?: number; message?: string } = { type: 'idle' };
 let researchRepository: ResearchRepository | null = null;
 let researchRuntime: ResearchRuntimeService | null = null;
 let researchMedia: ResearchMediaService | null = null;
@@ -2294,6 +2298,34 @@ function setupIPC(): void {
     return updateChecker.check(app.getVersion());
   });
 
+  // ── Auto update control ──────────────────────────────────
+  ipcMain.handle('update:status', (event) => {
+    try {
+      requireRendererMainFrame(event);
+    } catch {
+      return { error: 'unauthorized_renderer' };
+    }
+    return { ...lastUpdateEvent, currentVersion: app.getVersion() };
+  });
+  ipcMain.handle('update:download', async (event) => {
+    try {
+      requireRendererMainFrame(event);
+    } catch {
+      return { error: 'unauthorized_renderer' };
+    }
+    await autoUpdaterService?.download();
+    return lastUpdateEvent;
+  });
+  ipcMain.handle('update:install', (event) => {
+    try {
+      requireRendererMainFrame(event);
+    } catch {
+      return { error: 'unauthorized_renderer' };
+    }
+    autoUpdaterService?.quitAndInstall();
+    return { installing: true };
+  });
+
   ipcMain.handle('settings:set', (event, rawRequest: unknown) => {
     try {
       requireRendererMainFrame(event);
@@ -4100,6 +4132,18 @@ app.whenReady().then(async () => {
     initSecureStorage(safeStorage);
   } else {
     console.warn('[Main] Electron safeStorage not available — config encryption will use fallback.');
+  }
+  // Background auto-update (unsigned NSIS builds update fine when
+  // verifyUpdateCodeSignature is false). Non-fatal: failures only emit an
+  // error event and never block startup.
+  try {
+    autoUpdaterService = new AutoUpdaterService();
+    autoUpdaterService.on('event', (event: { type: string; version?: string; percent?: number; message?: string }) => {
+      lastUpdateEvent = event;
+    });
+    autoUpdaterService.init();
+  } catch {
+    autoUpdaterService = null;
   }
   const citationTruthSecret = loadOrCreateCitationTruthSecret(DATA_DIR, safeStorage);
   citationTruthReceipts = citationTruthSecret

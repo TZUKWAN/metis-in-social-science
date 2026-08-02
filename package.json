@@ -45,6 +45,7 @@
     "@xterm/xterm": "^6.0.0",
     "better-sqlite3": "^12.10.0",
     "csv-parse": "^6.2.1",
+    "electron-updater": "^6.8.9",
     "katex": "^0.17.0",
     "lucide-react": "^1.17.0",
     "node-pty": "^1.1.0",
@@ -96,7 +97,7 @@
     },
     "win": {
       "artifactName": "Metis-Research-Workbench-${version}-${arch}.${ext}",
-      "verifyUpdateCodeSignature": true,
+      "verifyUpdateCodeSignature": false,
       "target": [
         {
           "target": "nsis",
@@ -143,7 +144,15 @@
       "createStartMenuShortcut": true,
       "upgradeCode": "8f1d3af6-43a8-4a4a-9b6c-38ac99b5d342",
       "artifactName": "Metis-Research-Workbench-${version}-${arch}.${ext}"
-    }
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "TZUKWAN",
+        "repo": "metis-in-social-science",
+        "releaseType": "release"
+      }
+    ]
   },
   "devDependencies": {
     "@electron/asar": "^3.4.1",
