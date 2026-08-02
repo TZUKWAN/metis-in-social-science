@@ -36,6 +36,7 @@ import SettingsProjectMemorySection from './SettingsProjectMemorySection';
 import SettingsBackupSection from './SettingsBackupSection';
 import SettingsDiagnosticSection from './SettingsDiagnosticSection';
 import { ZoteroSettingsSection } from './ZoteroSettingsSection';
+import { ToolCatalogPanel } from './ToolCatalogPanel';
 
 export interface SettingsPanelProps {
   uiMode: UIMode;
@@ -891,6 +892,9 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
 
       {/* Data backup / import */}
       <SettingsBackupSection uiMode={uiMode} />
+
+      {/* Tool catalog — browse builtin agent tools by category */}
+      <ToolCatalogPanel />
 
       {/* Diagnostic-only: MCP + HITL */}
       {diagnosticMode && <SettingsDiagnosticSection />}

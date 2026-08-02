@@ -368,6 +368,19 @@ const en = {
     zoteroUnavailable: 'Zotero sync is unavailable in this environment.',
   },
 
+  tools: {
+    catalogTitle: 'Tool Catalog',
+    catalogCount: '{count} builtin tools',
+    category_file: 'File operations',
+    category_search: 'Search',
+    category_shell: 'Shell',
+    category_research: 'Research',
+    category_evidence: 'Evidence',
+    category_plugin: 'Plugins',
+    category_academic: 'Academic',
+    category_multiagent: 'Multi-agent',
+  },
+
   // ─── Right Panel ───────────────────────────────────────────
   rightPanel: {
     views: 'Research sidebar',

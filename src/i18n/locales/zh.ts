@@ -391,6 +391,19 @@ const zh: Locale = {
     zoteroUnavailable: '当前环境不可用 Zotero 同步。',
   },
 
+  tools: {
+    catalogTitle: '工具目录',
+    catalogCount: '{count} 个内置工具',
+    category_file: '文件操作',
+    category_search: '搜索',
+    category_shell: 'Shell',
+    category_research: '研究',
+    category_evidence: '证据',
+    category_plugin: '插件',
+    category_academic: '学术',
+    category_multiagent: '多智能体',
+  },
+
   // ─── 审批弹窗 ──────────────────────────────────────────────
   approval: {
     title: '需要审批',
