@@ -1013,6 +1013,12 @@ const en = {
     legacyProjectRulesContext: 'Legacy project-scoped definition',
     rulesContextDescription: 'This editor changes a saved rule definition. The active project’s authoritative Metis.md is a separate editor.',
     openProjectRules: 'Open current project Metis.md',
+    browseBuiltinShow: 'Browse built-in skills',
+    browseBuiltinHide: 'Hide built-in skills',
+    browseBuiltinTitle: 'Built-in skills and tools',
+    browseBuiltinHint: 'Read-only overview of what the engine ships with. Create your own definitions to customize them.',
+    browseSkillsSection: 'Skills',
+    browseToolsSection: 'Plugin tools',
   },
 
   errorBoundary: {

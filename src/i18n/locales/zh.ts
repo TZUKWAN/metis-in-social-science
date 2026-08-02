@@ -1015,6 +1015,12 @@ const zh: Locale = {
     legacyProjectRulesContext: '旧版项目范围定义',
     rulesContextDescription: '此处编辑保存的规则定义；当前项目的权威 Metis.md 使用独立编辑器管理。',
     openProjectRules: '打开当前项目 Metis.md',
+    browseBuiltinShow: '浏览内置技能',
+    browseBuiltinHide: '收起内置技能',
+    browseBuiltinTitle: '内置技能与工具',
+    browseBuiltinHint: '引擎自带能力的只读总览。创建你自己的定义来定制它们。',
+    browseSkillsSection: '技能',
+    browseToolsSection: '插件工具',
   },
 
   errorBoundary: {

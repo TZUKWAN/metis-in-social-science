@@ -19,6 +19,7 @@ import McpActivationPanel, {
   type McpActivationPanelDependencies,
 } from './McpActivationPanel';
 import ProjectMetisRulesEditor from './ProjectMetisRulesEditor';
+import { BuiltinSkillBrowserPanel } from './BuiltinSkillBrowserPanel';
 import './PersonalizationCenter.css';
 
 type Kind = PersonalizationDefinition['kind'];
@@ -1765,6 +1766,7 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
   const [definitions, setDefinitions] = useState<PersonalizationDefinition[]>([]);
   const [kind, setKind] = useState<Kind>('scenario');
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [browseBuiltinOpen, setBrowseBuiltinOpen] = useState(false);
   const [status, setStatus] = useState('');
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
@@ -2054,6 +2056,14 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
               <span>{t('personalization.rulesContextDescription')}</span>
               <button type="button" onClick={() => setSelectedId(null)}>{t('personalization.openProjectRules')}</button>
             </div>
+          )}
+          {kind === 'skill' && (
+            <>
+              <button type="button" className="btn-toggle" onClick={() => setBrowseBuiltinOpen((v) => !v)}>
+                {browseBuiltinOpen ? t('personalization.browseBuiltinHide') : t('personalization.browseBuiltinShow')}
+              </button>
+              {browseBuiltinOpen && <BuiltinSkillBrowserPanel />}
+            </>
           )}
           {(kind === 'skill' || kind === 'mcp') && <ExtensionInstaller key={kind} kind={kind} definitions={userDefinitions} onInstalled={afterExtensionInstall} onRefresh={load} />}
           {kind === 'mcp' && <SecretVaultPanel />}
