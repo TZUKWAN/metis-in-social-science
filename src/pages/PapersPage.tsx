@@ -743,9 +743,11 @@ export default function PapersPage({ onNavigate, uiMode = 'normal' }: PapersPage
     const arxivId = extractArxivId(importText);
 
     // URL branch: import a web page (paper landing page, blog post, etc.)
-    // via citation meta-tag extraction. Runs before DOI/arXiv resolution so a
-    // pasted paper URL still resolves through Crossref enrichment.
-    if (/^https?:\/\//i.test(importText.trim())) {
+    // via citation meta-tag extraction. Skip arXiv/DOI URLs so they still
+    // resolve through their dedicated adapters, and run before plain-text
+    // DOI/arXiv parsing so a pasted paper URL is handled here.
+    const lowerUrl = importText.trim().toLowerCase();
+    if (/^https?:\/\//i.test(lowerUrl) && !lowerUrl.includes('arxiv.org') && !lowerUrl.includes('doi.org')) {
       setImportResolving(true);
       try {
         const result = await importFromUrl(importText.trim());
