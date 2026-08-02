@@ -40,6 +40,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 import * as pty from 'node-pty';
 import { PersistenceStore, setSharedStore } from '../engine/persistence/PersistenceStore.js';
+import { BackupService } from './BackupService.js';
 import { ResearchRepository } from '../engine/persistence/ResearchRepository.js';
 import { OpenAICompatProvider } from '../engine/providers/OpenAICompatProvider.js';
 import { AgentLoop } from '../engine/core/AgentLoop.js';
@@ -356,6 +357,8 @@ import {
 
 let mainWindow: BrowserWindow | null = null;
 let store: PersistenceStore | null = null;
+let backupService: BackupService | null = null;
+let backupTimer: NodeJS.Timeout | null = null;
 let researchRepository: ResearchRepository | null = null;
 let researchRuntime: ResearchRuntimeService | null = null;
 let researchMedia: ResearchMediaService | null = null;
@@ -4150,6 +4153,17 @@ app.whenReady().then(async () => {
   try {
     store = new PersistenceStore(DB_PATH);
     setSharedStore(store);
+    // Rolling automatic backups: snapshot on startup, then every 6 hours.
+    // Failures are non-fatal and only logged — backups must never block the app.
+    try {
+      backupService = new BackupService(store, path.join(DATA_DIR, 'backups'));
+      void backupService.runBackup().catch(() => { /* best-effort */ });
+      backupTimer = setInterval(() => {
+        void backupService?.runBackup().catch(() => { /* best-effort */ });
+      }, 6 * 60 * 60 * 1000);
+    } catch {
+      backupService = null;
+    }
     try {
       fundingTemplateRepository = new FundingTemplateRepository(DATA_DIR);
       fundingTemplateService = new FundingTemplateService(fundingTemplateRepository);
@@ -4441,6 +4455,10 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  if (backupTimer) {
+    clearInterval(backupTimer);
+    backupTimer = null;
+  }
   fileCapabilities.clear();
   exportPreviews.clear();
   for (const session of activeTerminals.values()) {

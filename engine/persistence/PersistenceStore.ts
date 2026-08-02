@@ -2516,6 +2516,16 @@ export class PersistenceStore {
 
   // ─── Lifecycle ──────────────────────────────────────────────
 
+  /**
+   * Online backup to a destination file using better-sqlite3's backup API.
+   * Safe to call while the app is running (readers/writers are not blocked).
+   * Returns the backup metadata (total pages, etc.) on completion.
+   */
+  async backupTo(destinationPath: string): Promise<{ destination: string; totalPages: number }> {
+    const meta = await this.db.backup(destinationPath);
+    return { destination: destinationPath, totalPages: meta.totalPages };
+  }
+
   close(): void {
     this.db.close();
   }
