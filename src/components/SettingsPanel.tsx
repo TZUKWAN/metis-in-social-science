@@ -35,6 +35,7 @@ import type {
 import SettingsProjectMemorySection from './SettingsProjectMemorySection';
 import SettingsBackupSection from './SettingsBackupSection';
 import SettingsDiagnosticSection from './SettingsDiagnosticSection';
+import { ZoteroSettingsSection } from './ZoteroSettingsSection';
 
 export interface SettingsPanelProps {
   uiMode: UIMode;
@@ -808,6 +809,8 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
           {providerTestStatus === 'success' && <div style={{ fontSize: 12, color: 'var(--status-completed)' }}>{providerTestMessage}</div>}
         </div>
       </div>
+
+      <ZoteroSettingsSection />
 
       {/* Project Metis.md — CAS protected */}
       <div className="settings-group">
