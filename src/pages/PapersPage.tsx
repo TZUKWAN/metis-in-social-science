@@ -445,6 +445,9 @@ export default function PapersPage({ onNavigate, uiMode = 'normal' }: PapersPage
 
   const filtered = filterPapers(papers, paperFilter, collections);
   const [sortBy, setSortBy] = useState<'newest' | 'oldest' | 'year' | 'rating' | 'priority' | 'deadline' | 'title'>('newest');
+  // Progressive render window: large libraries render in chunks instead of
+  // mapping the entire filtered list into the DOM at once.
+  const [visibleCount, setVisibleCount] = useState(60);
 
   const sortedFiltered = useMemo(() => {
     const list = [...filtered];
@@ -461,6 +464,14 @@ export default function PapersPage({ onNavigate, uiMode = 'normal' }: PapersPage
       default: return list;
     }
   }, [filtered, sortBy]);
+
+  // Progressive render window: slice the sorted/filtered list so only a chunk
+  // of paper cards exist in the DOM at once. visibleCount is monotonic and
+  // intentionally not reset on filter change — a user who expanded the view
+  // keeps that expanded width across refinements, and slice naturally caps at
+  // the (possibly smaller) result length.
+  const visiblePapers = sortedFiltered.slice(0, visibleCount);
+  const hasMore = sortedFiltered.length > visiblePapers.length;
 
   const selected = papers.find((p) => p.id === selectedPaperId);
 
@@ -1695,7 +1706,7 @@ export default function PapersPage({ onNavigate, uiMode = 'normal' }: PapersPage
           </div>
         )}
         <ul className="papers-list" aria-label={t('papers.paperList')}>
-          {sortedFiltered.map((p) => (
+          {visiblePapers.map((p) => (
             <li key={p.id} className={`paper-item ${selectedPaperId === p.id ? 'active' : ''} ${selectedIds.has(p.id) ? 'batch-selected' : ''} ${isOverdue(p.deadline) ? 'overdue' : ''}`}
               onClick={(e) => {
                 // Don't select row when clicking interactive child elements
@@ -1802,6 +1813,13 @@ export default function PapersPage({ onNavigate, uiMode = 'normal' }: PapersPage
               </button>
             </li>
           ))}
+          {hasMore && (
+            <li className="paper-load-more">
+              <button type="button" className="btn-secondary" onClick={() => setVisibleCount((c) => c + 60)}>
+                {t('papers.loadMore', { shown: visiblePapers.length, total: sortedFiltered.length })}
+              </button>
+            </li>
+          )}
           {sortedFiltered.length === 0 && (
             <div className="empty-list">
               {papers.length === 0 ? t('papers.emptyList') : t('papers.noMatchingPapers')}

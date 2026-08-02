@@ -622,6 +622,7 @@ const en = {
     unarchiveSelected: 'Unarchive Selected',
     aiReview: 'AI Review',
     checkCitations: 'Check Citations',
+    loadMore: 'Show more ({shown} of {total})',
   },
 
   // ─── Collections Page ───────────────────────────────────────

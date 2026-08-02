@@ -541,6 +541,42 @@ export class PersistenceStore {
     );
   }
 
+  /**
+   * Lightweight paper list for UI rendering: excludes the heavy pdfText and
+   * abstract columns (which can be tens of KB per row) and supports keyset
+   * pagination so a library of thousands of papers does not pull every large
+   * field into memory at once. Use getPapers() when full text is required.
+   */
+  listPaperSummaries(options: { limit?: number; beforeAddedAt?: number } = {}): Array<{
+    id: string; title: string; authors: string[]; year: number; venue: string;
+    doi?: string; arxivId?: string; pdfPath?: string; pdfUrl?: string;
+    citationCount?: number; tags: string[]; readStatus: string; rating: number; addedAt: number;
+  }> {
+    const limit = Math.max(1, Math.min(500, options.limit ?? 100));
+    const stmt = options.beforeAddedAt !== undefined
+      ? this.db.prepare('SELECT id, title, authors, year, venue, doi, arxiv_id, pdf_path, pdf_url, citation_count, tags, read_status, rating, added_at FROM papers WHERE added_at < ? ORDER BY added_at DESC LIMIT ?')
+      : this.db.prepare('SELECT id, title, authors, year, venue, doi, arxiv_id, pdf_path, pdf_url, citation_count, tags, read_status, rating, added_at FROM papers ORDER BY added_at DESC LIMIT ?');
+    const rows = (options.beforeAddedAt !== undefined
+      ? stmt.all(options.beforeAddedAt, limit)
+      : stmt.all(limit)) as Record<string, unknown>[];
+    return rows.map((row) => ({
+      id: row.id as string,
+      title: row.title as string,
+      authors: JSON.parse((row.authors as string) || '[]'),
+      year: row.year as number,
+      venue: row.venue as string,
+      doi: (row.doi as string) || undefined,
+      arxivId: (row.arxiv_id as string) || undefined,
+      pdfPath: (row.pdf_path as string) || undefined,
+      pdfUrl: (row.pdf_url as string) || undefined,
+      citationCount: (row.citation_count as number) || undefined,
+      tags: JSON.parse((row.tags as string) || '[]'),
+      readStatus: row.read_status as string,
+      rating: row.rating as number,
+      addedAt: row.added_at as number,
+    }));
+  }
+
   getPapers(): Array<{
     id: string; title: string; authors: string[]; year: number; venue: string;
     abstract: string; doi?: string; arxivId?: string; pdfPath?: string; pdfUrl?: string; pdfText?: string;

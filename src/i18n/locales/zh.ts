@@ -624,6 +624,7 @@ const zh: Locale = {
     unarchiveSelected: '取消归档所选',
     aiReview: 'AI 审稿',
     checkCitations: '校验引用',
+    loadMore: '显示更多（{shown} / {total}）',
   },
 
   // ─── 文集页 ────────────────────────────────────────────────
