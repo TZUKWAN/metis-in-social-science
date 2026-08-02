@@ -9,7 +9,8 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import type { PersistenceStore } from '../engine/persistence/PersistenceStore.js';
+import Database from 'better-sqlite3';
+import { PersistenceStore } from '../engine/persistence/PersistenceStore.js';
 
 const DEFAULT_KEEP = 5;
 
@@ -22,8 +23,9 @@ export interface BackupResult {
 
 export class BackupService {
   constructor(
-    private readonly store: PersistenceStore,
+    private store: PersistenceStore,
     private readonly backupsDir: string,
+    private readonly dbPath: string,
     private readonly keep = DEFAULT_KEEP,
   ) {
     try {
@@ -65,6 +67,33 @@ export class BackupService {
     if (files.length <= this.keep) return;
     for (const stale of files.slice(this.keep)) {
       try { fs.unlinkSync(stale); } catch { /* best-effort */ }
+    }
+  }
+
+  /**
+   * Restore the database from a backup file. Creates a rollback snapshot of
+   * the current state first, then swaps the backup into place and reopens the
+   * store. Fails closed if the backup cannot be validated or written.
+   */
+  async restoreFrom(backupPath: string): Promise<BackupResult> {
+    try {
+      // Validate the backup is a readable SQLite file.
+      const check = new Database(backupPath, { readonly: true });
+      check.close();
+
+      // Rollback snapshot of the current state.
+      const rollback = await this.runBackup();
+      if (!rollback.ok) {
+        return { ok: false, error: `Rollback snapshot failed: ${rollback.error}` };
+      }
+
+      // Close, swap, reopen.
+      this.store.close();
+      fs.copyFileSync(backupPath, this.dbPath);
+      this.store = new PersistenceStore(this.dbPath);
+      return { ok: true, destination: backupPath };
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
     }
   }
 }

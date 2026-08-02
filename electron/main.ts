@@ -2334,6 +2334,28 @@ function setupIPC(): void {
     return { installing: true };
   });
 
+  // ── Backup management ──────────────────────────────────────
+  ipcMain.handle('backup:list', (event) => {
+    try {
+      requireRendererMainFrame(event);
+      if (!backupService) return { backups: [] };
+      return { backups: backupService.listBackups().map((p) => ({ path: p, name: path.basename(p) })) };
+    } catch {
+      return { backups: [] };
+    }
+  });
+
+  ipcMain.handle('backup:restore', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = rawRequest as { backupPath?: string };
+      if (!backupService || !request?.backupPath) return { ok: false, error: 'backup_unavailable' };
+      return backupService.restoreFrom(request.backupPath);
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  });
+
   // ── Zotero import ────────────────────────────────────────
   ipcMain.handle('zotero:import', async (event, rawRequest: unknown) => {
     try {
@@ -4303,7 +4325,7 @@ app.whenReady().then(async () => {
     // Rolling automatic backups: snapshot on startup, then every 6 hours.
     // Failures are non-fatal and only logged — backups must never block the app.
     try {
-      backupService = new BackupService(store, path.join(DATA_DIR, 'backups'));
+      backupService = new BackupService(store, path.join(DATA_DIR, 'backups'), DB_PATH);
       void backupService.runBackup().catch(() => { /* best-effort */ });
       backupTimer = setInterval(() => {
         void backupService?.runBackup().catch(() => { /* best-effort */ });
