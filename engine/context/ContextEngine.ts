@@ -25,15 +25,18 @@ export class ContextEngine {
   private readonly budget: BudgetConfig;
   private readonly charsPerToken: number;
   private readonly overrideMaxContextTokens?: number;
+  private readonly summarizer?: (msgs: ChatMessage[]) => Promise<string>;
 
   constructor(options: {
     budget: BudgetConfig;
     charsPerToken?: number;
     overrideMaxContextTokens?: number;
+    summarizer?: (msgs: ChatMessage[]) => Promise<string>;
   }) {
     this.budget = options.budget;
     this.charsPerToken = options.charsPerToken ?? CONTEXT_CHARS_PER_TOKEN;
     this.overrideMaxContextTokens = options.overrideMaxContextTokens;
+    this.summarizer = options.summarizer;
   }
 
   get maxContextTokens(): number {
@@ -66,7 +69,7 @@ export class ContextEngine {
     const originalChars = countChars(messages);
     const originalTokens = estimateMessagesTokens(messages);
 
-    const compression = await compressMessages(messages, maxChars);
+    const compression = await compressMessages(messages, maxChars, this.summarizer);
 
     const finalTokens = estimateMessagesTokens(compression.messages);
 
