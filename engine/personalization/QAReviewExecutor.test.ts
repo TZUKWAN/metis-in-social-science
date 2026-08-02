@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { qaReviewExecutor } from './QAReviewExecutor.js';
+import { qaReviewExecutor, type QaReviewResult } from './QAReviewExecutor.js';
 import type { ScenarioStepExecutionInput } from './ScenarioRunCoordinator.js';
 
 const baseInput: ScenarioStepExecutionInput = {
@@ -13,7 +13,7 @@ const baseInput: ScenarioStepExecutionInput = {
   projectId: 'proj-1',
   scenarioId: 'scn-1',
   manifestDigest: 'd'.repeat(64),
-  step: { id: 'step-1', qualityCriteria: ['must cite a source', 'must be under 1000 words'] } as ScenarioStepExecutionInput['step'],
+  step: { id: 'step-1', name: 'step', description: '', agentId: 'agent-1', skillIds: [], toolIds: [], mcpIds: [], dependsOn: [], maxTurns: 3, qualityCriteria: ['must cite a source', 'must be under 1000 words'] } as unknown as ScenarioStepExecutionInput['step'],
   dependencyOutputs: {},
 };
 
@@ -22,7 +22,7 @@ describe('qaReviewExecutor', () => {
     const producer = async () => ({ ok: true, output: { text: 'draft' } });
     const reviewer = vi.fn(async () => ({ passed: true, failures: [] }));
     const exec = qaReviewExecutor(producer, { reviewer });
-    const result = await exec(baseInput);
+    const result = await exec(baseInput) as QaReviewResult;
     expect(result.ok).toBe(true);
     expect(result.verdict.passed).toBe(true);
     expect(reviewer).toHaveBeenCalled();
@@ -32,7 +32,7 @@ describe('qaReviewExecutor', () => {
     const producer = async () => ({ ok: true, output: { text: 'draft' } });
     const reviewer = async () => ({ passed: false, failures: ['no citation found'] });
     const exec = qaReviewExecutor(producer, { reviewer });
-    const result = await exec(baseInput);
+    const result = await exec(baseInput) as QaReviewResult;
     expect(result.ok).toBe(false);
     expect(result.verdict.failures).toEqual(['no citation found']);
   });
@@ -41,7 +41,7 @@ describe('qaReviewExecutor', () => {
     const producer = async () => ({ ok: true, output: { text: 'draft' } });
     const reviewer = async () => ({ passed: false, failures: ['weak'] });
     const exec = qaReviewExecutor(producer, { reviewer, blockOnFailure: false });
-    const result = await exec(baseInput);
+    const result = await exec(baseInput) as QaReviewResult;
     expect(result.ok).toBe(true);
     expect(result.verdict.passed).toBe(false);
     expect(result.output).toMatchObject({ text: 'draft' });
@@ -51,7 +51,7 @@ describe('qaReviewExecutor', () => {
     const producer = async () => ({ ok: false, code: 'producer_error', message: 'boom' });
     const reviewer = vi.fn(async () => ({ passed: true, failures: [] }));
     const exec = qaReviewExecutor(producer, { reviewer });
-    const result = await exec(baseInput);
+    const result = await exec(baseInput) as QaReviewResult;
     expect(result.ok).toBe(false);
     expect(result.verdict.passed).toBe(false);
     expect(reviewer).not.toHaveBeenCalled();
