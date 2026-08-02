@@ -57,4 +57,40 @@ describe('RagEngine persistence', () => {
     const results = engine.search('graph', 1);
     expect(results[0]!.document.id).toBe('p1');
   });
+
+  it('indexPapersWithFullText indexes terms that only exist in the PDF body', () => {
+    const engine = new RagEngine();
+    engine.indexPapersWithFullText([{
+      id: 'p2', title: 'Deep Study', authors: [], year: 2024, venue: 'V',
+      abstract: 'unrelated abstract', notes: '',
+      pdfText: 'The term magnetohydrodynamic turbulence appears only in the body.',
+      tags: [], readStatus: 'unread', rating: 0, referenceIds: [], addedAt: 1,
+    } as never]);
+    const results = engine.search('magnetohydrodynamic', 1);
+    expect(results.length).toBe(1);
+    expect(results[0]!.document.id).toBe('p2');
+  });
+
+  it('indexPapersWithFullText caps full text per paper', () => {
+    const engine = new RagEngine();
+    const hugeBody = 'repeatablebodyterm '.repeat(10_000); // ~220k chars
+    engine.indexPapersWithFullText([{
+      id: 'p3', title: 'Huge', authors: [], year: 2024, venue: 'V',
+      abstract: '', notes: '', pdfText: hugeBody,
+      tags: [], readStatus: 'unread', rating: 0, referenceIds: [], addedAt: 1,
+    } as never], 80_000);
+    // The capped document still indexes and searches the repeated term.
+    const results = engine.search('repeatablebodyterm', 1);
+    expect(results[0]!.document.id).toBe('p3');
+  });
+
+  it('indexPapersWithFullText falls back to standard fields without pdfText', () => {
+    const engine = new RagEngine();
+    engine.indexPapersWithFullText([{
+      id: 'p4', title: 'No PDF', authors: [], year: 2024, venue: 'V',
+      abstract: 'abstract keyword alpha', notes: '', pdfText: '',
+      tags: [], readStatus: 'unread', rating: 0, referenceIds: [], addedAt: 1,
+    } as never]);
+    expect(engine.search('alpha', 1)[0]!.document.id).toBe('p4');
+  });
 });

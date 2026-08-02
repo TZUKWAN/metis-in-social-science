@@ -4234,8 +4234,8 @@ app.whenReady().then(async () => {
         } catch {
           // Corrupt or missing index is non-fatal; rebuild from the library.
         }
-        const papers = (store?.getPapers() ?? []) as Parameters<typeof engine.indexPapers>[0];
-        if (papers.length > 0) engine.indexPapers(papers);
+        const papers = (store?.getPapers() ?? []) as Parameters<typeof engine.indexPapersWithFullText>[0];
+        if (papers.length > 0) engine.indexPapersWithFullText(papers);
         try {
           fs.mkdirSync(path.dirname(ragPath), { recursive: true });
           fs.writeFileSync(ragPath, engine.serializeDocuments(), 'utf8');

@@ -271,6 +271,33 @@ export class RagEngine {
   }
 
   /**
+   * Index papers including their full PDF text (when extracted). The full
+   * text is appended after title/abstract/notes and capped per paper so a
+   * single huge document does not dominate the TF-IDF vocabulary; PDFs without
+   * extracted text fall back to the standard fields.
+   */
+  indexPapersWithFullText(papers: PaperItem[], fullTextCap = 80_000): void {
+    const docs: RagDocument[] = papers.map((p) => {
+      const fullText = (p.pdfText ?? '').trim();
+      const content = fullText
+        ? `${p.title}\n${p.abstract}\n${p.notes}\n${fullText.slice(0, fullTextCap)}`
+        : `${p.title}\n${p.abstract}\n${p.notes}`;
+      return {
+        id: p.id,
+        title: p.title,
+        content,
+        metadata: {
+          authors: p.authors,
+          year: p.year,
+          venue: p.venue,
+          tags: p.tags,
+        },
+      };
+    });
+    this.indexDocuments(docs);
+  }
+
+  /**
    * Serialize the indexed documents for persistence (the index itself is
    * rebuilt lazily from documents on load, so only docs need to be stored).
    * Returns a JSON-safe representation of the document set.
