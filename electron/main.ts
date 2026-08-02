@@ -50,6 +50,7 @@ import { AgentLoop } from '../engine/core/AgentLoop.js';
 import { ToolRegistry } from '../engine/tools/ToolRegistry.js';
 import { ToolDispatcher } from '../engine/tools/ToolDispatcher.js';
 import { registerBuiltinTools } from '../engine/tools/index.js';
+import { MULTI_AGENT_TOOL, createMultiAgentHandler } from '../engine/tools/builtin/MultiAgentTool.js';
 import type { PersonalizationMcpToolRegistration } from './PersonalizationMcpToolBridge.js';
 import { HookBus } from '../engine/core/HookBus.js';
 import { ContextEngine } from '../engine/context/ContextEngine.js';
@@ -900,6 +901,11 @@ function createAgentLoop(
     approvalStore,
     behaviorRegistry,
   });
+
+  // Register the multi-agent orchestration tool now that the AgentLoop exists.
+  // It needs the loop to run specialist agents internally.
+  toolRegistry.register(MULTI_AGENT_TOOL);
+  dispatcher.registerHandler(MULTI_AGENT_TOOL.name, createMultiAgentHandler({ agentLoop }));
 
   return { agentLoop, approvalStore };
 }

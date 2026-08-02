@@ -16,6 +16,7 @@ import { getSearchToolSpecs, getSearchToolHandlers } from './builtin/search-tool
 import { getShellToolSpecs, getShellToolHandlers } from './builtin/shell-tools.js';
 import { getResearchToolSpecs, getResearchToolHandlers } from './builtin/research-tools.js';
 import { PLUGIN_TOOLS, getPluginToolHandlers } from './builtin/PluginMarketplace.js';
+import { MULTI_AGENT_TOOL, createMultiAgentHandler } from './builtin/MultiAgentTool.js';
 import { getEvidenceToolSpecs, getEvidenceToolHandlers } from './builtin/evidence-tools.js';
 import {
   ACADEMIC_TOOL_SPECS,
@@ -111,8 +112,9 @@ const CURRENT_AFFAIRS_SPECS: ToolSpec[] = [];
 
 /**
  * Register all built-in tools (file + search + shell + academic + research + current_affairs) into a registry and dispatcher.
+ * @param options.agentLoop — when provided, the multi-agent orchestration tool is registered.
  */
-export function registerBuiltinTools(registry: ToolRegistry, dispatcher: ToolDispatcher): void {
+export function registerBuiltinTools(registry: ToolRegistry, dispatcher: ToolDispatcher, options?: { agentLoop?: import('../core/AgentLoop.js').AgentLoop }): void {
   const allSpecs: ToolSpec[] = [
     ...getFileToolSpecs(),
     ...getSearchToolSpecs(),
@@ -121,6 +123,7 @@ export function registerBuiltinTools(registry: ToolRegistry, dispatcher: ToolDis
     ...getResearchToolSpecs(),
     ...PLUGIN_TOOLS,
     ...getEvidenceToolSpecs(),
+    ...(options?.agentLoop ? [MULTI_AGENT_TOOL] : []),
     ...CURRENT_AFFAIRS_SPECS,
   ];
 
@@ -208,6 +211,7 @@ export function registerBuiltinTools(registry: ToolRegistry, dispatcher: ToolDis
     ['journal_integrity_lookup', journalIntegrityLookupHandler],
     ['journal_integrity_stats', journalIntegrityStatsHandler],
     // ['current_affairs_research', currentAffairsResearchHandler], // REMOVED — fail-closed
+    ...(options?.agentLoop ? [['multi_agent_orchestrate', createMultiAgentHandler({ agentLoop: options.agentLoop })] as const] : []),
   ]);
 
   const builtinDecoders = buildBuiltinDecoders();
