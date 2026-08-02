@@ -41,6 +41,7 @@ const __dirname = path.dirname(__filename);
 import * as pty from 'node-pty';
 import { PersistenceStore, setSharedStore } from '../engine/persistence/PersistenceStore.js';
 import { BackupService } from './BackupService.js';
+import { UpdateCheckerService } from './UpdateCheckerService.js';
 import { ResearchRepository } from '../engine/persistence/ResearchRepository.js';
 import { OpenAICompatProvider } from '../engine/providers/OpenAICompatProvider.js';
 import { AgentLoop } from '../engine/core/AgentLoop.js';
@@ -359,6 +360,7 @@ let mainWindow: BrowserWindow | null = null;
 let store: PersistenceStore | null = null;
 let backupService: BackupService | null = null;
 let backupTimer: NodeJS.Timeout | null = null;
+let updateChecker: UpdateCheckerService | null = null;
 let researchRepository: ResearchRepository | null = null;
 let researchRuntime: ResearchRuntimeService | null = null;
 let researchMedia: ResearchMediaService | null = null;
@@ -2279,6 +2281,17 @@ function setupIPC(): void {
       theme: currentTheme,
       weeklyReadingGoal: loadWeeklyReadingGoal(),
     });
+  });
+
+  // ── Update check ─────────────────────────────────────────
+  ipcMain.handle('update:check', async (event) => {
+    try {
+      requireRendererMainFrame(event);
+    } catch {
+      return { hasUpdate: false, currentVersion: app.getVersion(), error: 'unauthorized_renderer' };
+    }
+    if (!updateChecker) updateChecker = new UpdateCheckerService();
+    return updateChecker.check(app.getVersion());
   });
 
   ipcMain.handle('settings:set', (event, rawRequest: unknown) => {

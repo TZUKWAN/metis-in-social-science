@@ -654,6 +654,7 @@ const api = {
 
   // ── Settings ───────────────────────────────────────────
   getSettings: async () => decodeSettingsView(await ipcRenderer.invoke('settings:get')),
+  checkForUpdates: async () => ipcRenderer.invoke('update:check') as Promise<unknown>,
   setSettings: async (config: unknown) => {
     const request = decodeSettingsUpdateRequest(config);
     if (!request) return createSettingsMutationFailure('secure_setup_required');
