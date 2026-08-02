@@ -13,6 +13,7 @@ import {
 import 'reactflow/dist/style.css';
 import { useMetisStore, type PaperItem } from '../store';
 import { useTranslation } from '../i18n';
+import { getPaperRecommendations, recommendationToPlain } from '@engine/research/SemanticScholarClient.js';
 
 const NODE_WIDTH = 200;
 
@@ -169,9 +170,11 @@ function PaperNode({ data }: { data: Node['data'] }) {
 const nodeTypes: NodeTypes = { paperNode: PaperNode };
 
 export default function KnowledgeGraphPage() {
-  const { papers } = useMetisStore();
+  const { papers, addPaperReference } = useMetisStore();
   const { t } = useTranslation();
   const [layoutMode, setLayoutMode] = useState<'circular' | 'tags'>('circular');
+  const [loadingCitations, setLoadingCitations] = useState(false);
+  const [citationNotice, setCitationNotice] = useState<string | null>(null);
   const categoryColors = useCategoryColors();
   const graphData = useMemo(() => buildGraph(papers, categoryColors, t('papers.unknownAuthor')), [papers, categoryColors, t]);
   const [nodes, setNodes, onNodesChange] = useNodesState(graphData.nodes);
@@ -198,11 +201,71 @@ export default function KnowledgeGraphPage() {
     setNodes(updated);
   }, [nodes, setNodes]);
 
+  /** Fetch real citation edges from Semantic Scholar for every paper that has
+   * a DOI or arXiv id, and persist discovered in-library references through the
+   * store so buildGraph's reference-edge block renders them. This replaces the
+   * heuristic abstract-string "cites" edges with authoritative data. */
+  const loadRealCitations = useCallback(async () => {
+    const normalizeDoi = (doi?: string) => doi ? doi.toLowerCase().replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, '').trim() : '';
+    const normalizeArxiv = (id?: string) => id ? id.toLowerCase().trim() : '';
+    // Index library papers by normalized identifier for fast matching.
+    const byDoi = new Map<string, PaperItem>();
+    const byArxiv = new Map<string, PaperItem>();
+    for (const paper of papers) {
+      const doi = normalizeDoi(paper.doi);
+      const arxiv = normalizeArxiv(paper.arxivId);
+      if (doi) byDoi.set(doi, paper);
+      if (arxiv) byArxiv.set(arxiv, paper);
+    }
+
+    setLoadingCitations(true);
+    setCitationNotice(null);
+    let added = 0;
+    let checked = 0;
+    try {
+      for (const paper of papers) {
+        if (!paper.doi && !paper.arxivId) continue;
+        checked++;
+        const paperId = paper.doi ? `DOI:${paper.doi}` : `ARXIV:${paper.arxivId}`;
+        // type 'references' returns the papers THIS paper cites.
+        const result = await getPaperRecommendations({ paperId, type: 'references', limit: 50 });
+        for (const raw of result.data) {
+          const plain = recommendationToPlain(raw);
+          if (!plain) continue;
+          const refDoi = normalizeDoi(plain.doi as string | undefined);
+          const refArxiv = normalizeArxiv(plain.arxivId as string | undefined);
+          const matched = (refDoi && byDoi.get(refDoi)) || (refArxiv && byArxiv.get(refArxiv));
+          // Only record edges between papers already in the library, and skip
+          // self-references. addPaperReference(source, target) = source cites target.
+          if (matched && matched.id !== paper.id) {
+            if (!paper.referenceIds.includes(matched.id)) {
+              await addPaperReference(paper.id, matched.id);
+              added++;
+            }
+          }
+        }
+      }
+      setCitationNotice(t('graph.citationsLoaded', { added, checked }));
+    } catch (err) {
+      setCitationNotice(t('graph.citationsError', { error: String(err) }));
+    } finally {
+      setLoadingCitations(false);
+    }
+  }, [papers, addPaperReference, t]);
+
   return (
     <div className="graph-page">
       <div className="graph-toolbar">
         <h2>{t('graph.pageTitle')}</h2>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button
+            className="btn-toggle"
+            onClick={loadRealCitations}
+            disabled={loadingCitations || papers.length === 0}
+            title={t('graph.loadCitationsTooltip')}
+          >
+            {loadingCitations ? t('graph.loadCitationsRunning') : t('graph.loadCitations')}
+          </button>
           <button
             className={`btn-toggle ${layoutMode === 'circular' ? 'active' : ''}`}
             onClick={() => setLayoutMode('circular')}
@@ -213,6 +276,11 @@ export default function KnowledgeGraphPage() {
           >{t('graph.layoutByTags')}</button>
         </div>
       </div>
+      {citationNotice && (
+        <div style={{ padding: '6px 16px', fontSize: 12, color: 'var(--text-secondary)', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border)' }}>
+          {citationNotice}
+        </div>
+      )}
       {papers.length === 0 ? (
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div className="empty-state">

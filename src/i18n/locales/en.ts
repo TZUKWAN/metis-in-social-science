@@ -827,6 +827,11 @@ const en = {
     emptyTitle: 'No papers in library',
     emptyDescription: 'Add papers to see their relationships visualized as a knowledge graph.',
     legendStats: '{papers} papers · {connections} connections',
+    loadCitations: 'Load real citations',
+    loadCitationsRunning: 'Loading citations...',
+    loadCitationsTooltip: 'Fetch real citation edges from Semantic Scholar for papers with a DOI or arXiv ID',
+    citationsLoaded: 'Added {added} citation edges across {checked} papers.',
+    citationsError: 'Failed to load citations: {error}',
   },
 
   // ─── Research Timeline Page ────────────────────────────────

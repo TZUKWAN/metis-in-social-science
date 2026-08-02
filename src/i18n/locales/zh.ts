@@ -829,6 +829,11 @@ const zh: Locale = {
     emptyTitle: '论文库为空',
     emptyDescription: '添加论文以可视化它们之间的关系。',
     legendStats: '{papers} 篇论文 · {connections} 个关联',
+    loadCitations: '加载真实引用',
+    loadCitationsRunning: '正在加载引用...',
+    loadCitationsTooltip: '从 Semantic Scholar 获取有 DOI 或 arXiv ID 的论文的真实引用边',
+    citationsLoaded: '在 {checked} 篇论文中新增了 {added} 条引用边。',
+    citationsError: '加载引用失败：{error}',
   },
 
   // ─── 研究时间线页 ──────────────────────────────────────────
