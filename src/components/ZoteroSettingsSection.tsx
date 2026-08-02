@@ -24,6 +24,8 @@ export function ZoteroSettingsSection() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importSummary, setImportSummary] = useState<{ imported: number; merged: number; skipped: number } | null>(null);
 
   // Latest vault revision, needed for the optimistic-lock field on set/remove.
   const revisionRef = useRef(0);
@@ -170,6 +172,36 @@ export function ZoteroSettingsSection() {
     }
   }, [t]);
 
+  /** Import items from the Zotero library into the local paper library.
+   * The main process resolves the vault key (renderer cannot read plaintext). */
+  const handleImport = useCallback(async () => {
+    setNotice(null);
+    setImporting(true);
+    setImportSummary(null);
+    try {
+      const metis = window.metis;
+      if (!metis?.importZotero) {
+        setNotice(t('settings.zoteroUnavailable'));
+        return;
+      }
+      const result = await metis.importZotero({
+        userId: userId.trim(),
+        groupId: groupId.trim() || undefined,
+        query: '',
+        maxItems: 20,
+      }) as { ok?: boolean; imported?: number; merged?: number; skipped?: number; error?: string };
+      if (!result.ok) {
+        setNotice(result.error === 'zotero_not_configured' ? t('settings.zoteroMissingFields') : t('settings.zoteroImportFailed', { error: result.error ?? 'unknown' }));
+        return;
+      }
+      setImportSummary({ imported: result.imported ?? 0, merged: result.merged ?? 0, skipped: result.skipped ?? 0 });
+    } catch (err) {
+      setNotice(t('settings.zoteroImportFailed', { error: String((err as Error).message ?? err) }));
+    } finally {
+      setImporting(false);
+    }
+  }, [userId, groupId, t]);
+
   if (!loaded) return null;
 
   return (
@@ -227,11 +259,19 @@ export function ZoteroSettingsSection() {
         <button type="button" className="btn-toggle" onClick={handleTest} disabled={busy || !userId.trim()}>
           {busy ? t('settings.zoteroWorking') : t('settings.zoteroTest')}
         </button>
+        <button type="button" className="btn-toggle" onClick={handleImport} disabled={importing || !userId.trim() || !hasApiKey}>
+          {importing ? t('settings.zoteroWorking') : t('settings.zoteroImport')}
+        </button>
         <button type="button" className="btn-toggle" onClick={handleSave} disabled={busy || !dirty}>
           {t('settings.zoteroSave')}
         </button>
       </div>
 
+      {importSummary && (
+        <div className="settings-notice" role="status">
+          {t('settings.zoteroImportSummary', { imported: importSummary.imported, merged: importSummary.merged, skipped: importSummary.skipped })}
+        </div>
+      )}
       {notice && <div className="settings-notice">{notice}</div>}
     </div>
   );

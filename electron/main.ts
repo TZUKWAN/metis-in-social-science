@@ -43,6 +43,7 @@ import { PersistenceStore, setSharedStore } from '../engine/persistence/Persiste
 import { BackupService } from './BackupService.js';
 import { UpdateCheckerService } from './UpdateCheckerService.js';
 import { AutoUpdaterService } from './AutoUpdaterService.js';
+import { ZoteroImportService } from './ZoteroImportService.js';
 import { ResearchRepository } from '../engine/persistence/ResearchRepository.js';
 import { OpenAICompatProvider } from '../engine/providers/OpenAICompatProvider.js';
 import { AgentLoop } from '../engine/core/AgentLoop.js';
@@ -363,6 +364,7 @@ let backupService: BackupService | null = null;
 let backupTimer: NodeJS.Timeout | null = null;
 let updateChecker: UpdateCheckerService | null = null;
 let autoUpdaterService: AutoUpdaterService | null = null;
+let zoteroImportService: ZoteroImportService | null = null;
 // Latest auto-update event, kept for the renderer to query on demand.
 let lastUpdateEvent: { type: string; version?: string; percent?: number; message?: string } = { type: 'idle' };
 let researchRepository: ResearchRepository | null = null;
@@ -2324,6 +2326,29 @@ function setupIPC(): void {
     }
     autoUpdaterService?.quitAndInstall();
     return { installing: true };
+  });
+
+  // ── Zotero import ────────────────────────────────────────
+  ipcMain.handle('zotero:import', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+    } catch {
+      return { ok: false, imported: 0, merged: 0, skipped: 0, error: 'unauthorized_renderer', items: [] };
+    }
+    if (!store) return { ok: false, imported: 0, merged: 0, skipped: 0, error: 'store_unavailable', items: [] };
+    const request = rawRequest as { userId?: string; groupId?: string; query?: string; maxItems?: number };
+    if (!zoteroImportService) {
+      zoteroImportService = new ZoteroImportService({
+        store,
+        apiKeyResolver: () => personalizationSecretVault?.resolve('{{secret:ZOTERO_API_KEY}}') ?? undefined,
+      });
+    }
+    return zoteroImportService.import({
+      userId: String(request.userId ?? ''),
+      groupId: request.groupId ? String(request.groupId) : undefined,
+      query: request.query ? String(request.query) : undefined,
+      maxItems: typeof request.maxItems === 'number' ? request.maxItems : 20,
+    });
   });
 
   ipcMain.handle('settings:set', (event, rawRequest: unknown) => {

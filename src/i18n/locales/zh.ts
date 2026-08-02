@@ -385,6 +385,9 @@ const zh: Locale = {
     zoteroKeyRemoved: 'API 密钥已移除。',
     zoteroMissingFields: '请先填写用户 ID 和 API 密钥。',
     zoteroSavedKeyNoProbe: '已存在保存的密钥。如需测试连接，请重新输入。',
+    zoteroImport: '从 Zotero 导入',
+    zoteroImportFailed: 'Zotero 导入失败：{error}',
+    zoteroImportSummary: '新导入 {imported} 篇，合并 {merged} 篇，跳过 {skipped} 篇。',
     zoteroUnavailable: '当前环境不可用 Zotero 同步。',
   },
 

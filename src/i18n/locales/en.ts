@@ -362,6 +362,9 @@ const en = {
     zoteroKeyRemoved: 'API key removed.',
     zoteroMissingFields: 'Provide a User ID and an API key first.',
     zoteroSavedKeyNoProbe: 'A saved key exists. Re-enter it to test the connection.',
+    zoteroImport: 'Import from Zotero',
+    zoteroImportFailed: 'Zotero import failed: {error}',
+    zoteroImportSummary: 'Imported {imported} new, merged {merged}, skipped {skipped}.',
     zoteroUnavailable: 'Zotero sync is unavailable in this environment.',
   },
 
