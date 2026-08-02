@@ -856,6 +856,18 @@ const zh: Locale = {
     citationsError: '加载引用失败：{error}',
   },
 
+  comparison: {
+    pageTitle: '对比矩阵',
+    toggleButton: '对比矩阵',
+    toggleTooltip: '切换到所选论文的结构化并排对比',
+    selectAll: '全选',
+    clearAll: '清空',
+    viewTable: '表格',
+    viewMarkdown: 'Markdown',
+    selectedCount: '已选 {count} 篇论文',
+    empty: '请至少选择一篇论文以生成对比矩阵。',
+  },
+
   // ─── 研究时间线页 ──────────────────────────────────────────
   timeline: {
     pageTitle: '研究时间线',

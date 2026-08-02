@@ -854,6 +854,18 @@ const en = {
     citationsError: 'Failed to load citations: {error}',
   },
 
+  comparison: {
+    pageTitle: 'Comparison Matrix',
+    toggleButton: 'Comparison matrix',
+    toggleTooltip: 'Switch to a side-by-side structured comparison of the selected papers',
+    selectAll: 'Select all',
+    clearAll: 'Clear',
+    viewTable: 'Table',
+    viewMarkdown: 'Markdown',
+    selectedCount: '{count} paper(s) selected',
+    empty: 'Select at least one paper to build the comparison matrix.',
+  },
+
   // ─── Research Timeline Page ────────────────────────────────
   timeline: {
     pageTitle: 'Research Timeline',

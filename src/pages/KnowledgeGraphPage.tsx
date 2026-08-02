@@ -14,6 +14,7 @@ import 'reactflow/dist/style.css';
 import { useMetisStore, type PaperItem } from '../store';
 import { useTranslation } from '../i18n';
 import { getPaperRecommendations, recommendationToPlain } from '@engine/research/SemanticScholarClient.js';
+import { ComparisonMatrixPage } from './ComparisonMatrixPage';
 
 const NODE_WIDTH = 200;
 
@@ -173,6 +174,7 @@ export default function KnowledgeGraphPage() {
   const { papers, addPaperReference } = useMetisStore();
   const { t } = useTranslation();
   const [layoutMode, setLayoutMode] = useState<'circular' | 'tags'>('circular');
+  const [matrixMode, setMatrixMode] = useState(false);
   const [loadingCitations, setLoadingCitations] = useState(false);
   const [citationNotice, setCitationNotice] = useState<string | null>(null);
   const categoryColors = useCategoryColors();
@@ -259,6 +261,13 @@ export default function KnowledgeGraphPage() {
         <h2>{t('graph.pageTitle')}</h2>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <button
+            className={`btn-toggle ${matrixMode ? 'active' : ''}`}
+            onClick={() => setMatrixMode((v) => !v)}
+            title={t('comparison.toggleTooltip')}
+          >
+            {t('comparison.toggleButton')}
+          </button>
+          <button
             className="btn-toggle"
             onClick={loadRealCitations}
             disabled={loadingCitations || papers.length === 0}
@@ -281,7 +290,9 @@ export default function KnowledgeGraphPage() {
           {citationNotice}
         </div>
       )}
-      {papers.length === 0 ? (
+      {matrixMode && papers.length > 0 ? (
+        <ComparisonMatrixPage onClose={() => setMatrixMode(false)} />
+      ) : papers.length === 0 ? (
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div className="empty-state">
             <h3>{t('graph.emptyTitle')}</h3>
