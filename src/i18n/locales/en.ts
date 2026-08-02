@@ -946,6 +946,14 @@ const en = {
     searchResultsFound: '{count} result{s} found',
     searchNext: 'Next',
     searchClear: 'Clear',
+    annotationHighlight: 'Highlight',
+    annotationAdd: 'Add note',
+    annotationSave: 'Save',
+    annotationPlaceholder: 'Write a note for this passage...',
+    annotationEmptyNote: '(empty note)',
+    annotationSaveFailed: 'Could not save this annotation. Try again.',
+    annotationRegionMode: 'Region',
+    annotationRegionTooltip: 'Toggle region-select mode: drag a rectangle over the page to annotate an area',
   },
 
   // ─── Error Boundary ────────────────────────────────────────

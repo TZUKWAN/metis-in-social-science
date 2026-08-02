@@ -1,0 +1,152 @@
+/* PDF Reader Page — annotation layer styles.
+ * All colors use CSS variables for light/dark theme support. */
+
+.pdf-page-wrapper {
+  position: relative;
+  display: inline-block;
+  /* pdfjs text layer positions its spans relative to --scale-factor. */
+  line-height: 1;
+}
+
+.pdf-page-wrapper--region {
+  cursor: crosshair;
+}
+
+/* In region mode the text layer must not swallow pointer events used for
+ * drawing the region rectangle. */
+.pdf-page-wrapper--region .textLayer {
+  pointer-events: none;
+}
+
+/* Invisible text layer: spans are transparent but selectable. */
+.pdf-page-wrapper .textLayer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  opacity: 1;
+  line-height: 1;
+  text-align: initial;
+  z-index: 2;
+}
+
+.pdf-page-wrapper .textLayer span,
+.pdf-page-wrapper .textLayer br {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0 0;
+}
+
+.pdf-page-wrapper .textLayer ::selection {
+  background: color-mix(in srgb, var(--primary, #4a6fa5) 35%, transparent);
+}
+
+/* Highlight overlay sits above the canvas but below the text layer so text
+ * remains selectable. */
+.pdf-highlight-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.pdf-highlight-layer--pending {
+  z-index: 3;
+}
+
+.pdf-highlight-rect {
+  position: absolute;
+  pointer-events: auto;
+  mix-blend-mode: multiply;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.pdf-highlight-rect--mark {
+  background: color-mix(in srgb, var(--primary, #4a6fa5) 28%, transparent);
+}
+
+.pdf-highlight-rect--note {
+  background: color-mix(in srgb, #d97706 32%, transparent);
+  border-bottom: 2px solid #d97706;
+}
+
+.pdf-highlight-rect--pending {
+  background: color-mix(in srgb, var(--primary, #4a6fa5) 30%, transparent);
+  outline: 1px dashed var(--primary, #4a6fa5);
+}
+
+/* Dark theme: use screen blend so highlights stay visible on dark pages. */
+[data-theme='dark'] .pdf-highlight-rect {
+  mix-blend-mode: screen;
+}
+
+[data-theme='dark'] .pdf-highlight-rect--mark {
+  background: color-mix(in srgb, var(--primary, #7aa2d6) 38%, transparent);
+}
+
+/* Action menu that appears next to a fresh selection. */
+.pdf-annotation-menu {
+  position: absolute;
+  display: flex;
+  gap: 6px;
+  padding: 6px;
+  background: var(--bg-card, #fff);
+  border: 1px solid var(--border-light, #e2e8f0);
+  border-radius: var(--radius-md, 8px);
+  box-shadow: 0 8px 24px rgb(15 23 42 / 14%);
+  z-index: 40;
+}
+
+/* Note editor popover. */
+.pdf-annotation-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 260px;
+  max-width: 360px;
+}
+
+.pdf-annotation-input {
+  width: 100%;
+  min-height: 64px;
+  padding: 8px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--text-primary, #0f172a);
+  background: var(--bg-secondary, #f8fafc);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: var(--radius-sm, 6px);
+  resize: vertical;
+}
+
+.pdf-annotation-preview {
+  padding: 8px;
+  min-height: 64px;
+  font-size: 13px;
+  color: var(--text-primary, #0f172a);
+  background: var(--bg-secondary, #f8fafc);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: var(--radius-sm, 6px);
+}
+
+.pdf-annotation-editor-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+/* Read-only note popover shown when clicking a saved highlight. */
+.pdf-annotation-popover {
+  position: absolute;
+  max-width: 320px;
+  padding: 10px 12px;
+  font-size: 13px;
+  color: var(--text-primary, #0f172a);
+  background: var(--bg-card, #fff);
+  border: 1px solid var(--border-light, #e2e8f0);
+  border-radius: var(--radius-md, 8px);
+  box-shadow: 0 8px 24px rgb(15 23 42 / 14%);
+  z-index: 40;
+}

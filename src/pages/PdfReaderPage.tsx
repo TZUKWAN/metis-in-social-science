@@ -6,11 +6,16 @@
  * All colors use CSS variables for light/dark theme support.
  */
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useMetisStore } from '../store';
+import { useResearchWorkspaceStore } from '../research/researchWorkspaceStore';
 import { useTranslation } from '../i18n';
 import { presentDiagnosticText } from '../presentation/executionPresentation';
+import { SafeMarkdown } from '../presentation/SafeMarkdown';
+import { anchorFromPdfSelection, anchorFromPdfRegion } from '../../engine/viewers/DocumentViewers';
+import type { AnchorSpec } from '../../engine/sources/EvidenceAnchor';
 import type { UIMode } from '../../engine/capabilities/DiagnosticMode';
+import './PdfReaderPage.css';
 
 // ─── Types ────────────────────────────────────────────────────
 
@@ -26,6 +31,25 @@ interface SearchResult {
   position: number;
 }
 
+/** A persisted highlight/annotation for one PDF source, decoded from evidence. */
+interface PdfAnnotation {
+  id: string;
+  anchor: AnchorSpec;
+  snippet: string;
+  note: string;
+  highlightOnly: boolean;
+  sourceVersionHash: string | null;
+}
+
+/** An in-progress selection before the user picks highlight vs annotate. */
+interface PendingSelection {
+  anchor: AnchorSpec;
+  snippet: string;
+  rects: Array<{ left: number; top: number; width: number; height: number }>;
+  menuLeft: number;
+  menuTop: number;
+}
+
 // ─── PDF Reader Component ─────────────────────────────────────
 
 interface PdfReaderPageProps {
@@ -34,7 +58,10 @@ interface PdfReaderPageProps {
 
 export default function PdfReaderPage({ uiMode = 'normal' }: PdfReaderPageProps) {
   const { papers } = useMetisStore();
-  const { t } = useTranslation();
+  const activeProjectId = useResearchWorkspaceStore((state) => state.activeProjectId);
+  const snapshot = useResearchWorkspaceStore((state) => state.snapshot);
+  const applyCrud = useResearchWorkspaceStore((state) => state.applyCrud);
+  const { t, locale } = useTranslation();
 
   // PDF state
   const [pdfDoc, setPdfDoc] = useState<unknown>(null);
@@ -59,8 +86,29 @@ export default function PdfReaderPage({ uiMode = 'normal' }: PdfReaderPageProps)
   // Thumbnail pages for sidebar
   const [thumbnails, setThumbnails] = useState<Array<{ num: number; loaded: boolean }>>([]);
 
+  // ─── Annotation state ──────────────────────────────────────
+  // Per-page extracted text, keyed by page number. Used both for search and
+  // for converting a text-layer DOM selection into a page-local char offset
+  // that anchorFromPdfSelection expects.
+  const [pageTextMap, setPageTextMap] = useState<Map<number, string>>(new Map());
+  // The library paper this PDF belongs to (null when opened from a bare file).
+  const [currentPaperId, setCurrentPaperId] = useState<string | null>(null);
+  // A fresh selection waiting for the user to pick highlight vs annotate.
+  const [pendingSelection, setPendingSelection] = useState<PendingSelection | null>(null);
+  // The annotation being edited (note text), keyed by pending action.
+  const [noteDraft, setNoteDraft] = useState('');
+  const [notePreview, setNotePreview] = useState(false);
+  const [annotateMode, setAnnotateMode] = useState(false);
+  // Region-select mode: drag a rectangle over the page to annotate an area.
+  const [regionMode, setRegionMode] = useState(false);
+  const [regionDragRect, setRegionDragRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+
   // Refs
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const textLayerRef = useRef<HTMLDivElement>(null);
+  const highlightLayerRef = useRef<HTMLDivElement>(null);
+  const pageWrapperRef = useRef<HTMLDivElement>(null);
+  const regionDragRef = useRef<{ startX: number; startY: number; active: boolean } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pdfjsRef = useRef<unknown>(null);
 
@@ -110,6 +158,25 @@ export default function PdfReaderPage({ uiMode = 'normal' }: PdfReaderPageProps)
       viewport,
     }).promise;
 
+    // Render an invisible text layer on top of the canvas so the user can
+    // select text. This is required for highlight/annotation capture.
+    if (textLayerRef.current) {
+      const container = textLayerRef.current;
+      container.innerHTML = '';
+      container.style.setProperty('--scale-factor', String(scale));
+      try {
+        const textLayer = new pdfjs.TextLayer({
+          textContentSource: page.streamTextContent(),
+          container,
+          viewport,
+        });
+        await textLayer.render();
+      } catch {
+        // Text layer rendering is best-effort; annotation capture degrades
+        // gracefully to region-only mode if it fails.
+      }
+    }
+
     setPageInfo({ num: pageNum, width: viewport.width, height: viewport.height });
   }, []);
 
@@ -131,6 +198,11 @@ export default function PdfReaderPage({ uiMode = 'normal' }: PdfReaderPageProps)
       setTotalPages(doc.numPages);
       setCurrentPage(1);
 
+      // Reset annotation state whenever a different PDF is opened.
+      setPendingSelection(null);
+      setNoteDraft('');
+      setAnnotateMode(false);
+
       // Initialize thumbnails
       const thumbs = Array.from({ length: doc.numPages }, (_, i) => ({
         num: i + 1,
@@ -151,9 +223,11 @@ export default function PdfReaderPage({ uiMode = 'normal' }: PdfReaderPageProps)
         // Outline extraction failed — non-critical
       }
 
-      // Extract full text for search
+      // Extract full text for search, and keep a per-page map so that text
+      // selections can be converted into page-local char offsets for anchors.
       try {
         const textParts: string[] = [];
+        const pageMap = new Map<number, string>();
         for (let i = 1; i <= doc.numPages; i++) {
           const page = await doc.getPage(i);
           const textContent = await page.getTextContent();
@@ -161,8 +235,10 @@ export default function PdfReaderPage({ uiMode = 'normal' }: PdfReaderPageProps)
             .map((item) => ('str' in item ? (item as { str: string }).str : ''))
             .join('');
           textParts.push(pageText);
+          pageMap.set(i, pageText);
         }
         setExtractedText(textParts.join('\n\n'));
+        setPageTextMap(pageMap);
       } catch {
         // Text extraction failed — non-critical
       }
@@ -192,6 +268,9 @@ export default function PdfReaderPage({ uiMode = 'normal' }: PdfReaderPageProps)
   }, [currentPage, isLoading, pdfDoc, renderPage, t, uiMode, zoom]);
 
   const loadPdfFromFile = useCallback(async (file: File) => {
+    // A bare file has no library paper, so highlights cannot be persisted as
+    // project evidence. Keep annotation state cleared for this path.
+    setCurrentPaperId(null);
     const arrayBuffer = await file.arrayBuffer();
     await loadPdfFromData(new Uint8Array(arrayBuffer), file.name);
   }, [loadPdfFromData]);
@@ -301,6 +380,344 @@ export default function PdfReaderPage({ uiMode = 'normal' }: PdfReaderPageProps)
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [currentPage, totalPages, zoom, searchQuery, goToPage, handleZoom, goToNextSearchResult]);
 
+  // ─── Annotation helpers ───────────────────────────────────
+
+  /** Resolve the research source that corresponds to a library paper.
+   * Prefers an existing source whose id matches the paper id (the convention
+   * used when we create one); falls back to DOI/arXiv/title matching. Creates
+   * the source if none exists. Returns null when persistence is unavailable.
+   */
+  const resolveSourceForPaper = useCallback(async (
+    paper: (typeof papers)[number],
+    projectId: string,
+  ): Promise<string | null> => {
+    const normalizeDoi = (doi: string | undefined) =>
+      doi ? doi.toLowerCase().replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, '').trim() : '';
+    const paperDoi = normalizeDoi(paper.doi);
+    // Prefer a source already in the loaded snapshot.
+    const sources = snapshot?.sources ?? [];
+    const match = sources.find((s) => s.id === paper.id)
+      ?? sources.find((s) => paperDoi && s.identifierType === 'doi' && normalizeDoi(s.identifier) === paperDoi)
+      ?? sources.find((s) => paper.arxivId && s.identifierType === 'arxiv' && s.identifier === paper.arxivId)
+      ?? sources.find((s) => s.title === paper.title && s.year === paper.year);
+    if (match) return match.id;
+
+    // No match — create a source reusing the paper id for a stable mapping.
+    const identifierType = paper.doi ? 'doi' : paper.arxivId ? 'arxiv' : 'other';
+    const identifier = paper.doi ?? paper.arxivId ?? '';
+    const createResult = await applyCrud({
+      operation: 'create',
+      entityKind: 'source',
+      projectId,
+      value: {
+        id: paper.id,
+        kind: 'paper',
+        title: paper.title,
+        authors: paper.authors,
+        year: paper.year,
+        venue: paper.venue,
+        identifier,
+        identifierType,
+        externalUrl: paper.pdfUrl ?? paper.url ?? null,
+        tags: paper.tags,
+        deliverableSourceKind: null,
+        deliverableRuleKind: null,
+        sourceVersionHash: null,
+      },
+    });
+    if (createResult.success) return createResult.resourceId;
+    // A conflict means another run created it concurrently; the id is ours.
+    if (createResult.code === 'conflict') return paper.id;
+    return null;
+  }, [snapshot, applyCrud]);
+
+  /** Resolve (and cache) the research source id for the current paper. Runs in
+   * an effect because it may create the source as a side effect. The cached
+   * value carries its paper id so stale results are filtered at read time
+   * instead of being cleared synchronously inside the effect. */
+  const [sourceResolution, setSourceResolution] = useState<{ paperId: string; sourceId: string | null } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const paper = papers.find((p) => p.id === currentPaperId);
+    if (!activeProjectId || !paper) return;
+    void resolveSourceForPaper(paper, activeProjectId).then((id) => {
+      if (!cancelled) setSourceResolution({ paperId: paper.id, sourceId: id });
+    });
+    return () => { cancelled = true; };
+  }, [activeProjectId, currentPaperId, papers, resolveSourceForPaper]);
+
+  // The resolved source id for the *current* paper only; null while resolving
+  // or when no paper is active.
+  const resolvedSourceId = sourceResolution?.paperId === currentPaperId
+    ? sourceResolution.sourceId
+    : null;
+
+  // Annotations are derived (not stored) from the resolved source and the
+  // workspace snapshot: evidence anchors joined with their note_code text.
+  const annotations: PdfAnnotation[] = useMemo(() => {
+    if (!resolvedSourceId) return [];
+    const noteByEvidence = new Map<string, string>();
+    for (const note of snapshot?.noteCodes ?? []) {
+      if (note.evidenceId && note.code === 'pdf-annotation' && note.deletedAt === null) {
+        noteByEvidence.set(note.evidenceId, note.content);
+      }
+    }
+    return (snapshot?.evidence ?? [])
+      .filter((row) => row.sourceId === resolvedSourceId && row.deletedAt === null)
+      .map((row) => {
+        const note = noteByEvidence.get(row.id) ?? '';
+        return {
+          id: row.id,
+          anchor: {
+            type: row.anchorType,
+            pageNumber: row.pageNumber ?? undefined,
+            start: row.anchorStart ?? undefined,
+            end: row.anchorEnd ?? undefined,
+          },
+          snippet: row.snippet,
+          note,
+          highlightOnly: note.trim() === '',
+          sourceVersionHash: row.sourceVersionHash,
+        };
+      });
+  }, [resolvedSourceId, snapshot]);
+
+  /** Persist a highlight/annotation: an evidence record for the anchor, plus a
+   * note_code carrying the comment text when the user wrote one. */
+  const persistAnnotation = useCallback(async (
+    anchor: AnchorSpec,
+    snippet: string,
+    note: string,
+    highlightOnly: boolean,
+  ): Promise<void> => {
+    const projectId = activeProjectId;
+    const sourceId = resolvedSourceId;
+    if (!projectId || !sourceId) {
+      setError(t('pdf.annotationSaveFailed'));
+      return;
+    }
+
+    // Renderer must compute the snippet hash (main does not). WebCrypto is
+    // async; produce the SHA-256 hex digest expected by the schema.
+    let snippetHash: string;
+    try {
+      const bytes = new TextEncoder().encode(snippet);
+      const digest = await crypto.subtle.digest('SHA-256', bytes);
+      snippetHash = Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
+    } catch {
+      setError(t('pdf.annotationSaveFailed'));
+      return;
+    }
+
+    const evidenceId = `evidence_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+    const evResult = await applyCrud({
+      operation: 'create',
+      entityKind: 'evidence',
+      projectId,
+      value: {
+        id: evidenceId,
+        sourceId,
+        anchorType: anchor.type,
+        anchorStart: anchor.start ?? null,
+        anchorEnd: anchor.end ?? null,
+        pageNumber: anchor.pageNumber ?? null,
+        snippet,
+        snippetHash,
+        sourceVersionHash: null,
+        confidence: 1,
+      },
+    });
+    if (!evResult.success) {
+      setError(t('pdf.annotationSaveFailed'));
+      return;
+    }
+
+    // When the user wrote a comment, persist it as a note_code bound to the
+    // evidence. highlightOnly markers skip this step.
+    if (!highlightOnly && note.trim()) {
+      const noteId = `note_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+      const noteResult = await applyCrud({
+        operation: 'create',
+        entityKind: 'note_code',
+        projectId,
+        value: {
+          id: noteId,
+          evidenceId,
+          code: 'pdf-annotation',
+          content: note.trim(),
+          author: 'human',
+          confidence: 1,
+          accepted: 'accepted',
+          tags: ['pdf-annotation'],
+        },
+      });
+      if (!noteResult.success) {
+        setError(t('pdf.annotationSaveFailed'));
+        return;
+      }
+    }
+    // applyCrud already refreshes the workspace snapshot on success, so the
+    // derived `annotations` memo picks up the new record without local state.
+  }, [activeProjectId, resolvedSourceId, applyCrud, t]);
+
+  // ─── Selection capture ────────────────────────────────────
+
+  /** Convert the current window selection (inside the text layer) into a
+   * pending annotation: derive page-local char offsets and screen rects.
+   */
+  const captureTextSelection = useCallback(() => {
+    const pageText = pageTextMap.get(currentPage);
+    const wrapper = pageWrapperRef.current;
+    const textLayer = textLayerRef.current;
+    if (!pageText || !wrapper || !textLayer) return;
+
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return;
+    const range = selection.getRangeAt(0);
+    const selectedText = selection.toString();
+    if (!selectedText.trim()) return;
+
+    // The selection must live inside this page's text layer.
+    if (!textLayer.contains(range.commonAncestorContainer)) return;
+
+    // Derive the page-local char offset by walking text-layer spans in order
+    // and summing their text lengths up to the selection start.
+    let charStart = -1;
+    let charEnd = -1;
+    let offset = 0;
+    const walker = document.createTreeWalker(textLayer, NodeFilter.SHOW_TEXT);
+    let node = walker.nextNode();
+    while (node) {
+      const len = node.textContent?.length ?? 0;
+      if (charStart < 0 && node === range.startContainer) charStart = offset + range.startOffset;
+      if (charEnd < 0 && node === range.endContainer) charEnd = offset + range.endOffset;
+      offset += len;
+      if (charStart >= 0 && charEnd >= 0) break;
+      node = walker.nextNode();
+    }
+    if (charStart < 0 || charEnd < 0 || charStart >= charEnd) return;
+
+    const wrapperRect = wrapper.getBoundingClientRect();
+    const rects = Array.from(range.getClientRects())
+      .filter((r) => r.width > 0 && r.height > 0)
+      .map((r) => ({
+        left: r.left - wrapperRect.left,
+        top: r.top - wrapperRect.top,
+        width: r.width,
+        height: r.height,
+      }));
+    if (rects.length === 0) return;
+
+    const built = anchorFromPdfSelection(currentPaperId ?? 'file', currentPage, charStart, charEnd, selectedText);
+    const firstRect = rects[0]!;
+    setPendingSelection({
+      anchor: built.anchor,
+      snippet: built.snippet,
+      rects,
+      menuLeft: firstRect.left,
+      menuTop: firstRect.top + firstRect.height + 6,
+    });
+  }, [currentPage, currentPaperId, pageTextMap]);
+
+  /** Convert a drawn region (in wrapper coordinates) into a pending region
+   * annotation. */
+  const captureRegionSelection = useCallback((x: number, y: number, w: number, h: number) => {
+    // anchorFromPdfRegion encodes x*10000+y / w*10000+h, so clamp to 9999.
+    const cx = Math.min(9999, Math.max(0, Math.round(x)));
+    const cy = Math.min(9999, Math.max(0, Math.round(y)));
+    const cw = Math.min(9999, Math.max(1, Math.round(w)));
+    const ch = Math.min(9999, Math.max(1, Math.round(h)));
+    const built = anchorFromPdfRegion(currentPaperId ?? 'file', currentPage, cx, cy, cw, ch);
+    setPendingSelection({
+      anchor: built.anchor,
+      snippet: '',
+      rects: [{ left: cx, top: cy, width: cw, height: ch }],
+      menuLeft: cx,
+      menuTop: cy + ch + 6,
+    });
+  }, [currentPage, currentPaperId]);
+
+  // ─── Region-drag selection ────────────────────────────────
+
+  /** Start a region drag: record the anchor point in wrapper coordinates. */
+  const handleRegionMouseDown = useCallback((e: React.MouseEvent) => {
+    if (!regionMode) return;
+    const wrapper = pageWrapperRef.current;
+    if (!wrapper) return;
+    const rect = wrapper.getBoundingClientRect();
+    regionDragRef.current = {
+      startX: e.clientX - rect.left,
+      startY: e.clientY - rect.top,
+      active: true,
+    };
+    setRegionDragRect(null);
+    setPendingSelection(null);
+    e.preventDefault();
+  }, [regionMode]);
+
+  /** Update the live drag rectangle. */
+  const handleRegionMouseMove = useCallback((e: React.MouseEvent) => {
+    const drag = regionDragRef.current;
+    if (!regionMode || !drag?.active) return;
+    const wrapper = pageWrapperRef.current;
+    if (!wrapper) return;
+    const rect = wrapper.getBoundingClientRect();
+    const curX = e.clientX - rect.left;
+    const curY = e.clientY - rect.top;
+    setRegionDragRect({
+      left: Math.min(drag.startX, curX),
+      top: Math.min(drag.startY, curY),
+      width: Math.abs(curX - drag.startX),
+      height: Math.abs(curY - drag.startY),
+    });
+  }, [regionMode]);
+
+  /** Finish the drag and turn it into a pending region annotation. */
+  const handleRegionMouseUp = useCallback((e: React.MouseEvent) => {
+    const drag = regionDragRef.current;
+    if (!regionMode || !drag?.active) return;
+    regionDragRef.current = null;
+    const rect = regionDragRect;
+    setRegionDragRect(null);
+    // Ignore accidental tiny drags.
+    if (!rect || rect.width < 8 || rect.height < 8) return;
+    captureRegionSelection(rect.left, rect.top, rect.width, rect.height);
+    e.preventDefault();
+  }, [regionMode, regionDragRect, captureRegionSelection]);
+
+  /** Finalize the pending selection as a highlight (no note) or annotation. */
+  const commitSelection = useCallback(async (annotate: boolean) => {
+    const pending = pendingSelection;
+    if (!pending) return;
+    if (annotate) {
+      // Keep the pending anchor but open the note editor.
+      setAnnotateMode(true);
+      return;
+    }
+    await persistAnnotation(pending.anchor, pending.snippet, '', true);
+    setPendingSelection(null);
+    try { window.getSelection()?.removeAllRanges(); } catch { /* jsdom stub may lack removeAllRanges */ }
+  }, [pendingSelection, persistAnnotation]);
+
+  /** Save the note for the pending selection, then clear it. */
+  const saveNote = useCallback(async () => {
+    const pending = pendingSelection;
+    if (!pending) return;
+    await persistAnnotation(pending.anchor, pending.snippet, noteDraft.trim(), false);
+    setPendingSelection(null);
+    setNoteDraft('');
+    setAnnotateMode(false);
+    setNotePreview(false);
+    try { window.getSelection()?.removeAllRanges(); } catch { /* jsdom stub may lack removeAllRanges */ }
+  }, [pendingSelection, noteDraft, persistAnnotation]);
+
+  const cancelPending = useCallback(() => {
+    setPendingSelection(null);
+    setNoteDraft('');
+    setAnnotateMode(false);
+    setNotePreview(false);
+  }, []);
+
   // ─── File input handler ─────────────────────────────────
 
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -345,6 +762,9 @@ export default function PdfReaderPage({ uiMode = 'normal' }: PdfReaderPageProps)
         setError(t('pdf.errorFileAccessUnavailable'));
         return;
       }
+      // Bind this PDF to its library paper so highlights/annotations persist
+      // as evidence tied to the paper's source and project.
+      setCurrentPaperId(paper.id);
       await loadPdfFromData(new Uint8Array(result.data), paper.title);
     } catch (err) {
       setError(
@@ -506,6 +926,17 @@ export default function PdfReaderPage({ uiMode = 'normal' }: PdfReaderPageProps)
 
         <div className="toolbar-separator" />
 
+        {/* Annotation mode toggles */}
+        <button
+          onClick={() => { setRegionMode((v) => !v); setPendingSelection(null); }}
+          className={`toolbar-btn ${regionMode ? 'active' : ''}`}
+          title={t('pdf.annotationRegionTooltip')}
+        >
+          {t('pdf.annotationRegionMode')}
+        </button>
+
+        <div className="toolbar-separator" />
+
         {/* Search */}
         <input
           type="text"
@@ -630,13 +1061,107 @@ export default function PdfReaderPage({ uiMode = 'normal' }: PdfReaderPageProps)
           {isLoading ? (
             <div style={{ color: 'var(--text-secondary)', marginTop: 40 }}>Loading PDF...</div>
           ) : (
-            <canvas
-              ref={canvasRef}
-              style={{
-                boxShadow: 'var(--shadow-card)',
-                background: 'var(--bg-card)',
-              }}
-            />
+            <div
+              ref={pageWrapperRef}
+              className={`pdf-page-wrapper ${regionMode ? 'pdf-page-wrapper--region' : ''}`}
+              onMouseUp={regionMode ? handleRegionMouseUp : captureTextSelection}
+              onMouseDown={regionMode ? handleRegionMouseDown : undefined}
+              onMouseMove={regionMode ? handleRegionMouseMove : undefined}
+            >
+              <canvas
+                ref={canvasRef}
+                style={{
+                  boxShadow: 'var(--shadow-card)',
+                  background: 'var(--bg-card)',
+                  display: 'block',
+                }}
+              />
+              {/* Invisible text layer that makes PDF text selectable. */}
+              <div ref={textLayerRef} className="textLayer" />
+              {/* Persistent highlight overlay. */}
+              <div ref={highlightLayerRef} className="pdf-highlight-layer">
+                {annotations
+                  .filter((a) => a.anchor.pageNumber === currentPage)
+                  .map((a) => (
+                    <HighlightRect key={a.id} annotation={a} />
+                  ))}
+              </div>
+              {/* Live drag rectangle while region-selecting. */}
+              {regionDragRect && (
+                <div
+                  className="pdf-highlight-rect pdf-highlight-rect--pending"
+                  style={{
+                    position: 'absolute',
+                    left: regionDragRect.left,
+                    top: regionDragRect.top,
+                    width: regionDragRect.width,
+                    height: regionDragRect.height,
+                    zIndex: 5,
+                  }}
+                />
+              )}
+              {/* Pending selection overlay + action menu. */}
+              {pendingSelection && (
+                <>
+                  <div className="pdf-highlight-layer pdf-highlight-layer--pending">
+                    {pendingSelection.rects.map((r, i) => (
+                      <div
+                        key={i}
+                        className="pdf-highlight-rect pdf-highlight-rect--pending"
+                        style={{ left: r.left, top: r.top, width: r.width, height: r.height }}
+                      />
+                    ))}
+                  </div>
+                  <div
+                    className="pdf-annotation-menu"
+                    style={{ left: pendingSelection.menuLeft, top: pendingSelection.menuTop }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {!annotateMode ? (
+                      <>
+                        <button className="toolbar-btn" onClick={() => void commitSelection(false)}>
+                          {t('pdf.annotationHighlight')}
+                        </button>
+                        <button className="toolbar-btn" onClick={() => void commitSelection(true)}>
+                          {t('pdf.annotationAdd')}
+                        </button>
+                        <button className="toolbar-btn" onClick={cancelPending}>
+                          {t('common.cancel')}
+                        </button>
+                      </>
+                    ) : (
+                      <div className="pdf-annotation-editor" onMouseUp={(e) => e.stopPropagation()}>
+                        {notePreview ? (
+                          <div className="pdf-annotation-preview">
+                            <SafeMarkdown content={noteDraft || t('pdf.annotationEmptyNote')} uiMode={uiMode} locale={locale} />
+                          </div>
+                        ) : (
+                          <textarea
+                            className="pdf-annotation-input"
+                            value={noteDraft}
+                            onChange={(e) => setNoteDraft(e.target.value)}
+                            placeholder={t('pdf.annotationPlaceholder')}
+                            rows={3}
+                            autoFocus
+                          />
+                        )}
+                        <div className="pdf-annotation-editor-actions">
+                          <button className="toolbar-btn" onClick={() => setNotePreview((v) => !v)}>
+                            {notePreview ? t('common.edit') : t('common.preview')}
+                          </button>
+                          <button className="toolbar-btn" onClick={() => void saveNote()} disabled={!noteDraft.trim()}>
+                            {t('pdf.annotationSave')}
+                          </button>
+                          <button className="toolbar-btn" onClick={cancelPending}>
+                            {t('common.cancel')}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
           )}
         </div>
 
@@ -699,5 +1224,106 @@ export default function PdfReaderPage({ uiMode = 'normal' }: PdfReaderPageProps)
         </div>
       )}
     </div>
+  );
+}
+
+// ─── Highlight rectangle renderer ────────────────────────────
+
+/** Render a persisted annotation as an overlay rect. For char_range anchors
+ * the rect is derived from the text layer spans spanning the char offsets;
+ * for region anchors the stored coordinates are decoded directly. The rect is
+ * recomputed on mount and whenever the text layer re-renders (page/zoom
+ * change) via a ResizeObserver on the text layer. */
+function HighlightRect({ annotation }: { annotation: PdfAnnotation }) {
+  const [rects, setRects] = useState<Array<{ left: number; top: number; width: number; height: number }>>([]);
+  const [showNote, setShowNote] = useState(false);
+  const { locale } = useTranslation();
+  const { anchor } = annotation;
+
+  useEffect(() => {
+    const wrapper = document.querySelector<HTMLElement>('.pdf-page-wrapper');
+    const textLayer = wrapper?.querySelector<HTMLElement>('.textLayer');
+    if (!wrapper) return;
+
+    const compute = () => {
+      if (anchor.type === 'region' && anchor.start != null && anchor.end != null) {
+        // Region encoding: start = x*10000+y, end = w*10000+h.
+        const x = Math.floor(anchor.start / 10000);
+        const y = anchor.start % 10000;
+        const w = Math.floor(anchor.end / 10000);
+        const h = anchor.end % 10000;
+        setRects([{ left: x, top: y, width: w, height: h }]);
+        return;
+      }
+      if (anchor.type === 'char_range' && anchor.start != null && anchor.end != null && textLayer) {
+        const wrapperRect = wrapper.getBoundingClientRect();
+        const range = document.createRange();
+        const walker = document.createTreeWalker(textLayer, NodeFilter.SHOW_TEXT);
+        let offset = 0;
+        let startNode: Node | null = null;
+        let startOffset = 0;
+        let endNode: Node | null = null;
+        let endOffset = 0;
+        let node = walker.nextNode();
+        while (node) {
+          const len = node.textContent?.length ?? 0;
+          if (startNode === null && anchor.start < offset + len) {
+            startNode = node;
+            startOffset = anchor.start - offset;
+          }
+          if (endNode === null && anchor.end <= offset + len) {
+            endNode = node;
+            endOffset = anchor.end - offset;
+            break;
+          }
+          offset += len;
+          node = walker.nextNode();
+        }
+        if (!startNode || !endNode) { setRects([]); return; }
+        range.setStart(startNode, startOffset);
+        range.setEnd(endNode, endOffset);
+        const out = Array.from(range.getClientRects())
+          .filter((r) => r.width > 0 && r.height > 0)
+          .map((r) => ({
+            left: r.left - wrapperRect.left,
+            top: r.top - wrapperRect.top,
+            width: r.width,
+            height: r.height,
+          }));
+        setRects(out);
+        range.detach();
+        return;
+      }
+      setRects([]);
+    };
+
+    compute();
+    // Recompute when the text layer (re)lays out — page/zoom changes.
+    const observer = textLayer ? new ResizeObserver(() => compute()) : null;
+    if (observer && textLayer) observer.observe(textLayer);
+    return () => observer?.disconnect();
+  }, [anchor]);
+
+  if (rects.length === 0) return null;
+  return (
+    <>
+      {rects.map((r, i) => (
+        <div
+          key={i}
+          className={`pdf-highlight-rect ${annotation.highlightOnly ? 'pdf-highlight-rect--mark' : 'pdf-highlight-rect--note'}`}
+          style={{ left: r.left, top: r.top, width: r.width, height: r.height }}
+          onClick={(e) => { e.stopPropagation(); setShowNote((v) => !v); }}
+        />
+      ))}
+      {showNote && !annotation.highlightOnly && rects[0] && (
+        <div
+          className="pdf-annotation-popover"
+          style={{ left: rects[0].left, top: rects[0].top + rects[0].height + 6 }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <SafeMarkdown content={annotation.note} uiMode="normal" locale={locale} />
+        </div>
+      )}
+    </>
   );
 }

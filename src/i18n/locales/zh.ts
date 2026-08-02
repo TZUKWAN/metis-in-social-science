@@ -948,6 +948,14 @@ const zh: Locale = {
     searchResultsFound: '找到 {count} 个结果',
     searchNext: '下一个',
     searchClear: '清除',
+    annotationHighlight: '高亮',
+    annotationAdd: '添加批注',
+    annotationSave: '保存',
+    annotationPlaceholder: '为这段文字写一条批注...',
+    annotationEmptyNote: '（空批注）',
+    annotationSaveFailed: '批注保存失败，请重试。',
+    annotationRegionMode: '区域',
+    annotationRegionTooltip: '切换区域选择模式：在页面上拖拽矩形来批注一块区域',
   },
 
   // ─── 错误边界 ──────────────────────────────────────────────
