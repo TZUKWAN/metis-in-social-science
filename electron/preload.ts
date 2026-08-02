@@ -785,6 +785,10 @@ const api = {
     if (!parsed.success) return false;
     return (await ipcRenderer.invoke('experiment:cancel', parsed.data)) === true;
   },
+  listExperimentRuns: async (experimentId: string, limit?: number) =>
+    ipcRenderer.invoke('experiment:listRuns', { experimentId, limit }) as Promise<{ runs: unknown[] }>,
+  getExperimentRunOutput: async (experimentId: string, runId: string) =>
+    ipcRenderer.invoke('experiment:getRunOutput', { experimentId, runId }) as Promise<{ output: string; truncated: boolean }>,
 
   // ── Bulk Load ──────────────────────────────────────────
   loadAllData: async () => {

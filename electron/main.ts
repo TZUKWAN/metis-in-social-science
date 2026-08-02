@@ -3116,6 +3116,51 @@ function setupIPC(): void {
     }
   });
 
+  // ── Experiment run history + output ──────────────────────
+  ipcMain.handle('experiment:listRuns', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = rawRequest as { experimentId?: string; limit?: number };
+      if (!experimentScriptAdapter) return { runs: [] };
+      const runs = experimentScriptAdapter.repository.getRunsForExperiment(
+        String(request?.experimentId ?? ''),
+        typeof request?.limit === 'number' ? request.limit : 50,
+      );
+      return {
+        runs: runs.map((r) => ({
+          runId: r.runId, experimentId: r.experimentId, status: r.status,
+          exitCode: r.exitCode, metrics: r.metrics, startedAt: r.startedAt,
+          finishedAt: r.finishedAt, hasOutput: Boolean(r.stdoutLogPath),
+        })),
+      };
+    } catch {
+      return { runs: [] };
+    }
+  });
+
+  ipcMain.handle('experiment:getRunOutput', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = rawRequest as { experimentId?: string; runId?: string };
+      if (!experimentScriptAdapter) return { output: '', truncated: false };
+      const runs = experimentScriptAdapter.repository.getRunsForExperiment(String(request?.experimentId ?? ''), 200);
+      const run = runs.find((r) => r.runId === request?.runId);
+      if (!run?.stdoutLogPath) return { output: '', truncated: false };
+      const MAX_BYTES = 16 * 1024;
+      const stat = fs.statSync(run.stdoutLogPath);
+      const start = Math.max(0, stat.size - MAX_BYTES);
+      const fd = fs.openSync(run.stdoutLogPath, 'r');
+      const buf = Buffer.alloc(Math.min(stat.size, MAX_BYTES));
+      fs.readSync(fd, buf, 0, buf.length, start);
+      fs.closeSync(fd);
+      let text = buf.toString('utf8');
+      text = text.replace(/[A-Z]:\\[^\s\n]+/gi, '[path]').replace(/\/home\/[^\s\n]+/g, '[path]');
+      return { output: text, truncated: stat.size > MAX_BYTES };
+    } catch {
+      return { output: '', truncated: false };
+    }
+  });
+
   // ── Bulk Load ───────────────────────────────────────────
   ipcMain.handle('data:loadAll', (event) => {
     try {
