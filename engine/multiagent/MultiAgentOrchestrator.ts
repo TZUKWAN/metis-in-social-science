@@ -1,6 +1,15 @@
 /**
  * Multi-Agent Orchestrator — collaborative agent architecture.
  *
+ * STATUS: UNWIRED / EXPERIMENTAL.
+ * This module is a complete multi-agent orchestration implementation (role
+ * templates, serial + parallel execution, handoff messages) but is currently
+ * not imported by any production code path — neither electron/ nor src/ use
+ * it, and the production scenario runtime (ScenarioRunCoordinator) drives
+ * multi-step workflows directly. It is retained as a reference implementation
+ * for a future true multi-agent routing feature. Do not assume it affects
+ * runtime behavior; if you wire it up, add the integration tests here.
+ *
  * Enables multiple specialized agents to collaborate on research tasks.
  * Agents communicate through a shared message bus and coordinated by the orchestrator.
  *
