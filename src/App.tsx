@@ -22,6 +22,7 @@ const ProjectShell = lazy(() => import('./shell/ProjectShell'));
 const NotesPage = lazy(() => import('./pages/NotesPage'));
 const ExperimentsPage = lazy(() => import('./pages/ExperimentsPage'));
 const KnowledgeGraphPage = lazy(() => import('./pages/KnowledgeGraphPage'));
+const ArtifactsPage = lazy(() => import('./pages/ArtifactsPage'));
 const ResearchTimelinePage = lazy(() => import('./pages/ResearchTimelinePage'));
 const LatexPreviewPage = lazy(() => import('./pages/LatexPreviewPage'));
 const PdfReaderPage = lazy(() => import('./pages/PdfReaderPage'));
@@ -311,6 +312,7 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
   const initialLocation = legacyPageToEntry(initialPage);
   const [currentEntry, setCurrentEntry] = useState<TopLevelEntry>(initialLocation.entry)
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(initialLocation.mode)
+  const [analyzeView, setAnalyzeView] = useState<'graph' | 'artifacts'>('graph')
   const [uiMode, setUIMode] = useState<UIMode>(() => getDiagnosticMode())
   const [standalonePage, setStandalonePage] = useState<StandalonePage | null>(() =>
     resolveStandalonePage(initialPage, getDiagnosticMode() === 'diagnostic'))
@@ -466,7 +468,9 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
   function renderNonChatWorkspace() {
     switch (workspaceMode) {
       case 'read': return <PdfReaderPage uiMode={uiMode} />;
-      case 'analyze': return <KnowledgeGraphPage />;
+      case 'analyze': return analyzeView === 'artifacts'
+        ? <ArtifactsPage />
+        : <KnowledgeGraphPage onNavigateArtifacts={() => setAnalyzeView('artifacts')} />;
       case 'write': return <NotesPage uiMode={uiMode} onNavigate={(page) => navigateLegacy(page as Page)} />;
       case 'converse': return null;
     }

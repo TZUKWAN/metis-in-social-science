@@ -648,6 +648,15 @@ const zh: Locale = {
     triangulateError: '验证失败',
   },
 
+  artifacts: {
+    pageTitle: '产物',
+    loadFailed: '加载产物失败。',
+    emptyTitle: '暂无产物',
+    emptyDescription: '场景与智能体生成的产物将显示在这里。',
+    session: '会话 {id}',
+    selectToPreview: '选择一个产物进行预览',
+  },
+
   // ─── 文集页 ────────────────────────────────────────────────
   collections: {
     title: '文集',
@@ -876,6 +885,8 @@ const zh: Locale = {
     loadCitationsTooltip: '从 Semantic Scholar 获取有 DOI 或 arXiv ID 的论文的真实引用边',
     citationsLoaded: '在 {checked} 篇论文中新增了 {added} 条引用边。',
     citationsError: '加载引用失败：{error}',
+    navigateArtifacts: '产物',
+    navigateArtifactsTooltip: '浏览跨会话生成的产物',
   },
 
   comparison: {

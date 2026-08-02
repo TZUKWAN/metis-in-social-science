@@ -170,7 +170,11 @@ function PaperNode({ data }: { data: Node['data'] }) {
 
 const nodeTypes: NodeTypes = { paperNode: PaperNode };
 
-export default function KnowledgeGraphPage() {
+interface KnowledgeGraphPageProps {
+  onNavigateArtifacts?: () => void;
+}
+
+export default function KnowledgeGraphPage({ onNavigateArtifacts }: KnowledgeGraphPageProps) {
   const { papers, addPaperReference } = useMetisStore();
   const { t } = useTranslation();
   const [layoutMode, setLayoutMode] = useState<'circular' | 'tags'>('circular');
@@ -267,6 +271,15 @@ export default function KnowledgeGraphPage() {
           >
             {t('comparison.toggleButton')}
           </button>
+          {onNavigateArtifacts && (
+            <button
+              className="btn-toggle"
+              onClick={onNavigateArtifacts}
+              title={t('graph.navigateArtifactsTooltip')}
+            >
+              {t('graph.navigateArtifacts')}
+            </button>
+          )}
           <button
             className="btn-toggle"
             onClick={loadRealCitations}
