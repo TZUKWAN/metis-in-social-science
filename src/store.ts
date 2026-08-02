@@ -7,6 +7,7 @@
 import { create } from 'zustand';
 import type { ExperimentMetadata } from '../engine/runtime/ExperimentMetadataContract';
 import type { PaperItem, ReadStatus } from '../engine/research/PaperItem';
+import { RagEngine } from '../engine/research/RagEngine';
 import {
   ExperimentRuntimeStatusSchema,
   ExperimentScriptAttachmentSchema,
@@ -849,6 +850,24 @@ export function rankPapersByRelevance(papers: PaperItem[], query: string): Paper
   });
 }
 
+/**
+ * Semantic ranking via the shared RagEngine (TF-IDF with smoothed IDF and full
+ * PDF text when available). Built on a per-query transient RagEngine instance
+ * so it never needs the main-process singleton and works entirely in the
+ * renderer. Papers without a hit are dropped, mirroring keyword-filter intent.
+ */
+export function rankPapersWithRag(papers: PaperItem[], query: string): PaperItem[] {
+  const trimmed = query.trim();
+  if (!trimmed) return papers;
+  const engine = new RagEngine();
+  engine.indexPapersWithFullText(papers);
+  const hits = engine.search(trimmed, papers.length);
+  const scoreById = new Map(hits.map((h) => [h.document.id, h.score]));
+  return papers
+    .filter((p) => scoreById.has(p.id))
+    .sort((a, b) => (scoreById.get(b.id) ?? 0) - (scoreById.get(a.id) ?? 0));
+}
+
 export interface SimilarPaperResult {
   paper: PaperItem;
   score: number;
@@ -915,7 +934,7 @@ export function filterPapers(
   }
   if (filter.query) {
     if (filter.semantic) {
-      return rankPapersByRelevance(result, filter.query);
+      return rankPapersWithRag(result, filter.query);
     }
     const q = filter.query.toLowerCase();
     return result.filter((p) =>
