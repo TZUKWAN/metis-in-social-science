@@ -102,7 +102,10 @@ function buildTfIdf(docs: RagDocument[]): TfIdfWeights {
 
     const vector = new Map<string, number>();
     for (const [term, count] of tf) {
-      const idf = Math.log((docs.length + 1) / ((docFreq.get(term) ?? 0) + 1));
+      // Smoothed IDF: +1 keeps weights non-zero even when every document
+      // contains the term (or there is a single document), so cosine search
+      // still ranks correctly for small libraries.
+      const idf = 1 + Math.log((docs.length + 1) / ((docFreq.get(term) ?? 0) + 1));
       vector.set(term, (count / tokens.length) * idf);
     }
     vectors.set(doc.id, vector);
@@ -173,10 +176,10 @@ export class RagEngine {
       queryTf.set(t, (queryTf.get(t) ?? 0) + 1);
     }
 
-    // Build query vector
+    // Build query vector (smoothed IDF, matching the index-side formula).
     const queryVec = new Map<string, number>();
     for (const [term, count] of queryTf) {
-      const idf = Math.log(
+      const idf = 1 + Math.log(
         (weights.docCount + 1) / ((weights.docFreq.get(term) ?? 0) + 1),
       );
       queryVec.set(term, (count / queryTokens.length) * idf);
@@ -265,6 +268,35 @@ export class RagEngine {
       },
     }));
     this.indexDocuments(docs);
+  }
+
+  /**
+   * Serialize the indexed documents for persistence (the index itself is
+   * rebuilt lazily from documents on load, so only docs need to be stored).
+   * Returns a JSON-safe representation of the document set.
+   */
+  serializeDocuments(): string {
+    return JSON.stringify([...this.documents.values()]);
+  }
+
+  /**
+   * Replace the document set from a previously persisted payload.
+   * Returns the number of documents loaded.
+   */
+  loadSerializedDocuments(payload: string): number {
+    try {
+      const docs = JSON.parse(payload) as RagDocument[];
+      this.documents.clear();
+      for (const doc of docs) {
+        if (doc && typeof doc.id === 'string' && typeof doc.content === 'string') {
+          this.documents.set(doc.id, doc);
+        }
+      }
+      this.weights = null;
+      return this.documents.size;
+    } catch {
+      return 0;
+    }
   }
 
   /**

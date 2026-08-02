@@ -4164,6 +4164,31 @@ app.whenReady().then(async () => {
     } catch {
       backupService = null;
     }
+    // Persistent RAG index: load previously persisted documents so the
+    // in-memory TF-IDF index survives restarts, then index the current library.
+    try {
+      void (async () => {
+        const { getRagEngine } = await import('../engine/research/RagEngine.js');
+        const engine = getRagEngine();
+        const ragPath = path.join(DATA_DIR, 'manifest', 'rag-index.json');
+        try {
+          const persisted = fs.existsSync(ragPath) ? fs.readFileSync(ragPath, 'utf8') : '';
+          if (persisted) engine.loadSerializedDocuments(persisted);
+        } catch {
+          // Corrupt or missing index is non-fatal; rebuild from the library.
+        }
+        const papers = (store?.getPapers() ?? []) as Parameters<typeof engine.indexPapers>[0];
+        if (papers.length > 0) engine.indexPapers(papers);
+        try {
+          fs.mkdirSync(path.dirname(ragPath), { recursive: true });
+          fs.writeFileSync(ragPath, engine.serializeDocuments(), 'utf8');
+        } catch {
+          // Persistence is best-effort; the in-memory index still works.
+        }
+      })();
+    } catch {
+      // RAG init must never block startup.
+    }
     try {
       fundingTemplateRepository = new FundingTemplateRepository(DATA_DIR);
       fundingTemplateService = new FundingTemplateService(fundingTemplateRepository);
