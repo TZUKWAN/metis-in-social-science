@@ -1,6 +1,7 @@
 import { useState, useRef, useMemo, useCallback, useEffect } from 'react';
 import SearchInput from '../components/SearchInput';
 import ConfirmDialog from '../components/ConfirmDialog';
+import { IntegrityBadge } from '../components/IntegrityBadge';
 import { useMetisStore, filterPapers, findSimilarPapers, suggestTags } from '../store';
 import type { ReadStatus, PaperItem, MetisState } from '../store';
 import { useTranslation } from '../i18n';
@@ -1718,6 +1719,7 @@ export default function PapersPage({ onNavigate, uiMode = 'normal' }: PapersPage
                 </div>
                 <div className="paper-status">
                   <span className={`badge status-${p.readStatus}`}>{READ_STATUS_LABELS[p.readStatus]}</span>
+                  {p.doi && <IntegrityBadge doi={p.doi} />}
                   {p.priority && (
                     <span
                       className="badge"
