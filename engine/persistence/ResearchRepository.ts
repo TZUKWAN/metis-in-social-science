@@ -1061,6 +1061,33 @@ export class ResearchRepository {
       .run(Date.now(), id).changes > 0;
   }
 
+  /**
+   * Transition an artifact's review status and record the move in the current
+   * version's manifest reviewTrail (the audit trail is review metadata, not
+   * content — the content hash and version number are untouched).
+   */
+  updateArtifactReviewStatus(id: string, toStatus: string, reason: string): boolean {
+    const artifact = this.getArtifact(id);
+    if (!artifact) return false;
+    const from = artifact.reviewStatus;
+    const now = Date.now();
+    this.db.prepare('UPDATE research_artifacts SET review_status = ?, updated_at = ? WHERE id = ?')
+      .run(toStatus, now, id);
+    const current = this.getArtifactVersion(id);
+    if (current) {
+      const manifest = current.manifest as Record<string, unknown>;
+      const trail = Array.isArray(manifest.reviewTrail) ? manifest.reviewTrail : [];
+      const updated = {
+        ...manifest,
+        reviewStatus: toStatus,
+        reviewTrail: [...trail, { at: now, from, to: toStatus, reason }],
+      };
+      this.db.prepare('UPDATE artifact_versions SET manifest = ? WHERE artifact_id = ? AND version = ?')
+        .run(JSON.stringify(updated), id, current.version);
+    }
+    return true;
+  }
+
   // ─── Durable run/checkpoint/decision state ─────────────────
 
   saveRun(run: ResearchRun): ResearchRun {

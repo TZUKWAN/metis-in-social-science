@@ -1,0 +1,82 @@
+{
+  "startedAt": "2026-08-03T18:02:30.590Z",
+  "checks": [
+    {
+      "name": "startup:status ready",
+      "ok": true,
+      "detail": "{\"ready\":true,\"storeReady\":true}"
+    },
+    {
+      "name": "settings:get returns structured view",
+      "ok": true,
+      "detail": "{\"configured\":false,\"hasApiKey\":false,\"needsReauth\":false,\"theme\":\"light\",\"weeklyReadingGoal\":5,\"providerVision\":false}"
+    },
+    {
+      "name": "data:loadAll returns structured payload",
+      "ok": true,
+      "detail": "papers=0"
+    },
+    {
+      "name": "note saved and reloaded from SQLite",
+      "ok": true
+    },
+    {
+      "name": "papers:searchFullText structured response",
+      "ok": true
+    },
+    {
+      "name": "papers:aiExplain provider_unavailable without provider",
+      "ok": true,
+      "detail": "provider_unavailable"
+    },
+    {
+      "name": "papers:aiSynthesis rejects <2 papers",
+      "ok": true,
+      "detail": "need_at_least_two_papers"
+    },
+    {
+      "name": "papers:aiSynthesis provider_unavailable without provider",
+      "ok": true,
+      "detail": "provider_unavailable"
+    },
+    {
+      "name": "latex:aiPolish provider_unavailable without provider",
+      "ok": true,
+      "detail": "provider_unavailable"
+    },
+    {
+      "name": "data:loadPaperDetail structured miss",
+      "ok": true
+    },
+    {
+      "name": "wechat:getStatus structured response",
+      "ok": true,
+      "detail": "{\"ok\":true,\"status\":{\"phase\":\"unbound\",\"botId\":\"\",\"userId\":\"\",\"activeProjectId\":\"\",\"activeSessionId\":\"\",\"boundAt\":0,\"bus"
+    },
+    {
+      "name": "renderer UI mounted",
+      "ok": true,
+      "detail": "{\"children\":1,\"scripts\":[\"inline\",\"inline\",\"metis-app://renderer/assets/index-5kqffS6M.js\"],\"bodyLen\":171}"
+    },
+    {
+      "name": "officecli:detected",
+      "ok": true,
+      "detail": "1.0.143"
+    },
+    {
+      "name": "officecli:add paragraph",
+      "ok": true
+    },
+    {
+      "name": "officecli:render html",
+      "ok": true,
+      "detail": "<!DOCTYPE html>\r\n<html lang=\"zh-CN\">\r\n<head>\r\n<meta charset="
+    },
+    {
+      "name": "officecli:close",
+      "ok": true
+    }
+  ],
+  "failed": 0,
+  "passed": 16
+}

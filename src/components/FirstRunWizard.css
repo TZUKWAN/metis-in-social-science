@@ -436,7 +436,8 @@
 }
 
 .first-run-submit,
-.first-run-stop {
+.first-run-stop,
+.first-run-skip {
   min-height: 44px;
   border-radius: 8px;
   font: inherit;
@@ -473,6 +474,24 @@
   border: 1px solid var(--setup-border);
   color: var(--setup-secondary);
   background: transparent;
+}
+
+.first-run-skip {
+  margin-right: auto;
+  padding: 9px 13px;
+  border: none;
+  color: var(--setup-muted);
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 580;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.first-run-skip:hover {
+  color: var(--setup-secondary);
 }
 
 .first-run-stop span {

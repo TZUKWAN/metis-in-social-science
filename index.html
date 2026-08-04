@@ -2,6 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https: http: data: blob:; worker-src 'self' blob:;" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>metis-workbench</title>
@@ -12,6 +13,45 @@
           var theme = localStorage.getItem('metis-theme') || 'light';
           document.documentElement.dataset.theme = theme;
         } catch (e) {}
+      })();
+    </script>
+    <script>
+      // Minimal Buffer polyfill. A few bundled engine modules (Zotero client,
+      // BOM sniffing) reference Node's Buffer at module top level; the
+      // renderer has no Node globals, so provide a Uint8Array-backed subset.
+      (function() {
+        if (typeof window.Buffer !== 'undefined') return;
+        function from(data, encoding) {
+          if (data instanceof ArrayBuffer) return new Uint8Array(data);
+          if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+          if (Array.isArray(data)) return new Uint8Array(data);
+          if (typeof data === 'string') {
+            if (encoding === 'base64') {
+              var bin = atob(data);
+              var out = new Uint8Array(bin.length);
+              for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+              return out;
+            }
+            return new TextEncoder().encode(data);
+          }
+          return new Uint8Array(0);
+        }
+        window.Buffer = {
+          from: from,
+          alloc: function(n) { return new Uint8Array(n); },
+          isBuffer: function(v) { return v instanceof Uint8Array; },
+          concat: function(list) {
+            var total = list.reduce(function(sum, item) { return sum + item.length; }, 0);
+            var out = new Uint8Array(total);
+            var offset = 0;
+            for (var i = 0; i < list.length; i++) { out.set(list[i], offset); offset += list[i].length; }
+            return out;
+          },
+          byteLength: function(str, encoding) {
+            if (encoding === 'base64') return Math.floor(str.length * 3 / 4);
+            return new TextEncoder().encode(str).length;
+          },
+        };
       })();
     </script>
   </head>

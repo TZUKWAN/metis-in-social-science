@@ -18,6 +18,7 @@ import { getResearchToolSpecs, getResearchToolHandlers } from './builtin/researc
 import { PLUGIN_TOOLS, getPluginToolHandlers } from './builtin/PluginMarketplace.js';
 import { MULTI_AGENT_TOOL, createMultiAgentHandler } from './builtin/MultiAgentTool.js';
 import { getEvidenceToolSpecs, getEvidenceToolHandlers } from './builtin/evidence-tools.js';
+import { getMemoryToolSpecs, getMemoryToolHandlers } from './builtin/MemoryTools.js';
 import {
   ACADEMIC_TOOL_SPECS,
   arxivSearchHandler,
@@ -113,8 +114,13 @@ const CURRENT_AFFAIRS_SPECS: ToolSpec[] = [];
 /**
  * Register all built-in tools (file + search + shell + academic + research + current_affairs) into a registry and dispatcher.
  * @param options.agentLoop — when provided, the multi-agent orchestration tool is registered.
+ * @param options.store — when provided, the memory_remember/memory_recall tools get a live memory store.
  */
-export function registerBuiltinTools(registry: ToolRegistry, dispatcher: ToolDispatcher, options?: { agentLoop?: import('../core/AgentLoop.js').AgentLoop }): void {
+export function registerBuiltinTools(
+  registry: ToolRegistry,
+  dispatcher: ToolDispatcher,
+  options?: { agentLoop?: import('../core/AgentLoop.js').AgentLoop; store?: import('../persistence/PersistenceStore.js').PersistenceStore },
+): void {
   const allSpecs: ToolSpec[] = [
     ...getFileToolSpecs(),
     ...getSearchToolSpecs(),
@@ -123,6 +129,7 @@ export function registerBuiltinTools(registry: ToolRegistry, dispatcher: ToolDis
     ...getResearchToolSpecs(),
     ...PLUGIN_TOOLS,
     ...getEvidenceToolSpecs(),
+    ...getMemoryToolSpecs(),
     ...(options?.agentLoop ? [MULTI_AGENT_TOOL] : []),
     ...CURRENT_AFFAIRS_SPECS,
   ];
@@ -134,6 +141,7 @@ export function registerBuiltinTools(registry: ToolRegistry, dispatcher: ToolDis
     ...getResearchToolHandlers(),
     ...getPluginToolHandlers(),
     ...getEvidenceToolHandlers(),
+    ...getMemoryToolHandlers(options?.store),
     ['arxiv_search', arxivSearchHandler],
     ['import_by_arxiv', importByArxivHandler],
     ['search_papers', searchPapersHandler],

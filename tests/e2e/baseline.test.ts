@@ -210,6 +210,9 @@ describe('METIS-006 end-to-end baseline', () => {
       },
     ];
 
+    // This scripted provider deliberately exposes NO streaming (it only overrides
+    // complete()): the loop must fall back to complete() and dispatch the echoed
+    // tool call exactly as a real non-streaming provider would.
     const provider = new (class extends FakeProvider {
       private idx = 0;
       override async complete(): Promise<NormalizedResponse> {
@@ -217,6 +220,9 @@ describe('METIS-006 end-to-end baseline', () => {
         this.idx++;
         return r;
       }
+      override completeStream: FakeProvider['completeStream'] = () => {
+        throw new Error('no streaming in this baseline provider');
+      };
     })();
 
     const registry = new ToolRegistry();

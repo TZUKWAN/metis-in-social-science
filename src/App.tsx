@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, Suspense, lazy } from 'react'
+﻿import { useState, useEffect, useRef, Suspense, lazy } from 'react'
 import './App.css'
 import ChatPage from './pages/ChatPage'
 import { useTranslation } from './i18n'
@@ -11,10 +11,10 @@ import type { WorkspaceMode } from './shell/ProjectShell'
 import { getTopLevelNav } from './shell/navConfig'
 import { getDiagnosticMode, setDiagnosticMode, type UIMode } from '../engine/capabilities/DiagnosticMode'
 import type { FirstRunSetupClient } from './components/FirstRunWizard'
-import { useResearchWorkspaceStore } from './research/researchWorkspaceStore'
+import { useResearchWorkspaceStore, researchWorkspaceStore } from './research/researchWorkspaceStore'
 import { setPendingChatIntent } from './lib/chatIntent'
 
-// 鈹€鈹€鈹€ Lazy-loaded pages to reduce initial bundle size 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ─── Lazyloaded pages to reduce initial bundle size ───
 
 const PapersPage = lazy(() => import('./pages/PapersPage'));
 const DashboardPage = lazy(() => import('./pages/DashboardPage'));
@@ -26,6 +26,7 @@ const ArtifactsPage = lazy(() => import('./pages/ArtifactsPage'));
 const ResearchTimelinePage = lazy(() => import('./pages/ResearchTimelinePage'));
 const LatexPreviewPage = lazy(() => import('./pages/LatexPreviewPage'));
 const PdfReaderPage = lazy(() => import('./pages/PdfReaderPage'));
+const OfficeDocumentPage = lazy(() => import('./pages/OfficeDocumentPage'));
 const GoalPage = lazy(() => import('./pages/GoalPage'));
 const CollectionsPage = lazy(() => import('./pages/CollectionsPage'));
 const TagsPage = lazy(() => import('./pages/TagsPage'));
@@ -45,7 +46,7 @@ const firstRunSetupClient: FirstRunSetupClient = {
   abort: (request) => window.metis?.setupAbort(request) ?? Promise.resolve(null),
 };
 
-// 鈹€鈹€鈹€ Theme Toggle Component 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ─── Theme Toggle Component ───
 
 const THEME_CYCLE: ThemeMode[] = ['light', 'dark', 'system'];
 
@@ -78,7 +79,7 @@ function ThemeToggle() {
   )
 }
 
-// 鈹€鈹€鈹€ Navigation 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ─── Navigation ───
 
 interface NavItem { id: TopLevelEntry; labelKey: string; icon: React.ReactNode }
 
@@ -110,10 +111,12 @@ function legacyPageToEntry(page: Page): { entry: TopLevelEntry; mode: WorkspaceM
     case 'pdf':
       return { entry: 'projects', mode: 'read' };
     case 'graph':
+    case 'artifacts':
     case 'timeline':
     case 'experiments':
       return { entry: 'projects', mode: 'analyze' };
     case 'latex':
+    case 'office':
     case 'notes':
       return { entry: 'projects', mode: 'write' };
     default:
@@ -121,9 +124,9 @@ function legacyPageToEntry(page: Page): { entry: TopLevelEntry; mode: WorkspaceM
   }
 }
 
-// 鈹€鈹€鈹€ Evals Page 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ─── Evals Page ───
 
-type StandalonePage = 'dashboard' | 'goal' | 'collections' | 'tags' | 'timeline' | 'latex' | 'experiments' | 'evals';
+type StandalonePage = 'dashboard' | 'goal' | 'collections' | 'tags' | 'timeline' | 'latex' | 'experiments' | 'evals' | 'office';
 
 function resolveStandalonePage(page: Page, diagnosticMode: boolean): StandalonePage | null {
   switch (page) {
@@ -134,6 +137,7 @@ function resolveStandalonePage(page: Page, diagnosticMode: boolean): StandaloneP
     case 'timeline':
     case 'latex':
     case 'experiments':
+    case 'office':
       return page;
     case 'evals':
       return diagnosticMode ? page : null;
@@ -307,6 +311,68 @@ function EvalsPage() {
     </div>
   )
 }
+
+/**
+ * METIS-OPT-4: the main process now shows the window before heavy startup
+ * initialization finishes. Wait (with a 15s cap) for the startup signal so
+ * settings/config checks and data hydration never see a half-initialized
+ * main process.
+ */
+async function waitForStartup(metis: { startupStatus?: () => Promise<{ ready: boolean }> }): Promise<void> {
+  if (!metis.startupStatus) return;
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    try {
+      const status = await metis.startupStatus();
+      if (status?.ready) return;
+    } catch {
+      /* transient — keep polling */
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+}
+
+// ─── Session restore (navigation + last active project) ────────
+// The last workspace location is remembered in localStorage so a restart
+// lands where the user left off. Project restore is best-effort: it only
+// wins when the project still exists (loadProjects re-validates it).
+
+const SESSION_STORAGE_KEY = 'metis-session';
+const VALID_SESSION_ENTRIES: ReadonlySet<string> = new Set(['projects', 'library', 'settings']);
+const VALID_SESSION_MODES: ReadonlySet<string> = new Set(['converse', 'read', 'analyze', 'write']);
+
+interface SavedSession {
+  entry: TopLevelEntry;
+  mode: WorkspaceMode;
+  projectId: string | null;
+}
+
+function readSavedSession(): SavedSession | null {
+  try {
+    const raw = localStorage.getItem(SESSION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as unknown;
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const { entry, mode, projectId } = parsed as { entry?: unknown; mode?: unknown; projectId?: unknown };
+    if (typeof entry !== 'string' || !VALID_SESSION_ENTRIES.has(entry)) return null;
+    if (typeof mode !== 'string' || !VALID_SESSION_MODES.has(mode)) return null;
+    return {
+      entry: entry as TopLevelEntry,
+      mode: mode as WorkspaceMode,
+      projectId: typeof projectId === 'string' ? projectId : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function saveSession(entry: TopLevelEntry, mode: WorkspaceMode, projectId: string | null): void {
+  try {
+    localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({ entry, mode, projectId }));
+  } catch {
+    // Session persistence is best-effort; navigation still works without it.
+  }
+}
+
 function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) {
   const { t, locale } = useTranslation();
   const initialLocation = legacyPageToEntry(initialPage);
@@ -330,6 +396,35 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
   const activeResearchProjectId = useResearchWorkspaceStore((state) => state.activeProjectId)
   const activeResearchSection = useResearchWorkspaceStore((state) => state.activeSection)
 
+  // Restore the last navigation location once, before any child mounts. The
+  // project id is seeded into the workspace store; loadProjects keeps it only
+  // when the project still exists.
+  const sessionRestoredRef = useRef(false)
+  useEffect(() => {
+    if (sessionRestoredRef.current) return
+    const saved = readSavedSession()
+    if (!saved) return
+    sessionRestoredRef.current = true
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot session restore on launch
+    setCurrentEntry(saved.entry)
+    setWorkspaceMode(saved.mode)
+    setStandalonePage(null)
+    if (saved.projectId) {
+      researchWorkspaceStore.setState({ activeProjectId: saved.projectId })
+    }
+  }, [])
+
+  // Persist the navigation location (skipping the initial render so a stale
+  // saved session is not overwritten before the restore effect above lands).
+  const sessionSaveSkippedRef = useRef(false)
+  useEffect(() => {
+    if (!sessionSaveSkippedRef.current) {
+      sessionSaveSkippedRef.current = true
+      return
+    }
+    saveSession(currentEntry, workspaceMode, activeResearchProjectId)
+  }, [currentEntry, workspaceMode, activeResearchProjectId])
+
   useEffect(() => {
     const metis = window.metis
     if (!metis?.getSettings) {
@@ -337,24 +432,34 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
       setSetupState('ready')
       return
     }
-    metis.getSettings().then((settings) => {
+    // METIS-OPT-4: wait for the main process to finish startup (the window now
+    // appears before heavy initialization completes). Poll with a timeout so a
+    // stuck main process degrades to the previous behavior instead of hanging.
+    let cancelled = false
+    void waitForStartup(metis).then(() => {
+      if (cancelled) return
+      return metis.getSettings!().then((settings) => {
       if (settings?.baseUrl || settings?.model) {
         setSetupInitialConfig({
           baseUrl: settings.baseUrl || undefined,
           model: settings.model || undefined,
         })
       }
-      setSetupState(settings?.configured && settings.hasApiKey ? 'ready' : 'required')
+        setSetupState(settings?.configured && settings.hasApiKey ? 'ready' : 'required')
+      }).catch(() => {
+        setSetupState('required')
+      })
     }).catch(() => {
       setSetupState('required')
     })
+    return () => { cancelled = true }
   }, [])
 
   // Hydrate from SQLite on mount
   useEffect(() => {
     const metis = window.metis
     if (metis && metis.loadAllData) {
-      metis.loadAllData().then((data) => {
+      void waitForStartup(metis).then(() => metis.loadAllData!()).then((data) => {
         hydrateFromPersistence({
           papers: data.papers ?? [],
           notes: data.notes ?? [],
@@ -436,6 +541,9 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
     setPersonalizationOpen(false);
     setCurrentEntry(location.entry);
     setWorkspaceMode(location.mode);
+    if (location.mode === 'analyze') {
+      setAnalyzeView(page === 'artifacts' ? 'artifacts' : 'graph');
+    }
     setStandalonePage(resolveStandalonePage(page, uiMode === 'diagnostic'));
   }
 
@@ -485,6 +593,7 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
       case 'timeline': return <ResearchTimelinePage />;
       case 'latex': return <LatexPreviewPage />;
       case 'experiments': return <ExperimentsPage />;
+      case 'office': return <OfficeDocumentPage />;
       case 'evals': return uiMode === 'diagnostic' ? <EvalsPage /> : null;
       default: return null;
     }
@@ -557,6 +666,7 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
             client={firstRunSetupClient}
             initialConfig={setupInitialConfig}
             onComplete={() => setSetupState('ready')}
+            onSkip={() => setSetupState('ready')}
           />
         </Suspense>
       </div>
@@ -621,8 +731,8 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
                 className={`personalization-trigger ${personalizationOpen ? 'active' : ''}`}
                 onClick={() => { setPersonalizationOpen(true); setStandalonePage(null); }}
                 aria-current={personalizationOpen ? 'page' : undefined}
-                aria-label={locale === 'zh' ? '个性化' : 'Personalization'}
-                title={locale === 'zh' ? '个性化' : 'Personalization'}
+                aria-label={t('personalization.title')}
+                title={t('personalization.title')}
                 data-testid="personalization-trigger"
               >
                 <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">

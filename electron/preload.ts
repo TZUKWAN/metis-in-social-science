@@ -346,6 +346,7 @@ const api = {
 
   // ── Store ──────────────────────────────────────────────
   storeReady: () => ipcRenderer.invoke('store:ready'),
+  startupStatus: () => ipcRenderer.invoke('startup:status') as Promise<{ ready: boolean; storeReady: boolean }>,
 
   setupProbe: async (
     rawRequest: SettingsProviderProbeRequest,
@@ -661,6 +662,55 @@ const api = {
   listBackups: async () => ipcRenderer.invoke('backup:list') as Promise<{ backups: Array<{ path: string; name: string }> }>,
   restoreBackup: async (backupPath: string) => ipcRenderer.invoke('backup:restore', { backupPath }) as Promise<{ ok: boolean; error?: string }>,
   importZotero: async (request: unknown) => ipcRenderer.invoke('zotero:import', request) as Promise<unknown>,
+  exportProject: async (request: { projectId: string; destPath?: string }) =>
+    ipcRenderer.invoke('project:export', request) as Promise<{ ok: boolean; path?: string; error?: string; manifest?: unknown }>,
+  importProject: async (request: { archivePath: string; projectId?: string; overwrite?: boolean }) =>
+    ipcRenderer.invoke('project:import', request) as Promise<{ ok: boolean; projectId?: string; error?: string; restored?: unknown }>,
+  listProjects: async () => ipcRenderer.invoke('project:list') as Promise<{
+    success: boolean;
+    projects: Array<{ id: string; title: string; updatedAt: number; archivedAt: number | null }>;
+  }>,
+  pickProjectArchive: async () => ipcRenderer.invoke('project:pickArchive') as Promise<{ canceled: boolean; path?: string }>,
+  // ── WeChat Bot (METIS-WX-1) ──
+  wechatGetStatus: async () => ipcRenderer.invoke('wechat:getStatus') as Promise<{ ok: boolean; status?: unknown; error?: string }>,
+  wechatBeginLogin: async () => ipcRenderer.invoke('wechat:beginLogin') as Promise<{ ok: boolean; qrContent?: string; error?: string }>,
+  wechatPollLogin: async () => ipcRenderer.invoke('wechat:pollLogin') as Promise<{ phase: string; ok: boolean; error?: string }>,
+  wechatSubmitVerifyCode: async (code: string) => ipcRenderer.invoke('wechat:submitVerifyCode', { code }) as Promise<{ ok: boolean; error?: string }>,
+  wechatLogout: async () => ipcRenderer.invoke('wechat:logout') as Promise<{ ok: boolean; error?: string }>,
+  wechatSendTest: async (text: string) => ipcRenderer.invoke('wechat:sendTest', { text }) as Promise<{ ok: boolean; error?: string }>,
+  wechatSetProject: async (projectId: string) => ipcRenderer.invoke('wechat:setProject', { projectId }) as Promise<{ ok: boolean; error?: string }>,
+  loadPaperDetail: async (paperId: string) => ipcRenderer.invoke('data:loadPaperDetail', { paperId }) as Promise<{ found: boolean; paper?: unknown }>,
+  searchPapersFullText: async (query: string, limit?: number) => ipcRenderer.invoke('papers:searchFullText', query, limit) as Promise<{ results: Array<{ id: string; title: string; snippet: string }> }>,
+  aiExplainPaper: async (request: { passage: string; paperTitle?: string; action?: 'explain' | 'translate' | 'summarize' }) => ipcRenderer.invoke('papers:aiExplain', request) as Promise<{ ok: boolean; text?: string; error?: string }>,
+  aiSynthesis: async (request: { mode?: 'synthesis' | 'compare' | 'report'; papers: Array<{ title: string; authors: string[]; year: number; venue: string; abstract: string }> }) => ipcRenderer.invoke('papers:aiSynthesis', request) as Promise<{ ok: boolean; text?: string; error?: string }>,
+  aiPolishLatex: async (request: { text: string; action?: 'polish' | 'rewrite' | 'expand' }) => ipcRenderer.invoke('latex:aiPolish', request) as Promise<{ ok: boolean; text?: string; error?: string }>,
+  artifactListByProject: async (projectId: string) => ipcRenderer.invoke('artifact:listByProject', projectId) as Promise<{ items: Array<Record<string, unknown>> }>,
+  artifactUpdateReviewStatus: async (request: { artifactId: string; toStatus: string; reason?: string }) => ipcRenderer.invoke('artifact:updateReviewStatus', request) as Promise<{ ok: boolean; error?: string }>,
+  artifactListVersions: async (artifactId: string) => ipcRenderer.invoke('artifact:listVersions', artifactId) as Promise<{ versions: Array<{ version: number; createdAt: number; createdBy: string; contentPreview: string }> }>,
+  artifactRestoreVersion: async (request: { artifactId: string; version: number }) => ipcRenderer.invoke('artifact:restoreVersion', request) as Promise<{ ok: boolean; version?: number; error?: string }>,
+  officeCliStatus: async () => ipcRenderer.invoke('officecli:status') as Promise<{ available: boolean; binary: string; version?: string; error?: string }>,
+  officeCliNewDocument: async (ext: 'docx' | 'pptx' | 'xlsx', projectId?: string) => ipcRenderer.invoke('officecli:newDocument', ext, projectId) as Promise<{ success: boolean; filePath?: string; error?: string }>,
+  officeCliExec: async (args: string[]) => ipcRenderer.invoke('officecli:exec', args) as Promise<{ success: boolean; data?: unknown; message?: string; error?: string }>,
+  officeCliCreate: async (filePath: string) => ipcRenderer.invoke('officecli:create', filePath) as Promise<{ success: boolean; data?: unknown; message?: string; error?: string }>,
+  officeCliOpen: async (filePath: string) => ipcRenderer.invoke('officecli:open', filePath) as Promise<{ success: boolean; data?: unknown; message?: string; error?: string }>,
+  officeCliAdd: async (request: { filePath: string; parent?: string; type: string; props?: Record<string, string> }) => ipcRenderer.invoke('officecli:add', request) as Promise<{ success: boolean; data?: unknown; message?: string; error?: string }>,
+  officeCliSet: async (request: { filePath: string; path: string; props?: Record<string, string> }) => ipcRenderer.invoke('officecli:set', request) as Promise<{ success: boolean; data?: unknown; message?: string; error?: string }>,
+  officeCliQuery: async (request: { filePath: string; selector: string }) => ipcRenderer.invoke('officecli:query', request) as Promise<{ success: boolean; data?: unknown; message?: string; error?: string }>,
+  officeCliGet: async (request: { filePath: string; path?: string }) => ipcRenderer.invoke('officecli:get', request) as Promise<{ success: boolean; data?: unknown; message?: string; error?: string }>,
+  officeCliRemove: async (request: { filePath: string; path: string }) => ipcRenderer.invoke('officecli:remove', request) as Promise<{ success: boolean; data?: unknown; message?: string; error?: string }>,
+  officeCliRenderHtml: async (filePath: string) => ipcRenderer.invoke('officecli:renderHtml', filePath) as Promise<{ success: boolean; data?: string; error?: string }>,
+  officeCliOutline: async (filePath: string) => ipcRenderer.invoke('officecli:outline', filePath) as Promise<{ success: boolean; data?: unknown; error?: string }>,
+  officeCliStartWatch: async (filePath: string) => ipcRenderer.invoke('officecli:startWatch', filePath) as Promise<{ success: boolean; url?: string; port?: number; error?: string }>,
+  officeCliStopWatch: async (filePath: string) => ipcRenderer.invoke('officecli:stopWatch', filePath) as Promise<{ success: boolean; error?: string }>,
+  officeCliClose: async (filePath: string) => ipcRenderer.invoke('officecli:close', filePath) as Promise<{ success: boolean; error?: string }>,
+  officeCliRevealFile: async (filePath: string) => ipcRenderer.invoke('officecli:revealFile', filePath) as Promise<{ success: boolean; error?: string }>,
+  officeCliAddSlide: async (request: { filePath: string; layout?: string; title?: string; text?: string }) => ipcRenderer.invoke('officecli:addSlide', request) as Promise<{ success: boolean; data?: unknown; error?: string }>,
+  officeCliAddShapeNoOverlap: async (request: { filePath: string; slidePath?: string; text?: string; x?: string; y?: string; w?: string; h?: string }) => ipcRenderer.invoke('officecli:addShapeNoOverlap', request) as Promise<{ success: boolean; data?: unknown; error?: string }>,
+  officeCliSetTheme: async (request: { filePath: string; props: Record<string, string> }) => ipcRenderer.invoke('officecli:setTheme', request) as Promise<{ success: boolean; data?: unknown; error?: string }>,
+  officeCliAiEdit: async (request: { instruction: string; docType?: string }) => ipcRenderer.invoke('officecli:aiEdit', request) as Promise<{ ok: boolean; plan: Array<Record<string, unknown>>; error?: string }>,
+  flashcardList: async () => ipcRenderer.invoke('flashcard:list') as Promise<{ cards: Array<Record<string, unknown>> }>,
+  flashcardSave: async (card: Record<string, unknown>) => ipcRenderer.invoke('flashcard:save', card) as Promise<{ ok: boolean }>,
+  flashcardDelete: async (id: string) => ipcRenderer.invoke('flashcard:delete', id) as Promise<{ ok: boolean }>,
   setSettings: async (config: unknown) => {
     const request = decodeSettingsUpdateRequest(config);
     if (!request) return createSettingsMutationFailure('secure_setup_required');

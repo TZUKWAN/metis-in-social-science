@@ -192,4 +192,19 @@ export const METIS_MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    version: 3,
+    description: 'METIS-F12: add project_id column to memory for project-scoped memories',
+    up: (db) => {
+      // Additive and idempotent: only alter when the table and column exist state
+      // allow it. Fresh databases create memory with project_id via SCHEMA_SQL.
+      const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='memory'").all()) as Array<{ name: string }>;
+      if (tables.length === 0) return;
+      const cols = (db.prepare('PRAGMA table_info(memory)').all() as Array<{ name: string }>).map((row) => row.name);
+      if (!cols.includes('project_id')) {
+        db.exec('ALTER TABLE memory ADD COLUMN project_id TEXT');
+      }
+      db.exec('CREATE INDEX IF NOT EXISTS idx_memory_project ON memory(project_id)');
+    },
+  },
 ];

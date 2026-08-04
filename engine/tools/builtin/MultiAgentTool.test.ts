@@ -5,13 +5,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { MULTI_AGENT_TOOL, createMultiAgentHandler } from './MultiAgentTool.js';
 
-// Mock the orchestrator so no real agent loop/provider is needed.
+// Mock the orchestrator so no real agent loop/provider is needed, while
+// keeping the real exports (e.g. DEFAULT_AGENT_TEMPLATES) intact.
 const executeMock = vi.fn();
-vi.mock('../../multiagent/MultiAgentOrchestrator.js', () => ({
-  MultiAgentOrchestrator: class {
-    execute(...args: never[]) { return executeMock(...args); }
-  },
-}));
+vi.mock('../../multiagent/MultiAgentOrchestrator.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../multiagent/MultiAgentOrchestrator.js')>();
+  return {
+    ...actual,
+    MultiAgentOrchestrator: class {
+      execute(...args: never[]) { return executeMock(...args); }
+    },
+  };
+});
 
 describe('multi_agent_orchestrate tool', () => {
   beforeEach(() => {

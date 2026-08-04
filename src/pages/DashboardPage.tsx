@@ -15,6 +15,8 @@ import {
 import { useMetisStore, type ReadStatus } from '../store';
 import { useTranslation } from '../i18n';
 import type { Page } from '../store';
+import { useResearchWorkspaceStore } from '../research/researchWorkspaceStore';
+import { SafeMarkdown } from '../presentation/SafeMarkdown';
 import './DashboardPage.css';
 
 const CHART_VAR_NAMES = ['--chart-1', '--chart-2', '--chart-3', '--chart-4', '--chart-5', '--chart-6', '--chart-7', '--chart-8'];
@@ -119,9 +121,80 @@ function ListItem({ markerColor, text, meta, onClick, ariaLabel }: {
 
 export default function DashboardPage({ onNavigate }: { onNavigate?: (page: Page) => void }) {
   const { papers, notes, experiments, setSelectedPaperId, selectNote, setExperimentSearchQuery, setPaperFilter, weeklyReadingGoal } = useMetisStore();
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const chartColors = useChartColors();
   const [now] = useState(() => Date.now());
+  // AI reading report over the papers read this week (main-process one-shot).
+  const [reportResult, setReportResult] = useState<string | null>(null);
+  const [reportLoading, setReportLoading] = useState(false);
+  // Project artifact stats for the overview card (research repository).
+  const [artifactStats, setArtifactStats] = useState<{ total: number; pending: number; verified: number } | null>(null);
+  const activeProjectId = useResearchWorkspaceStore((state) => state.activeProjectId);
+
+  useEffect(() => {
+    if (!activeProjectId || !window.metis?.artifactListByProject) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- clear stats when no project is active
+      setArtifactStats(null);
+      return;
+    }
+    let cancelled = false;
+    void window.metis.artifactListByProject(activeProjectId).then((result) => {
+      if (cancelled) return;
+      const items = (result.items ?? []) as Array<{ reviewStatus?: string }>;
+      setArtifactStats({
+        total: items.length,
+        pending: items.filter((i) => i.reviewStatus === 'pending').length,
+        verified: items.filter((i) => i.reviewStatus === 'verified').length,
+      });
+    }).catch(() => { /* stats card is best-effort */ });
+    return () => { cancelled = true; };
+  }, [activeProjectId]);
+
+  /** Generate a reading report for the papers read this week. */
+  const runReadingReport = async () => {
+    const metis = window.metis;
+    if (reportLoading || !metis?.aiSynthesis) return;
+    const weekPapers = papers.filter((p) => !p.archived && p.readStatus === 'read' && p.readAt && p.readAt >= now - 7 * 86400000);
+    if (weekPapers.length === 0) return;
+    setReportLoading(true);
+    setReportResult(null);
+    try {
+      const result = await metis.aiSynthesis({
+        mode: 'report',
+        papers: weekPapers.map((p) => ({
+          title: p.title,
+          authors: p.authors,
+          year: p.year,
+          venue: p.venue,
+          abstract: p.abstract ?? '',
+        })),
+      });
+      if (result.ok && result.text) {
+        setReportResult(result.text);
+      }
+    } catch { /* report generation failure leaves the dashboard untouched */ }
+    finally {
+      setReportLoading(false);
+    }
+  };
+
+  /** Save the reading report as a literature note linked to this week's papers. */
+  const saveReportAsNote = async () => {
+    if (!reportResult) return;
+    const weekPapers = papers.filter((p) => !p.archived && p.readStatus === 'read' && p.readAt && p.readAt >= now - 7 * 86400000);
+    const noteId = `note_report_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    await useMetisStore.getState().addNote({
+      id: noteId,
+      title: t('dashboard.readingReportNoteTitle'),
+      content: reportResult,
+      tags: [t('dashboard.readingReportNoteTitle')],
+      linkedPaperIds: weekPapers.map((p) => p.id),
+      linkedNoteIds: [],
+      starred: false,
+      updatedAt: Date.now(),
+    });
+    setReportResult(null);
+  };
 
   const openPaper = useCallback((paperId: string) => {
     setSelectedPaperId(paperId); onNavigate?.('papers');
@@ -271,7 +344,36 @@ export default function DashboardPage({ onNavigate }: { onNavigate?: (page: Page
       <div className="dash-page-header">
         <h2>{t('dashboard.pageTitle')}</h2>
         {!isEmpty && <p>{t('dashboard.statPapersNeedAttention').replace('{count}', String(stats.unreadPapers))} &middot; {stats.papersReadThisWeek}/{weeklyReadingGoal} {t('dashboard.statReadingProgress', { current: stats.papersReadThisWeek, goal: weeklyReadingGoal })}</p>}
+        {stats.papersReadThisWeek > 0 && (
+          <button
+            className="btn-sm btn-secondary"
+            data-testid="dashboard-reading-report"
+            disabled={reportLoading}
+            onClick={() => void runReadingReport()}
+            style={{ marginTop: 4 }}
+          >
+            {reportLoading ? t('dashboard.readingReportLoading') : t('dashboard.readingReport')}
+          </button>
+        )}
       </div>
+
+      {/* AI reading report result */}
+      {reportResult && (
+        <div className="modal-overlay" onClick={() => setReportResult(null)}>
+          <div className="modal modal-wide" data-testid="reading-report-modal" onClick={(e) => e.stopPropagation()}>
+            <h3>{t('dashboard.readingReportTitle')}</h3>
+            <div style={{ maxHeight: '55vh', overflowY: 'auto', marginTop: 12, fontSize: 13, lineHeight: 1.7 }}>
+              <SafeMarkdown content={reportResult} uiMode="normal" locale={locale} />
+            </div>
+            <div className="modal-actions" style={{ marginTop: 16 }}>
+              <button className="btn-primary" data-testid="reading-report-save-note" onClick={() => void saveReportAsNote()}>
+                {t('dashboard.readingReportSaveNote')}
+              </button>
+              <button className="btn-secondary" onClick={() => setReportResult(null)}>{t('common.close')}</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {isEmpty && (
         <div className="dash-empty">
@@ -336,6 +438,13 @@ export default function DashboardPage({ onNavigate }: { onNavigate?: (page: Page
             <SecondaryStat label={t('dashboard.statUpcomingDeadlines')} value={stats.upcomingDeadlines} onClick={() => goPapers({ deadlineStatus: 'upcoming' })} />
             <SecondaryStat label={t('dashboard.statAvgReadingProgress')} value={`${stats.avgReadingProgress}%`} onClick={() => goPapers()} />
             <SecondaryStat label={t('dashboard.statArchivedPapers')} value={stats.archivedPapers} onClick={() => goPapers({ archived: true })} />
+            {artifactStats && (
+              <SecondaryStat
+                label={t('dashboard.statArtifacts')}
+                value={`${artifactStats.total}（${t('dashboard.statArtifactsPending', { count: artifactStats.pending })}）`}
+                onClick={() => onNavigate?.('artifacts')}
+              />
+            )}
           </div>
 
           {/* ── Deadline Alerts ── */}

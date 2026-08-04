@@ -3,7 +3,20 @@
  */
 
 import { fireEvent, render, waitFor, act } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi, beforeAll } from 'vitest';
+import { useMetisStore } from '../../src/store';
+import { researchWorkspaceStore } from '../../src/research/researchWorkspaceStore';
+
+beforeAll(() => {
+  // Highlight rects recompute on text-layer layout via ResizeObserver.
+  if (typeof globalThis.ResizeObserver === 'undefined') {
+    globalThis.ResizeObserver = class ResizeObserver {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    } as unknown as typeof globalThis.ResizeObserver;
+  }
+});
 
 // A reusable pdfjs mock: one page whose text layer contains two spans so the
 // selection-capture logic can walk text nodes and derive page-local offsets.
@@ -211,5 +224,108 @@ describe('PdfReaderPage annotation capture and persistence', () => {
     // child rects are derived from the workspace snapshot (see the persistence
     // test above for the end-to-end path).
     expect(container.querySelector('.pdf-highlight-layer')).toBeTruthy();
+  });
+});
+
+// ─── Stale annotation badge ────────────────────────────────────
+// A highlight saved against an older source version hash must be flagged.
+// The reader loads PDFs from the library so the paper binds to a research
+// source; the workspace snapshot carries the source and its evidence rows.
+describe('PdfReaderPage stale highlight detection', () => {
+  const fixturePaper = {
+    id: 'paper-1',
+    title: 'fixture paper',
+    authors: [],
+    year: 2024,
+    venue: '',
+    abstract: '',
+    tags: [],
+    notes: '',
+    pdfCapability: {
+      capabilityId: 'fc_pdf_0000000000000001',
+      kind: 'file',
+      mime: 'application/pdf',
+      displayName: 'fixture.pdf',
+      operations: ['file'],
+      issuedAt: 0,
+      expiresAt: 9999999999999,
+    },
+  };
+
+  /** Render the reader and open the library paper bound to a workspace
+   * snapshot whose source/evidence hashes are (sourceHash, evidenceHash). */
+  async function renderWithSnapshot(sourceHash: string, evidenceHash: string | null) {
+    researchWorkspaceStore.setState({
+      activeProjectId: 'project-pdf',
+      snapshot: {
+        project: { id: 'project-pdf', name: 'PDF project' },
+        sources: [{
+          id: 'paper-1',
+          deletedAt: null,
+          sourceVersionHash: sourceHash,
+        }],
+        evidence: [{
+          id: 'evidence-1',
+          sourceId: 'paper-1',
+          deletedAt: null,
+          anchorType: 'region',
+          anchorStart: 1000,
+          anchorEnd: 5000,
+          pageNumber: 1,
+          snippet: 'region snippet',
+          sourceVersionHash: evidenceHash,
+        }],
+        noteCodes: [],
+      } as unknown as NonNullable<ReturnType<typeof researchWorkspaceStore.getState>['snapshot']>,
+    });
+    window.metis = {
+      ...window.metis,
+      useFileCapability: vi.fn().mockResolvedValue({
+        success: true,
+        operation: 'read',
+        data: new TextEncoder().encode('%PDF fixture').buffer,
+      }),
+    } as unknown as typeof window.metis;
+
+    const PdfReaderPage = await loadPage();
+    const { container } = render(<PdfReaderPage />);
+    // The library card is the innermost div carrying the title text (the root
+    // div also contains it, so scan deepest-first).
+    const libraryCard = Array.from(container.querySelectorAll('div'))
+      .reverse()
+      .find((el) => el.textContent?.includes('fixture paper'));
+    expect(libraryCard).toBeTruthy();
+    await act(async () => {
+      libraryCard!.click();
+    });
+    await waitFor(() => expect(renderPageMock).toHaveBeenCalledTimes(1));
+    return container;
+  }
+
+  beforeEach(() => {
+    renderPageMock.mockClear();
+    getDocumentMock.mockClear();
+    researchWorkspaceStore.setState({ activeProjectId: null });
+    window.metis = {} as unknown as typeof window.metis;
+  });
+
+  it('flags a highlight saved against an older source hash as stale', async () => {
+    useMetisStore.setState({ papers: [fixturePaper as never] });
+
+    const container = await renderWithSnapshot('v2', 'v1');
+    // The evidence hash (v1) differs from the source hash (v2) → stale rect.
+    await waitFor(() => {
+      expect(container.querySelector('.pdf-highlight-rect--stale')).toBeTruthy();
+    });
+  });
+
+  it('does not flag a highlight whose hash matches the source', async () => {
+    useMetisStore.setState({ papers: [fixturePaper as never] });
+
+    const container = await renderWithSnapshot('v2', 'v2');
+    await waitFor(() => {
+      expect(container.querySelector('.pdf-highlight-rect')).toBeTruthy();
+    });
+    expect(container.querySelector('.pdf-highlight-rect--stale')).toBeNull();
   });
 });

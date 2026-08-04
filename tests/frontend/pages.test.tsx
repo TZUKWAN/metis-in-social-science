@@ -375,7 +375,7 @@ describe('PapersPage', () => {
     render(<PapersPage />);
     fireEvent.click(screen.getByText('+ 添加'));
     expect(screen.getByText('导入论文')).toBeDefined();
-    expect(screen.getByPlaceholderText('粘贴 BibTeX、DOI、arXiv ID 或论文元数据...')).toBeDefined();
+    expect(screen.getByPlaceholderText('粘贴 BibTeX、RIS、DOI、arXiv ID 或论文元数据...')).toBeDefined();
   });
 
   it('should import paper when text is entered and Import clicked', async () => {
@@ -383,7 +383,7 @@ describe('PapersPage', () => {
     const { default: PapersPage } = await import('../../src/pages/PapersPage');
     render(<PapersPage />);
     fireEvent.click(screen.getByText('+ 添加'));
-    const textarea = screen.getByPlaceholderText('粘贴 BibTeX、DOI、arXiv ID 或论文元数据...');
+    const textarea = screen.getByPlaceholderText('粘贴 BibTeX、RIS、DOI、arXiv ID 或论文元数据...');
     fireEvent.change(textarea, { target: { value: 'New paper about transformers' } });
     await act(async () => {
       fireEvent.click(screen.getByText('导入'));
@@ -398,7 +398,7 @@ describe('PapersPage', () => {
     const { default: PapersPage } = await import('../../src/pages/PapersPage');
     render(<PapersPage />);
     fireEvent.click(screen.getByText('+ 添加'));
-    const textarea = screen.getByPlaceholderText('粘贴 BibTeX、DOI、arXiv ID 或论文元数据...');
+    const textarea = screen.getByPlaceholderText('粘贴 BibTeX、RIS、DOI、arXiv ID 或论文元数据...');
     const bibtex = `@article{dup,\n  title={Duplicate Merge Title},\n  author={Alice Smith},\n  year={2024}\n}`;
     fireEvent.change(textarea, { target: { value: bibtex } });
     await act(async () => {
@@ -434,7 +434,7 @@ describe('PapersPage', () => {
       const { default: PapersPage } = await import('../../src/pages/PapersPage');
       render(<PapersPage />);
       fireEvent.click(screen.getByText('+ 添加'));
-      const textarea = screen.getByPlaceholderText('粘贴 BibTeX、DOI、arXiv ID 或论文元数据...');
+      const textarea = screen.getByPlaceholderText('粘贴 BibTeX、RIS、DOI、arXiv ID 或论文元数据...');
       fireEvent.change(textarea, { target: { value: '1706.03762' } });
       await act(async () => {
         fireEvent.click(screen.getByText('导入'));
@@ -471,7 +471,7 @@ describe('PapersPage', () => {
       const { default: PapersPage } = await import('../../src/pages/PapersPage');
       render(<PapersPage />);
       fireEvent.click(screen.getByText('+ 添加'));
-      const textarea = screen.getByPlaceholderText('粘贴 BibTeX、DOI、arXiv ID 或论文元数据...');
+      const textarea = screen.getByPlaceholderText('粘贴 BibTeX、RIS、DOI、arXiv ID 或论文元数据...');
       fireEvent.change(textarea, { target: { value: 'https://arxiv.org/abs/2401.12345' } });
       await act(async () => {
         fireEvent.click(screen.getByText('导入'));
@@ -514,7 +514,7 @@ describe('PapersPage', () => {
       const { default: PapersPage } = await import('../../src/pages/PapersPage');
       render(<PapersPage />);
       fireEvent.click(screen.getByText('+ 添加'));
-      const textarea = screen.getByPlaceholderText('粘贴 BibTeX、DOI、arXiv ID 或论文元数据...');
+      const textarea = screen.getByPlaceholderText('粘贴 BibTeX、RIS、DOI、arXiv ID 或论文元数据...');
       fireEvent.change(textarea, { target: { value: '1706.03762' } });
       await act(async () => {
         fireEvent.click(screen.getByText('导入'));

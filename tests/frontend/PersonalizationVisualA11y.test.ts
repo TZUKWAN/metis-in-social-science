@@ -159,7 +159,8 @@ describe('Personalization visual and accessibility contracts', () => {
     expect(app).toContain('aria-label={t(item.labelKey)}');
     expect(app).toContain('title={t(item.labelKey)}');
     expect(app).toContain('<span className="nav-icon" aria-hidden="true">{item.icon}</span>');
-    expect(app).toContain('aria-label={locale === \'zh\' ? \'个性化\' : \'Personalization\'}');
+    expect(app).toContain('aria-label={t(\'personalization.title\')}');
+    expect(app).toContain('title={t(\'personalization.title\')}');
     expect(app).toContain('<svg aria-hidden="true"');
   });
 

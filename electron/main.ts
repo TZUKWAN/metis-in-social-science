@@ -17,10 +17,11 @@ import {
   safeStorage,
   screen,
   shell,
+  protocol,
   type IpcMainInvokeEvent,
 } from 'electron';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 import { spawnSync, exec } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -41,6 +42,13 @@ const __dirname = path.dirname(__filename);
 import * as pty from 'node-pty';
 import { PersistenceStore, setSharedStore } from '../engine/persistence/PersistenceStore.js';
 import { BackupService } from './BackupService.js';
+import { WeChatBotService } from './WeChatBotService.js';
+import { IlinkClient } from '../engine/im/IlinkClient.js';
+import {
+  PROJECT_ARCHIVE_EXT,
+  exportProjectArchive,
+  importProjectArchive,
+} from '../engine/export/ProjectArchiveExporter.js';
 import { UpdateCheckerService } from './UpdateCheckerService.js';
 import { AutoUpdaterService } from './AutoUpdaterService.js';
 import { ZoteroImportService } from './ZoteroImportService.js';
@@ -59,6 +67,7 @@ import { ApprovalStore } from '../engine/hitl/HITLCore.js';
 import { BehaviorRegistry } from '../engine/behavior/BehaviorRegistry.js';
 import {
   decryptProviderConfig,
+  getSecureStorage,
   initSecureStorage,
 } from '../engine/core/SecureStorage.js';
 import type { ProviderConfig } from '../engine/core/types.js';
@@ -74,6 +83,7 @@ import type { WorkflowDefinition, WorkflowHooks } from '../engine/workflow/types
 import { MCPManager } from '../engine/mcp/MCPManager.js';
 import { SkillRegistry, registerDefaultSkills } from '../engine/skills/SkillRegistry.js';
 import { PersonalizationRepository } from '../engine/personalization/PersonalizationRepository.js';
+import { buildPptBuiltinDefinitions } from '../engine/personalization/PptBuiltinDefinitions.js';
 import { isFundingTemplateBuiltinDraftReady } from '../engine/personalization/FundingTemplateBuiltinDraft.js';
 import { PersonalizationRuntimeService } from './PersonalizationRuntimeService.js';
 import { projectMetisRulesFromWorkspace } from './ProjectMetisRulesBridge.js';
@@ -345,6 +355,8 @@ import {
   decodeEvalRunResult,
 } from '../engine/runtime/EvalRuntimeContract.js';
 import { createExperimentScriptAdapter, type ExperimentScriptAdapter } from './ExperimentScriptAdapter.js';
+import { getOfficeCliService } from './OfficeCliService.js';
+import { findNonOverlappingPosition } from './OfficeCliService.js';
 import {
   decodeExperimentDelete,
   decodeExperimentList,
@@ -371,6 +383,8 @@ let lastUpdateEvent: { type: string; version?: string; percent?: number; message
 let researchRepository: ResearchRepository | null = null;
 let researchRuntime: ResearchRuntimeService | null = null;
 let researchMedia: ResearchMediaService | null = null;
+let weChatBotService: WeChatBotService | null = null;
+let startupReady = false;
 let firstRunSetup: FirstRunSetupService | null = null;
 let runtimeGeneration = 0;
 let agentLoop: AgentLoop | null = null;
@@ -449,10 +463,22 @@ const activeTerminals = new Map<string, ActiveTerminalSession>();
 let requestCounter = 0;
 
 const DATA_DIR = path.join(app.getPath('userData'), 'metis-data');
+
+// ── Custom app scheme for the production renderer ─────────────
+// file:// URLs cannot load ESM bundles (Chromium blocks module scripts with a
+// null origin + crossorigin attribute), so production serves dist/ over a
+// privileged `metis://` scheme. Must be registered before app ready.
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'metis-app',
+    privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true },
+  },
+]);
 process.env.METIS_DATA_DIR = DATA_DIR;
 
 const PAPERS_DIR = path.join(DATA_DIR, 'papers');
 const IMPORTS_DIR = path.join(DATA_DIR, 'imports');
+const EXPORTS_DIR = path.join(DATA_DIR, 'exports');
 const RESEARCH_MEDIA_DIR = path.join(DATA_DIR, 'research-media');
 const TERMINAL_WORKSPACE_DIR = path.join(DATA_DIR, 'terminal-workspace');
 const DB_PATH = path.join(DATA_DIR, 'metis.db');
@@ -462,7 +488,7 @@ const THEME_PATH = path.join(DATA_DIR, 'theme.txt');
 const layoutAcceptanceToken = extractLayoutAcceptanceToken(process.argv);
 export const layoutAcceptanceEntryPath = path.resolve(__dirname, '../../dist/index.html');
 const rendererEntryUrl = process.env.VITE_DEV_SERVER_URL
-  ?? pathToFileURL(layoutAcceptanceEntryPath).toString();
+  ?? 'metis-app://renderer/index.html';
 
 export function getRendererEntryUrl(): string {
   return rendererEntryUrl;
@@ -855,6 +881,7 @@ function createProvider(config: ProviderConfig): OpenAICompatProvider {
     timeout: config.timeout,
     maxRetries: config.maxRetries,
     retryBackoffSeconds: config.retryBackoffSeconds,
+    ...(config.vision ? { vision: true } : {}),
   });
 }
 
@@ -867,7 +894,7 @@ function createAgentLoop(
   const toolRegistry = registry ?? new ToolRegistry();
   const hooks = new HookBus();
   const dispatcher = new ToolDispatcher(toolRegistry, hooks);
-  registerBuiltinTools(toolRegistry, dispatcher);
+  registerBuiltinTools(toolRegistry, dispatcher, { store: store ?? undefined });
   fundingTemplateTools?.register(toolRegistry, dispatcher);
   for (const registration of additionalRegistrations) {
     toolRegistry.register(registration.spec);
@@ -1017,30 +1044,35 @@ function loadConfig(): ProviderConfig | null {
 
 const SETTINGS_PATH = path.join(DATA_DIR, 'settings.json');
 
-interface PersistedSettings { theme: string; weeklyReadingGoal: number; }
+interface PersistedSettings { theme: string; weeklyReadingGoal: number; providerVision: boolean; }
 
 function loadPersistedSettings(): PersistedSettings {
   try {
     if (fs.existsSync(SETTINGS_PATH)) {
       const raw = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf-8'));
-      return { theme: raw.theme || 'light', weeklyReadingGoal: Number(raw.weeklyReadingGoal) || 5 };
+      return {
+        theme: raw.theme || 'light',
+        weeklyReadingGoal: Number(raw.weeklyReadingGoal) || 5,
+        providerVision: raw.providerVision === true,
+      };
     }
   } catch { /* ignore */ }
   // Backward compat: read old theme.txt
   try {
     if (fs.existsSync(THEME_PATH)) {
-      return { theme: fs.readFileSync(THEME_PATH, 'utf-8').trim() || 'light', weeklyReadingGoal: 5 };
+      return { theme: fs.readFileSync(THEME_PATH, 'utf-8').trim() || 'light', weeklyReadingGoal: 5, providerVision: false };
     }
   } catch { /* ignore */ }
-  return { theme: 'light', weeklyReadingGoal: 5 };
+  return { theme: 'light', weeklyReadingGoal: 5, providerVision: false };
 }
 
 function loadTheme(): string { return loadPersistedSettings().theme; }
 function loadWeeklyReadingGoal(): number { return loadPersistedSettings().weeklyReadingGoal; }
+function loadProviderVision(): boolean { return loadPersistedSettings().providerVision; }
 
-function saveSettings(theme: string, weeklyReadingGoal: number): boolean {
+function saveSettings(theme: string, weeklyReadingGoal: number, providerVision: boolean): boolean {
   try {
-    fs.writeFileSync(SETTINGS_PATH, JSON.stringify({ theme, weeklyReadingGoal }), 'utf-8');
+    fs.writeFileSync(SETTINGS_PATH, JSON.stringify({ theme, weeklyReadingGoal, providerVision }), 'utf-8');
     return true;
   } catch (err) {
     console.warn('Failed to save settings:', err);
@@ -1061,6 +1093,8 @@ function initProviderAndAgent(): void {
     return;
   }
   currentConfig = config;
+  // METIS-WX-2: multimodal support is a user-declared setting merged at init.
+  currentConfig.vision = loadProviderVision();
   provider = createProvider(config);
   currentTheme = loadTheme();
   console.log('[Main] initProviderAndAgent: Config loaded — baseUrl:', config.baseUrl, 'model:', config.model, 'store:', !!store);
@@ -1138,12 +1172,12 @@ function createWindow(): void {
   // dist files are used after rebuilds (Electron caches file:// URLs).
   mainWindow.webContents.session.clearCache().catch(() => {});
 
-  // In dev, load from Vite dev server; in prod, load built files
+  // In dev, load from Vite dev server; in prod, serve dist/ over metis-app://
   if (process.env.VITE_DEV_SERVER_URL) {
     mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
     mainWindow.webContents.openDevTools();
   } else {
-    mainWindow.loadFile(path.join(__dirname, '../../dist/index.html'));
+    mainWindow.loadURL('metis-app://renderer/index.html');
   }
 
   mainWindow.on('closed', () => {
@@ -1232,11 +1266,90 @@ async function compileLatexLocal(source: string, bib?: string): Promise<{
 
 // ─── IPC Handlers ─────────────────────────────────────────────
 
+/**
+ * Lazily construct the WeChat bot service (METIS-WX-1). Module-level so both
+ * setupIPC() handlers and the startup resume path can reach it.
+ */
+function ensureWeChatBot(): WeChatBotService | null {
+  if (weChatBotService) return weChatBotService;
+  if (!store) return null;
+  weChatBotService = new WeChatBotService({
+    client: new IlinkClient({}),
+    store: getSecureStorage(),
+    statePath: path.join(DATA_DIR, 'bot-state.json'),
+    mediaDir: path.join(DATA_DIR, 'wechat-media'),
+    runTurn: async ({ sessionId, userText, projectId, signal, attachments, images }) => {
+      if (!store || !agentLoop) return { ok: false, error: 'Metis 服务未就绪' };
+      try {
+        const history = store.getMessages(sessionId).map((m) => ({
+          role: m.role,
+          content: m.content,
+          ...(m.toolCalls ? { toolCalls: m.toolCalls } : {}),
+          ...(m.toolCallId ? { toolCallId: m.toolCallId } : {}),
+          ...(m.name ? { name: m.name } : {}),
+        }));
+        // Memory injection (F12 project isolation applies when a project is bound).
+        let skillPrompt: string | undefined;
+        try {
+          const memoryContext = memoryManager?.buildMemoryContext(projectId ?? undefined);
+          if (memoryContext && memoryContext.trim()) skillPrompt = memoryContext;
+        } catch { /* memory must never break a turn */ }
+        // WeChat media attachments (METIS-WX-2): point the agent at local files
+        // so its file tools (read_pdf, etc.) can analyze them.
+        if (attachments && attachments.length > 0) {
+          const attachmentBlock = [
+            '用户通过微信发送了以下附件（本地文件，可直接用工具读取分析）：',
+            ...attachments.map((a) => `- ${a.name} (${a.mime}) → ${a.path}`),
+          ].join('\n');
+          skillPrompt = [attachmentBlock, skillPrompt].filter(Boolean).join('\n\n');
+        }
+        const response = await runPersistedChatTurn({
+          agentLoop,
+          store,
+          sessionId,
+          messages: [
+            ...history,
+            {
+              role: 'user' as const,
+              content: userText,
+              ...(images && images.length > 0 ? { images } : {}),
+            },
+          ],
+          requestId: `wx-${Date.now()}-${Math.floor(Math.random() * 1e6)}`.slice(0, 128),
+          taskContractHash: '',
+          promptStackHash: '',
+          skillPrompt,
+          projectId,
+          signal,
+          options: { mode: 'send' },
+        });
+        if (response.status === 'completed' && response.answer) {
+          return { ok: true, answer: response.answer };
+        }
+        return {
+          ok: false,
+          error: response.diagnostics[0]?.message ?? `agent_${response.status}`,
+        };
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
+    },
+    listProjects: () => (researchRepository?.listProjects() ?? []).map((p) => ({ id: p.id, title: p.title })),
+    getModelName: () => currentConfig?.model ?? 'unknown',
+    supportsVision: () => currentConfig?.vision === true,
+  });
+  return weChatBotService;
+}
+
 function setupIPC(): void {
   let evalSuiteRunning = false;
 
   // ── Store ───────────────────────────────────────────────
   ipcMain.handle('store:ready', () => store !== null);
+
+  // METIS-OPT-4: the renderer waits for full startup before hydrating, so the
+  // window can appear before heavy initialization finishes.
+  ipcMain.handle('startup:status', () => ({ ready: startupReady, storeReady: store !== null }));
 
   ipcMain.handle('setup:probe', async (event, rawRequest: unknown) => {
     try {
@@ -1777,6 +1890,84 @@ function setupIPC(): void {
     }
   });
 
+  // ── Project artifact management (research_artifacts, project-scoped) ──
+  ipcMain.handle('artifact:listByProject', (event, rawProjectId: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const projectId = typeof rawProjectId === 'string' ? rawProjectId : '';
+      if (!projectId || !researchRepository) return { items: [] };
+      const repository = researchRepository;
+      const items = repository.listArtifacts(projectId).map((artifact) => {
+        const current = repository.getArtifactVersion(artifact.id);
+        const manifest = (current?.manifest ?? {}) as Record<string, unknown>;
+        return {
+          id: artifact.id,
+          projectId: artifact.projectId,
+          title: artifact.title,
+          artifactType: artifact.artifactType,
+          reviewStatus: artifact.reviewStatus,
+          version: artifact.version,
+          createdAt: artifact.createdAt,
+          updatedAt: artifact.updatedAt,
+          citedSourceIds: Array.isArray(manifest.citedSourceIds) ? manifest.citedSourceIds : [],
+          reviewTrail: Array.isArray(manifest.reviewTrail) ? manifest.reviewTrail : [],
+        };
+      });
+      return { items };
+    } catch {
+      return { items: [] };
+    }
+  });
+
+  ipcMain.handle('artifact:updateReviewStatus', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = rawRequest as { artifactId?: unknown; toStatus?: unknown; reason?: unknown };
+      const artifactId = typeof request?.artifactId === 'string' ? request.artifactId : '';
+      const toStatus = typeof request?.toStatus === 'string' ? request.toStatus : '';
+      const reason = typeof request?.reason === 'string' ? request.reason : '';
+      const allowed = new Set(['draft', 'pending', 'partial', 'verified', 'stale']);
+      if (!artifactId || !allowed.has(toStatus) || !researchRepository) {
+        return { ok: false, error: 'invalid_request' };
+      }
+      const updated = researchRepository.updateArtifactReviewStatus(artifactId, toStatus, reason || 'manual');
+      return updated ? { ok: true } : { ok: false, error: 'not_found' };
+    } catch {
+      return { ok: false, error: 'update_failed' };
+    }
+  });
+
+  ipcMain.handle('artifact:listVersions', (event, rawArtifactId: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const artifactId = typeof rawArtifactId === 'string' ? rawArtifactId : '';
+      if (!artifactId || !researchRepository) return { versions: [] };
+      const versions = researchRepository.listArtifactVersions(artifactId).map((record) => ({
+        version: record.version,
+        createdAt: record.createdAt,
+        createdBy: record.createdBy,
+        contentPreview: typeof record.content === 'string' ? record.content.slice(0, 2000) : '',
+      }));
+      return { versions };
+    } catch {
+      return { versions: [] };
+    }
+  });
+
+  ipcMain.handle('artifact:restoreVersion', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = rawRequest as { artifactId?: unknown; version?: unknown };
+      const artifactId = typeof request?.artifactId === 'string' ? request.artifactId : '';
+      const version = typeof request?.version === 'number' ? request.version : 0;
+      if (!artifactId || version < 1 || !researchRepository) return { ok: false, error: 'invalid_request' };
+      const restored = researchRepository.restoreArtifactVersion(artifactId, version);
+      return restored ? { ok: true, version: restored.version } : { ok: false, error: 'not_found' };
+    } catch {
+      return { ok: false, error: 'restore_failed' };
+    }
+  });
+
   // ── Messages ────────────────────────────────────────────
   ipcMain.handle('messages:get', (event, rawSessionId: unknown) => {
     try {
@@ -2273,6 +2464,7 @@ function setupIPC(): void {
         needsReauth: false,
         theme: currentTheme,
         weeklyReadingGoal: loadWeeklyReadingGoal(),
+        providerVision: loadProviderVision(),
       });
     }
     if (!currentConfig) {
@@ -2282,6 +2474,7 @@ function setupIPC(): void {
         needsReauth: false,
         theme: currentTheme,
         weeklyReadingGoal: loadWeeklyReadingGoal(),
+        providerVision: loadProviderVision(),
       });
     }
     return decodeSettingsView({
@@ -2292,6 +2485,7 @@ function setupIPC(): void {
       needsReauth: !currentConfig.apiKey,
       theme: currentTheme,
       weeklyReadingGoal: loadWeeklyReadingGoal(),
+      providerVision: loadProviderVision(),
     });
   });
 
@@ -2356,6 +2550,460 @@ function setupIPC(): void {
     }
   });
 
+  // ── Complete project archive (METIS-F10) ───────────────────
+  ipcMain.handle('project:export', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = rawRequest as { projectId?: string; destPath?: string };
+      if (!store || !researchRepository || !request?.projectId) {
+        return { ok: false, error: 'project_export_unavailable' };
+      }
+      fs.mkdirSync(EXPORTS_DIR, { recursive: true });
+      const destPath = request.destPath
+        ?? path.join(EXPORTS_DIR, `${request.projectId}-${new Date().toISOString().replace(/[:.]/g, '-')}${PROJECT_ARCHIVE_EXT}`);
+      return await exportProjectArchive({
+        db: store.raw,
+        projectId: request.projectId,
+        destPath,
+        appVersion: app.getVersion(),
+      });
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  });
+
+  ipcMain.handle('project:import', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = rawRequest as { archivePath?: string; projectId?: string; overwrite?: boolean };
+      if (!store || !request?.archivePath) return { ok: false, error: 'archive_path_required' };
+      fs.mkdirSync(IMPORTS_DIR, { recursive: true });
+      return await importProjectArchive({
+        db: store.raw,
+        archivePath: request.archivePath,
+        projectId: request.projectId,
+        overwrite: request.overwrite,
+        filesDir: IMPORTS_DIR,
+      });
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  });
+
+  ipcMain.handle('project:list', (event) => {
+    try {
+      requireRendererMainFrame(event);
+      if (!researchRepository) return { success: true, projects: [] };
+      const projects = researchRepository.listProjects().map((p) => ({
+        id: p.id,
+        title: p.title,
+        updatedAt: p.updatedAt,
+        archivedAt: p.archivedAt,
+      }));
+      return { success: true, projects };
+    } catch {
+      return { success: true, projects: [] };
+    }
+  });
+
+  ipcMain.handle('project:pickArchive', async (event) => {
+    try {
+      const win = requireRendererMainFrame(event);
+      const selected = await dialog.showOpenDialog(win, {
+        properties: ['openFile'],
+        filters: [{ name: 'Metis Project Archive', extensions: ['metisproj'] }],
+      });
+      return { canceled: selected.canceled, path: selected.canceled ? undefined : selected.filePaths[0] };
+    } catch {
+      return { canceled: true, path: undefined };
+    }
+  });
+
+  // ── WeChat Bot (METIS-WX-1, iLink protocol — same as ZCode) ──
+  ipcMain.handle('wechat:getStatus', (event) => {
+    try {
+      requireRendererMainFrame(event);
+      const service = ensureWeChatBot();
+      return service ? { ok: true, status: service.getStatus() } : { ok: false, error: 'wechat_unavailable' };
+    } catch {
+      return { ok: false, error: 'unauthorized_renderer' };
+    }
+  });
+
+  ipcMain.handle('wechat:beginLogin', async (event) => {
+    try {
+      requireRendererMainFrame(event);
+      const service = ensureWeChatBot();
+      if (!service) return { ok: false, error: 'wechat_unavailable' };
+      return await service.beginLogin();
+    } catch {
+      return { ok: false, error: 'unauthorized_renderer' };
+    }
+  });
+
+  ipcMain.handle('wechat:pollLogin', async (event) => {
+    try {
+      requireRendererMainFrame(event);
+      const service = ensureWeChatBot();
+      if (!service) return { ok: false, phase: 'error', error: 'wechat_unavailable' };
+      return await service.pollLogin();
+    } catch {
+      return { ok: false, phase: 'error', error: 'unauthorized_renderer' };
+    }
+  });
+
+  ipcMain.handle('wechat:submitVerifyCode', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const service = ensureWeChatBot();
+      const request = rawRequest as { code?: string };
+      if (!service || !request?.code) return { ok: false, error: 'wechat_unavailable' };
+      service.submitVerifyCode(request.code);
+      return { ok: true };
+    } catch {
+      return { ok: false, error: 'unauthorized_renderer' };
+    }
+  });
+
+  ipcMain.handle('wechat:logout', async (event) => {
+    try {
+      requireRendererMainFrame(event);
+      const service = ensureWeChatBot();
+      if (!service) return { ok: false, error: 'wechat_unavailable' };
+      await service.logout();
+      return { ok: true };
+    } catch {
+      return { ok: false, error: 'unauthorized_renderer' };
+    }
+  });
+
+  ipcMain.handle('wechat:sendTest', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const service = ensureWeChatBot();
+      const request = rawRequest as { text?: string };
+      if (!service || !request?.text?.trim()) return { ok: false, error: 'wechat_unavailable' };
+      return await service.sendTestMessage(request.text);
+    } catch {
+      return { ok: false, error: 'unauthorized_renderer' };
+    }
+  });
+
+  ipcMain.handle('wechat:setProject', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const service = ensureWeChatBot();
+      const request = rawRequest as { projectId?: string };
+      if (!service || !request?.projectId) return { ok: false, error: 'wechat_unavailable' };
+      service.setActiveProject(request.projectId);
+      return { ok: true };
+    } catch {
+      return { ok: false, error: 'unauthorized_renderer' };
+    }
+  });
+
+  // ── OfficeCli (Word/PPT/Excel via external officecli binary) ──
+  ipcMain.handle('officecli:status', (event) => {
+    try {
+      requireRendererMainFrame(event);
+      return getOfficeCliService().detect();
+    } catch {
+      return { available: false, binary: '', error: 'unauthorized_renderer' };
+    }
+  });
+
+  // Create a fresh document under the app data dir and return its path. The
+  // renderer never chooses filesystem locations directly.
+  ipcMain.handle('officecli:newDocument', async (event, rawExt: unknown, rawProjectId: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const ext = typeof rawExt === 'string' ? rawExt : 'docx';
+      const allowed = new Set(['docx', 'pptx', 'xlsx']);
+      if (!allowed.has(ext)) return { success: false, error: 'unsupported_format' };
+      const projectId = typeof rawProjectId === 'string' && rawProjectId ? rawProjectId : null;
+      const docsRoot = path.join(DATA_DIR, 'office-docs', projectId ?? 'global');
+      fs.mkdirSync(docsRoot, { recursive: true });
+      const stamp = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      const filePath = path.join(docsRoot, `doc-${stamp}.${ext}`);
+      const created = await getOfficeCliService().create(filePath);
+      if (!created.success) return { success: false, error: created.error ?? 'create_failed' };
+      return { success: true, filePath };
+    } catch (err) {
+      return { success: false, error: (err as Error)?.message ?? 'create_failed' };
+    }
+  });
+
+  ipcMain.handle('officecli:exec', async (event, rawArgs: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const args = Array.isArray(rawArgs) ? rawArgs.filter((a): a is string => typeof a === 'string') : [];
+      return await getOfficeCliService().exec(args);
+    } catch {
+      return { success: false, error: 'unauthorized_renderer' };
+    }
+  });
+
+  ipcMain.handle('officecli:create', async (event, rawFilePath: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const filePath = typeof rawFilePath === 'string' ? rawFilePath : '';
+      if (!filePath) return { success: false, error: 'invalid_path' };
+      return await getOfficeCliService().create(filePath);
+    } catch {
+      return { success: false, error: 'unauthorized_renderer' };
+    }
+  });
+
+  ipcMain.handle('officecli:open', async (event, rawFilePath: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const filePath = typeof rawFilePath === 'string' ? rawFilePath : '';
+      if (!filePath || !fs.existsSync(filePath)) return { success: false, error: 'file_not_found' };
+      return await getOfficeCliService().open(filePath);
+    } catch {
+      return { success: false, error: 'unauthorized_renderer' };
+    }
+  });
+
+  ipcMain.handle('officecli:add', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = rawRequest as { filePath?: unknown; parent?: unknown; type?: unknown; props?: unknown };
+      const filePath = typeof request?.filePath === 'string' ? request.filePath : '';
+      const parent = typeof request?.parent === 'string' ? request.parent : '/';
+      const type = typeof request?.type === 'string' ? request.type : 'paragraph';
+      const props = (request?.props && typeof request.props === 'object' ? request.props : {}) as Record<string, string>;
+      if (!filePath) return { success: false, error: 'invalid_path' };
+      return await getOfficeCliService().add(filePath, parent, type, props);
+    } catch {
+      return { success: false, error: 'unauthorized_renderer' };
+    }
+  });
+
+  ipcMain.handle('officecli:set', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = rawRequest as { filePath?: unknown; path?: unknown; props?: unknown };
+      const filePath = typeof request?.filePath === 'string' ? request.filePath : '';
+      const nodePath = typeof request?.path === 'string' ? request.path : '/';
+      const props = (request?.props && typeof request.props === 'object' ? request.props : {}) as Record<string, string>;
+      if (!filePath) return { success: false, error: 'invalid_path' };
+      return await getOfficeCliService().set(filePath, nodePath, props);
+    } catch {
+      return { success: false, error: 'unauthorized_renderer' };
+    }
+  });
+
+  ipcMain.handle('officecli:query', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = rawRequest as { filePath?: unknown; selector?: unknown };
+      const filePath = typeof request?.filePath === 'string' ? request.filePath : '';
+      const selector = typeof request?.selector === 'string' ? request.selector : '';
+      if (!filePath) return { success: false, error: 'invalid_path' };
+      return await getOfficeCliService().query(filePath, selector);
+    } catch {
+      return { success: false, error: 'unauthorized_renderer' };
+    }
+  });
+
+  ipcMain.handle('officecli:get', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = rawRequest as { filePath?: unknown; path?: unknown };
+      const filePath = typeof request?.filePath === 'string' ? request.filePath : '';
+      const nodePath = typeof request?.path === 'string' ? request.path : '/';
+      if (!filePath) return { success: false, error: 'invalid_path' };
+      return await getOfficeCliService().get(filePath, nodePath);
+    } catch {
+      return { success: false, error: 'unauthorized_renderer' };
+    }
+  });
+
+  ipcMain.handle('officecli:remove', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = rawRequest as { filePath?: unknown; path?: unknown };
+      const filePath = typeof request?.filePath === 'string' ? request.filePath : '';
+      const nodePath = typeof request?.path === 'string' ? request.path : '/';
+      if (!filePath) return { success: false, error: 'invalid_path' };
+      return await getOfficeCliService().remove(filePath, nodePath);
+    } catch {
+      return { success: false, error: 'unauthorized_renderer' };
+    }
+  });
+
+  ipcMain.handle('officecli:renderHtml', async (event, rawFilePath: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const filePath = typeof rawFilePath === 'string' ? rawFilePath : '';
+      if (!filePath) return { success: false, error: 'invalid_path' };
+      return await getOfficeCliService().renderHtml(filePath);
+    } catch {
+      return { success: false, error: 'unauthorized_renderer' };
+    }
+  });
+
+  ipcMain.handle('officecli:outline', async (event, rawFilePath: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const filePath = typeof rawFilePath === 'string' ? rawFilePath : '';
+      if (!filePath) return { success: false, error: 'invalid_path' };
+      return await getOfficeCliService().outline(filePath);
+    } catch {
+      return { success: false, error: 'unauthorized_renderer' };
+    }
+  });
+
+  ipcMain.handle('officecli:startWatch', async (event, rawFilePath: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const filePath = typeof rawFilePath === 'string' ? rawFilePath : '';
+      if (!filePath) return { success: false, error: 'invalid_path' };
+      return await getOfficeCliService().startWatch(filePath);
+    } catch {
+      return { success: false, error: 'unauthorized_renderer' };
+    }
+  });
+
+  ipcMain.handle('officecli:stopWatch', async (event, rawFilePath: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const filePath = typeof rawFilePath === 'string' ? rawFilePath : '';
+      if (!filePath) return { success: false, error: 'invalid_path' };
+      return await getOfficeCliService().stopWatch(filePath);
+    } catch {
+      return { success: false, error: 'unauthorized_renderer' };
+    }
+  });
+
+  ipcMain.handle('officecli:close', async (event, rawFilePath: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const filePath = typeof rawFilePath === 'string' ? rawFilePath : '';
+      if (!filePath) return { success: false, error: 'invalid_path' };
+      return await getOfficeCliService().close(filePath);
+    } catch {
+      return { success: false, error: 'unauthorized_renderer' };
+    }
+  });
+
+  ipcMain.handle('officecli:revealFile', (event, rawFilePath: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const filePath = typeof rawFilePath === 'string' ? rawFilePath : '';
+      if (!filePath || !fs.existsSync(filePath)) return { success: false, error: 'file_not_found' };
+      shell.showItemInFolder(filePath);
+      return { success: true };
+    } catch {
+      return { success: false, error: 'unauthorized_renderer' };
+    }
+  });
+
+  // ── PPT-specific operations ──
+  // Add a slide with title + content in one call.
+  ipcMain.handle('officecli:addSlide', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = rawRequest as { filePath?: unknown; layout?: unknown; title?: unknown; text?: unknown };
+      const filePath = typeof request?.filePath === 'string' ? request.filePath : '';
+      const layout = typeof request?.layout === 'string' ? request.layout : 'Title and Content';
+      const props: Record<string, string> = { layout };
+      if (typeof request?.title === 'string' && request.title) props.title = request.title;
+      if (typeof request?.text === 'string' && request.text) props.text = request.text;
+      if (!filePath) return { success: false, error: 'invalid_path' };
+      return await getOfficeCliService().add(filePath, '/', 'slide', props);
+    } catch {
+      return { success: false, error: 'unauthorized_renderer' };
+    }
+  });
+
+  // Add a shape with non-overlap enforcement: queries existing shapes on the
+  // target slide, computes a safe position, then adds the shape.
+  ipcMain.handle('officecli:addShapeNoOverlap', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = rawRequest as { filePath?: unknown; slidePath?: unknown; text?: unknown; x?: unknown; y?: unknown; w?: unknown; h?: unknown };
+      const filePath = typeof request?.filePath === 'string' ? request.filePath : '';
+      const slidePath = typeof request?.slidePath === 'string' ? request.slidePath : '/slide[1]';
+      if (!filePath) return { success: false, error: 'invalid_path' };
+      const service = getOfficeCliService();
+      // Query existing shapes on the slide.
+      const query = await service.query(filePath, `${slidePath} shape`);
+      const existingShapes = (Array.isArray(query.data) ? query.data : []) as Array<Record<string, string>>;
+      const proposed = {
+        x: typeof request?.x === 'string' ? parseFloat(request.x) || 72 : 72,
+        y: typeof request?.y === 'string' ? parseFloat(request.y) || 72 : 72,
+        w: typeof request?.w === 'string' ? parseFloat(request.w) || 200 : 200,
+        h: typeof request?.h === 'string' ? parseFloat(request.h) || 100 : 100,
+      };
+      const safe = findNonOverlappingPosition(existingShapes, proposed);
+      // pt → cm for officecli (1cm ≈ 28.35pt).
+      const props: Record<string, string> = {
+        x: `${(safe.x / 28.35).toFixed(1)}cm`,
+        y: `${(safe.y / 28.35).toFixed(1)}cm`,
+        w: `${(proposed.w / 28.35).toFixed(1)}cm`,
+        h: `${(proposed.h / 28.35).toFixed(1)}cm`,
+      };
+      if (typeof request?.text === 'string' && request.text) props.text = request.text;
+      return await service.add(filePath, slidePath, 'shape', props);
+    } catch {
+      return { success: false, error: 'unauthorized_renderer' };
+    }
+  });
+
+  // Set theme colors/fonts at the presentation level.
+  ipcMain.handle('officecli:setTheme', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = rawRequest as { filePath?: unknown; props?: unknown };
+      const filePath = typeof request?.filePath === 'string' ? request.filePath : '';
+      const props = (request?.props && typeof request.props === 'object' ? request.props : {}) as Record<string, string>;
+      if (!filePath) return { success: false, error: 'invalid_path' };
+      return await getOfficeCliService().set(filePath, '/presentation', props);
+    } catch {
+      return { success: false, error: 'unauthorized_renderer' };
+    }
+  });
+
+  // ── Flashcards (SQLite-backed via memory store) ──────────
+  ipcMain.handle('flashcard:list', (event) => {
+    try {
+      requireRendererMainFrame(event);
+      if (!store) return { cards: [] };
+      const entries = store.getMemoryByCategory('flashcard');
+      return { cards: entries.map((e) => { try { return JSON.parse(e.value); } catch { return null; } }).filter(Boolean) };
+    } catch {
+      return { cards: [] };
+    }
+  });
+
+  ipcMain.handle('flashcard:save', (event, rawCard: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      if (!store) return { ok: false };
+      const card = rawCard as { id?: unknown; front?: unknown; back?: unknown; dueAt?: unknown; intervalDays?: unknown; createdAt?: unknown };
+      if (typeof card?.id !== 'string') return { ok: false };
+      store.setMemory(`flashcard:${card.id}`, JSON.stringify(card), 'flashcard');
+      return { ok: true };
+    } catch {
+      return { ok: false };
+    }
+  });
+
+  ipcMain.handle('flashcard:delete', (event, rawId: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      if (!store) return { ok: false };
+      const id = typeof rawId === 'string' ? rawId : '';
+      if (!id) return { ok: false };
+      store.deleteMemory?.(`flashcard:${id}`);
+      return { ok: true };
+    } catch {
+      return { ok: false };
+    }
+  });
+
   // ── Zotero import ────────────────────────────────────────
   ipcMain.handle('zotero:import', async (event, rawRequest: unknown) => {
     try {
@@ -2384,8 +3032,10 @@ function setupIPC(): void {
       requireRendererMainFrame(event);
       const request = decodeSettingsUpdateRequest(rawRequest);
       if (!request) return createSettingsMutationFailure('secure_setup_required');
+
       const goal = request.weeklyReadingGoal ?? loadWeeklyReadingGoal();
-      const ok = saveSettings(request.theme, goal);
+      const vision = request.providerVision ?? loadProviderVision();
+      const ok = saveSettings(request.theme, goal, vision);
       if (!ok) return createSettingsMutationFailure('settings_update_unavailable');
       currentTheme = request.theme;
       return decodeSettingsMutationResult({ success: true, code: 'settings_saved' });
@@ -2543,7 +3193,8 @@ function setupIPC(): void {
     // MemoryManager.recordKeyDecision was wired but buildMemoryContext was not
     // consumed by any prompt — decisions were recorded but never fed back.
     try {
-      const memoryContext = memoryManager?.buildMemoryContext();
+      // METIS-F12: scope the injected memory to the active project when known.
+      const memoryContext = memoryManager?.buildMemoryContext(projectId);
       if (memoryContext && memoryContext.trim()) {
         skillPrompt = [skillPrompt, memoryContext].filter(Boolean).join('\n\n');
         resolvedSystemPrompt = [resolvedSystemPrompt, memoryContext].filter(Boolean).join('\n\n');
@@ -2612,6 +3263,7 @@ function setupIPC(): void {
             mode,
             signal: activeRun.controller.signal,
             liveSteering: liveSteeringQueue,
+            projectId: resolvedManifest.projectId ?? projectId,
             isCurrentRuntime: () => runtimeGeneration === requestRuntimeGeneration,
           })
         : await runPersistedChatTurn({
@@ -2629,6 +3281,7 @@ function setupIPC(): void {
             signal: activeRun.controller.signal,
             liveSteering: liveSteeringQueue,
             options: { mode },
+            projectId,
             isCurrentRuntime: () => runtimeGeneration === requestRuntimeGeneration,
           });
 
@@ -3184,19 +3837,222 @@ function setupIPC(): void {
   });
 
   // ── Bulk Load ───────────────────────────────────────────
+  // Papers ship without pdfText (the largest field) so startup hydration stays
+  // fast even for large libraries; full details load on demand via
+  // data:loadPaperDetail. All renderer consumers already treat pdfText as
+  // optional (?? '' / conditional rendering).
   ipcMain.handle('data:loadAll', (event) => {
     try {
       requireRendererMainFrame(event);
       const owner = executionOwnerFor(event);
       const data = store?.getAllData() ?? { papers: [], notes: [], experiments: [], collections: [] };
       return {
-        papers: data.papers.map((paper) => presentPaper(paper, owner)),
+        papers: data.papers.map((paper) => {
+          const { pdfText: _pdfText, ...summary } = paper;
+          void _pdfText;
+          return presentPaper(summary, owner);
+        }),
         notes: data.notes,
         experiments: decodeExperimentList(store?.getExperimentMetadata() ?? []),
         collections: data.collections,
       };
     } catch {
       return { papers: [], notes: [], experiments: [], collections: [] };
+    }
+  });
+
+  ipcMain.handle('data:loadPaperDetail', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = rawRequest as { paperId?: string };
+      const paper = request?.paperId ? store?.getPaper(request.paperId) : undefined;
+      if (!paper) return { found: false };
+      const owner = executionOwnerFor(event);
+      return { found: true, paper: presentPaper(paper, owner) };
+    } catch {
+      return { found: false };
+    }
+  });
+
+  // ── Full-text paper search ──────────────────────────────
+  // The renderer only ever receives lightweight summaries (pdfText is stripped
+  // from loadAll), so paper-body search runs here and the full text never
+  // leaves the main process. Returns capped results with a match snippet.
+  ipcMain.handle('papers:searchFullText', (event, rawQuery: unknown, rawLimit: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const query = typeof rawQuery === 'string' ? rawQuery.trim().toLowerCase() : '';
+      const limit = typeof rawLimit === 'number'
+        ? Math.max(1, Math.min(50, Math.floor(rawLimit)))
+        : 20;
+      if (query.length < 2) return { results: [] };
+      if (!store) return { results: [] };
+      // SQL LIKE query: only matching rows are loaded (not the whole library).
+      const pattern = `%${query}%`;
+      const rows = store.raw.prepare(`
+        SELECT id, title, abstract, pdf_text FROM papers
+        WHERE title LIKE ? OR abstract LIKE ? OR pdf_text LIKE ?
+        ORDER BY added_at DESC LIMIT ?
+      `).all(pattern, pattern, pattern, limit + 1) as Array<{ id: string; title: string; abstract: string | null; pdf_text: string | null }>;
+      const results: Array<{ id: string; title: string; snippet: string }> = [];
+      for (const row of rows) {
+        if (results.length >= limit) break;
+        const raw = [row.title, row.abstract ?? '', row.pdf_text ?? ''].join('\n');
+        const index = raw.toLowerCase().indexOf(query);
+        if (index === -1) continue;
+        const start = Math.max(0, index - 60);
+        const end = Math.min(raw.length, index + query.length + 80);
+        let snippet = raw.slice(start, end).replace(/\s+/g, ' ').trim();
+        if (start > 0) snippet = `…${snippet}`;
+        if (end < raw.length) snippet = `${snippet}…`;
+        results.push({ id: row.id, title: row.title, snippet });
+      }
+      return { results, hasMore: rows.length > limit };
+    } catch {
+      return { results: [] };
+    }
+  });
+
+  // ── AI explanation of a selected PDF passage ─────────────
+  // One-shot Q&A (no agent loop, no tools, no persistence): the PDF reader
+  // asks the provider to explain / translate / summarize a selection, then
+  // the user may save the result as an annotation via the normal evidence flow.
+  ipcMain.handle('papers:aiExplain', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = rawRequest as { passage?: unknown; paperTitle?: unknown; action?: unknown };
+      const passage = typeof request?.passage === 'string' ? request.passage.trim() : '';
+      const action = request?.action === 'translate' || request?.action === 'summarize'
+        ? request.action
+        : 'explain';
+      const paperTitle = typeof request?.paperTitle === 'string' ? request.paperTitle : '';
+      if (!passage || passage.length > 6000) return { ok: false, error: 'invalid_passage' };
+      if (!provider) return { ok: false, error: 'provider_unavailable' };
+      const systemPrompts: Record<string, string> = {
+        explain: '你是一名科研阅读助手。用中文简明解释用户选中的论文片段：说明它的含义、要点和在研究中的作用。直接回答，不要重复原文。',
+        translate: '你是一名学术翻译。把用户选中的论文片段完整准确地翻译成中文，保留专业术语。只输出译文。',
+        summarize: '你是一名科研阅读助手。用中文概括用户选中的论文片段的核心内容（1-3 句）。只输出概括。',
+      };
+      const response = await provider.complete([
+        { role: 'system', content: systemPrompts[action]! },
+        { role: 'user', content: paperTitle ? `论文标题：${paperTitle}\n\n片段：\n${passage}` : passage },
+      ], undefined, { temperature: 0.3 });
+      return { ok: true, text: response.content };
+    } catch (err) {
+      return { ok: false, error: (err as Error)?.message ?? 'unknown' };
+    }
+  });
+
+  // ── AI literature synthesis / comparison over multiple papers ──
+  // Packs selected papers (title/authors/year/venue/abstract) into one prompt
+  // and asks for a structured literature review or a comparison analysis.
+  ipcMain.handle('papers:aiSynthesis', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = rawRequest as {
+        mode?: unknown;
+        papers?: unknown;
+      };
+      const mode = request?.mode === 'compare' || request?.mode === 'report' ? request.mode : 'synthesis';
+      const papersInput = Array.isArray(request?.papers) ? request.papers : [];
+      const papers = papersInput
+        .slice(0, 10)
+        .map((raw) => {
+          const item = raw as Record<string, unknown>;
+          return {
+            title: typeof item.title === 'string' ? item.title : '',
+            authors: Array.isArray(item.authors) ? item.authors.filter((a): a is string => typeof a === 'string').slice(0, 5) : [],
+            year: typeof item.year === 'number' ? item.year : 0,
+            venue: typeof item.venue === 'string' ? item.venue : '',
+            abstract: typeof item.abstract === 'string' ? item.abstract.slice(0, 1500) : '',
+          };
+        })
+        .filter((p) => p.title);
+      if (papers.length < 2) return { ok: false, error: 'need_at_least_two_papers' };
+      if (!provider) return { ok: false, error: 'provider_unavailable' };
+      const paperBlocks = papers.map((p, i) => [
+        `[${i + 1}] ${p.title}`,
+        `作者：${p.authors.join(', ') || '未知'}；年份：${p.year || '未知'}；来源：${p.venue || '未知'}`,
+        p.abstract ? `摘要：${p.abstract}` : '',
+      ].filter(Boolean).join('\n')).join('\n\n');
+      const systemPrompt = mode === 'compare'
+        ? '你是一名学术分析助手。对用户选中的多篇论文做结构化对比分析：研究问题、方法、数据、结论、创新点逐一对比，最后指出各自的优势与局限。用中文、Markdown 表格或小标题组织。'
+        : mode === 'report'
+          ? '你是一名科研阅读助手。用户本周读完了以下论文，请生成一份中文阅读报告：归纳本周阅读的主题脉络、各篇论文的核心贡献、以及建议的后续阅读方向。结构清晰，用 Markdown。'
+          : '你是一名学术写作助手。基于用户选中的多篇论文，生成一段中文文献综述草稿：按主题聚类、梳理方法演进、指出共识与分歧、最后点出研究空白。引用格式用（作者, 年份）。直接输出综述正文。';
+      const response = await provider.complete([
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: `以下是选中的 ${papers.length} 篇论文：\n\n${paperBlocks}` },
+      ], undefined, { temperature: 0.4 });
+      return { ok: true, text: response.content };
+    } catch (err) {
+      return { ok: false, error: (err as Error)?.message ?? 'unknown' };
+    }
+  });
+
+  // ── AI polish of a selected LaTeX passage ────────────────
+  // One-shot polish/rewrite/expand for the LaTeX editor selection. Keeps
+  // LaTeX commands intact and returns only the rewritten text.
+  ipcMain.handle('latex:aiPolish', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = rawRequest as { text?: unknown; action?: unknown };
+      const text = typeof request?.text === 'string' ? request.text.trim() : '';
+      const action = request?.action === 'rewrite' || request?.action === 'expand'
+        ? request.action
+        : 'polish';
+      if (!text || text.length > 6000) return { ok: false, error: 'invalid_text' };
+      if (!provider) return { ok: false, error: 'provider_unavailable' };
+      const systemPrompts: Record<string, string> = {
+        polish: '你是一名学术论文润色助手。润色用户给出的段落：改进语法、用词、流畅度与学术表达，保持原意与 LaTeX 命令（如 \\cite、\\ref、环境）不变。只输出润色后的文本。',
+        rewrite: '你是一名学术写作助手。重写用户给出的段落，使其更简洁清晰，保持原意与 LaTeX 命令不变。只输出重写后的文本。',
+        expand: '你是一名学术写作助手。扩写用户给出的段落，补充论据与细节，保持学术语气与 LaTeX 命令不变。只输出扩写后的文本。',
+      };
+      const response = await provider.complete([
+        { role: 'system', content: systemPrompts[action]! },
+        { role: 'user', content: text },
+      ], undefined, { temperature: 0.3 });
+      return { ok: true, text: response.content };
+    } catch (err) {
+      return { ok: false, error: (err as Error)?.message ?? 'unknown' };
+    }
+  });
+
+  // ── AI Office document edit ──────────────────────────────
+  // Translate a natural-language instruction into a JSON plan of OfficeCli
+  // operations (add/set/remove). Distinct from aiSynthesis (which is for
+  // paper literature reviews) so the prompts and contracts stay clean.
+  ipcMain.handle('officecli:aiEdit', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = rawRequest as { instruction?: unknown; docType?: unknown };
+      const instruction = typeof request?.instruction === 'string' ? request.instruction.trim() : '';
+      const docType = typeof request?.docType === 'string' ? request.docType : 'docx';
+      if (!instruction || instruction.length > 2000) return { ok: false, plan: [], error: 'invalid_instruction' };
+      if (!provider) return { ok: false, plan: [], error: 'provider_unavailable' };
+      const kindLabel = docType === 'pptx' ? 'PowerPoint' : docType === 'xlsx' ? 'Excel' : 'Word';
+      const systemPrompt = [
+        `你操作 OfficeCli 编辑${kindLabel}文档。将用户的指令翻译为一组 JSON 操作。`,
+        '每个操作是以下之一：',
+        '{"op":"add","parent":"/body","type":"paragraph","props":{"text":"..."}}',
+        '{"op":"add","parent":"/body","type":"table","props":{"rows":"2","cols":"2"}}',
+        docType === 'pptx' ? '{"op":"add","parent":"/","type":"slide","props":{"layout":"Title and Content","title":"...","text":"..."}}' : '',
+        '{"op":"set","path":"/body/p[1]","props":{"text":"...","bold":"true","size":"14","font.ea":"宋体","align":"center"}}',
+        '可用属性：text, bold, italic, underline, strike, color(hex), size(pt), font.ea, font.latin, align(left/center/right/justify/distribute), lineSpacing, spaceBefore, spaceAfter, firstLineIndent, style(Heading1/2/3/Normal), listStyle(bullet/ordered)',
+        'PPT 主题色：set /presentation props theme.color.accent1=#RRGGBB',
+        'PPT 字体：set /presentation props theme.font.major.eastAsia=宋体',
+        '只输出 JSON 数组，不要输出其他文字或解释。',
+      ].filter(Boolean).join('\n');
+      const response = await provider.complete([
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: `用户指令：${instruction}` },
+      ], undefined, { temperature: 0.3 });
+      // Extract the JSON array from the response.
+      const match = response.content.match(/\[[\s\S]*\]/);
+      const plan = match ? JSON.parse(match[0]) : [];
+      return { ok: true, plan };
+    } catch (err) {
+      return { ok: false, plan: [], error: (err as Error)?.message ?? 'unknown' };
     }
   });
 
@@ -4231,6 +5087,42 @@ app.on('second-instance', () => {
 
 app.whenReady().then(async () => {
   if (!gotSingleInstanceLock) return;
+
+  // Serve the production renderer bundle over metis-app:// (ESM modules cannot
+  // load from file:// under Chromium's null-origin CORS rules). Every request
+  // is confined to the dist/ directory.
+  const distRoot = path.join(__dirname, '../../dist');
+  // Module scripts require an exact JavaScript MIME type — net.fetch over
+  // file:// does not guarantee one, so responses are built explicitly.
+  const webMimeTypes: Record<string, string> = {
+    '.html': 'text/html',
+    '.js': 'text/javascript',
+    '.mjs': 'text/javascript',
+    '.css': 'text/css',
+    '.json': 'application/json',
+    '.svg': 'image/svg+xml',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.woff': 'font/woff',
+    '.woff2': 'font/woff2',
+    '.ico': 'image/x-icon',
+  };
+  protocol.handle('metis-app', (request) => {
+    const url = new URL(request.url);
+    let pathname = decodeURIComponent(url.pathname);
+    if (pathname === '/' || pathname === '') pathname = '/index.html';
+    const resolved = path.resolve(distRoot, `.${pathname}`);
+    if (!resolved.startsWith(distRoot + path.sep) && resolved !== distRoot) {
+      return new Response('Forbidden', { status: 403 });
+    }
+    if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
+      return new Response('Not found', { status: 404 });
+    }
+    const mime = webMimeTypes[path.extname(resolved).toLowerCase()] ?? 'application/octet-stream';
+    return new Response(fs.readFileSync(resolved), { headers: { 'Content-Type': mime } });
+  });
+
   // Ensure data directory
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.mkdirSync(TERMINAL_WORKSPACE_DIR, { recursive: true });
@@ -4379,6 +5271,12 @@ app.whenReady().then(async () => {
       console.warn('[Main] Funding template services unavailable:', (error as Error)?.message);
     }
     personalizationRepository = new PersonalizationRepository(store.raw, citationTruthSecret ?? undefined);
+    // Seed built-in PPT scenario (idempotent: skips definitions that already exist).
+    try {
+      personalizationRepository.seedBuiltins(buildPptBuiltinDefinitions());
+    } catch (err) {
+      console.warn('[Main] PPT scenario seed skipped:', (err as Error)?.message);
+    }
     personalizationRuntime = new PersonalizationRuntimeService(
       personalizationRepository,
       citationTruthSecret ?? undefined,
@@ -4391,14 +5289,32 @@ app.whenReady().then(async () => {
       personalizationBundleSink = null;
       console.warn('[Main] Personalization bundle service unavailable:', (error as Error)?.message);
     }
+    // ── Personalization extension services ──────────────────────────
+    // Each capability gets its own fault boundary so one failure never
+    // degrades unrelated personalization services (pattern used elsewhere).
+    const skillRoot = path.join(DATA_DIR, 'personalization-skills');
+    const mcpRoot = path.join(DATA_DIR, 'personalization-mcp');
     try {
-      const skillRoot = path.join(DATA_DIR, 'personalization-skills');
-      const mcpRoot = path.join(DATA_DIR, 'personalization-mcp');
       personalizationSkills = new PersonalizationSkillInstaller(skillRoot);
+    } catch (error) {
+      personalizationSkills = null;
+      console.warn('[Main] Personalization skill installer unavailable:', (error as Error)?.message);
+    }
+    try {
       personalizationMcp = new PersonalizationMcpInstaller(mcpRoot);
-      if (!evidenceEnvelopes) throw new Error('Evidence signing is unavailable');
-      const extensionEvidence = evidenceEnvelopes;
-      const mcpBuilder = new McpBuilderService(personalizationMcp, {
+    } catch (error) {
+      personalizationMcp = null;
+      console.warn('[Main] Personalization MCP installer unavailable:', (error as Error)?.message);
+    }
+    // MCP builder needs a live provider and evidence signing; kept isolated
+    // from the installers above so a provider gap cannot disable them.
+    const extensionEvidence = evidenceEnvelopes;
+    let mcpBuilder: McpBuilderService | null = null;
+    let mcpProbeRunner: PersonalizationMcpProbeRunner | null = null;
+    try {
+      if (!extensionEvidence) throw new Error('Evidence signing is unavailable');
+      if (!personalizationMcp) throw new Error('MCP installer is unavailable');
+      mcpBuilder = new McpBuilderService(personalizationMcp, {
         createSpecification: async (input) => {
           const activeProvider = provider;
           if (!activeProvider) throw new Error('Provider is unavailable');
@@ -4419,9 +5335,16 @@ app.whenReady().then(async () => {
           return McpBuilderSpecificationSchema.parse(raw);
         },
       });
-      const mcpProbeRunner = new PersonalizationMcpProbeRunner({
+      mcpProbeRunner = new PersonalizationMcpProbeRunner({
         resolve: (reference, context) => personalizationSecretVault?.resolve(reference, context),
       });
+    } catch (error) {
+      mcpBuilder = null;
+      mcpProbeRunner = null;
+      console.warn('[Main] Personalization MCP builder unavailable:', (error as Error)?.message);
+    }
+    // Activation + generated activation recovery (each recovery is verified).
+    if (personalizationMcp && extensionEvidence && mcpProbeRunner) {
       try {
         const activation = new PersonalizationMcpActivationService(mcpRoot, {
           installer: personalizationMcp,
@@ -4445,76 +5368,83 @@ app.whenReady().then(async () => {
         personalizationGeneratedMcpActivation = null;
         console.warn('[Main] Personalization MCP activation unavailable:', (error as Error)?.message);
       }
-      personalizationExtensions = new PersonalizationExtensionService({
-        definitions: {
-          get: (id) => personalizationRepository?.get(id, true),
-          save: (request) => personalizationRepository?.save(request) ?? { ok: false, code: 'io_error' },
-        },
-        evidence: extensionEvidence,
-        skills: personalizationSkills,
-        mcp: personalizationMcp,
-        mcpBuilder,
-        mcpProbeRunner,
-        mcpCompensator: new FilesystemMcpInstallationCompensator(mcpRoot),
-      });
+    }
+    // Extension service needs every port; skipped (not cascaded) if any is missing.
+    if (personalizationSkills && personalizationMcp && mcpBuilder && extensionEvidence) {
       try {
-        if (!personalizationBundles || !personalizationBundleSink) {
-          throw new Error('Base personalization bundle services are unavailable');
-        }
-        const bundleAssetRoot = path.join(DATA_DIR, 'personalization-bundles');
-        const rehydrationStagingRoot = path.join(DATA_DIR, 'personalization-bundle-skill-staging');
-        const receiptRoot = path.join(DATA_DIR, 'personalization-bundle-receipts');
-        const skillRehydrator = new PersonalizationBundleSkillRehydrationService(
-          bundleAssetRoot,
-          rehydrationStagingRoot,
-          personalizationSkills,
-        );
-        personalizationBundleSkillAssets = new PersonalizationBundleSkillAssetSource(
-          personalizationRepository,
-          personalizationSkills,
-        );
-        personalizationBundleCoordinator = new PersonalizationBundleImportCoordinator({
-          bundleService: personalizationBundles,
-          definitionSink: personalizationBundleSink,
-          skillRehydrator,
-          skillCompensator: personalizationSkills,
-          bundleAssetRoot,
-          receiptRoot,
+        personalizationExtensions = new PersonalizationExtensionService({
+          definitions: {
+            get: (id) => personalizationRepository?.get(id, true),
+            save: (request) => personalizationRepository?.save(request) ?? { ok: false, code: 'io_error' },
+          },
+          evidence: extensionEvidence,
+          skills: personalizationSkills,
+          mcp: personalizationMcp,
+          mcpBuilder,
+          mcpProbeRunner: mcpProbeRunner ?? undefined,
+          mcpCompensator: new FilesystemMcpInstallationCompensator(mcpRoot),
         });
       } catch (error) {
-        personalizationBundleCoordinator = null;
-        personalizationBundleSkillAssets = null;
-        console.warn('[Main] Portable personalization bundles unavailable:', (error as Error)?.message);
+        personalizationExtensions = null;
+        console.warn('[Main] Personalization extension service unavailable:', (error as Error)?.message);
       }
-      personalizationMcpRuntime = new ManagedPersonalizationMcpRuntime(
-        personalizationMcp,
-        { resolve: (reference, context) => personalizationSecretVault?.resolve(reference, context) },
-        extensionEvidence,
-        {
-          runtimeSnapshotRoot: path.join(DATA_DIR, 'personalization-mcp-runtime'),
-          recoverStaleSnapshots: true,
-        },
+    }
+    // Portable bundle coordinator (needs bundles sink + skill installer).
+    try {
+      if (!personalizationBundles || !personalizationBundleSink || !personalizationSkills) {
+        throw new Error('Base personalization bundle services are unavailable');
+      }
+      const bundleAssetRoot = path.join(DATA_DIR, 'personalization-bundles');
+      const rehydrationStagingRoot = path.join(DATA_DIR, 'personalization-bundle-skill-staging');
+      const receiptRoot = path.join(DATA_DIR, 'personalization-bundle-receipts');
+      const skillRehydrator = new PersonalizationBundleSkillRehydrationService(
+        bundleAssetRoot,
+        rehydrationStagingRoot,
+        personalizationSkills,
       );
-      personalizationMcpBridge = new PersonalizationMcpToolBridge({
-        runtime: personalizationMcpRuntime,
-        definitions: personalizationRepository,
-        descriptors: personalizationMcp,
-        evidenceSink: {
-          record: (envelope) => extensionEvidence.verify(envelope)
-            && Boolean(personalizationRepository?.recordEvidenceEnvelope(envelope)),
-        },
+      personalizationBundleSkillAssets = new PersonalizationBundleSkillAssetSource(
+        personalizationRepository,
+        personalizationSkills,
+      );
+      personalizationBundleCoordinator = new PersonalizationBundleImportCoordinator({
+        bundleService: personalizationBundles,
+        definitionSink: personalizationBundleSink,
+        skillRehydrator,
+        skillCompensator: personalizationSkills,
+        bundleAssetRoot,
+        receiptRoot,
       });
     } catch (error) {
-      personalizationSkills = null;
-      personalizationMcp = null;
-      personalizationMcpRuntime = null;
-      personalizationMcpBridge = null;
-      personalizationMcpActivation = null;
-      personalizationGeneratedMcpActivation = null;
-      personalizationExtensions = null;
       personalizationBundleCoordinator = null;
       personalizationBundleSkillAssets = null;
-      console.warn('[Main] Personalization extension services unavailable:', (error as Error)?.message);
+      console.warn('[Main] Portable personalization bundles unavailable:', (error as Error)?.message);
+    }
+    // Managed MCP runtime + tool bridge.
+    if (personalizationMcp && extensionEvidence) {
+      try {
+        personalizationMcpRuntime = new ManagedPersonalizationMcpRuntime(
+          personalizationMcp,
+          { resolve: (reference, context) => personalizationSecretVault?.resolve(reference, context) },
+          extensionEvidence,
+          {
+            runtimeSnapshotRoot: path.join(DATA_DIR, 'personalization-mcp-runtime'),
+            recoverStaleSnapshots: true,
+          },
+        );
+        personalizationMcpBridge = new PersonalizationMcpToolBridge({
+          runtime: personalizationMcpRuntime,
+          definitions: personalizationRepository,
+          descriptors: personalizationMcp,
+          evidenceSink: {
+            record: (envelope) => extensionEvidence.verify(envelope)
+              && Boolean(personalizationRepository?.recordEvidenceEnvelope(envelope)),
+          },
+        });
+      } catch (error) {
+        personalizationMcpRuntime = null;
+        personalizationMcpBridge = null;
+        console.warn('[Main] Personalization MCP runtime unavailable:', (error as Error)?.message);
+      }
     }
     researchRepository = new ResearchRepository(store.raw, (manifest, content) => {
       if (!researchRepository || !citationTruthReceipts) {
@@ -4550,6 +5480,12 @@ app.whenReady().then(async () => {
       console.warn('[Main] ExperimentScriptAdapter failed:', (err as Error)?.message);
     }
     console.log('[Main] PersistenceStore initialized.');
+    // Resume a previously bound WeChat bot (polling starts only if bound).
+    try {
+      ensureWeChatBot?.()?.start();
+    } catch (err: unknown) {
+      console.warn('[Main] WeChat bot resume failed:', (err as Error)?.message);
+    }
   } catch (err: unknown) {
     personalizationRepository = null;
     personalizationRuntime = null;
@@ -4588,6 +5524,16 @@ app.whenReady().then(async () => {
   // Initialize skill registry with default skills
   skillRegistry = registerDefaultSkills();
 
+
+
+  // Setup IPC before loading the renderer, then create the initial window.
+  setupIPC();
+  // METIS-OPT-4: show the window immediately; heavy personalization
+  // initialization below continues in the background. The renderer waits on
+  // store:ready before hydrating, so early UI never sees a half-initialized
+  // main process.
+  createWindow();
+
   // Restore the OS-protected first-run configuration and atomically prepare the
   // provider runtime before the renderer loads. Legacy configuration remains a
   // migration fallback only when no new setup envelope is ready.
@@ -4612,10 +5558,7 @@ app.whenReady().then(async () => {
   }
   currentTheme = loadTheme();
   if (!setupRestored) initProviderAndAgent();
-
-  // Setup IPC before loading the renderer, then create the initial window.
-  setupIPC();
-  createWindow();
+  startupReady = true;
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -4653,6 +5596,12 @@ app.on('before-quit', () => {
     clearInterval(backupTimer);
     backupTimer = null;
   }
+  if (weChatBotService) {
+    void weChatBotService.stop().catch(() => {});
+    weChatBotService = null;
+  }
+  // Tear down any running OfficeCli watch servers so no orphans linger.
+  getOfficeCliService().shutdown();
   fileCapabilities.clear();
   exportPreviews.clear();
   for (const session of activeTerminals.values()) {

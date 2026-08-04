@@ -46,6 +46,8 @@ export interface FirstRunSetupClient {
 export interface FirstRunWizardProps {
   client: FirstRunSetupClient;
   onComplete: (result: SetupSaveSuccess) => void;
+  /** Optional exit: enter the app without configuring a provider (local mode). */
+  onSkip?: () => void;
   initialConfig?: Partial<Pick<SetupInput, 'baseUrl' | 'model'>>;
 }
 
@@ -66,6 +68,7 @@ interface WizardCopy {
   working: string;
   completed: string;
   stop: string;
+  skip: string;
   progressTitle: string;
   progressHint: string;
   readyTitle: string;
@@ -102,6 +105,7 @@ const COPY: Record<LocaleKey, WizardCopy> = {
     working: '正在设置…',
     completed: '设置完成',
     stop: '停止',
+    skip: '稍后配置',
     progressTitle: '正在完成连接',
     progressHint: '通常只需片刻。你可以按 Esc 停止本次尝试。',
     readyTitle: '模型能力已确认',
@@ -136,6 +140,7 @@ const COPY: Record<LocaleKey, WizardCopy> = {
     working: 'Setting up…',
     completed: 'Setup complete',
     stop: 'Stop',
+    skip: 'Configure later',
     progressTitle: 'Completing the connection',
     progressHint: 'This usually takes a moment. Press Escape to stop this attempt.',
     readyTitle: 'Model capabilities confirmed',
@@ -374,6 +379,7 @@ function safeAbort(client: FirstRunSetupClient, operationId: string): void {
 export default function FirstRunWizard({
   client,
   onComplete,
+  onSkip,
   initialConfig,
 }: FirstRunWizardProps) {
   const { locale } = useTranslation();
@@ -803,6 +809,16 @@ export default function FirstRunWizard({
           )}
 
           <div className="first-run-actions">
+            {onSkip && !busy && !completed && (
+              <button
+                type="button"
+                className="first-run-skip"
+                onClick={onSkip}
+                data-testid="first-run-skip"
+              >
+                {copy.skip}
+              </button>
+            )}
             {canStop && (
               <button
                 type="button"

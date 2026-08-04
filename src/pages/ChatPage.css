@@ -394,6 +394,7 @@
 .chat-scenario-bar__retry:hover { border-color: var(--primary); color: var(--primary); }
 .chat-scenario-bar__retry:focus-visible { outline: 2px solid var(--focus-ring-color); outline-offset: 2px; }
 .chat-scenario-bar__policy { color: var(--text-muted); font-size: 10px; text-align: right; }
+.chat-scenario-bar__policy--interrupting { color: var(--warning, #b8860b); font-weight: 650; }
 
 @media (max-width: 720px) {
   .chat-scenario-bar { align-items: flex-start; flex-direction: column; gap: 4px; }

@@ -36,6 +36,7 @@ interface RunPersistedChatTurnOptions {
   signal?: AbortSignal;
   liveSteering?: LiveSteeringSource;
   options?: ChatTurnOptions;
+  projectId?: string;
   isCurrentRuntime?: () => boolean;
 }
 
@@ -83,6 +84,7 @@ export async function runPersistedChatTurn({
   signal,
   liveSteering,
   options,
+  projectId,
   isCurrentRuntime,
 }: RunPersistedChatTurnOptions): Promise<ChatTurnResponse> {
   const mode = options?.mode ?? 'send';
@@ -116,6 +118,7 @@ export async function runPersistedChatTurn({
     fullAccess,
     signal,
     liveSteering,
+    projectId,
   });
 
   if (isCurrentRuntime && !isCurrentRuntime()) {

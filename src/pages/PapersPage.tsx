@@ -12,10 +12,13 @@ import { resolveDoi } from '@engine/research/DoiResolver.js';
 import { resolveArxiv } from '@engine/research/ArxivResolver.js';
 import { importFromUrl } from '@engine/research/WebImport.js';
 import { fetchRssFeed, type RssFeedEntry } from '@engine/research/RssFeedResolver.js';
+import { isRisFormat, parseRis } from '@engine/research/RisParser.js';
 import { setPendingChatIntent } from '../lib/chatIntent.js';
 import type { UIMode } from '../../engine/capabilities/DiagnosticMode.js';
 import { presentExecutionError, type PresentationLocale } from '../presentation/executionPresentation.js';
 import { decodeAgentResponse } from '../../engine/runtime/ChatRuntimeContract.js';
+import { SafeMarkdown } from '../presentation/SafeMarkdown';
+import { papersToHtml } from '../lib/papersHtml';
 import {
   ReactFlow, Background, Controls,
   type Node, type Edge, MarkerType,
@@ -124,6 +127,23 @@ function papersToCsv(papers: PaperItem[]): string {
     p.rating,
     JSON.stringify(p.priority ?? ''),
     JSON.stringify(p.deadline ?? ''),
+    JSON.stringify(p.abstract),
+  ]);
+  return [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+}
+
+/** Notion-compatible CSV: Name as the first (title) column, URL included. */
+function papersToNotionCsv(papers: PaperItem[]): string {
+  const headers = ['Name', 'Authors', 'Year', 'Venue', 'DOI', 'arXiv', 'URL', 'Tags', 'Abstract'];
+  const rows = papers.map((p) => [
+    JSON.stringify(p.title),
+    JSON.stringify(p.authors.join('; ')),
+    p.year,
+    JSON.stringify(p.venue),
+    JSON.stringify(p.doi ?? ''),
+    JSON.stringify(p.arxivId ?? ''),
+    JSON.stringify(p.pdfUrl ?? p.url ?? ''),
+    JSON.stringify(p.tags.join(', ')),
     JSON.stringify(p.abstract),
   ]);
   return [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
@@ -255,6 +275,16 @@ function hasPdfAttachment(paper: PaperItem): boolean {
   return Boolean(paper.pdfCapability);
 }
 
+/** Impure id/timestamp generation for notes, kept at module scope so the
+ * component body stays pure for the React Compiler purity analysis. */
+function makeNoteId(prefix: string): string {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function nowMs(): number {
+  return Date.now();
+}
+
 function presentPdfAttachment(paper: PaperItem, uiMode: UIMode, locale: PresentationLocale): string {
   const basename = pdfAttachmentName(paper);
   if (uiMode === 'diagnostic') return basename || (locale === 'zh' ? '（无PDF）' : '(no PDF)');
@@ -297,6 +327,99 @@ export default function PapersPage({ onNavigate, uiMode = 'normal' }: PapersPage
     onNavigate?.('chat');
   }
 
+  /** Fetch missing metadata for an existing paper via its DOI or arXiv ID.
+   * Only empty fields are filled (never overwriting manual edits); the
+   * citation count is refreshed unconditionally since it changes over time. */
+  const handleCompleteMetadata = async (paper: PaperItem) => {
+    if (completingMetadata) return;
+    setCompletingMetadata(true);
+    setMetadataFeedback(null);
+    try {
+      const metadata = paper.doi
+        ? await resolveDoi(paper.doi)
+        : paper.arxivId
+          ? await resolveArxiv(paper.arxivId)
+          : null;
+      if (!metadata) {
+        setMetadataFeedback(t('papers.metadataNotFound'));
+        return;
+      }
+      const updates: Partial<PaperItem> = {};
+      if (!paper.title.trim() && metadata.title) updates.title = metadata.title;
+      if (paper.authors.length === 0 && metadata.authors.length > 0) updates.authors = metadata.authors;
+      if (!paper.year && metadata.year) updates.year = metadata.year;
+      if (!paper.venue && metadata.venue) updates.venue = metadata.venue;
+      if (!paper.abstract && metadata.abstract) updates.abstract = metadata.abstract;
+      if (!paper.pdfUrl && metadata.pdfUrl) updates.pdfUrl = metadata.pdfUrl;
+      if (!paper.doi && metadata.doi) updates.doi = metadata.doi;
+      if (!paper.arxivId && metadata.arxivId) updates.arxivId = metadata.arxivId;
+      const citationCount = 'citationCount' in metadata ? metadata.citationCount : undefined;
+      if (citationCount !== undefined && citationCount !== paper.citationCount) {
+        updates.citationCount = citationCount;
+      }
+      if (Object.keys(updates).length === 0) {
+        setMetadataFeedback(t('papers.metadataUpToDate'));
+        return;
+      }
+      await updatePaper(paper.id, updates);
+      setMetadataFeedback(t('papers.metadataCompleted'));
+    } catch (err) {
+      setMetadataFeedback(presentPapersError('import', err instanceof Error ? err.message : String(err), locale, uiMode));
+    } finally {
+      setCompletingMetadata(false);
+    }
+  };
+
+  /** Generate a literature review draft over the multi-selected papers. */
+  const handleGenerateSynthesis = async () => {
+    const metis = window.metis;
+    if (synthesisLoading || !metis?.aiSynthesis) return;
+    const selected = papers.filter((p) => selectedIds.has(p.id));
+    if (selected.length < 2) return;
+    setSynthesisLoading(true);
+    setSynthesisResult(null);
+    setImportError('');
+    try {
+      const result = await metis.aiSynthesis({
+        mode: 'synthesis',
+        papers: selected.map((p) => ({
+          title: p.title,
+          authors: p.authors,
+          year: p.year,
+          venue: p.venue,
+          abstract: p.abstract ?? '',
+        })),
+      });
+      if (result.ok && result.text) {
+        setSynthesisResult(result.text);
+      } else {
+        setImportError(t('papers.synthesisFailed'));
+      }
+    } catch {
+      setImportError(t('papers.synthesisFailed'));
+    } finally {
+      setSynthesisLoading(false);
+    }
+  };
+
+  /** Save the generated synthesis as a literature note linked to the sources. */
+  const handleSaveSynthesisAsNote = async () => {
+    if (!synthesisResult) return;
+    const selected = papers.filter((p) => selectedIds.has(p.id));
+    await useMetisStore.getState().addNote({
+      id: makeNoteId('note_synthesis'),
+      title: t('papers.synthesisNoteTitle'),
+      content: synthesisResult,
+      tags: [t('papers.synthesisNoteTitle')],
+      linkedPaperIds: selected.map((p) => p.id),
+      linkedNoteIds: [],
+      starred: false,
+      updatedAt: nowMs(),
+    });
+    setImportNotice(t('papers.synthesisSaved'));
+    setSynthesisResult(null);
+  };
+
   function handleCheckCitations(paper: PaperItem) {
     const refs = paper.referenceIds
       .map((id) => papers.find((p) => p.id === id))
@@ -326,6 +449,14 @@ export default function PapersPage({ onNavigate, uiMode = 'normal' }: PapersPage
   const [pdfDownloadLoading, setPdfDownloadLoading] = useState<Set<string>>(new Set());
   const [pdfDownloadUrls, setPdfDownloadUrls] = useState<Record<string, string>>({});
   const [importResolving, setImportResolving] = useState(false);
+  // One-shot metadata completion for the selected paper (DOI/arXiv lookup).
+  const [completingMetadata, setCompletingMetadata] = useState(false);
+  // Feedback rendered next to the detail-panel button (import notices only
+  // show inside the import form, which is closed during this flow).
+  const [metadataFeedback, setMetadataFeedback] = useState<string | null>(null);
+  // AI literature synthesis over the multi-selected papers.
+  const [synthesisResult, setSynthesisResult] = useState<string | null>(null);
+  const [synthesisLoading, setSynthesisLoading] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const bulkSelectAllRef = useRef<HTMLInputElement>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -401,12 +532,54 @@ export default function PapersPage({ onNavigate, uiMode = 'normal' }: PapersPage
   const [rssLoading, setRssLoading] = useState(false);
   const [rssError, setRssError] = useState('');
   const [showRssPanel, setShowRssPanel] = useState(false);
+  // AI one-line summaries for RSS entries (per entry id).
+  const [rssSummaries, setRssSummaries] = useState<Record<string, string>>({});
+  const [rssSummarizing, setRssSummarizing] = useState(false);
 
   useEffect(() => {
     if (typeof localStorage !== 'undefined' && typeof localStorage.setItem === 'function') {
       localStorage.setItem('metis-rss-feeds', JSON.stringify(rssFeeds));
     }
   }, [rssFeeds]);
+
+  // Auto-refresh the first feed when the panel opens and it has been more
+  // than 6 hours since the last refresh (recorded in localStorage).
+  useEffect(() => {
+    if (!showRssPanel || rssFeeds.length === 0) return;
+    const last = Number(localStorage.getItem('metis-rss-last-refresh') ?? '0');
+    if (Date.now() - last < 6 * 3600 * 1000) return;
+    const feedUrl = rssFeeds[0]!;
+    localStorage.setItem('metis-rss-last-refresh', String(Date.now()));
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- spinner reflects the auto-refresh fetch below
+    setRssLoading(true);
+    void fetchRssFeed(feedUrl).then((feed) => {
+      setRssLoading(false);
+      if (feed) setRssEntries(feed.entries.slice(0, 20));
+    }).catch(() => { setRssLoading(false); });
+  }, [showRssPanel, rssFeeds]);
+
+  /** One-line AI summary for each currently listed RSS entry (max 10). */
+  const handleSummarizeRss = async () => {
+    const metis = window.metis;
+    if (rssSummarizing || !metis?.aiExplainPaper) return;
+    setRssSummarizing(true);
+    try {
+      const entries = rssEntries.slice(0, 10);
+      for (const entry of entries) {
+        if (rssSummaries[entry.id]) continue;
+        const passage = [entry.title, entry.summary ?? ''].filter(Boolean).join('\n').slice(0, 2000);
+        if (!passage) continue;
+        try {
+          const result = await metis.aiExplainPaper({ passage, action: 'summarize' });
+          if (result.ok && result.text) {
+            setRssSummaries((prev) => ({ ...prev, [entry.id]: result.text! }));
+          }
+        } catch { /* single-entry failure does not stop the batch */ }
+      }
+    } finally {
+      setRssSummarizing(false);
+    }
+  };
 
   // ─── Related papers state ───────────────────────────────────────
   const [relatedOpen, setRelatedOpen] = useState(false);
@@ -503,7 +676,7 @@ export default function PapersPage({ onNavigate, uiMode = 'normal' }: PapersPage
   };
 
   const markSelectedAsRead = () => {
-    const now = Date.now();
+    const now = nowMs();
     selectedIds.forEach((id) => {
       void updatePaper(id, { readStatus: 'read', readAt: now });
     });
@@ -554,7 +727,7 @@ export default function PapersPage({ onNavigate, uiMode = 'normal' }: PapersPage
 
   const setSelectedStatus = (status: ReadStatus) => {
     const updates: Partial<PaperItem> = { readStatus: status };
-    if (status === 'read') updates.readAt = Date.now();
+    if (status === 'read') updates.readAt = nowMs();
     selectedIds.forEach((id) => {
       void updatePaper(id, updates);
     });
@@ -867,6 +1040,47 @@ export default function PapersPage({ onNavigate, uiMode = 'normal' }: PapersPage
       return;
     }
 
+    if (isRisFormat(importText)) {
+      // RIS entries (Web of Science / Scopus / Zotero exports).
+      const risEntries = parseRis(importText);
+      if (risEntries.length === 0) {
+        setImportError(t('papers.importParseError'));
+        return;
+      }
+      let mergedCount = 0;
+      for (const entry of risEntries) {
+        const id = generatePaperId();
+        const paper: PaperItem = {
+          id,
+          title: entry.title || t('papers.untitled'),
+          authors: entry.authors,
+          year: entry.year || new Date().getFullYear(),
+          venue: entry.venue || '',
+          abstract: entry.abstract || '',
+          doi: entry.doi,
+          url: entry.url,
+          tags: [],
+          notes: '',
+          readStatus: 'unread',
+          rating: 0,
+          referenceIds: [],
+          addedAt: generateTimestamp(),
+        };
+        const result = await addPaper(paper);
+        if (result.merged) {
+          mergedCount += 1;
+          notifyMerge(result.paper, true);
+        }
+      }
+      if (mergedCount > 0) {
+        setImportNotice(t('papers.importMerged'));
+      } else {
+        setImportText('');
+        setShowForm(false);
+      }
+      return;
+    }
+
     if (isLikelyBibtex(importText)) {
       // Parse BibTeX entries
       const bibEntries = parseBibtex(importText);
@@ -1064,12 +1278,16 @@ export default function PapersPage({ onNavigate, uiMode = 'normal' }: PapersPage
     }
   };
 
-  const handleExport = (format: 'bibtex' | 'csv') => {
+  const handleExport = (format: 'bibtex' | 'csv' | 'html' | 'notion-csv') => {
     if (papers.length === 0) return;
     const content = format === 'bibtex'
       ? papers.map((p) => paperToBibtex(p)).join('\n\n')
-      : papersToCsv(papers);
-    const filename = format === 'bibtex' ? 'library.bib' : 'library.csv';
+      : format === 'html'
+        ? papersToHtml(papers, locale)
+        : format === 'notion-csv'
+          ? papersToNotionCsv(papers)
+          : papersToCsv(papers);
+    const filename = format === 'bibtex' ? 'library.bib' : format === 'html' ? 'library.html' : format === 'notion-csv' ? 'library-notion.csv' : 'library.csv';
     downloadTextFile(content, filename);
     setImportNotice(t('papers.exportSuccess'));
     setShowExport(false);
@@ -1473,7 +1691,7 @@ export default function PapersPage({ onNavigate, uiMode = 'normal' }: PapersPage
         <div className="papers-collections" style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-color, #e2e8f0)' }}>
           <div className="detail-section-header" style={{ marginBottom: 6 }}>
             <h3 style={{ fontSize: 13 }}>{t('papers.rssFeeds')}</h3>
-            <button className="btn-sm" onClick={() => setShowRssPanel((prev) => !prev)}>{showRssPanel ? t('common.close') : t('papers.manageRssFeeds')}</button>
+            <button className="btn-sm" data-testid="rss-manage" onClick={() => setShowRssPanel((prev) => !prev)}>{showRssPanel ? t('common.close') : t('papers.manageRssFeeds')}</button>
           </div>
           {showRssPanel && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -1525,12 +1743,26 @@ export default function PapersPage({ onNavigate, uiMode = 'normal' }: PapersPage
               {rssError && <div style={{ color: 'var(--status-failed, #e53e3e)', fontSize: 12 }}>{rssError}</div>}
               {rssEntries.length > 0 && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 240, overflowY: 'auto', marginTop: 4 }}>
+                  <button
+                    className="btn-sm btn-secondary"
+                    data-testid="rss-ai-summarize"
+                    disabled={rssSummarizing}
+                    onClick={() => void handleSummarizeRss()}
+                    style={{ alignSelf: 'flex-start' }}
+                  >
+                    {rssSummarizing ? t('papers.rssSummarizing') : t('papers.rssSummarize')}
+                  </button>
                   {rssEntries.map((entry) => (
                     <div key={entry.id} style={{ padding: 8, border: '1px solid var(--border-color, #e2e8f0)', borderRadius: 6 }}>
                       <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 2 }}>{entry.title}</div>
                       <div style={{ fontSize: 11, color: 'var(--text-muted, #718096)', marginBottom: 4 }}>
                         {entry.authors.join(', ') || t('papers.unknownAuthors')} · {entry.publishedAt ? new Date(entry.publishedAt).getFullYear() : 'n.d.'}
                       </div>
+                      {rssSummaries[entry.id] && (
+                        <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4, lineHeight: 1.5 }}>
+                          {rssSummaries[entry.id]}
+                        </div>
+                      )}
                       <button
                         className="btn-sm btn-primary"
                         onClick={() => void handleImportRssEntry(entry)}
@@ -1702,6 +1934,17 @@ export default function PapersPage({ onNavigate, uiMode = 'normal' }: PapersPage
               </select>
               <button type="button" className="btn-sm btn-secondary" onClick={() => setShowBulkTagInput(true)}>{t('papers.bulkAddTags')}</button>
               <button type="button" className="btn-sm btn-secondary" onClick={() => setShowBulkDeadlineInput(true)}>{t('papers.bulkSetDeadline')}</button>
+              {selectedIds.size >= 2 && (
+                <button
+                  type="button"
+                  className="btn-sm btn-secondary"
+                  data-testid="paper-generate-synthesis"
+                  disabled={synthesisLoading}
+                  onClick={() => void handleGenerateSynthesis()}
+                >
+                  {synthesisLoading ? t('papers.synthesisGenerating') : t('papers.generateSynthesis')}
+                </button>
+              )}
               {paperFilter.archived ? (
                 <button type="button" className="btn-sm btn-secondary" onClick={unarchiveSelected}>{t('papers.unarchiveSelected')}</button>
               ) : (
@@ -1941,6 +2184,16 @@ export default function PapersPage({ onNavigate, uiMode = 'normal' }: PapersPage
                 >
                   {t('papers.exportCsv')}
                 </button>
+                {(selected.doi || selected.arxivId) && (
+                  <button
+                    className="btn-secondary btn-sm"
+                    data-testid="paper-complete-metadata"
+                    disabled={completingMetadata}
+                    onClick={() => void handleCompleteMetadata(selected)}
+                  >
+                    {completingMetadata ? t('papers.metadataCompleting') : t('papers.completeMetadata')}
+                  </button>
+                )}
                 <button
                   className="btn-secondary btn-sm"
                   data-testid="paper-ai-review"
@@ -1950,6 +2203,14 @@ export default function PapersPage({ onNavigate, uiMode = 'normal' }: PapersPage
                 </button>
               </div>
             </div>
+            {metadataFeedback && (
+              <div
+                role="status"
+                style={{ padding: '6px 10px', marginBottom: 8, fontSize: 12, color: 'var(--text-secondary)', background: 'var(--bg-secondary)', borderRadius: 6 }}
+              >
+                {metadataFeedback}
+              </div>
+            )}
             <div className="detail-meta">
               <span>{selected.authors.join(', ') || t('papers.unknownAuthors')}</span>
               <span>{selected.year}</span>
@@ -2665,10 +2926,33 @@ export default function PapersPage({ onNavigate, uiMode = 'normal' }: PapersPage
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 12 }}>
               <button className="btn-primary" onClick={() => handleExport('bibtex')}>{t('papers.exportFormatBibtex')}</button>
               <button className="btn-primary" onClick={() => handleExport('csv')}>{t('papers.exportFormatCsv')}</button>
+              <button className="btn-primary" data-testid="export-html" onClick={() => handleExport('html')}>{t('papers.exportFormatHtml')}</button>
+              <button className="btn-primary" data-testid="export-notion-csv" onClick={() => handleExport('notion-csv')}>{t('papers.exportFormatNotionCsv')}</button>
             </div>
             {importNotice && <div style={{ color: 'var(--status-success, #38a169)', fontSize: 13, marginTop: 8 }}>{importNotice}</div>}
             <div className="modal-actions">
               <button className="btn-secondary" onClick={() => { setShowExport(false); setImportNotice(''); }}>{t('common.close')}</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* AI literature synthesis result */}
+      {synthesisResult && (
+        <div className="modal-overlay" onClick={() => setSynthesisResult(null)}>
+          <div className="modal modal-wide" data-testid="synthesis-modal" onClick={(e) => e.stopPropagation()}>
+            <h3>{t('papers.synthesisTitle')}</h3>
+            <div style={{ maxHeight: '55vh', overflowY: 'auto', marginTop: 12, fontSize: 13, lineHeight: 1.7 }}>
+              <SafeMarkdown content={synthesisResult} uiMode={uiMode} locale={locale} />
+            </div>
+            <div className="modal-actions" style={{ marginTop: 16 }}>
+              <button
+                className="btn-primary"
+                data-testid="synthesis-save-note"
+                onClick={() => void handleSaveSynthesisAsNote()}
+              >
+                {t('papers.synthesisSaveNote')}
+              </button>
+              <button className="btn-secondary" onClick={() => setSynthesisResult(null)}>{t('common.close')}</button>
             </div>
           </div>
         </div>

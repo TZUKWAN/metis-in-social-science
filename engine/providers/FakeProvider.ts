@@ -99,5 +99,20 @@ export class FakeProvider extends BaseProvider {
             : { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
       };
     }
+
+    // Mirror the real SSE streamer: tool calls arrive in a final chunk after the
+    // text stream, so streaming consumers see the same tool calls as complete().
+    if (this.options.toolCalls.length > 0) {
+      yield {
+        content: '',
+        toolCalls: this.options.toolCalls.map((tc) => ({
+          name: tc.name,
+          arguments: tc.arguments,
+          id: tc.id,
+        })),
+        isFinished: true,
+        usage: { promptTokens: 10, completionTokens: 20, totalTokens: 30 },
+      };
+    }
   }
 }

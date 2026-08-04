@@ -85,6 +85,8 @@ export interface AgentRunRequest {
   signal?: AbortSignal;
   /** Optional strict source of live user instructions and interrupt commands. */
   liveSteering?: LiveSteeringSource;
+  /** Active project scope (METIS-F12): forwarded into ToolContext for tools. */
+  projectId?: string;
 }
 
 export interface AgentRunResult {
@@ -118,6 +120,12 @@ export interface ChatMessage {
   toolCallId?: string;
   name?: string;
   metadata?: Record<string, unknown>;
+  /**
+   * Inline images attached to this message (METIS-WX-2 vision): serialized as
+   * OpenAI image_url content blocks when the provider reports vision support.
+   * Transient — never persisted into session history.
+   */
+  images?: Array<{ mime?: string; dataBase64: string }>;
 }
 
 // ─── Provider ─────────────────────────────────────────────────
@@ -129,6 +137,8 @@ export interface ProviderCapabilities {
   jsonSchemaOutput: boolean;
   streaming: boolean;
   thinking: boolean;
+  /** Model accepts inline image content (multimodal chat completions). */
+  vision?: boolean;
   maxContextTokens: number;
   maxOutputTokens: number;
   maxConcurrency?: number;
@@ -142,6 +152,8 @@ export interface ProviderConfig {
   timeout: number;
   maxRetries: number;
   retryBackoffSeconds: number;
+  /** User-declared multimodal support; gates WeChat image understanding. */
+  vision?: boolean;
 }
 
 // ─── Tool Definition ──────────────────────────────────────────
@@ -175,6 +187,8 @@ export interface ToolContext {
   provider?: BaseProvider;
   /** Cooperative cancellation signal for handlers that support interruption. */
   signal?: AbortSignal;
+  /** Active project scope (METIS-F12): tools may scope their writes to it. */
+  projectId?: string;
 }
 
 // ─── Tracing ──────────────────────────────────────────────────

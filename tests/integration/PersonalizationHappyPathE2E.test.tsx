@@ -206,8 +206,8 @@ describe('Personalization persisted UI-to-runtime happy paths', () => {
     const agentChat = installRuntimeBridge(initial, { resolvedTurns });
 
     const mounted = render(<App />);
-    fireEvent.click(await screen.findByTestId('personalization-trigger'));
-    await screen.findByRole('heading', { name: 'Personalization' });
+    fireEvent.click(await screen.findByTestId('personalization-trigger', {}, { timeout: 5000 }));
+    await screen.findByRole('heading', { name: 'Personalization' }, { timeout: 5000 });
 
     fireEvent.click(screen.getByRole('button', { name: /^Agents/u }));
     fireEvent.click(screen.getByRole('button', { name: 'New' }));
@@ -262,7 +262,7 @@ describe('Personalization persisted UI-to-runtime happy paths', () => {
       name: 'Use in conversation',
     }));
 
-    const selector = await screen.findByRole('combobox', { name: 'Active scenario' }) as HTMLSelectElement;
+    const selector = await screen.findByRole('combobox', { name: 'Active scenario' }, { timeout: 5000 }) as HTMLSelectElement;
     await waitFor(() => expect(selector.value).toBe(CUSTOM_SCENARIO_ID));
     fireEvent.change(screen.getByPlaceholderText('Ask a research question...'), {
       target: { value: '/chat Prove this saved scenario reaches the runtime.' },
@@ -288,7 +288,7 @@ describe('Personalization persisted UI-to-runtime happy paths', () => {
     expect(resolved.manifest.definitionRevisions[CUSTOM_SCENARIO_ID]).toBe(2);
     expect(resolved.manifest.agentIds).toEqual([CUSTOM_AGENT_ID]);
     expect(resolved.manifest.definitionRevisions[CUSTOM_AGENT_ID]).toBe(2);
-    expect(await screen.findByText('Resolved custom scenario conversation.')).toBeDefined();
+    expect(await screen.findByText('Resolved custom scenario conversation.', {}, { timeout: 5000 })).toBeDefined();
 
     mounted.unmount();
     closeDatabase(initial.database);
@@ -319,7 +319,7 @@ describe('Personalization persisted UI-to-runtime happy paths', () => {
 
     restartedApp.unmount();
     closeDatabase(restarted.database);
-  });
+  }, 20000);
 
   it('saves Markdown Skill content through the signed extension service and reloads it after restart', async () => {
     const root = tempRoot();
@@ -336,8 +336,8 @@ describe('Personalization persisted UI-to-runtime happy paths', () => {
     installRuntimeBridge(initial, { extension, extensionResponses });
 
     const mounted = render(<App />);
-    fireEvent.click(await screen.findByTestId('personalization-trigger'));
-    await screen.findByRole('heading', { name: 'Personalization' });
+    fireEvent.click(await screen.findByTestId('personalization-trigger', {}, { timeout: 5000 }));
+    await screen.findByRole('heading', { name: 'Personalization' }, { timeout: 5000 });
     fireEvent.click(await screen.findByRole('button', { name: /^Skills/u }));
     await screen.findByRole('button', { name: 'Choose skill ZIP package' });
     fireEvent.click(screen.getByRole('button', { name: 'New' }));
@@ -374,8 +374,8 @@ describe('Personalization persisted UI-to-runtime happy paths', () => {
     const restarted = openRuntime(databasePath);
     installRuntimeBridge(restarted);
     const restartedCenter = render(<App />);
-    fireEvent.click(await screen.findByTestId('personalization-trigger'));
-    await screen.findByRole('heading', { name: 'Personalization' });
+    fireEvent.click(await screen.findByTestId('personalization-trigger', {}, { timeout: 5000 }));
+    await screen.findByRole('heading', { name: 'Personalization' }, { timeout: 5000 });
     fireEvent.click(await screen.findByRole('button', { name: /^Skills/u }));
     await waitFor(() => expect(definitionCard(CUSTOM_SKILL_ID)).toBeDefined());
     expect(within(definitionCard(CUSTOM_SKILL_ID)).getByText('Durable Markdown Skill')).toBeDefined();

@@ -650,6 +650,9 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  // Live control state: 'idle' until the user requests an interrupt, 'interrupting'
+  // while the active run is draining, back to 'idle' when the run settles.
+  const [controlState, setControlState] = useState<'idle' | 'interrupting'>('idle');
   const [historyReady, setHistoryReady] = useState(false);
   const [artifacts, setArtifacts] = useState<ArtifactItem[]>([]);
 
@@ -1275,13 +1278,22 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
       if (!isCurrentChatRequest(request)) return;
 
       if (response.status !== 'completed') {
-        const diagnosticCode = response.diagnostics[0]?.code ?? response.status;
-        const errorMsg: ChatMessage = {
-          role: 'assistant',
-          content: presentExecutionError(diagnosticCode, locale, resolvedUIMode),
-          timestamp: now(),
-        };
-        setMessages((prev) => [...prev, errorMsg]);
+        if (response.status === 'interrupted' || response.status === 'cancelled') {
+          // User-initiated stop: an explicit receipt, never an error presentation.
+          setMessages((prev) => [...prev, {
+            role: 'system',
+            content: t('chat.interruptedNotice'),
+            timestamp: now(),
+          }]);
+        } else {
+          const diagnosticCode = response.diagnostics[0]?.code ?? response.status;
+          const errorMsg: ChatMessage = {
+            role: 'assistant',
+            content: presentExecutionError(diagnosticCode, locale, resolvedUIMode),
+            timestamp: now(),
+          };
+          setMessages((prev) => [...prev, errorMsg]);
+        }
       } else if (response.answer) {
         const assistantMsg: ChatMessage = {
           role: 'assistant',
@@ -1308,6 +1320,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
       if (isCurrentChatRequest(request)) {
         activeChatRequestRef.current = null;
         setIsLoading(false);
+        setControlState('idle');
       }
     }
   }
@@ -1486,7 +1499,12 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
       }]);
       return;
     }
-    setMessages((prev) => [...prev, { role: 'user', content, timestamp: now() }]);
+    // Success receipt: confirm to the user that the instruction reached the run.
+    setMessages((prev) => [
+      ...prev,
+      { role: 'user', content, timestamp: now() },
+      { role: 'system', content: t('chat.steerReceipt'), timestamp: now() },
+    ]);
     setInput('');
   }
 
@@ -1504,7 +1522,15 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
         content: presentExecutionError(response?.code ?? 'live_interrupt_unavailable', locale, resolvedUIMode),
         timestamp: now(),
       }]);
+      return;
     }
+    // Success receipt: the request is queued; the run settles at its next safe point.
+    setControlState('interrupting');
+    setMessages((prev) => [...prev, {
+      role: 'system',
+      content: t('chat.interruptReceipt'),
+      timestamp: now(),
+    }]);
   }
 
   async function handleSend(overrideContent?: string, scenarioOverride?: string) {
@@ -1564,25 +1590,19 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
     if (pendingIntent.scenarioId && scenarioLoadState !== 'ready') return;
     clearPendingChatIntent();
     const intent = pendingIntent;
-    const rejectHandoff = (english: string, chinese: string) => {
+    const rejectHandoff = (key: 'chat.handoffRejectedProject' | 'chat.handoffRejectedSession' | 'chat.handoffRejectedScenario') => {
       setMessages((previous) => [...previous, {
         role: 'system',
-        content: locale === 'zh' ? chinese : english,
+        content: t(key),
         timestamp: now(),
       }]);
     };
     if (intent.projectId && intent.projectId !== currentProjectId) {
-      rejectHandoff(
-        'Scenario handoff rejected: the active project changed before launch.',
-        '场景交接已拒绝：启动前活动项目已经改变。',
-      );
+      rejectHandoff('chat.handoffRejectedProject');
       return;
     }
     if (intent.sessionId && intent.sessionId !== currentSessionId) {
-      rejectHandoff(
-        'Scenario handoff rejected: the active conversation changed before launch.',
-        '场景交接已拒绝：启动前活动会话已经改变。',
-      );
+      rejectHandoff('chat.handoffRejectedSession');
       return;
     }
     if (intent.skillId && skills.some((skill) => skill.id === intent.skillId)) {
@@ -1590,10 +1610,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
       window.metis?.setActiveSkill?.(intent.skillId).catch(() => {});
     }
     if (intent.scenarioId && !scenarios.some((scenario) => scenario.id === intent.scenarioId)) {
-      rejectHandoff(
-        'Scenario handoff rejected: the requested scenario is unavailable or disabled.',
-        '场景交接已拒绝：所请求的场景不可用或已禁用。',
-      );
+      rejectHandoff('chat.handoffRejectedScenario');
       return;
     }
     const requestedScenario = intent.scenarioId ?? activeScenarioId;
@@ -1676,6 +1693,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
       if (isCurrentChatRequest(request)) {
         activeChatRequestRef.current = null;
         setIsLoading(false);
+        setControlState('idle');
       }
     }
   }
@@ -1831,7 +1849,16 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
               </div>
             )}
           </div>
-          <span className="chat-scenario-bar__policy">Full Access · {locale === 'zh' ? '可随时引导或打断 · 真实性自动执行' : 'live steering · automatic truth controls'}</span>
+          <span
+            data-testid="chat-policy-status"
+            className={`chat-scenario-bar__policy ${controlState === 'interrupting' ? 'chat-scenario-bar__policy--interrupting' : ''}`}
+          >
+            {controlState === 'interrupting'
+              ? t('chat.policyInterrupting')
+              : isLoading
+                ? t('chat.policyRunning')
+                : t('chat.policyIdle')}
+          </span>
         </div>
         {diagnosticMode && skills.length > 0 && (
           <div
@@ -1896,9 +1923,9 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
                 border: '1px solid var(--border)', background: 'var(--bg-primary)',
                 color: 'var(--text-secondary)', cursor: 'pointer',
               }}
-              title="切换终端"
+              title={t('chat.toggleTerminal')}
             >
-              <TerminalIcon size={12} /> 终端
+              <TerminalIcon size={12} /> {t('chat.terminal')}
             </button>
           </div>
         )}

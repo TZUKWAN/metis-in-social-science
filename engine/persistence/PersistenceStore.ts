@@ -2310,8 +2310,20 @@ export class PersistenceStore {
   setMemory(key: string, value: string, category = 'general'): void {
     const now = Date.now();
     this.db.prepare(
-      'INSERT OR REPLACE INTO memory (key, value, category, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+      'INSERT OR REPLACE INTO memory (key, value, category, project_id, created_at, updated_at) VALUES (?, ?, ?, NULL, ?, ?)',
     ).run(key, value, category, now, now);
+  }
+
+  /**
+   * METIS-F12: project-scoped memories use a namespaced key (`p:{projectId}:{key}`)
+   * so identical keys in different projects never collide, plus the project_id
+   * column for filtered queries.
+   */
+  setMemoryScoped(projectId: string, key: string, value: string, category = 'general'): void {
+    const now = Date.now();
+    this.db.prepare(
+      'INSERT OR REPLACE INTO memory (key, value, category, project_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+    ).run(`p:${projectId}:${key}`, value, category, projectId, now, now);
   }
 
   getMemory(key: string): { key: string; value: string; category: string; createdAt: number; updatedAt: number } | undefined {
@@ -2326,9 +2338,18 @@ export class PersistenceStore {
     };
   }
 
-  getMemoryByCategory(category: string): Array<{ key: string; value: string; category: string; createdAt: number; updatedAt: number }> {
-    const rows = this.db.prepare('SELECT * FROM memory WHERE category = ? ORDER BY updated_at DESC').all(category) as Record<string, unknown>[];
-    return rows.map((row) => ({
+  getMemoryScoped(projectId: string, key: string): { key: string; value: string; category: string; createdAt: number; updatedAt: number } | undefined {
+    return this.getMemory(`p:${projectId}:${key}`);
+  }
+
+  getMemoryByCategory(
+    category: string,
+    projectId?: string,
+  ): Array<{ key: string; value: string; category: string; createdAt: number; updatedAt: number }> {
+    const rows = projectId === undefined
+      ? this.db.prepare('SELECT * FROM memory WHERE category = ? AND project_id IS NULL ORDER BY updated_at DESC').all(category)
+      : this.db.prepare('SELECT * FROM memory WHERE category = ? AND project_id = ? ORDER BY updated_at DESC').all(category, projectId);
+    return (rows as Record<string, unknown>[]).map((row) => ({
       key: row.key as string,
       value: row.value as string,
       category: row.category as string,
@@ -2337,13 +2358,19 @@ export class PersistenceStore {
     }));
   }
 
-  listMemoryKeys(): string[] {
-    const rows = this.db.prepare('SELECT key FROM memory ORDER BY updated_at DESC').all() as Record<string, unknown>[];
-    return rows.map((row) => row.key as string);
+  listMemoryKeys(projectId?: string): string[] {
+    const rows = projectId === undefined
+      ? this.db.prepare('SELECT key FROM memory WHERE project_id IS NULL ORDER BY updated_at DESC').all()
+      : this.db.prepare('SELECT key FROM memory WHERE project_id = ? ORDER BY updated_at DESC').all(projectId);
+    return (rows as Record<string, unknown>[]).map((row) => row.key as string);
   }
 
   deleteMemory(key: string): void {
     this.db.prepare('DELETE FROM memory WHERE key = ?').run(key);
+  }
+
+  deleteMemoryScoped(projectId: string, key: string): void {
+    this.db.prepare('DELETE FROM memory WHERE key = ?').run(`p:${projectId}:${key}`);
   }
 
   // ─── MCP Servers ────────────────────────────────────────────
@@ -2397,6 +2424,13 @@ export class PersistenceStore {
       experiments: this.getExperiments(),
       collections: this.getCollections(),
     };
+  }
+
+  /** Single paper with full fields (including pdfText) by id. */
+  getPaper(id: string): ReturnType<PersistenceStore['getPapers']>[number] | undefined {
+    const row = this.db.prepare('SELECT * FROM papers WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    if (!row) return undefined;
+    return this.getPapers().find((p) => p.id === id);
   }
 
   // ─── Artifacts ──────────────────────────────────────────────

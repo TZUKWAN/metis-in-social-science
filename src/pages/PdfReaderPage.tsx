@@ -102,6 +102,11 @@ export default function PdfReaderPage({ uiMode = 'normal' }: PdfReaderPageProps)
   // Region-select mode: drag a rectangle over the page to annotate an area.
   const [regionMode, setRegionMode] = useState(false);
   const [regionDragRect, setRegionDragRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  // AI explanation of the pending selection (one-shot provider call via IPC).
+  const [aiResult, setAiResult] = useState<string | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  // Export feedback shown below the toolbar after annotation export.
+  const [exportFeedback, setExportFeedback] = useState<string | null>(null);
 
   // Refs
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -452,6 +457,11 @@ export default function PdfReaderPage({ uiMode = 'normal' }: PdfReaderPageProps)
     ? sourceResolution.sourceId
     : null;
 
+  // The source's own version hash (null for sources that never received one).
+  // Persisted evidence carries the hash it was saved against; when both exist
+  // and differ, the annotation predates a source update and is shown as stale.
+  const currentSourceHash = snapshot?.sources.find((s) => s.id === resolvedSourceId)?.sourceVersionHash ?? null;
+
   // Annotations are derived (not stored) from the resolved source and the
   // workspace snapshot: evidence anchors joined with their note_code text.
   const annotations: PdfAnnotation[] = useMemo(() => {
@@ -523,7 +533,9 @@ export default function PdfReaderPage({ uiMode = 'normal' }: PdfReaderPageProps)
         pageNumber: anchor.pageNumber ?? null,
         snippet,
         snippetHash,
-        sourceVersionHash: null,
+        // Record the source hash the annotation was saved against, so the
+        // reader can flag stale highlights after a source update.
+        sourceVersionHash: snapshot?.sources.find((s) => s.id === sourceId)?.sourceVersionHash ?? null,
         confidence: 1,
       },
     });
@@ -558,7 +570,7 @@ export default function PdfReaderPage({ uiMode = 'normal' }: PdfReaderPageProps)
     }
     // applyCrud already refreshes the workspace snapshot on success, so the
     // derived `annotations` memo picks up the new record without local state.
-  }, [activeProjectId, resolvedSourceId, applyCrud, t]);
+  }, [activeProjectId, resolvedSourceId, applyCrud, snapshot, t]);
 
   // ─── Selection capture ────────────────────────────────────
 
@@ -716,7 +728,94 @@ export default function PdfReaderPage({ uiMode = 'normal' }: PdfReaderPageProps)
     setNoteDraft('');
     setAnnotateMode(false);
     setNotePreview(false);
+    setAiResult(null);
+    setAiLoading(false);
   }, []);
+
+  // ─── AI explanation of the pending selection ─────────────
+
+  /** Ask the provider (via main) to explain/translate the selected passage. */
+  const runAiExplain = useCallback(async (action: 'explain' | 'translate' | 'summarize') => {
+    const pending = pendingSelection;
+    const metis = window.metis;
+    if (!pending || !metis?.aiExplainPaper) return;
+    setAiLoading(true);
+    setAiResult(null);
+    try {
+      const paper = papers.find((p) => p.id === currentPaperId);
+      const result = await metis.aiExplainPaper({
+        passage: pending.snippet,
+        paperTitle: paper?.title ?? fileName,
+        action,
+      });
+      if (result.ok && result.text) {
+        setAiResult(result.text);
+      } else {
+        setError(t('pdf.aiExplainFailed'));
+      }
+    } catch {
+      setError(t('pdf.aiExplainFailed'));
+    } finally {
+      setAiLoading(false);
+    }
+  }, [pendingSelection, currentPaperId, fileName, papers, t]);
+
+  /** Save the AI explanation as the annotation note for the selection. */
+  const saveAiAsNote = useCallback(async () => {
+    const pending = pendingSelection;
+    if (!pending || !aiResult) return;
+    await persistAnnotation(pending.anchor, pending.snippet, aiResult, false);
+    setPendingSelection(null);
+    setAiResult(null);
+    setNoteDraft('');
+    setAnnotateMode(false);
+    setNotePreview(false);
+    try { window.getSelection()?.removeAllRanges(); } catch { /* jsdom stub may lack removeAllRanges */ }
+  }, [pendingSelection, aiResult, persistAnnotation]);
+
+  // ─── Export annotations to a literature note ─────────────
+
+  /** Bundle every highlight/annotation of this PDF into one literature note. */
+  const exportAnnotationsToNote = async () => {
+    const paper = papers.find((p) => p.id === currentPaperId);
+    if (!paper || annotations.length === 0) return;
+    try {
+      const byPage = new Map<number, PdfAnnotation[]>();
+      for (const a of annotations) {
+        const page = a.anchor.pageNumber ?? 0;
+        byPage.set(page, [...(byPage.get(page) ?? []), a]);
+      }
+      const sections = [...byPage.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([page, items]) => {
+          const lines = items.map((a) => {
+            const snippet = a.snippet ? `> ${a.snippet}` : `> ${t('pdf.annotationRegionSnippet')}`;
+            return `${snippet}\n\n${a.note || t('pdf.annotationHighlightOnly')}`;
+          });
+          return `## ${t('pdf.annotationExportPage', { page })}\n\n${lines.join('\n\n---\n\n')}`;
+        })
+        .join('\n\n');
+      const content = [
+        `> ${t('pdf.annotationExportMeta', { date: new Date().toLocaleString() })}`,
+        '',
+        sections,
+      ].join('\n');
+      const noteId = `note_pdf_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+      await useMetisStore.getState().addNote({
+        id: noteId,
+        title: `${paper.title} · ${t('pdf.annotationExportTitle')}`,
+        content,
+        tags: [t('pdf.annotationExportTitle'), ...paper.tags.slice(0, 3)],
+        linkedPaperIds: [paper.id],
+        linkedNoteIds: [],
+        starred: false,
+        updatedAt: Date.now(),
+      });
+      setExportFeedback(t('pdf.annotationExported'));
+    } catch {
+      setExportFeedback(t('pdf.annotationExportFailed'));
+    }
+  };
 
   // ─── File input handler ─────────────────────────────────
 
@@ -934,6 +1033,15 @@ export default function PdfReaderPage({ uiMode = 'normal' }: PdfReaderPageProps)
         >
           {t('pdf.annotationRegionMode')}
         </button>
+        <button
+          onClick={() => { setExportFeedback(null); void exportAnnotationsToNote(); }}
+          className="toolbar-btn"
+          data-testid="pdf-export-annotations"
+          disabled={annotations.length === 0 || !currentPaperId}
+          title={t('pdf.annotationExportTooltip')}
+        >
+          {t('pdf.annotationExport')}
+        </button>
 
         <div className="toolbar-separator" />
 
@@ -1083,7 +1191,11 @@ export default function PdfReaderPage({ uiMode = 'normal' }: PdfReaderPageProps)
                 {annotations
                   .filter((a) => a.anchor.pageNumber === currentPage)
                   .map((a) => (
-                    <HighlightRect key={a.id} annotation={a} />
+                    <HighlightRect
+                      key={a.id}
+                      annotation={a}
+                      stale={a.sourceVersionHash !== null && a.sourceVersionHash !== currentSourceHash}
+                    />
                   ))}
               </div>
               {/* Live drag rectangle while region-selecting. */}
@@ -1125,6 +1237,14 @@ export default function PdfReaderPage({ uiMode = 'normal' }: PdfReaderPageProps)
                         <button className="toolbar-btn" onClick={() => void commitSelection(true)}>
                           {t('pdf.annotationAdd')}
                         </button>
+                        <button
+                          className="toolbar-btn"
+                          data-testid="pdf-ai-explain"
+                          disabled={aiLoading || !pendingSelection.snippet}
+                          onClick={() => void runAiExplain('explain')}
+                        >
+                          {aiLoading ? t('pdf.aiExplainLoading') : t('pdf.aiExplain')}
+                        </button>
                         <button className="toolbar-btn" onClick={cancelPending}>
                           {t('common.cancel')}
                         </button>
@@ -1160,6 +1280,33 @@ export default function PdfReaderPage({ uiMode = 'normal' }: PdfReaderPageProps)
                     )}
                   </div>
                 </>
+              )}
+              {/* AI explanation panel for the pending selection. */}
+              {aiResult && pendingSelection && (
+                <div
+                  className="pdf-ai-result"
+                  data-testid="pdf-ai-result"
+                  style={{
+                    position: 'absolute',
+                    left: Math.max(0, pendingSelection.menuLeft),
+                    top: pendingSelection.menuTop + 44,
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                  onMouseUp={(e) => e.stopPropagation()}
+                >
+                  <div className="pdf-ai-result__title">{t('pdf.aiExplain')}</div>
+                  <div className="pdf-ai-result__body">
+                    <SafeMarkdown content={aiResult} uiMode={uiMode} locale={locale} />
+                  </div>
+                  <div className="pdf-ai-result__actions">
+                    <button className="toolbar-btn" data-testid="pdf-ai-save-note" onClick={() => void saveAiAsNote()}>
+                      {t('pdf.aiExplainSaveNote')}
+                    </button>
+                    <button className="toolbar-btn" onClick={() => setAiResult(null)}>
+                      {t('common.cancel')}
+                    </button>
+                  </div>
+                </div>
               )}
             </div>
           )}
@@ -1217,6 +1364,13 @@ export default function PdfReaderPage({ uiMode = 'normal' }: PdfReaderPageProps)
         </div>
       )}
 
+      {/* Export feedback */}
+      {exportFeedback && (
+        <div style={{ padding: '6px 16px', background: 'var(--bg-secondary)', color: 'var(--text-secondary)', fontSize: 12, borderTop: '1px solid var(--border)' }} role="status">
+          {exportFeedback}
+        </div>
+      )}
+
       {/* Error */}
       {error && (
         <div style={{ padding: '6px 16px', background: 'var(--status-failed-bg)', color: 'var(--status-failed)', fontSize: 12 }}>
@@ -1234,10 +1388,10 @@ export default function PdfReaderPage({ uiMode = 'normal' }: PdfReaderPageProps)
  * for region anchors the stored coordinates are decoded directly. The rect is
  * recomputed on mount and whenever the text layer re-renders (page/zoom
  * change) via a ResizeObserver on the text layer. */
-function HighlightRect({ annotation }: { annotation: PdfAnnotation }) {
+function HighlightRect({ annotation, stale = false }: { annotation: PdfAnnotation; stale?: boolean }) {
   const [rects, setRects] = useState<Array<{ left: number; top: number; width: number; height: number }>>([]);
   const [showNote, setShowNote] = useState(false);
-  const { locale } = useTranslation();
+  const { t, locale } = useTranslation();
   const { anchor } = annotation;
 
   useEffect(() => {
@@ -1305,13 +1459,19 @@ function HighlightRect({ annotation }: { annotation: PdfAnnotation }) {
   }, [anchor]);
 
   if (rects.length === 0) return null;
+  const rectClass = stale
+    ? 'pdf-highlight-rect--stale'
+    : annotation.highlightOnly
+      ? 'pdf-highlight-rect--mark'
+      : 'pdf-highlight-rect--note';
   return (
     <>
       {rects.map((r, i) => (
         <div
           key={i}
-          className={`pdf-highlight-rect ${annotation.highlightOnly ? 'pdf-highlight-rect--mark' : 'pdf-highlight-rect--note'}`}
+          className={`pdf-highlight-rect ${rectClass}`}
           style={{ left: r.left, top: r.top, width: r.width, height: r.height }}
+          title={stale ? t('pdf.annotationStale') : undefined}
           onClick={(e) => { e.stopPropagation(); setShowNote((v) => !v); }}
         />
       ))}
@@ -1321,6 +1481,7 @@ function HighlightRect({ annotation }: { annotation: PdfAnnotation }) {
           style={{ left: rects[0].left, top: rects[0].top + rects[0].height + 6 }}
           onClick={(e) => e.stopPropagation()}
         >
+          {stale && <div className="pdf-annotation-stale-badge">{t('pdf.annotationStale')}</div>}
           <SafeMarkdown content={annotation.note} uiMode="normal" locale={locale} />
         </div>
       )}

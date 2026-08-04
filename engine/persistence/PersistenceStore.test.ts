@@ -2035,3 +2035,24 @@ describe('PersistenceStore.rankCandidates', () => {
     expect(out).toContain('not initialized');
   });
 });
+
+describe('PersistenceStore.getPaper (METIS-OPT-2 lazy detail)', () => {
+  it('returns a full single paper including pdfText by id', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'metis-getpaper-'));
+    const store = new PersistenceStore(path.join(dir, 'metis.db'));
+    try {
+      store.savePaper({
+        id: 'lazy-1', title: 'Lazy detail', authors: ['A'], year: 2024, venue: 'V',
+        abstract: 'abs', tags: [], notes: '', readStatus: 'unread', rating: 0, addedAt: 1,
+        pdfText: 'full extracted text that the summary must not carry',
+      });
+      const full = store.getPaper('lazy-1');
+      expect(full?.id).toBe('lazy-1');
+      expect(full?.pdfText).toContain('full extracted text');
+      expect(store.getPaper('missing')).toBeUndefined();
+    } finally {
+      store.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

@@ -56,47 +56,67 @@ export class MemoryManager {
     this.store.setMemory(`summary:${sessionId}`, summary, 'conversation_summary');
   }
 
-  // ─── Cross-Session Memory ───────────────────────────────────
+  // ─── Cross-Session Memory (METIS-F12: optional projectId scoping) ──
 
-  recordKeyDecision(decision: string, context?: string): void {
+  recordKeyDecision(decision: string, context?: string, projectId?: string): void {
     const now = Date.now();
     const key = `decision:${now}`;
     const value = context ? `${decision}\n\nContext: ${context}` : decision;
-    this.store.setMemory(key, value, 'key_decision');
+    if (projectId) {
+      this.store.setMemoryScoped(projectId, key, value, 'key_decision');
+    } else {
+      this.store.setMemory(key, value, 'key_decision');
+    }
   }
 
-  getKeyDecisions(limit = 20): MemoryEntry[] {
-    return this.store.getMemoryByCategory('key_decision').slice(0, limit);
+  getKeyDecisions(limit = 20, projectId?: string): MemoryEntry[] {
+    return this.store.getMemoryByCategory('key_decision', projectId).slice(0, limit);
   }
 
-  recordPreference(key: string, value: string): void {
-    this.store.setMemory(`pref:${key}`, value, 'preference');
+  recordPreference(key: string, value: string, projectId?: string): void {
+    if (projectId) {
+      this.store.setMemoryScoped(projectId, `pref:${key}`, value, 'preference');
+    } else {
+      this.store.setMemory(`pref:${key}`, value, 'preference');
+    }
   }
 
-  getPreference(key: string): string | undefined {
-    return this.store.getMemory(`pref:${key}`)?.value;
+  getPreference(key: string, projectId?: string): string | undefined {
+    return projectId
+      ? this.store.getMemoryScoped(projectId, `pref:${key}`)?.value
+      : this.store.getMemory(`pref:${key}`)?.value;
   }
 
-  getAllPreferences(): MemoryEntry[] {
-    return this.store.getMemoryByCategory('preference');
+  getAllPreferences(projectId?: string): MemoryEntry[] {
+    return this.store.getMemoryByCategory('preference', projectId);
   }
 
   // ─── General Memory ─────────────────────────────────────────
 
-  set(key: string, value: string, category = 'general'): void {
-    this.store.setMemory(key, value, category);
+  set(key: string, value: string, category = 'general', projectId?: string): void {
+    if (projectId) {
+      this.store.setMemoryScoped(projectId, key, value, category);
+    } else {
+      this.store.setMemory(key, value, category);
+    }
   }
 
-  get(key: string): string | undefined {
-    return this.store.getMemory(key)?.value;
+  get(key: string, projectId?: string): string | undefined {
+    return projectId
+      ? this.store.getMemoryScoped(projectId, key)?.value
+      : this.store.getMemory(key)?.value;
   }
 
-  getByCategory(category: string): MemoryEntry[] {
-    return this.store.getMemoryByCategory(category);
+  getByCategory(category: string, projectId?: string): MemoryEntry[] {
+    return this.store.getMemoryByCategory(category, projectId);
   }
 
-  delete(key: string): void {
-    this.store.deleteMemory(key);
+  delete(key: string, projectId?: string): void {
+    if (projectId) {
+      this.store.deleteMemoryScoped(projectId, key);
+    } else {
+      this.store.deleteMemory(key);
+    }
   }
 
   // ─── Context Injection ──────────────────────────────────────
@@ -105,6 +125,9 @@ export class MemoryManager {
    * 构建注入 AgentLoop system prompt 的记忆上下文。
    * 包含 project memory + 最近的关键决策 + 用户偏好。
    *
+   * METIS-F12: pass a projectId to restrict injection to that project's memories
+   * (global memories remain included for backward compatibility).
+   *
    * STATUS: WIRED.
    * The Electron main process appends this context to the skillPrompt /
    * resolvedSystemPrompt before each chat turn, so recorded key decisions,
@@ -112,7 +135,7 @@ export class MemoryManager {
    * scenario runtime additionally builds its own per-step context
    * (ScenarioWorkflowService.scenarioMemoryContext).
    */
-  buildMemoryContext(): string {
+  buildMemoryContext(projectId?: string): string {
     const parts: string[] = [];
 
     const projectMemory = this.loadProjectMemory();
@@ -120,7 +143,20 @@ export class MemoryManager {
       parts.push('## Project Memory\n' + projectMemory.trim());
     }
 
-    const decisions = this.getKeyDecisions(10);
+    // METIS-F12: within a project, inject that project's memories plus global ones
+    // (legacy rows carry no project); outside any project, global memories only.
+    const mergeScopedAndGlobal = (
+      category: string,
+      limit: number,
+      sortDesc: (a: MemoryEntry, b: MemoryEntry) => number,
+    ): MemoryEntry[] => {
+      const scoped = projectId ? this.store.getMemoryByCategory(category, projectId) : [];
+      const global = this.store.getMemoryByCategory(category);
+      return [...scoped, ...global].sort(sortDesc).slice(0, limit);
+    };
+    const byUpdatedDesc = (a: MemoryEntry, b: MemoryEntry) => b.updatedAt - a.updatedAt;
+
+    const decisions = mergeScopedAndGlobal('key_decision', 10, byUpdatedDesc);
     if (decisions.length > 0) {
       parts.push(
         '## Recent Key Decisions\n' +
@@ -128,7 +164,7 @@ export class MemoryManager {
       );
     }
 
-    const prefs = this.getAllPreferences();
+    const prefs = mergeScopedAndGlobal('preference', 50, byUpdatedDesc);
     if (prefs.length > 0) {
       parts.push(
         '## User Preferences\n' +

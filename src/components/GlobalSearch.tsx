@@ -18,6 +18,9 @@ type ResultItem = {
   title: string;
   subtitle: string;
   starred?: boolean;
+  /** Selection target differs from the display key (full-text results carry a
+   * prefixed id but must select the underlying paper). */
+  selectId?: string;
 };
 
 const RECENT_SEARCHES_KEY = 'metis:recentSearches';
@@ -52,6 +55,8 @@ const PAGE_LABEL_KEYS: Record<Page, string> = {
   collections: 'nav.collections',
   tags: 'nav.tags',
   graph: 'nav.knowledgeGraph',
+  artifacts: 'nav.artifacts',
+  office: 'nav.office',
   timeline: 'nav.timeline',
   latex: 'nav.latexEditor',
   pdf: 'nav.pdfReader',
@@ -72,6 +77,11 @@ export default function GlobalSearch({ onNavigate, onClose }: GlobalSearchProps)
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [typeFilter, setTypeFilter] = useState<'all' | 'page' | 'paper' | 'note' | 'experiment' | 'collection'>('all');
   const [starredOnly, setStarredOnly] = useState(false);
+  // Full-text mode searches paper bodies in the main process (the renderer
+  // never holds pdfText). Off by default; results are merged into the list.
+  const [fullTextMode, setFullTextMode] = useState(false);
+  const [fullTextResults, setFullTextResults] = useState<Array<{ id: string; title: string; snippet: string }>>([]);
+  const [fullTextLoading, setFullTextLoading] = useState(false);
   const [recentSearches, setRecentSearches] = useState<string[]>(() => {
     try {
       const raw = localStorage.getItem(RECENT_SEARCHES_KEY);
@@ -273,14 +283,66 @@ export default function GlobalSearch({ onNavigate, onClose }: GlobalSearchProps)
     return filtered.slice(0, 20).map((s) => s.item);
   }, [searchParams, searchablePages, papers, notes, experiments, collections, t, typeFilter, starredOnly]);
 
+  // ── Full-text paper-body search (main process, debounced) ──
+  const fullTextQuery = searchParams.text ?? '';
+  useEffect(() => {
+    if (!fullTextMode || !window.metis?.searchPapersFullText) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- reset stale results when the mode/capability disappears
+      setFullTextResults([]);
+      setFullTextLoading(false);
+      return;
+    }
+    if (fullTextQuery.length < 2) {
+      setFullTextResults([]);
+      setFullTextLoading(false);
+      return;
+    }
+    setFullTextLoading(true);
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void window.metis!.searchPapersFullText!(fullTextQuery)
+        .then((result) => {
+          if (cancelled) return;
+          setFullTextResults(result?.results ?? []);
+          setFullTextLoading(false);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setFullTextResults([]);
+          setFullTextLoading(false);
+        });
+    }, 300);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [fullTextMode, fullTextQuery]);
+
+  // Merge full-text hits into the local results. A paper matched by both
+  // sources is represented once, by the full-text hit (richer snippet).
+  const mergedResults = useMemo(() => {
+    if (fullTextResults.length === 0) return results;
+    const fullTextIds = new Set(fullTextResults.map((hit) => hit.id));
+    const local = results.filter(
+      (item) => !(item.entityType === 'paper' && fullTextIds.has(item.id)),
+    );
+    const fullTextItems: ResultItem[] = fullTextResults.map((hit) => ({
+      id: `fulltext-${hit.id}`,
+      page: 'papers',
+      kind: 'entity',
+      entityType: 'paper',
+      title: hit.title,
+      subtitle: hit.snippet,
+      selectId: hit.id,
+    }));
+    return [...local, ...fullTextItems];
+  }, [results, fullTextResults]);
+
   // Keep the selected index within bounds if the result list shrinks.
-  const safeSelectedIndex = selectedIndex < results.length ? selectedIndex : Math.max(0, results.length - 1);
+  const safeSelectedIndex = selectedIndex < mergedResults.length ? selectedIndex : Math.max(0, mergedResults.length - 1);
 
   const handleSelect = useCallback((item: ResultItem) => {
     saveRecentSearch(query);
     if (item.kind === 'entity') {
       if (item.page === 'papers' && item.entityType !== 'collection') {
-        setSelectedPaperId(item.id);
+        setSelectedPaperId(item.selectId ?? item.id);
       } else if (item.page === 'notes') {
         selectNote(item.id);
       } else if (item.page === 'experiments') {
@@ -298,21 +360,21 @@ export default function GlobalSearch({ onNavigate, onClose }: GlobalSearchProps)
         onClose();
         return;
       }
-      if (results.length === 0) return;
+      if (mergedResults.length === 0) return;
       if (e.key === 'ArrowDown') {
         e.preventDefault();
-        setSelectedIndex((idx) => (idx + 1) % results.length);
+        setSelectedIndex((idx) => (idx + 1) % mergedResults.length);
       } else if (e.key === 'ArrowUp') {
         e.preventDefault();
-        setSelectedIndex((idx) => (idx - 1 + results.length) % results.length);
+        setSelectedIndex((idx) => (idx - 1 + mergedResults.length) % mergedResults.length);
       } else if (e.key === 'Enter') {
         e.preventDefault();
-        handleSelect(results[safeSelectedIndex]!);
+        handleSelect(mergedResults[safeSelectedIndex]!);
       }
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose, results, safeSelectedIndex, handleSelect]);
+  }, [onClose, mergedResults, safeSelectedIndex, handleSelect]);
 
   return (
     <div className="modal-overlay" onClick={onClose} style={{ alignItems: 'flex-start', paddingTop: '10vh' }}>
@@ -344,12 +406,25 @@ export default function GlobalSearch({ onNavigate, onClose }: GlobalSearchProps)
               {t(`globalSearch.filter${type.charAt(0).toUpperCase() + type.slice(1)}`)}
             </button>
           ))}
+          <button
+            type="button"
+            data-testid="fulltext-toggle"
+            className={`btn-sm ${fullTextMode ? 'btn-primary' : 'btn-secondary'}`}
+            onClick={() => { setFullTextMode((v) => !v); setSelectedIndex(0); }}
+          >
+            {t('globalSearch.filterFullText')}
+          </button>
           <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, cursor: 'pointer', marginLeft: 'auto' }}>
             <input type="checkbox" checked={starredOnly} onChange={(e) => { setStarredOnly(e.target.checked); setSelectedIndex(0); }} />
             {t('globalSearch.filterStarred')}
           </label>
         </div>
         <div style={{ maxHeight: '60vh', overflowY: 'auto', padding: '8px 0' }}>
+          {fullTextLoading && (
+            <div style={{ padding: '8px 16px', fontSize: 12, color: 'var(--text-secondary)' }}>
+              {t('globalSearch.fullTextSearching')}
+            </div>
+          )}
           {query.trim() === '' && recentSearches.length > 0 && (
             <div style={{ padding: '8px 16px 12px', borderBottom: '1px solid var(--border)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
@@ -378,17 +453,17 @@ export default function GlobalSearch({ onNavigate, onClose }: GlobalSearchProps)
               </div>
             </div>
           )}
-          {results.length === 0 && query.trim() !== '' && (
+          {mergedResults.length === 0 && query.trim() !== '' && (
             <div style={{ padding: '16px 20px', fontSize: 13, color: 'var(--text-secondary)' }}>
               {t('globalSearch.noResults')}
             </div>
           )}
-          {results.length === 0 && query.trim() === '' && recentSearches.length === 0 && (
+          {mergedResults.length === 0 && query.trim() === '' && recentSearches.length === 0 && (
             <div style={{ padding: '16px 20px', fontSize: 13, color: 'var(--text-secondary)' }}>
               {t('globalSearch.hint')}
             </div>
           )}
-          {results.map((item, idx) => (
+          {mergedResults.map((item, idx) => (
             <button
               key={`${item.page}-${item.id}`}
               data-testid="search-result"

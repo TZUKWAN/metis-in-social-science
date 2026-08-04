@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 
-import { render, waitFor, fireEvent } from '@testing-library/react';
+import { render, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const openAlexMock = vi.fn();

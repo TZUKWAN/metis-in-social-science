@@ -35,7 +35,7 @@ describe('BackupService', () => {
   });
 
   it('writes a timestamped snapshot into the backups directory', async () => {
-    const service = new BackupService(store, backupsDir, 5);
+    const service = new BackupService(store, backupsDir, path.join(dir, 'metis.db'), 5);
     const result = await service.runBackup();
     expect(result.ok).toBe(true);
     expect(result.destination).toBeTruthy();
@@ -47,7 +47,7 @@ describe('BackupService', () => {
   });
 
   it('trims to the configured keep count, keeping the newest', async () => {
-    const service = new BackupService(store, backupsDir, 3);
+    const service = new BackupService(store, backupsDir, path.join(dir, 'metis.db'), 3);
     // Run several backups; space them with distinct timestamps via the filename.
     for (let i = 0; i < 6; i++) {
       await service.runBackup();
@@ -63,14 +63,14 @@ describe('BackupService', () => {
     // Point backupsDir at a path that cannot be created (a file blocks mkdir).
     const blockingFile = path.join(dir, 'blocker');
     fs.writeFileSync(blockingFile, 'x');
-    const service = new BackupService(store, path.join(blockingFile, 'nested'), 5);
+    const service = new BackupService(store, path.join(blockingFile, 'nested'), path.join(dir, 'metis.db'), 5);
     const result = await service.runBackup();
     expect(result.ok).toBe(false);
     expect(result.error).toBeTruthy();
   });
 
   it('lists backups newest-first', async () => {
-    const service = new BackupService(store, backupsDir, 5);
+    const service = new BackupService(store, backupsDir, path.join(dir, 'metis.db'), 5);
     await service.runBackup();
     await new Promise((r) => setTimeout(r, 15));
     await service.runBackup();

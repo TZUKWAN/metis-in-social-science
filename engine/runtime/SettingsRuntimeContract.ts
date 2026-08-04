@@ -20,12 +20,15 @@ export const SettingsViewSchema = z.strictObject({
   needsReauth: z.boolean(),
   theme: ThemeModeSchema,
   weeklyReadingGoal: z.number().int().min(1).max(100).default(5),
+  providerVision: z.boolean().default(false),
 });
 export type SettingsView = z.infer<typeof SettingsViewSchema>;
 
 export const SettingsUpdateRequestSchema = z.strictObject({
   theme: ThemeModeSchema,
   weeklyReadingGoal: z.number().int().min(1).max(100).optional(),
+  /** METIS-WX-2: whether the configured model accepts inline images. */
+  providerVision: z.boolean().optional(),
 });
 export type SettingsUpdateRequest = z.infer<typeof SettingsUpdateRequestSchema>;
 
@@ -45,6 +48,7 @@ export function createSettingsViewRecovery(): SettingsView {
     needsReauth: false,
     theme: 'light',
     weeklyReadingGoal: 5,
+    providerVision: false,
   };
 }
 

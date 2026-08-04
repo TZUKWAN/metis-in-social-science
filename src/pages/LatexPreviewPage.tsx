@@ -405,6 +405,12 @@ export default function LatexPreviewPage() {
   const [bibSource, setBibSource] = useState(() => papers.map((p) => paperToBibtex(p)).join('\n\n'));
   const bibSourceRef = useRef(bibSource);
   const sourceRef = useRef<HTMLTextAreaElement>(null);
+  // AI polish of the current editor selection (main-process one-shot).
+  const [aiPolishResult, setAiPolishResult] = useState<string | null>(null);
+  const [aiPolishLoading, setAiPolishLoading] = useState(false);
+  const [aiPolishError, setAiPolishError] = useState(false);
+  // The editor selection captured when polish starts (used by Replace).
+  const aiPolishRangeRef = useRef<{ start: number; end: number } | null>(null);
 
   useEffect(() => {
     bibSourceRef.current = bibSource;
@@ -538,8 +544,43 @@ export default function LatexPreviewPage() {
     setShowCitationPanel(false);
   }, []);
 
-  const loadTemplate = useCallback((template: LatexTemplate) => {
-    setSource(template.content);
+  /** Run AI polish on the current editor selection. */
+  const runAiPolish = async () => {
+    const textarea = sourceRef.current;
+    const metis = window.metis;
+    if (aiPolishLoading || !textarea || !metis?.aiPolishLatex) return;
+    const start = textarea.selectionStart ?? 0;
+    const end = textarea.selectionEnd ?? 0;
+    const selected = source.slice(start, end).trim();
+    if (!selected) return;
+    aiPolishRangeRef.current = { start, end };
+    setAiPolishLoading(true);
+    setAiPolishResult(null);
+    setAiPolishError(false);
+    try {
+      const result = await metis.aiPolishLatex({ text: selected, action: 'polish' });
+      if (result.ok && result.text) {
+        setAiPolishResult(result.text);
+      } else {
+        setAiPolishError(true);
+      }
+    } catch {
+      setAiPolishError(true);
+    } finally {
+      setAiPolishLoading(false);
+    }
+  };
+
+  /** Replace the captured selection with the polished text. */
+  const applyAiPolish = () => {
+    const range = aiPolishRangeRef.current;
+    if (!range || aiPolishResult === null) return;
+    setSource((prev) => `${prev.slice(0, range.start)}${aiPolishResult}${prev.slice(range.end)}`);
+    setAiPolishResult(null);
+    aiPolishRangeRef.current = null;
+  };
+
+  const loadTemplate = useCallback((template: LatexTemplate) => {    setSource(template.content);
     setActiveTemplate(template.id);
     setShowTemplatePanel(false);
     setCompileStatus('idle');
@@ -619,6 +660,16 @@ export default function LatexPreviewPage() {
           >
             {t('latex.toolbarCheckCitations')}
           </button>
+          <button
+            className="btn-secondary"
+            data-testid="latex-ai-polish"
+            disabled={aiPolishLoading}
+            onClick={() => void runAiPolish()}
+            style={{ fontSize: 11, padding: '4px 10px' }}
+            title={t('latex.aiPolishTooltip')}
+          >
+            {aiPolishLoading ? t('latex.aiPolishLoading') : t('latex.aiPolish')}
+          </button>
           <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--text-secondary)' }}>
             <input
               type="checkbox"
@@ -638,6 +689,29 @@ export default function LatexPreviewPage() {
           </button>
         </div>
       </div>
+
+      {/* AI polish result */}
+      {aiPolishError && (
+        <div role="alert" style={{ padding: '8px 12px', margin: '8px 16px', background: 'var(--status-failed-bg)', color: 'var(--status-failed)', borderRadius: 6, fontSize: 13 }}>
+          {t('latex.aiPolishFailed')}
+        </div>
+      )}
+      {aiPolishResult !== null && (
+        <div className="modal-overlay" onClick={() => setAiPolishResult(null)}>
+          <div className="modal modal-wide" data-testid="latex-ai-polish-modal" onClick={(e) => e.stopPropagation()}>
+            <h3>{t('latex.aiPolishResultTitle')}</h3>
+            <div style={{ maxHeight: '55vh', overflowY: 'auto', marginTop: 12, fontSize: 13, lineHeight: 1.7, whiteSpace: 'pre-wrap', fontFamily: 'monospace' }}>
+              {aiPolishResult}
+            </div>
+            <div className="modal-actions" style={{ marginTop: 16 }}>
+              <button className="btn-primary" data-testid="latex-ai-polish-apply" onClick={applyAiPolish}>
+                {t('latex.aiPolishApply')}
+              </button>
+              <button className="btn-secondary" onClick={() => setAiPolishResult(null)}>{t('common.cancel')}</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Template Panel */}
       {showTemplatePanel && (

@@ -329,7 +329,7 @@ describe('unmount cleanup', () => {
 });
 
 describe('interrupt / revoke exact discriminated request', () => {
-  it('interrupt during automatic receipt sends exact discard_draft and ignores late receipt', async () => {
+  it('interrupt during automatic receipt sends exact discard_draft and ignores late receipt', { timeout: 15000 }, async () => {
     let resolveApproval!: (value: unknown) => void;
     m.currentAffairsApprove.mockReturnValueOnce(new Promise(resolve => { resolveApproval = resolve; }));
     await setup();

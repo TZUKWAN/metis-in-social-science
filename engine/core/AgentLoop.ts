@@ -122,6 +122,7 @@ interface RunContext {
   signal?: AbortSignal;
   liveSteering?: LiveSteeringSource;
   lastSteeringSequence: number;
+  projectId?: string;
 }
 
 // ─── Sentinel: early-return signals from sub-methods ──────────
@@ -284,6 +285,7 @@ export class AgentLoop {
       signal: request.signal,
       liveSteering: request.liveSteering,
       lastSteeringSequence: 0,
+      projectId: request.projectId,
     };
 
     if (fullAccessResult && !fullAccessResult.success) {
@@ -717,6 +719,7 @@ export class AgentLoop {
       turnIndex,
       provider: this.provider,
       signal: ctx.signal,
+      ...(ctx.projectId ? { projectId: ctx.projectId } : {}),
     };
 
     const toolResult = await this.dispatcher.dispatch(call, toolContext);
@@ -1013,7 +1016,17 @@ export class AgentLoop {
         usedRealStream = true;
         finalContent += chunk.content ?? '';
         if (chunk.reasoning) finalReasoning = (finalReasoning ?? '') + chunk.reasoning;
-        if (chunk.toolCalls) finalToolCalls = [...finalToolCalls, ...chunk.toolCalls];
+        if (chunk.toolCalls) {
+          // SSE streams deliver tool-call deltas: fragments without a name are
+          // meaningless on their own, and later chunks carry the full arguments.
+          // Keep the most complete version per id instead of accumulating both.
+          for (const tc of chunk.toolCalls) {
+            if (!tc.name || tc.name.trim() === '') continue;
+            const idx = finalToolCalls.findIndex((existing) => existing.id !== '' && tc.id !== '' && existing.id === tc.id);
+            if (idx >= 0) finalToolCalls[idx] = tc;
+            else finalToolCalls.push(tc);
+          }
+        }
         if (chunk.isFinished && chunk.usage) finalUsage = chunk.usage;
         await this.hooks.emitAsync('model.stream_chunk', {
           sessionId,

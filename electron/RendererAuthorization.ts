@@ -8,7 +8,9 @@ export interface RendererMainFrameContext {
 function normalizeDocumentUrl(rawUrl: string): string | null {
   try {
     const parsed = new URL(rawUrl);
-    if (parsed.protocol !== 'file:' && parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    // metis-app: is the privileged custom scheme serving the production
+    // renderer bundle (file:// cannot load ESM modules).
+    if (parsed.protocol !== 'file:' && parsed.protocol !== 'http:' && parsed.protocol !== 'https:' && parsed.protocol !== 'metis-app:') {
       return null;
     }
     parsed.hash = '';

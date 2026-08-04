@@ -48,6 +48,7 @@ interface RunPersistedScenarioWorkflowOptions {
   mode?: ChatTurnMode;
   signal?: AbortSignal;
   liveSteering?: LiveSteeringSource;
+  projectId?: string;
   isCurrentRuntime?: () => boolean;
 }
 
@@ -323,6 +324,7 @@ export async function runPersistedScenarioWorkflow({
   mode = 'send',
   signal,
   liveSteering,
+  projectId,
   isCurrentRuntime,
 }: RunPersistedScenarioWorkflowOptions): Promise<AgentResponse> {
   const turnId = safeTurnId(requestId);
@@ -402,6 +404,7 @@ export async function runPersistedScenarioWorkflow({
           fullAccess: manifest.fullAccess,
           signal,
           liveSteering,
+          projectId,
         });
         if (lastResult.status === 'completed' && lastResult.finalVerified && lastResult.finalText.trim()) {
           if (!finalOutputPlan) break;

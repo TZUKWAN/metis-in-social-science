@@ -34,6 +34,8 @@ import type {
 } from '../../engine/runtime/SetupRuntimeContract';
 import SettingsProjectMemorySection from './SettingsProjectMemorySection';
 import SettingsBackupSection from './SettingsBackupSection';
+import SettingsProjectArchiveSection from './SettingsProjectArchiveSection';
+import SettingsWeChatBotSection from './SettingsWeChatBotSection';
 import SettingsDiagnosticSection from './SettingsDiagnosticSection';
 import { ZoteroSettingsSection } from './ZoteroSettingsSection';
 import { ToolCatalogPanel } from './ToolCatalogPanel';
@@ -65,6 +67,8 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
   const [editModel, setEditModel] = useState('');
   const [editApiKey, setEditApiKey] = useState('');
   const [showApiKeyInput, setShowApiKeyInput] = useState(false);
+  const [providerVision, setProviderVision] = useState(false);
+  const [visionSaveStatus, setVisionSaveStatus] = useState<'idle' | 'saved'>('idle');
 
   const [providerTestStatus, setProviderTestStatus] = useState<ProviderTestStatus>('idle');
   const [providerTestMessage, setProviderTestMessage] = useState('');
@@ -157,6 +161,7 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
       setHasApiKey(settings.hasApiKey);
       setNeedsReauth(settings.needsReauth);
       if (settings.needsReauth) setShowApiKeyInput(true);
+      if (typeof settings.providerVision === 'boolean') setProviderVision(settings.providerVision);
     }).catch(() => { /* ignore */ });
   }, []);
 
@@ -735,6 +740,32 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
           />
         </div>
 
+        {/* Vision (multimodal) — METIS-WX-2: gates WeChat image understanding */}
+        <div style={{ marginBottom: 12 }}>
+          <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, color: 'var(--text-secondary)', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={providerVision}
+              onChange={(e) => {
+                const next = e.target.checked;
+                setProviderVision(next);
+                void window.metis?.setSettings?.({
+                  theme,
+                  weeklyReadingGoal,
+                  providerVision: next,
+                }).then((result) => {
+                  if (result?.success) setVisionSaveStatus('saved');
+                });
+              }}
+              data-testid="provider-vision-toggle"
+            />
+            {t('settings.providerVision')}
+            {visionSaveStatus === 'saved' && (
+              <span style={{ fontSize: 11, color: 'var(--status-completed)' }}>✓</span>
+            )}
+          </label>
+        </div>
+
         {/* API Key — masked, never displayed */}
         <div style={{ marginBottom: 12 }}>
           <label
@@ -892,6 +923,12 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
 
       {/* Data backup / import */}
       <SettingsBackupSection uiMode={uiMode} />
+
+      {/* Complete project archive (METIS-F10) */}
+      <SettingsProjectArchiveSection uiMode={uiMode} />
+
+      {/* WeChat Bot (METIS-WX-1) */}
+      <SettingsWeChatBotSection />
 
       {/* Tool catalog — browse builtin agent tools by category */}
       <ToolCatalogPanel />

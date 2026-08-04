@@ -31,11 +31,17 @@ export interface OpenAICompatProviderConfig {
   timeout?: number;
   maxRetries?: number;
   retryBackoffSeconds?: number;
+  /** User-declared multimodal support (gates inline image content). */
+  vision?: boolean;
 }
 
 interface OpenAIMessage {
   role: string;
-  content: string | null;
+  content: string | null | Array<{
+    type: 'text' | 'image_url';
+    text?: string;
+    image_url?: { url: string };
+  }>;
   tool_calls?: Array<{
     id: string;
     type: 'function';
@@ -148,7 +154,10 @@ export class OpenAICompatProvider extends BaseProvider {
     this.timeout = Math.min(config.timeout ?? 60_000, MAX_TIMEOUT_MS);
     this.maxRetries = config.maxRetries ?? 3;
     this.retryBackoffSeconds = config.retryBackoffSeconds ?? 2;
-    this.caps = detectCapabilities(this.model);
+    this.caps = {
+      ...detectCapabilities(this.model),
+      ...(config.vision ? { vision: true } : {}),
+    };
     this.rateLimiter = getRateLimiter(this.model, this.caps.maxConcurrency ?? 2);
   }
 
@@ -303,6 +312,22 @@ export class OpenAICompatProvider extends BaseProvider {
         role: msg.role,
         content: msg.content,
       };
+
+      // METIS-WX-2 vision: inline images become standard OpenAI image_url
+      // content blocks (data URIs). Text + images share one message so
+      // multimodal models see them together. Only when the model declares
+      // vision — otherwise image content is dropped to avoid 4xx errors.
+      if (msg.images && msg.images.length > 0 && this.caps.vision) {
+        formatted.content = [
+          { type: 'text', text: msg.content ?? '' },
+          ...msg.images.map((image) => ({
+            type: 'image_url' as const,
+            image_url: {
+              url: `data:${image.mime ?? 'image/jpeg'};base64,${image.dataBase64}`,
+            },
+          })),
+        ];
+      }
 
       if (msg.toolCalls && msg.toolCalls.length > 0) {
         formatted.tool_calls = msg.toolCalls.map((tc) => ({

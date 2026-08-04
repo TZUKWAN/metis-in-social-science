@@ -143,11 +143,13 @@ CREATE TABLE IF NOT EXISTS memory (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL DEFAULT '',
   category TEXT NOT NULL DEFAULT 'general',
+  project_id TEXT,                                -- METIS-F12: NULL = global memory; set = project-scoped
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_memory_category ON memory(category);
+CREATE INDEX IF NOT EXISTS idx_memory_project ON memory(project_id);
 
 CREATE TABLE IF NOT EXISTS mcp_servers (
   id TEXT PRIMARY KEY,

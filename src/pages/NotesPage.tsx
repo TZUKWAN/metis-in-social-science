@@ -4,6 +4,8 @@ import { useTranslation } from '../i18n';
 import { setPendingChatIntent } from '../lib/chatIntent.js';
 import SearchInput from '../components/SearchInput';
 import ConfirmDialog from '../components/ConfirmDialog';
+import FlashcardsPanel from '../components/FlashcardsPanel';
+import { addFlashcard } from '../lib/flashcards';
 import { SafeMarkdown } from '../presentation/SafeMarkdown';
 import type { UIMode } from '../../engine/capabilities/DiagnosticMode';
 
@@ -28,8 +30,18 @@ export default function NotesPage({ onNavigate, uiMode = 'normal' }: NotesPagePr
   const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false);
   const [bulkTagInput, setBulkTagInput] = useState('');
   const [showBulkTagInput, setShowBulkTagInput] = useState(false);
+  // Flashcards review panel (cards live in localStorage via FlashcardsPanel).
+  const [showFlashcards, setShowFlashcards] = useState(false);
+  const [flashcardNotice, setFlashcardNotice] = useState('');
   const contentRef = useRef<HTMLTextAreaElement>(null);
   const titleInputRef = useRef<HTMLInputElement>(null);
+
+  /** Convert the current note into a flashcard (front=title, back=content). */
+  const noteToFlashcard = (noteItem: typeof notes[number]) => {
+    if (!noteItem.title.trim() || !noteItem.content.trim()) return;
+    addFlashcard(noteItem.title, noteItem.content.slice(0, 500));
+    setFlashcardNotice(t('flashcards.noteToFlashcardDone'));
+  };
 
   function handleWritingQualityCheck(noteItem: typeof notes[number]) {
     const message = `Please check the academic writing quality of the following note. Provide clarity, structure, tone, and machine-writing-pattern feedback, plus concrete revision priorities.\n\nTitle: ${noteItem.title}\n\n${noteItem.content}`;
@@ -169,6 +181,14 @@ export default function NotesPage({ onNavigate, uiMode = 'normal' }: NotesPagePr
       <aside className="notes-sidebar">
         <div className="notes-toolbar">
           <button className="btn-primary" onClick={handleCreate}>{t('notes.newNote')}</button>
+          <button
+            className="btn-secondary"
+            data-testid="notes-flashcards"
+            onClick={() => setShowFlashcards(true)}
+            style={{ marginLeft: 8 }}
+          >
+            {t('flashcards.title')}
+          </button>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
           <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13, cursor: 'pointer' }}>
@@ -375,7 +395,19 @@ export default function NotesPage({ onNavigate, uiMode = 'normal' }: NotesPagePr
               >
                 {t('notes.writingQualityCheck')}
               </button>
+              <button
+                className="btn-secondary btn-sm"
+                data-testid="note-to-flashcard"
+                onClick={() => noteToFlashcard(note)}
+              >
+                {t('flashcards.noteToFlashcard')}
+              </button>
             </div>
+            {flashcardNotice && (
+              <div role="status" style={{ fontSize: 12, color: 'var(--text-secondary)', margin: '6px 0' }}>
+                {flashcardNotice}
+              </div>
+            )}
             {previewMode ? (
               <div
                 data-testid="note-preview"
@@ -419,6 +451,9 @@ export default function NotesPage({ onNavigate, uiMode = 'normal' }: NotesPagePr
           </div>
         )}
       </main>
+      {showFlashcards && (
+        <FlashcardsPanel onClose={() => { setShowFlashcards(false); setFlashcardNotice(''); }} />
+      )}
       {showPaperLinkModal && (
         <div className="modal-overlay" onClick={() => setShowPaperLinkModal(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
