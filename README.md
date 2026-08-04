@@ -102,13 +102,13 @@ PDF、书目记录、集合、标签、阅读状态、研究产物，始终与�
 
 任何 OpenAI 兼容服务都可以作为后端。Metis 不锁定任何单一供应商。
 
-![模型配置](docs/screenshots/provider-config.png)
+![模型配置](docs/screenshots/provider-setup.png)
 
 ### 暗色主题笔记
 
 笔记是研究产物的温床：草稿、引文、思路、待办、卡片——全部支持 Markdown。
 
-![笔记](docs/screenshots/notes-dark.png)
+![笔记](docs/screenshots/research-notes-dark.png)
 
 ---
 
