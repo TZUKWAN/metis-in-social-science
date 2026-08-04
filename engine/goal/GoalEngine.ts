@@ -86,6 +86,27 @@ export class GoalEngine {
     return Array.from(this.goals.values()).sort((a, b) => b.createdAt - a.createdAt);
   }
 
+  /** Transition a goal to a new status (kanban column move). */
+  setStatus(goalId: string, status: Goal['status']): boolean {
+    const goal = this.goals.get(goalId);
+    if (!goal) return false;
+    goal.status = status;
+    return true;
+  }
+
+  /** Update a goal's priority (kanban card color). */
+  setPriority(goalId: string, priority: Goal['priority']): boolean {
+    const goal = this.goals.get(goalId);
+    if (!goal) return false;
+    goal.priority = priority;
+    return true;
+  }
+
+  /** Delete a goal permanently. */
+  deleteGoal(goalId: string): boolean {
+    return this.goals.delete(goalId);
+  }
+
   // ─── Plan Generation ────────────────────────────────────────
 
   /**

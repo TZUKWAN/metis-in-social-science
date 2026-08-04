@@ -78,6 +78,7 @@ import {
   decodeWorkspaceAgentsGetRequest,
 } from '../engine/runtime/WorkspaceAgentsContract.js';
 import { GoalEngine } from '../engine/goal/GoalEngine.js';
+import type { Goal } from '../engine/goal/GoalPlanner.js';
 import { parseLatexLog } from '../engine/latex/LatexLogParser.js';
 import type { WorkflowDefinition, WorkflowHooks } from '../engine/workflow/types.js';
 import { MCPManager } from '../engine/mcp/MCPManager.js';
@@ -3887,13 +3888,31 @@ function setupIPC(): void {
         : 20;
       if (query.length < 2) return { results: [] };
       if (!store) return { results: [] };
-      // SQL LIKE query: only matching rows are loaded (not the whole library).
-      const pattern = `%${query}%`;
-      const rows = store.raw.prepare(`
-        SELECT id, title, abstract, pdf_text FROM papers
-        WHERE title LIKE ? OR abstract LIKE ? OR pdf_text LIKE ?
-        ORDER BY added_at DESC LIMIT ?
-      `).all(pattern, pattern, pattern, limit + 1) as Array<{ id: string; title: string; abstract: string | null; pdf_text: string | null }>;
+      // Prefer FTS5 index when available (10-100x faster on large libraries);
+      // fall back to SQL LIKE otherwise.
+      let rows: Array<{ id: string; title: string; abstract: string | null; pdf_text: string | null }>;
+      const ftsAvailable = store.raw.prepare(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'papers_fts'",
+      ).get();
+      if (ftsAvailable) {
+        // Rebuild the index before searching (contentless FTS5 — no triggers).
+        store.reindexPapersFts();
+        // FTS5: wrap each term in quotes for exact phrase matching.
+        const ftsQuery = query.split(/\s+/).filter(Boolean).map((term) => `"${term}"`).join(' ');
+        rows = store.raw.prepare(`
+          SELECT p.id, p.title, p.abstract, p.pdf_text FROM papers p
+          JOIN papers_fts ON papers_fts.rowid = p.rowid
+          WHERE papers_fts MATCH ?
+          ORDER BY p.added_at DESC LIMIT ?
+        `).all(ftsQuery, limit + 1) as typeof rows;
+      } else {
+        const pattern = `%${query}%`;
+        rows = store.raw.prepare(`
+          SELECT id, title, abstract, pdf_text FROM papers
+          WHERE title LIKE ? OR abstract LIKE ? OR pdf_text LIKE ?
+          ORDER BY added_at DESC LIMIT ?
+        `).all(pattern, pattern, pattern, limit + 1) as typeof rows;
+      }
       const results: Array<{ id: string; title: string; snippet: string }> = [];
       for (const row of rows) {
         if (results.length >= limit) break;
@@ -4340,6 +4359,49 @@ function setupIPC(): void {
       return [];
     }
     return [];
+  });
+
+  // ── Kanban status/priority transitions ──────────────────
+  ipcMain.handle('goal:updateStatus', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = rawRequest as { goalId?: unknown; status?: unknown };
+      const goalId = typeof request?.goalId === 'string' ? request.goalId : '';
+      const status = typeof request?.status === 'string' ? request.status : '';
+      const valid = new Set(['draft', 'planning', 'ready', 'running', 'paused', 'completed', 'failed']);
+      if (!goalId || !valid.has(status) || !goalEngine) return { ok: false, error: 'invalid_request' };
+      const updated = goalEngine.setStatus(goalId, status as Goal['status']);
+      return updated ? { ok: true } : { ok: false, error: 'not_found' };
+    } catch {
+      return { ok: false, error: 'unauthorized_renderer' };
+    }
+  });
+
+  ipcMain.handle('goal:updatePriority', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = rawRequest as { goalId?: unknown; priority?: unknown };
+      const goalId = typeof request?.goalId === 'string' ? request.goalId : '';
+      const priority = typeof request?.priority === 'string' ? request.priority : '';
+      const valid = new Set(['low', 'medium', 'high', 'urgent']);
+      if (!goalId || !valid.has(priority) || !goalEngine) return { ok: false, error: 'invalid_request' };
+      const updated = goalEngine.setPriority(goalId, priority as Goal['priority']);
+      return updated ? { ok: true } : { ok: false, error: 'not_found' };
+    } catch {
+      return { ok: false, error: 'unauthorized_renderer' };
+    }
+  });
+
+  ipcMain.handle('goal:delete', (event, rawGoalId: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const goalId = typeof rawGoalId === 'string' ? rawGoalId : '';
+      if (!goalId || !goalEngine) return { ok: false, error: 'invalid_request' };
+      const deleted = goalEngine.deleteGoal(goalId);
+      return deleted ? { ok: true } : { ok: false, error: 'not_found' };
+    } catch {
+      return { ok: false, error: 'unauthorized_renderer' };
+    }
   });
 
   // ── Skills ──────────────────────────────────────────────

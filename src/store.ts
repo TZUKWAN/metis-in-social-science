@@ -33,7 +33,7 @@ function resolveTheme(theme: ThemeMode): 'light' | 'dark' {
   return theme;
 }
 export type TopLevelEntry = 'projects' | 'library' | 'settings';
-export type Page = TopLevelEntry | 'dashboard' | 'chat' | 'goal' | 'papers' | 'collections' | 'tags' | 'graph' | 'timeline' | 'latex' | 'pdf' | 'notes' | 'experiments' | 'evals' | 'artifacts' | 'office';
+export type Page = TopLevelEntry | 'dashboard' | 'chat' | 'goal' | 'papers' | 'collections' | 'tags' | 'graph' | 'timeline' | 'latex' | 'pdf' | 'notes' | 'experiments' | 'evals' | 'artifacts' | 'office' | 'kanban';
 
 export interface NoteItem {
   id: string;

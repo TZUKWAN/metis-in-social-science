@@ -332,6 +332,10 @@ export default function PapersPage({ onNavigate, uiMode = 'normal' }: PapersPage
    * citation count is refreshed unconditionally since it changes over time. */
   const handleCompleteMetadata = async (paper: PaperItem) => {
     if (completingMetadata) return;
+    if (!navigator.onLine) {
+      setMetadataFeedback(locale === 'zh' ? '元数据补全需要联网，当前处于离线状态。' : 'Metadata completion requires an internet connection.');
+      return;
+    }
     setCompletingMetadata(true);
     setMetadataFeedback(null);
     try {
@@ -546,6 +550,7 @@ export default function PapersPage({ onNavigate, uiMode = 'normal' }: PapersPage
   // than 6 hours since the last refresh (recorded in localStorage).
   useEffect(() => {
     if (!showRssPanel || rssFeeds.length === 0) return;
+    if (!navigator.onLine) return; // offline: skip auto-refresh silently
     const last = Number(localStorage.getItem('metis-rss-last-refresh') ?? '0');
     if (Date.now() - last < 6 * 3600 * 1000) return;
     const feedUrl = rssFeeds[0]!;
@@ -1718,6 +1723,10 @@ export default function PapersPage({ onNavigate, uiMode = 'normal' }: PapersPage
                     className="btn-sm btn-secondary"
                     style={{ flex: 1, justifyContent: 'flex-start', overflow: 'hidden', textOverflow: 'ellipsis' }}
                     onClick={() => {
+                      if (!navigator.onLine) {
+                        setRssError(locale === 'zh' ? 'RSS 刷新需要联网，当前处于离线状态。' : 'RSS refresh requires an internet connection.');
+                        return;
+                      }
                       setRssLoading(true);
                       setRssError('');
                       void fetchRssFeed(feedUrl).then((feed) => {

@@ -906,6 +906,9 @@ const api = {
   getGoalProgress: (goalId: string) => ipcRenderer.invoke('goal:getProgress', goalId),
   archiveGoal: (goalId: string) => ipcRenderer.invoke('goal:archive', goalId),
   listArchives: () => ipcRenderer.invoke('goal:listArchives'),
+  updateGoalStatus: async (request: { goalId: string; status: string }) => ipcRenderer.invoke('goal:updateStatus', request) as Promise<{ ok: boolean; error?: string }>,
+  updateGoalPriority: async (request: { goalId: string; priority: string }) => ipcRenderer.invoke('goal:updatePriority', request) as Promise<{ ok: boolean; error?: string }>,
+  deleteGoal: async (goalId: string) => ipcRenderer.invoke('goal:delete', goalId) as Promise<{ ok: boolean; error?: string }>,
 
   onGoalStepStart: (callback: (data: GoalStepStartEvent) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, data: unknown) => {

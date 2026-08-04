@@ -208,6 +208,37 @@ export class PersistenceStore {
     this.migratePapersPdfText();
     this.migrateCollections();
     this.migrateArtifactContent();
+    this.migrateFtsIndex();
+  }
+
+  /** Create the FTS5 full-text index for papers (idempotent). Contentless
+   *  mode: no per-row triggers (which slow bulk inserts); call
+   *  `reindexPapersFts()` after large imports or before search. */
+  private migrateFtsIndex(): void {
+    const ftsExists = this.db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'papers_fts'",
+    ).get();
+    if (ftsExists) return;
+    try {
+      this.db.exec(`
+        CREATE VIRTUAL TABLE papers_fts USING fts5(
+          title, authors, abstract, pdf_text,
+          content='papers', content_rowid='rowid'
+        );
+      `);
+      this.reindexPapersFts();
+    } catch {
+      // FTS5 not available in this SQLite build — fall back to LIKE search.
+    }
+  }
+
+  /** Rebuild the FTS5 index from the papers table (idempotent, fast). */
+  reindexPapersFts(): void {
+    try {
+      this.db.exec(`
+        INSERT INTO papers_fts(papers_fts) VALUES('rebuild');
+      `);
+    } catch { /* FTS5 unavailable */ }
   }
 
   private migrateArtifactContent(): void {

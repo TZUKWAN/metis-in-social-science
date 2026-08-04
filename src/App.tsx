@@ -7,6 +7,7 @@ import { useMetisStore } from './store'
 import GlobalSearch from './components/GlobalSearch'
 import ShortcutsHelp from './components/ShortcutsHelp'
 import ErrorBoundary from './components/ErrorBoundary'
+import { shouldShowOnboarding } from './lib/onboarding'
 import type { WorkspaceMode } from './shell/ProjectShell'
 import { getTopLevelNav } from './shell/navConfig'
 import { getDiagnosticMode, setDiagnosticMode, type UIMode } from '../engine/capabilities/DiagnosticMode'
@@ -27,6 +28,8 @@ const ResearchTimelinePage = lazy(() => import('./pages/ResearchTimelinePage'));
 const LatexPreviewPage = lazy(() => import('./pages/LatexPreviewPage'));
 const PdfReaderPage = lazy(() => import('./pages/PdfReaderPage'));
 const OfficeDocumentPage = lazy(() => import('./pages/OfficeDocumentPage'));
+const TaskBoardPage = lazy(() => import('./pages/TaskBoardPage'));
+const OnboardingTour = lazy(() => import('./components/OnboardingTour'));
 const GoalPage = lazy(() => import('./pages/GoalPage'));
 const CollectionsPage = lazy(() => import('./pages/CollectionsPage'));
 const TagsPage = lazy(() => import('./pages/TagsPage'));
@@ -112,6 +115,7 @@ function legacyPageToEntry(page: Page): { entry: TopLevelEntry; mode: WorkspaceM
       return { entry: 'projects', mode: 'read' };
     case 'graph':
     case 'artifacts':
+    case 'kanban':
     case 'timeline':
     case 'experiments':
       return { entry: 'projects', mode: 'analyze' };
@@ -126,7 +130,7 @@ function legacyPageToEntry(page: Page): { entry: TopLevelEntry; mode: WorkspaceM
 
 // ─── Evals Page ───
 
-type StandalonePage = 'dashboard' | 'goal' | 'collections' | 'tags' | 'timeline' | 'latex' | 'experiments' | 'evals' | 'office';
+type StandalonePage = 'dashboard' | 'goal' | 'collections' | 'tags' | 'timeline' | 'latex' | 'experiments' | 'evals' | 'office' | 'kanban';
 
 function resolveStandalonePage(page: Page, diagnosticMode: boolean): StandalonePage | null {
   switch (page) {
@@ -138,6 +142,7 @@ function resolveStandalonePage(page: Page, diagnosticMode: boolean): StandaloneP
     case 'latex':
     case 'experiments':
     case 'office':
+    case 'kanban':
       return page;
     case 'evals':
       return diagnosticMode ? page : null;
@@ -390,6 +395,8 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
   const [chatIntentRevision, setChatIntentRevision] = useState(0)
   const [setupState, setSetupState] = useState<'checking' | 'required' | 'ready'>('checking')
   const [setupInitialConfig, setSetupInitialConfig] = useState<{ baseUrl?: string; model?: string }>({})
+  // First-run onboarding tour (shown once after hydration).
+  const [showOnboarding, setShowOnboarding] = useState(() => shouldShowOnboarding());
   const isHydrated = useMetisStore((s) => s.isHydrated)
   const hydrateFromPersistence = useMetisStore((s) => s.hydrateFromPersistence)
   const unreadPapers = useMetisStore((s) => s.papers.filter((p) => p.readStatus === 'unread').length)
@@ -544,6 +551,7 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
     if (location.mode === 'analyze') {
       setAnalyzeView(page === 'artifacts' ? 'artifacts' : 'graph');
     }
+    if (page === 'kanban') setStandalonePage('kanban');
     setStandalonePage(resolveStandalonePage(page, uiMode === 'diagnostic'));
   }
 
@@ -594,6 +602,7 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
       case 'latex': return <LatexPreviewPage />;
       case 'experiments': return <ExperimentsPage />;
       case 'office': return <OfficeDocumentPage />;
+      case 'kanban': return <TaskBoardPage />;
       case 'evals': return uiMode === 'diagnostic' ? <EvalsPage /> : null;
       default: return null;
     }
@@ -685,8 +694,10 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
     )
   }
 
+
   return (
     <div className="app-layout" data-ui-mode={uiMode}>
+      {showOnboarding && <OnboardingTour onDone={() => setShowOnboarding(false)} />}
       <nav className="sidebar" aria-label={t('app.title')}>
           <div className="sidebar-header">
             <h1 className="app-title">{t('app.title')}</h1>

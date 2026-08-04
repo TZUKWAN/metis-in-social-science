@@ -15,6 +15,7 @@ import { getFileToolSpecs, getFileToolHandlers } from './builtin/file-tools.js';
 import { getSearchToolSpecs, getSearchToolHandlers } from './builtin/search-tools.js';
 import { getShellToolSpecs, getShellToolHandlers } from './builtin/shell-tools.js';
 import { getResearchToolSpecs, getResearchToolHandlers } from './builtin/research-tools.js';
+import { getWebToolSpecs, getWebToolHandlers } from './builtin/web-tools.js';
 import { PLUGIN_TOOLS, getPluginToolHandlers } from './builtin/PluginMarketplace.js';
 import { MULTI_AGENT_TOOL, createMultiAgentHandler } from './builtin/MultiAgentTool.js';
 import { getEvidenceToolSpecs, getEvidenceToolHandlers } from './builtin/evidence-tools.js';
@@ -127,6 +128,7 @@ export function registerBuiltinTools(
     ...getShellToolSpecs(),
     ...ACADEMIC_TOOL_SPECS,
     ...getResearchToolSpecs(),
+    ...getWebToolSpecs(),
     ...PLUGIN_TOOLS,
     ...getEvidenceToolSpecs(),
     ...getMemoryToolSpecs(),
@@ -139,6 +141,7 @@ export function registerBuiltinTools(
     ...getSearchToolHandlers(),
     ...getShellToolHandlers(),
     ...getResearchToolHandlers(),
+    ...getWebToolHandlers(),
     ...getPluginToolHandlers(),
     ...getEvidenceToolHandlers(),
     ...getMemoryToolHandlers(options?.store),

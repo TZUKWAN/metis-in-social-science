@@ -13,6 +13,8 @@ export interface Goal {
   context?: string;
   createdAt: number;
   status: 'draft' | 'planning' | 'ready' | 'running' | 'paused' | 'completed' | 'failed';
+  /** Kanban priority: low|medium|high|urgent (default medium). */
+  priority?: 'low' | 'medium' | 'high' | 'urgent';
 }
 
 export interface PlanResult {
