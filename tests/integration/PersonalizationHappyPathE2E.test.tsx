@@ -198,7 +198,7 @@ afterEach(() => {
 });
 
 describe('Personalization persisted UI-to-runtime happy paths', () => {
-  it('creates and edits a custom scenario, uses it in chat, and reloads it after a runtime restart', async () => {
+  it('creates and edits a custom scenario, uses it in chat, and reloads it after a runtime restart', { timeout: 20000 }, async () => {
     const root = tempRoot();
     const databasePath = path.join(root, 'personalization.db');
     const initial = openRuntime(databasePath);

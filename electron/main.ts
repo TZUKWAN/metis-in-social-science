@@ -485,6 +485,7 @@ const TERMINAL_WORKSPACE_DIR = path.join(DATA_DIR, 'terminal-workspace');
 const DB_PATH = path.join(DATA_DIR, 'metis.db');
 const CONFIG_PATH = path.join(DATA_DIR, 'provider-config.json');
 const SETUP_CONFIG_PATH = path.join(DATA_DIR, 'provider-setup.json');
+const PROVIDERS_PATH = path.join(DATA_DIR, 'providers.json');
 const THEME_PATH = path.join(DATA_DIR, 'theme.txt');
 const layoutAcceptanceToken = extractLayoutAcceptanceToken(process.argv);
 export const layoutAcceptanceEntryPath = path.resolve(__dirname, '../../dist/index.html');
@@ -3042,6 +3043,106 @@ function setupIPC(): void {
       return decodeSettingsMutationResult({ success: true, code: 'settings_saved' });
     } catch {
       return createSettingsMutationFailure();
+    }
+  });
+
+  // ── Multi-provider management ────────────────────────────
+  // Stores named provider configs in providers.json; the active one is loaded
+  // into the runtime provider/agentLoop on switch.
+  ipcMain.handle('provider:list', (event) => {
+    try {
+      requireRendererMainFrame(event);
+      if (!fs.existsSync(PROVIDERS_PATH)) return { providers: [], activeId: null };
+      const data = JSON.parse(fs.readFileSync(PROVIDERS_PATH, 'utf-8')) as { providers?: Array<{ id: string; name: string; baseUrl: string; model: string; vision?: boolean }>; activeId?: string };
+      return { providers: data.providers ?? [], activeId: data.activeId ?? null };
+    } catch {
+      return { providers: [], activeId: null };
+    }
+  });
+
+  ipcMain.handle('provider:save', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = rawRequest as { id?: unknown; name?: unknown; baseUrl?: unknown; apiKey?: unknown; model?: unknown; vision?: unknown };
+      const id = typeof request?.id === 'string' ? request.id : `prov_${Date.now().toString(36)}`;
+      const name = typeof request?.name === 'string' ? request.name : '未命名';
+      const baseUrl = typeof request?.baseUrl === 'string' ? request.baseUrl : '';
+      const apiKey = typeof request?.apiKey === 'string' ? request.apiKey : '';
+      const model = typeof request?.model === 'string' ? request.model : '';
+      const vision = request?.vision === true;
+      if (!baseUrl || !apiKey || !model) return { ok: false, error: 'missing_fields' };
+
+      // Load existing providers list.
+      let data: { providers: Array<{ id: string; name: string; baseUrl: string; model: string; apiKey: string; vision?: boolean }>; activeId?: string };
+      try {
+        data = fs.existsSync(PROVIDERS_PATH)
+          ? JSON.parse(fs.readFileSync(PROVIDERS_PATH, 'utf-8'))
+          : { providers: [] };
+      } catch { data = { providers: [] }; }
+
+      // Upsert by id.
+      const idx = data.providers.findIndex((p) => p.id === id);
+      const entry = { id, name, baseUrl, model, apiKey, vision };
+      if (idx >= 0) data.providers[idx] = entry;
+      else data.providers.push(entry);
+
+      fs.writeFileSync(PROVIDERS_PATH, JSON.stringify(data, null, 2), 'utf-8');
+      return { ok: true, id };
+    } catch (err) {
+      return { ok: false, error: (err as Error)?.message ?? 'save_failed' };
+    }
+  });
+
+  ipcMain.handle('provider:switch', (event, rawId: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const id = typeof rawId === 'string' ? rawId : '';
+      if (!id) return { ok: false, error: 'invalid_id' };
+      if (!fs.existsSync(PROVIDERS_PATH)) return { ok: false, error: 'no_providers' };
+
+      const data = JSON.parse(fs.readFileSync(PROVIDERS_PATH, 'utf-8')) as { providers: Array<{ id: string; name: string; baseUrl: string; model: string; apiKey: string; vision?: boolean }>; activeId?: string };
+      const target = data.providers.find((p) => p.id === id);
+      if (!target) return { ok: false, error: 'not_found' };
+
+      // Build a ProviderConfig and create a new provider + agentLoop.
+      const config: ProviderConfig = {
+        baseUrl: target.baseUrl,
+        apiKey: target.apiKey,
+        model: target.model,
+        timeout: currentConfig?.timeout ?? 30000,
+        maxRetries: currentConfig?.maxRetries ?? 2,
+        retryBackoffSeconds: currentConfig?.retryBackoffSeconds ?? 1,
+        ...(target.vision ? { vision: true } : {}),
+      };
+      const newProvider = createProvider(config);
+      const loopResult = createAgentLoop(newProvider);
+      // Swap the globals atomically.
+      provider = newProvider;
+      agentLoop = loopResult.agentLoop;
+      currentConfig = { ...config };
+      runtimeGeneration += 1;
+
+      // Update activeId in providers.json.
+      data.activeId = id;
+      fs.writeFileSync(PROVIDERS_PATH, JSON.stringify(data, null, 2), 'utf-8');
+      return { ok: true, name: target.name, model: target.model };
+    } catch (err) {
+      return { ok: false, error: (err as Error)?.message ?? 'switch_failed' };
+    }
+  });
+
+  ipcMain.handle('provider:delete', (event, rawId: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const id = typeof rawId === 'string' ? rawId : '';
+      if (!id || !fs.existsSync(PROVIDERS_PATH)) return { ok: false, error: 'invalid' };
+      const data = JSON.parse(fs.readFileSync(PROVIDERS_PATH, 'utf-8')) as { providers: Array<{ id: string }>; activeId?: string };
+      data.providers = data.providers.filter((p) => p.id !== id);
+      if (data.activeId === id) data.activeId = undefined;
+      fs.writeFileSync(PROVIDERS_PATH, JSON.stringify(data, null, 2), 'utf-8');
+      return { ok: true };
+    } catch {
+      return { ok: false, error: 'delete_failed' };
     }
   });
 

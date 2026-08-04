@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback, type ReactNode } from 'react';
 import { useMetisStore } from '../store';
+import { matchSlashCommand, SLASH_COMMANDS, filterSlashCommands } from '../lib/slashCommands';
 import Prism from 'prismjs';
 import 'prismjs/components/prism-typescript';
 import 'prismjs/components/prism-javascript';
@@ -1533,11 +1534,139 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
     }]);
   }
 
+  /** Execute a slash command. Each maps to an existing system capability. */
+  async function handleSlashCommand(name: string, arg: string) {
+    const metis = window.metis;
+    const reply = (text: string) => {
+      setMessages((prev) => [...prev, {
+        role: 'user',
+        content: `/${name}${arg ? ' ' + arg : ''}`,
+        timestamp: now(),
+      }, {
+        role: 'system',
+        content: text,
+        timestamp: now(),
+      }]);
+    };
+    setInput('');
+
+    switch (name) {
+      case 'chat': {
+        if (!arg) { reply('用法：/chat <内容>'); return; }
+        // Dispatch as normal chat — keeps the active scenario (bypasses
+        // auto-match but does not clear an explicitly selected scenario).
+        setMessages((prev) => [...prev, { role: 'user', content: arg, timestamp: now() }]);
+        await handleChatFlow(arg, activeScenarioId || DEFAULT_SCENARIO_ID);
+        return;
+      }
+      case 'goal':
+      case 'task': {
+        if (!arg) { reply('用法：/' + name + ' <描述>'); return; }
+        await handleGoalFlow(arg);
+        return;
+      }
+      case 'scenario': {
+        if (!arg) { reply('用法：/scenario <名称>'); return; }
+        const matched = matchScenarioTrigger(arg, scenarios);
+        if (matched) {
+          setActiveScenarioId(matched.id);
+          try { window.localStorage.setItem(ACTIVE_SCENARIO_KEY, matched.id); } catch { /* preference persistence */ }
+          reply(`已切换到场景：${matched.name}`);
+        } else {
+          reply(`未找到匹配的场景「${arg}」。可用场景：${scenarios.map((s) => s.name).join('、')}`);
+        }
+        return;
+      }
+      case 'search': {
+        // Open the global search overlay (App-level state).
+        reply(`请使用 Ctrl+K 搜索「${arg}」。`);
+        return;
+      }
+      case 'paper': {
+        if (!arg) { reply('用法：/paper <标题或 DOI>'); return; }
+        const paper = {
+          id: `paper_slash_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+          title: arg, authors: [] as string[], year: new Date().getFullYear(),
+          venue: '', abstract: '', tags: [], notes: '', readStatus: 'unread' as const,
+          rating: 0, referenceIds: [], addedAt: Date.now(),
+        };
+        await useMetisStore.getState().addPaper(paper);
+        reply(`已添加文献：${arg}`);
+        return;
+      }
+      case 'note': {
+        if (!arg) { reply('用法：/note <内容>'); return; }
+        await useMetisStore.getState().addNote({
+          id: `note_slash_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+          title: arg.slice(0, 40), content: arg, tags: [], linkedPaperIds: [],
+          linkedNoteIds: [], updatedAt: Date.now(),
+        });
+        reply(`已添加笔记：${arg.slice(0, 40)}`);
+        return;
+      }
+      case 'export': {
+        const format = arg.trim().toLowerCase() || 'chat';
+        if (format === 'chat') {
+          const md = messages.map((m) => m.role === 'user' ? `\n## 我\n${m.content}` : m.role === 'system' ? `\n> ${m.content}` : `\n## AI\n${m.content}`).join('\n');
+          const blob = new Blob([md], { type: 'text/markdown' });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = `chat-${currentSessionId.slice(0, 8)}.md`;
+          a.click();
+          URL.revokeObjectURL(a.href);
+          reply('会话已导出为 Markdown。');
+        } else {
+          reply(`文献库导出请在设置页操作（格式：${format}）。`);
+        }
+        return;
+      }
+      case 'stop': {
+        await handleInterrupt();
+        return;
+      }
+      case 'pause': {
+        if (!activeGoalId) { reply('当前没有运行中的目标任务。'); return; }
+        await metis?.pauseGoal?.(activeGoalId);
+        reply('目标已暂停。');
+        return;
+      }
+      case 'resume': {
+        if (!activeGoalId) { reply('当前没有暂停的目标任务。'); return; }
+        await metis?.resumeGoal?.(activeGoalId);
+        reply('目标已恢复运行。');
+        return;
+      }
+      case 'status': {
+        const parts: string[] = [];
+        parts.push(`项目：${researchWorkspaceStore.getState().activeProjectId ?? '未选择'}`);
+        parts.push(`场景：${scenarios.find((s) => s.id === activeScenarioId)?.name ?? '默认'}`);
+        parts.push(`目标：${activeGoalId ? '运行中' : '无'}`);
+        parts.push(`状态：${isLoading ? '正在处理' : '空闲'}`);
+        reply(parts.join('\n'));
+        return;
+      }
+      case 'help': {
+        const lines = SLASH_COMMANDS.map((c) => `/${c.name}${c.hasArg ? ' <参数>' : ''} — ${c.description}`);
+        reply('可用命令：\n' + lines.join('\n'));
+        return;
+      }
+      default:
+        reply(`未知命令：/${name}。输入 /help 查看可用命令。`);
+    }
+  }
+
   async function handleSend(overrideContent?: string, scenarioOverride?: string) {
     const raw = stripEmoji((overrideContent || input).trim());
     if (!raw) return;
     if (isLoading) {
       await handleLiveInstruction(raw);
+      return;
+    }
+
+    // Slash commands: intercept before scenario matching / task detection.
+    const slashMatch = matchSlashCommand(raw);
+    if (slashMatch) {
+      await handleSlashCommand(slashMatch.command.name, slashMatch.arg);
       return;
     }
 
@@ -2086,6 +2215,38 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
             className="chat-textarea"
             rows={1}
           />
+          {input.startsWith('/') && input.length <= 20 && (() => {
+            const prefix = input.slice(1).split(/\s/)[0] ?? '';
+            const cmds = filterSlashCommands(prefix);
+            if (cmds.length === 0) return null;
+            return (
+              <div className="slash-command-menu" data-testid="slash-command-menu" style={{
+                position: 'absolute', bottom: '100%', left: 0, right: 0,
+                background: 'var(--bg-card)', border: '1px solid var(--border)',
+                borderRadius: '4px', maxHeight: 240, overflowY: 'auto',
+                boxShadow: '0 -4px 12px rgba(0,0,0,0.08)', zIndex: 10,
+              }}>
+                {cmds.slice(0, 8).map((cmd) => (
+                  <button
+                    key={cmd.name}
+                    className="slash-command-item"
+                    data-testid={`slash-cmd-${cmd.name}`}
+                    onClick={() => {
+                      setInput(`/${cmd.name} `);
+                      inputRef.current?.focus();
+                    }}
+                    style={{
+                      display: 'block', width: '100%', textAlign: 'left',
+                      padding: '6px 12px', border: 'none', background: 'transparent',
+                      cursor: 'pointer', fontSize: 12, color: 'var(--text-primary)',
+                    }}
+                  >
+                    <strong>/{cmd.name}</strong> <span style={{ color: 'var(--text-muted)' }}>{cmd.description}</span>
+                  </button>
+                ))}
+              </div>
+            );
+          })()}
           {isLoading && <button
             type="button"
             onClick={() => void handleInterrupt()}
