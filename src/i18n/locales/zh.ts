@@ -298,6 +298,8 @@ const zh: Locale = {
     pageTitle: '设置',
     providerStatus: '连接状态',
     providerVision: '模型支持图片（视觉）— 开启微信图片理解',
+    providerMaxContext: '最大上下文 Tokens（0 = 自动检测）— 上下文达到 70% 时自动压缩',
+    providerMaxContextPlaceholder: '例如 128000',
     connected: '已连接',
     notConfigured: '未配置',
     themeLabel: '主题',

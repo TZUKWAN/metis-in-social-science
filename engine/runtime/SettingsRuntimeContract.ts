@@ -21,6 +21,7 @@ export const SettingsViewSchema = z.strictObject({
   theme: ThemeModeSchema,
   weeklyReadingGoal: z.number().int().min(1).max(100).default(5),
   providerVision: z.boolean().default(false),
+  providerMaxContextTokens: z.number().int().min(0).default(0),
 });
 export type SettingsView = z.infer<typeof SettingsViewSchema>;
 
@@ -29,6 +30,8 @@ export const SettingsUpdateRequestSchema = z.strictObject({
   weeklyReadingGoal: z.number().int().min(1).max(100).optional(),
   /** METIS-WX-2: whether the configured model accepts inline images. */
   providerVision: z.boolean().optional(),
+  /** User-declared max context tokens (0 = auto-detect from model name). */
+  providerMaxContextTokens: z.number().int().min(0).max(2_000_000).optional(),
 });
 export type SettingsUpdateRequest = z.infer<typeof SettingsUpdateRequestSchema>;
 
@@ -49,6 +52,7 @@ export function createSettingsViewRecovery(): SettingsView {
     theme: 'light',
     weeklyReadingGoal: 5,
     providerVision: false,
+    providerMaxContextTokens: 0,
   };
 }
 

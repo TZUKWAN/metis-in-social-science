@@ -275,6 +275,8 @@ const en = {
     pageTitle: 'Settings',
 	    providerStatus: 'Connection Status',
     providerVision: 'Model supports images (vision) — enables WeChat image understanding',
+    providerMaxContext: 'Max context tokens (0 = auto-detect) — context is compressed at 70%',
+    providerMaxContextPlaceholder: 'e.g. 128000',
 	    connected: 'Connected',
 	    notConfigured: 'Not Configured',
 	    themeLabel: 'Theme',

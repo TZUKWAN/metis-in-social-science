@@ -154,6 +154,8 @@ export interface ProviderConfig {
   retryBackoffSeconds: number;
   /** User-declared multimodal support; gates WeChat image understanding. */
   vision?: boolean;
+  /** Maximum context window in tokens (user-declared). 0 = auto-detect. */
+  maxContextTokens?: number;
 }
 
 // ─── Tool Definition ──────────────────────────────────────────

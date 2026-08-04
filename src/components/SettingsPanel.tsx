@@ -68,7 +68,9 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
   const [editApiKey, setEditApiKey] = useState('');
   const [showApiKeyInput, setShowApiKeyInput] = useState(false);
   const [providerVision, setProviderVision] = useState(false);
+  const [providerMaxContextTokens, setProviderMaxContextTokens] = useState(0);
   const [visionSaveStatus, setVisionSaveStatus] = useState<'idle' | 'saved'>('idle');
+  const [maxContextSaveStatus, setMaxContextSaveStatus] = useState<'idle' | 'saved'>('idle');
 
   const [providerTestStatus, setProviderTestStatus] = useState<ProviderTestStatus>('idle');
   const [providerTestMessage, setProviderTestMessage] = useState('');
@@ -162,6 +164,7 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
       setNeedsReauth(settings.needsReauth);
       if (settings.needsReauth) setShowApiKeyInput(true);
       if (typeof settings.providerVision === 'boolean') setProviderVision(settings.providerVision);
+      if (typeof settings.providerMaxContextTokens === 'number') setProviderMaxContextTokens(settings.providerMaxContextTokens);
     }).catch(() => { /* ignore */ });
   }, []);
 
@@ -764,6 +767,42 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
               <span style={{ fontSize: 11, color: 'var(--status-completed)' }}>✓</span>
             )}
           </label>
+        </div>
+
+        {/* Max context tokens — 0 = auto-detect from model; 70% threshold triggers compression */}
+        <div style={{ marginBottom: 12 }}>
+          <label htmlFor="provider-max-context" style={{ display: 'block', fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>
+            {t('settings.providerMaxContext')}
+          </label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <input
+              id="provider-max-context"
+              type="number"
+              min={0}
+              step={1000}
+              value={providerMaxContextTokens || ''}
+              placeholder={t('settings.providerMaxContextPlaceholder')}
+              onChange={(e) => setProviderMaxContextTokens(Math.max(0, Math.floor(Number(e.target.value) || 0)))}
+              onBlur={() => {
+                const next = providerMaxContextTokens;
+                void window.metis?.setSettings?.({
+                  theme,
+                  weeklyReadingGoal,
+                  providerMaxContextTokens: next,
+                }).then((result) => {
+                  if (result?.success) setMaxContextSaveStatus('saved');
+                });
+              }}
+              className="settings-input"
+              style={{ width: 180 }}
+              data-testid="provider-max-context-input"
+              autoComplete="off"
+              spellCheck={false}
+            />
+            {maxContextSaveStatus === 'saved' && (
+              <span style={{ fontSize: 11, color: 'var(--status-completed)' }}>✓</span>
+            )}
+          </div>
         </div>
 
         {/* API Key — masked, never displayed */}

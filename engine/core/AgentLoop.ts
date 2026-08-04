@@ -92,6 +92,8 @@ export interface AgentLoopOptions {
   maxToolsPerSession?: number;
   maxToolRepairRetries?: number;
   perTurnTimeout?: number;
+  /** Called after every tool dispatch with the raw outcome (learning/telmetry). */
+  onToolResult?: (outcome: { name: string; status: 'ok' | 'error' }) => void;
 }
 
 // ─── Internal Types ───────────────────────────────────────────
@@ -167,6 +169,7 @@ export class AgentLoop {
   private readonly behaviorRegistry: BehaviorRegistry;
   private readonly maxToolsPerSession: number;
   private readonly maxToolRepairRetries: number;
+  private readonly onToolResult?: (outcome: { name: string; status: 'ok' | 'error' }) => void;
   private readonly workspace: string;
   private readonly presenterRegistry: ToolPresenterRegistry;
 
@@ -186,6 +189,7 @@ export class AgentLoop {
     this.behaviorRegistry = options.behaviorRegistry ?? new BehaviorRegistry();
     this.maxToolsPerSession = options.maxToolsPerSession ?? MAX_TOOLS_PER_SESSION;
     this.maxToolRepairRetries = options.maxToolRepairRetries ?? MAX_TOOL_REPAIR_RETRIES;
+    this.onToolResult = options.onToolResult;
     this.workspace = options.workspace ?? '.';
 
     // Build a per-loop immutable presenter registry. Built-in presenters are
@@ -723,6 +727,11 @@ export class AgentLoop {
     };
 
     const toolResult = await this.dispatcher.dispatch(call, toolContext);
+
+    // Notify the learning/telemetry hook with the raw outcome.
+    try {
+      this.onToolResult?.({ name: call.name, status: toolResult.status });
+    } catch { /* observers must never break tool dispatch */ }
 
     // Record evidence
     this.evidenceLedger.record(toolResult, ctx.sessionId, call.arguments);

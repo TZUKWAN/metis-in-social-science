@@ -72,6 +72,7 @@ import {
 } from '../engine/core/SecureStorage.js';
 import type { ProviderConfig } from '../engine/core/types.js';
 import { MemoryManager } from '../engine/memory/MemoryManager.js';
+import { LearningEngine } from '../engine/learning/LearningEngine.js';
 import { WorkspaceAgentsManager } from '../engine/memory/WorkspaceAgentsManager.js';
 import {
   decodeWorkspaceAgentsWriteRequest,
@@ -391,6 +392,7 @@ let runtimeGeneration = 0;
 let agentLoop: AgentLoop | null = null;
 let provider: OpenAICompatProvider | null = null;
 let memoryManager: MemoryManager | null = null;
+let learningEngine: LearningEngine | null = null;
 let goalEngine: GoalEngine | null = null;
 let mcpManager: MCPManager | null = null;
 let skillRegistry: SkillRegistry | null = null;
@@ -908,16 +910,34 @@ function createAgentLoop(
 
   const caps = prov.capabilities();
 
+  // Context compression: user-declared maxContextTokens overrides auto-detect;
+  // 70% threshold triggers compression; LLM summarizer activates for old messages.
+  const userMaxContext = currentConfig?.maxContextTokens ?? 0;
+  const effectiveMaxContext = userMaxContext > 0 ? userMaxContext : (caps.maxContextTokens > 0 ? caps.maxContextTokens : 32_000);
+
   const contextEngine = new ContextEngine({
     budget: {
-      modelContextTokens: caps.maxContextTokens,
+      modelContextTokens: effectiveMaxContext,
       modelOutputTokens: caps.maxOutputTokens,
-      contextThreshold: 0.8,
+      contextThreshold: 0.7, // 70% — compress when context fills to 70%
       perToolChars: 2000,
       maxToolResultChars: 8000,
       maxTurns: 12,
     },
-    overrideMaxContextTokens: caps.maxContextTokens > 0 ? caps.maxContextTokens : undefined,
+    overrideMaxContextTokens: effectiveMaxContext,
+    summarizer: async (msgs) => {
+      // Use the provider itself to summarize old messages.
+      const systemPrompt = 'Summarize the following conversation history concisely, preserving key decisions, context, and any important data. Output only the summary, no preamble.';
+      try {
+        const response = await prov.complete([
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: msgs.map((m) => `${m.role}: ${m.content}`).join('\n').slice(0, 12000) },
+        ], undefined, { temperature: 0.2 });
+        return `[对话摘要] ${response.content}`;
+      } catch {
+        return '[对话摘要不可用] 以下是最近的消息。';
+      }
+    },
   });
 
   const agentLoop = new AgentLoop({
@@ -929,6 +949,8 @@ function createAgentLoop(
     evidenceLedger,
     approvalStore,
     behaviorRegistry,
+    // Learning (C): record every tool outcome for reliability statistics.
+    onToolResult: (outcome) => learningEngine?.recordToolOutcome(outcome),
   });
 
   // Register the multi-agent orchestration tool now that the AgentLoop exists.
@@ -1046,7 +1068,7 @@ function loadConfig(): ProviderConfig | null {
 
 const SETTINGS_PATH = path.join(DATA_DIR, 'settings.json');
 
-interface PersistedSettings { theme: string; weeklyReadingGoal: number; providerVision: boolean; }
+interface PersistedSettings { theme: string; weeklyReadingGoal: number; providerVision: boolean; providerMaxContextTokens: number; }
 
 function loadPersistedSettings(): PersistedSettings {
   try {
@@ -1056,25 +1078,27 @@ function loadPersistedSettings(): PersistedSettings {
         theme: raw.theme || 'light',
         weeklyReadingGoal: Number(raw.weeklyReadingGoal) || 5,
         providerVision: raw.providerVision === true,
+        providerMaxContextTokens: Number(raw.providerMaxContextTokens) > 0 ? Number(raw.providerMaxContextTokens) : 0,
       };
     }
   } catch { /* ignore */ }
   // Backward compat: read old theme.txt
   try {
     if (fs.existsSync(THEME_PATH)) {
-      return { theme: fs.readFileSync(THEME_PATH, 'utf-8').trim() || 'light', weeklyReadingGoal: 5, providerVision: false };
+      return { theme: fs.readFileSync(THEME_PATH, 'utf-8').trim() || 'light', weeklyReadingGoal: 5, providerVision: false, providerMaxContextTokens: 0 };
     }
   } catch { /* ignore */ }
-  return { theme: 'light', weeklyReadingGoal: 5, providerVision: false };
+  return { theme: 'light', weeklyReadingGoal: 5, providerVision: false, providerMaxContextTokens: 0 };
 }
 
 function loadTheme(): string { return loadPersistedSettings().theme; }
 function loadWeeklyReadingGoal(): number { return loadPersistedSettings().weeklyReadingGoal; }
 function loadProviderVision(): boolean { return loadPersistedSettings().providerVision; }
+function loadProviderMaxContextTokens(): number { return loadPersistedSettings().providerMaxContextTokens; }
 
-function saveSettings(theme: string, weeklyReadingGoal: number, providerVision: boolean): boolean {
+function saveSettings(theme: string, weeklyReadingGoal: number, providerVision: boolean, providerMaxContextTokens: number): boolean {
   try {
-    fs.writeFileSync(SETTINGS_PATH, JSON.stringify({ theme, weeklyReadingGoal, providerVision }), 'utf-8');
+    fs.writeFileSync(SETTINGS_PATH, JSON.stringify({ theme, weeklyReadingGoal, providerVision, providerMaxContextTokens }), 'utf-8');
     return true;
   } catch (err) {
     console.warn('Failed to save settings:', err);
@@ -1097,11 +1121,16 @@ function initProviderAndAgent(): void {
   currentConfig = config;
   // METIS-WX-2: multimodal support is a user-declared setting merged at init.
   currentConfig.vision = loadProviderVision();
+  // User-declared context window (0 = auto-detect from model capabilities).
+  currentConfig.maxContextTokens = loadProviderMaxContextTokens();
   provider = createProvider(config);
   currentTheme = loadTheme();
   console.log('[Main] initProviderAndAgent: Config loaded — baseUrl:', config.baseUrl, 'model:', config.model, 'store:', !!store);
   if (store) {
     memoryManager = new MemoryManager(store, DATA_DIR);
+    // Autonomous learning (A memory / B prompt adaptation / C tool usage):
+    // created alongside memory so tool outcomes can be tracked and persisted.
+    learningEngine = new LearningEngine({ memory: memoryManager, provider, store });
     // Initialize MCP manager. Stored executables are never auto-started;
     // activation requires a separately consented execution capability.
     mcpManager = new MCPManager(store, new ToolRegistry());
@@ -1295,6 +1324,11 @@ function ensureWeChatBot(): WeChatBotService | null {
         try {
           const memoryContext = memoryManager?.buildMemoryContext(projectId ?? undefined);
           if (memoryContext && memoryContext.trim()) skillPrompt = memoryContext;
+          // Autonomous learning (B + C): behavior preferences + tool reliability.
+          const learningContext = learningEngine?.buildLearningContext(projectId ?? undefined);
+          if (learningContext && learningContext.trim()) {
+            skillPrompt = [skillPrompt, learningContext].filter(Boolean).join('\n\n');
+          }
         } catch { /* memory must never break a turn */ }
         // WeChat media attachments (METIS-WX-2): point the agent at local files
         // so its file tools (read_pdf, etc.) can analyze them.
@@ -1326,6 +1360,22 @@ function ensureWeChatBot(): WeChatBotService | null {
           options: { mode: 'send' },
         });
         if (response.status === 'completed' && response.answer) {
+          // Autonomous learning after the WeChat turn (fire and forget).
+          if (learningEngine) {
+            void (async () => {
+              try {
+                await learningEngine.ingestConversation(
+                  [...history, { role: 'user' as const, content: userText }],
+                  projectId ?? undefined,
+                );
+                learningEngine.applyFeedbackSignals(
+                  [...history, { role: 'user' as const, content: userText }],
+                  projectId ?? undefined,
+                );
+                learningEngine.persistToolStats();
+              } catch { /* learning must never break a turn */ }
+            })();
+          }
           return { ok: true, answer: response.answer };
         }
         return {
@@ -2467,6 +2517,7 @@ function setupIPC(): void {
         theme: currentTheme,
         weeklyReadingGoal: loadWeeklyReadingGoal(),
         providerVision: loadProviderVision(),
+        providerMaxContextTokens: loadProviderMaxContextTokens(),
       });
     }
     if (!currentConfig) {
@@ -2477,6 +2528,7 @@ function setupIPC(): void {
         theme: currentTheme,
         weeklyReadingGoal: loadWeeklyReadingGoal(),
         providerVision: loadProviderVision(),
+        providerMaxContextTokens: loadProviderMaxContextTokens(),
       });
     }
     return decodeSettingsView({
@@ -2488,6 +2540,7 @@ function setupIPC(): void {
       theme: currentTheme,
       weeklyReadingGoal: loadWeeklyReadingGoal(),
       providerVision: loadProviderVision(),
+      providerMaxContextTokens: loadProviderMaxContextTokens(),
     });
   });
 
@@ -3037,9 +3090,11 @@ function setupIPC(): void {
 
       const goal = request.weeklyReadingGoal ?? loadWeeklyReadingGoal();
       const vision = request.providerVision ?? loadProviderVision();
-      const ok = saveSettings(request.theme, goal, vision);
+      const maxContext = request.providerMaxContextTokens ?? loadProviderMaxContextTokens();
+      const ok = saveSettings(request.theme, goal, vision, maxContext);
       if (!ok) return createSettingsMutationFailure('settings_update_unavailable');
       currentTheme = request.theme;
+      if (currentConfig) currentConfig.maxContextTokens = maxContext > 0 ? maxContext : undefined;
       return decodeSettingsMutationResult({ success: true, code: 'settings_saved' });
     } catch {
       return createSettingsMutationFailure();
@@ -3053,7 +3108,7 @@ function setupIPC(): void {
     try {
       requireRendererMainFrame(event);
       if (!fs.existsSync(PROVIDERS_PATH)) return { providers: [], activeId: null };
-      const data = JSON.parse(fs.readFileSync(PROVIDERS_PATH, 'utf-8')) as { providers?: Array<{ id: string; name: string; baseUrl: string; model: string; vision?: boolean }>; activeId?: string };
+      const data = JSON.parse(fs.readFileSync(PROVIDERS_PATH, 'utf-8')) as { providers?: Array<{ id: string; name: string; baseUrl: string; model: string; vision?: boolean; maxContextTokens?: number }>; activeId?: string };
       return { providers: data.providers ?? [], activeId: data.activeId ?? null };
     } catch {
       return { providers: [], activeId: null };
@@ -3063,17 +3118,18 @@ function setupIPC(): void {
   ipcMain.handle('provider:save', (event, rawRequest: unknown) => {
     try {
       requireRendererMainFrame(event);
-      const request = rawRequest as { id?: unknown; name?: unknown; baseUrl?: unknown; apiKey?: unknown; model?: unknown; vision?: unknown };
+      const request = rawRequest as { id?: unknown; name?: unknown; baseUrl?: unknown; apiKey?: unknown; model?: unknown; vision?: unknown; maxContextTokens?: unknown };
       const id = typeof request?.id === 'string' ? request.id : `prov_${Date.now().toString(36)}`;
       const name = typeof request?.name === 'string' ? request.name : '未命名';
       const baseUrl = typeof request?.baseUrl === 'string' ? request.baseUrl : '';
       const apiKey = typeof request?.apiKey === 'string' ? request.apiKey : '';
       const model = typeof request?.model === 'string' ? request.model : '';
       const vision = request?.vision === true;
+      const maxContextTokens = typeof request?.maxContextTokens === 'number' && request.maxContextTokens > 0 ? Math.floor(request.maxContextTokens) : undefined;
       if (!baseUrl || !apiKey || !model) return { ok: false, error: 'missing_fields' };
 
       // Load existing providers list.
-      let data: { providers: Array<{ id: string; name: string; baseUrl: string; model: string; apiKey: string; vision?: boolean }>; activeId?: string };
+      let data: { providers: Array<{ id: string; name: string; baseUrl: string; model: string; apiKey: string; vision?: boolean; maxContextTokens?: number }>; activeId?: string };
       try {
         data = fs.existsSync(PROVIDERS_PATH)
           ? JSON.parse(fs.readFileSync(PROVIDERS_PATH, 'utf-8'))
@@ -3082,7 +3138,7 @@ function setupIPC(): void {
 
       // Upsert by id.
       const idx = data.providers.findIndex((p) => p.id === id);
-      const entry = { id, name, baseUrl, model, apiKey, vision };
+      const entry = { id, name, baseUrl, model, apiKey, vision, maxContextTokens };
       if (idx >= 0) data.providers[idx] = entry;
       else data.providers.push(entry);
 
@@ -3100,7 +3156,7 @@ function setupIPC(): void {
       if (!id) return { ok: false, error: 'invalid_id' };
       if (!fs.existsSync(PROVIDERS_PATH)) return { ok: false, error: 'no_providers' };
 
-      const data = JSON.parse(fs.readFileSync(PROVIDERS_PATH, 'utf-8')) as { providers: Array<{ id: string; name: string; baseUrl: string; model: string; apiKey: string; vision?: boolean }>; activeId?: string };
+      const data = JSON.parse(fs.readFileSync(PROVIDERS_PATH, 'utf-8')) as { providers: Array<{ id: string; name: string; baseUrl: string; model: string; apiKey: string; vision?: boolean; maxContextTokens?: number }>; activeId?: string };
       const target = data.providers.find((p) => p.id === id);
       if (!target) return { ok: false, error: 'not_found' };
 
@@ -3113,6 +3169,10 @@ function setupIPC(): void {
         maxRetries: currentConfig?.maxRetries ?? 2,
         retryBackoffSeconds: currentConfig?.retryBackoffSeconds ?? 1,
         ...(target.vision ? { vision: true } : {}),
+        // Per-provider context window wins; otherwise fall back to the global setting.
+        ...(target.maxContextTokens && target.maxContextTokens > 0
+          ? { maxContextTokens: target.maxContextTokens }
+          : loadProviderMaxContextTokens() > 0 ? { maxContextTokens: loadProviderMaxContextTokens() } : {}),
       };
       const newProvider = createProvider(config);
       const loopResult = createAgentLoop(newProvider);
@@ -3301,6 +3361,13 @@ function setupIPC(): void {
         skillPrompt = [skillPrompt, memoryContext].filter(Boolean).join('\n\n');
         resolvedSystemPrompt = [resolvedSystemPrompt, memoryContext].filter(Boolean).join('\n\n');
       }
+      // Autonomous learning (B + C): behavior preferences learned from user
+      // feedback and tool reliability stats derived from history.
+      const learningContext = learningEngine?.buildLearningContext(projectId);
+      if (learningContext && learningContext.trim()) {
+        skillPrompt = [skillPrompt, learningContext].filter(Boolean).join('\n\n');
+        resolvedSystemPrompt = [resolvedSystemPrompt, learningContext].filter(Boolean).join('\n\n');
+      }
     } catch {
       // Memory injection must never break a chat turn.
     }
@@ -3393,6 +3460,18 @@ function setupIPC(): void {
       return createChatTurnErrorResponse(requestId, 'error', 'agent_chat_failed');
     } finally {
       await mcpToolRun?.close();
+      // Autonomous learning after each turn (never blocks the response):
+      // A — extract durable knowledge into memory; B — persist feedback
+      // signals as behavior preferences; C — flush tool reliability stats.
+      if (learningEngine) {
+        void (async () => {
+          try {
+            await learningEngine.ingestConversation(messages, projectId);
+            learningEngine.applyFeedbackSignals(messages, projectId);
+            learningEngine.persistToolStats();
+          } catch { /* learning must never break a chat turn */ }
+        })();
+      }
       if (activeChatRuns.get(sessionId) === activeRun) {
         activeChatRuns.delete(sessionId);
         liveSteeringQueue.clear(sessionId);
