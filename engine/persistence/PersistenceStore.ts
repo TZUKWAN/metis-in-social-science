@@ -204,11 +204,29 @@ export class PersistenceStore {
   }
 
   private initializeSchema(): void {
+    // METIS-F12 (pre-schema patch): the memory table gained a project_id
+    // column, and SCHEMA_SQL creates an index on it. On a pre-existing DB the
+    // CREATE TABLE IF NOT EXISTS is a no-op (column stays missing), but the
+    // CREATE INDEX ... ON memory(project_id) inside SCHEMA_SQL then fails with
+    // 'no such column: project_id'. Patch the column BEFORE exec(SCHEMA_SQL)
+    // so the index creation succeeds. Idempotent.
+    this.migrateMemoryProjectId();
     this.db.exec(SCHEMA_SQL);
     this.migratePapersPdfText();
     this.migrateCollections();
     this.migrateArtifactContent();
     this.migrateFtsIndex();
+  }
+
+  /** Idempotent: add project_id to memory if missing (METIS-F12). Must run
+   *  before SCHEMA_SQL because the index on memory(project_id) is in there. */
+  private migrateMemoryProjectId(): void {
+    const tables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='memory'").all() as Array<{ name: string }>;
+    if (tables.length === 0) return; // fresh DB: SCHEMA_SQL creates it with the column
+    const cols = (this.db.prepare('PRAGMA table_info(memory)').all() as Array<{ name: string }>).map((row) => row.name);
+    if (!cols.includes('project_id')) {
+      this.db.exec('ALTER TABLE memory ADD COLUMN project_id TEXT');
+    }
   }
 
   /** Create the FTS5 full-text index for papers (idempotent). Contentless

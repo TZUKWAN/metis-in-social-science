@@ -36,6 +36,7 @@ import { HookBus, type HookContext } from './HookBus.js';
 import { BaseProvider } from '../providers/BaseProvider.js';
 import { ToolRegistry } from '../tools/ToolRegistry.js';
 import { ToolDispatcher } from '../tools/ToolDispatcher.js';
+import { parseTextToolCall } from '../tools/TextToolProtocol.js';
 import {
   type ToolPresenterRegistry,
   createToolPresenterRegistry,
@@ -1080,10 +1081,26 @@ export class AgentLoop {
       } as unknown as HookContext);
     }
 
+    // Text tool protocol: when the model does not support native function
+    // calling, it emits {"tool":"<name>","args":{...}} as prose. The provider's
+    // parseResponse handles the non-streaming path; for the streaming path
+    // (where chunks only carry content), parse the aggregated finalContent
+    // here so tool dispatch still happens.
+    let resolvedContent = finalContent;
+    let resolvedToolCalls = finalToolCalls;
+    if (resolvedToolCalls.length === 0 && !this.provider.capabilities().nativeToolCalling && finalContent) {
+      const parsed = parseTextToolCall(finalContent);
+      if (parsed) {
+        resolvedToolCalls = [parsed];
+        resolvedContent = '';
+        finalFinishReason = 'tool_calls';
+      }
+    }
+
     return {
-      content: finalContent,
+      content: resolvedContent,
       reasoning: finalReasoning,
-      toolCalls: finalToolCalls,
+      toolCalls: resolvedToolCalls,
       finishReason: finalFinishReason,
       usage: finalUsage,
       raw: { streamed: usedRealStream },

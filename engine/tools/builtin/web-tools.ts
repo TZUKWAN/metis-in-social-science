@@ -39,7 +39,7 @@ export const webSearchSpec: ToolSpec = {
 export const webSearchHandler: ToolHandler = async (args) => {
   const query = String(args.query ?? '').trim();
   if (!query) return JSON.stringify({ ok: false, error: 'query is required' });
-  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+  if (typeof navigator !== 'undefined' && !(navigator as { onLine?: boolean }).onLine) {
     return JSON.stringify({ ok: false, error: 'offline', offline: true });
   }
   const maxResults = Math.min(Math.max(1, Number(args.maxResults) || 10), 50);
@@ -112,7 +112,7 @@ export const webFetchSpec: ToolSpec = {
 export const webFetchHandler: ToolHandler = async (args) => {
   const url = String(args.url ?? '').trim();
   if (!url) return JSON.stringify({ ok: false, error: 'url is required' });
-  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+  if (typeof navigator !== 'undefined' && !(navigator as { onLine?: boolean }).onLine) {
     return JSON.stringify({ ok: false, error: 'offline', offline: true });
   }
   if (!url.startsWith('http://') && !url.startsWith('https://')) {

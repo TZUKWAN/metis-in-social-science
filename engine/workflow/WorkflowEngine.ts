@@ -34,11 +34,16 @@ export class WorkflowEngine {
 
   /**
    * Execute a workflow definition serially.
+   *
+   * @param liveSteering Optional steering source forwarded to every step's
+   *   AgentLoop.run, so human pause/interrupt can take effect mid-step (not
+   *   only at phase boundaries). Used by the autonomous research engine.
    */
   async run(
     definition: WorkflowDefinition,
     input: Record<string, unknown> = {},
     hooks?: WorkflowHooks,
+    liveSteering?: import('../runtime/LiveSteeringContract.js').LiveSteeringSource,
   ): Promise<WorkflowRun> {
     const order = topologicalSort(definition);
     const stepMap = new Map(definition.steps.map((s) => [s.id, s]));
@@ -113,7 +118,7 @@ export class WorkflowEngine {
         hooks.onProgress(completedCount, totalCount, step);
       }
 
-      const result = await this.executeStep(step, upstreamOutputs, input);
+      const result = await this.executeStep(step, upstreamOutputs, input, liveSteering);
 
       stepResult.agentResult = result.agentResult;
       stepResult.retryCount = result.retryCount;
@@ -159,6 +164,7 @@ export class WorkflowEngine {
     pausedRun: WorkflowRun,
     fromStepId: string,
     hooks?: WorkflowHooks,
+    liveSteering?: import('../runtime/LiveSteeringContract.js').LiveSteeringSource,
   ): Promise<WorkflowRun> {
     const order = topologicalSort(definition);
     const fromIndex = order.indexOf(fromStepId);
@@ -191,7 +197,7 @@ export class WorkflowEngine {
       if (hooks?.onStepStart) await hooks.onStepStart(step, run);
 
       const upstreamOutputs = collectUpstreamOutputs(step, run.stepResults);
-      const result = await this.executeStep(step, upstreamOutputs, run.input);
+      const result = await this.executeStep(step, upstreamOutputs, run.input, liveSteering);
 
       run.stepResults[stepId] = {
         ...run.stepResults[stepId]!,
@@ -242,6 +248,7 @@ export class WorkflowEngine {
     step: WorkflowStep,
     upstreamOutputs: Record<string, string>,
     globalInput: Record<string, unknown>,
+    liveSteering?: import('../runtime/LiveSteeringContract.js').LiveSteeringSource,
   ): Promise<{ status: 'completed' | 'failed'; output: string; agentResult: AgentRunResult; retryCount: number }> {
     const maxRetries = step.retry?.maxRetries ?? 0;
     let retryCount = 0;
@@ -258,6 +265,7 @@ export class WorkflowEngine {
         promptStackHash: '',
         resumeFromCheckpoint: false,
         requestId: `wf-${step.id}-${Date.now()}`,
+        ...(liveSteering ? { liveSteering } : {}),
       };
 
       const agentResult = await this.agent.run(request);

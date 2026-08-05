@@ -63,27 +63,23 @@ export interface Reflection {
 
 export interface AutonomousPlannerOptions {
   provider?: BaseProvider;
-  /** Quality thresholds for auto-redo. Defaults: advance≥0.8, redo≥0.5, else rollback. */
-  advanceThreshold?: number;
+  /** Quality threshold below which an "advance" is downgraded to a redo. Default 0.5. */
   redoThreshold?: number;
   /** Per-phase redo cap; exceeding it forces advancement to avoid infinite loops. */
   maxRedosPerPhase?: number;
 }
 
-const DEFAULT_ADVANCE_THRESHOLD = 0.8;
 const DEFAULT_REDO_THRESHOLD = 0.5;
 const DEFAULT_MAX_REDOS_PER_PHASE = 2;
 
 export class AutonomousPlanner {
   private readonly provider?: BaseProvider;
-  private readonly advanceThreshold: number;
   private readonly redoThreshold: number;
   private readonly maxRedosPerPhase: number;
   private readonly redoCounts = new Map<ResearchPhaseKind, number>();
 
   constructor(options: AutonomousPlannerOptions = {}) {
     this.provider = options.provider;
-    this.advanceThreshold = options.advanceThreshold ?? DEFAULT_ADVANCE_THRESHOLD;
     this.redoThreshold = options.redoThreshold ?? DEFAULT_REDO_THRESHOLD;
     this.maxRedosPerPhase = options.maxRedosPerPhase ?? DEFAULT_MAX_REDOS_PER_PHASE;
   }
@@ -165,7 +161,22 @@ export class AutonomousPlanner {
   // ─── Internals ──────────────────────────────────────────────
 
   private enforceRedoCap(phase: ResearchPhaseKind, reflection: Reflection): Reflection {
-    if (reflection.decision !== 'redo' && reflection.decision !== 'rollback') return reflection;
+    // Quality safety-net: if the provider said "advance" but the score is below
+    // the redo threshold, downgrade to a redo (the phase output is too weak to
+    // build on). This catches providers that are too eager to advance.
+    let effective = reflection;
+    if (
+      reflection.decision === 'advance'
+      && reflection.qualityScore < this.redoThreshold
+    ) {
+      effective = {
+        ...reflection,
+        decision: 'redo',
+        reasoning: `${reflection.reasoning}\n（质量 ${reflection.qualityScore.toFixed(2)} 低于重做阈值 ${this.redoThreshold}，自动降级为重做）`,
+      };
+    }
+
+    if (effective.decision !== 'redo' && effective.decision !== 'rollback') return effective;
     const count = (this.redoCounts.get(phase) ?? 0) + 1;
     this.redoCounts.set(phase, count);
     if (count > this.maxRedosPerPhase) {
@@ -175,11 +186,11 @@ export class AutonomousPlanner {
         phase,
         decision: 'advance',
         nextPhase,
-        qualityScore: reflection.qualityScore,
-        reasoning: `${reflection.reasoning}\n（已达该阶段重做上限 ${this.maxRedosPerPhase} 次，强制推进到 ${nextPhase ?? '完成'}）`,
+        qualityScore: effective.qualityScore,
+        reasoning: `${effective.reasoning}\n（已达该阶段重做上限 ${this.maxRedosPerPhase} 次，强制推进到 ${nextPhase ?? '完成'}）`,
       };
     }
-    return reflection;
+    return effective;
   }
 
   private async reflectWithProvider(
@@ -217,7 +228,7 @@ export class AutonomousPlanner {
           transcript ? `\nRecent history:\n${transcript}` : '',
         ].join('\n'),
       },
-    ], undefined, { temperature: 0.3 });
+      ], undefined, { temperature: 0.3, thinking: true });
 
     return parseReflectionJson(phase, response.content);
   }

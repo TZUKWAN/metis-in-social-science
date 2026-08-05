@@ -242,7 +242,7 @@ export class LearningEngine {
           ].join('\n'),
         },
         { role: 'user', content: transcript },
-      ], undefined, { temperature: 0.2 });
+      ], undefined, { temperature: 0.2, thinking: true });
 
       const parsed = parseExtractionJson(response.content);
       if (!parsed) return;

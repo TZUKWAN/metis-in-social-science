@@ -1025,7 +1025,7 @@ function createAgentLoop(
         const response = await prov.complete([
           { role: 'system', content: systemPrompt },
           { role: 'user', content: msgs.map((m) => `${m.role}: ${m.content}`).join('\n').slice(0, 12000) },
-        ], undefined, { temperature: 0.2 });
+        ], undefined, { temperature: 0.2, thinking: true });
         return `[对话摘要] ${response.content}`;
       } catch {
         return '[对话摘要不可用] 以下是最近的消息。';

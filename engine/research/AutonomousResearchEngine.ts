@@ -125,7 +125,7 @@ export class AutonomousResearchEngine {
         const hooks = this.buildPhaseHooks(sessionId, planned, plan.phases.length, history.length);
         let run: WorkflowRun;
         try {
-          run = await this.workflowEngine.run(workflow, input, hooks);
+          run = await this.workflowEngine.run(workflow, input, hooks, this.liveSteering);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           this.eventBus.emit({

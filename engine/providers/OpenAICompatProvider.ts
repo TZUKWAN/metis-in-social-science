@@ -14,6 +14,7 @@ import {
   MAX_TIMEOUT_MS,
 } from '../core/Config.js';
 import { getRateLimiter } from '../core/RateLimiter.js';
+import { parseTextToolCall } from '../tools/TextToolProtocol.js';
 import type {
   ChatMessage,
   NormalizedResponse,
@@ -399,13 +400,35 @@ export class OpenAICompatProvider extends BaseProvider {
 
   /**
    * Inject tool definitions as text into the system prompt for models
-   * that do not support native function calling (common in 7B-class models).
+   * that do not support native function calling (thinking models, 7B-class).
+   * The model is asked to emit ONE tool call as JSON; parseTextToolCall then
+   * extracts it. Multi-turn tool use works because the agent loop re-prompts
+   * after each tool result.
    */
   private injectToolPrompt(messages: OpenAIMessage[], tools: ToolSpec[]): OpenAIMessage[] {
     const toolDescriptions = tools.map((t) =>
       `- ${t.name}: ${t.description}\n  Parameters: ${JSON.stringify(t.parameters)}`,
     ).join('\n\n');
-    const toolBlock = `\n\n## Available Tools\n\nYou have access to the following tools. To use a tool, respond with a JSON object:\n\n{\n  "tool": "<tool_name>",\n  "args": { ... }\n}\n\n${toolDescriptions}\n\nUse tools when needed to complete the task. Return ONLY the JSON tool call, no extra text.`;
+    const toolBlock = [
+      '',
+      '## Available Tools',
+      '',
+      'You have access to the following tools:',
+      '',
+      toolDescriptions,
+      '',
+      '## How to call a tool',
+      '',
+      'When you need a tool, respond with ONLY a single JSON object on one line, no prose, no code fences:',
+      '',
+      '{"tool": "<tool_name>", "args": {<parameter values>}}',
+      '',
+      'Rules:',
+      '- Call AT MOST ONE tool per response. After the tool returns its result, you will be prompted again to continue.',
+      '- If you can answer without a tool, answer normally in prose (no JSON).',
+      '- Never wrap the JSON in markdown fences or surround it with explanation.',
+      '- "args" must match the tool\'s parameter schema; omit unknown keys.',
+    ].join('\n');
 
     const updated = [...messages];
     const sysIdx = updated.findIndex((m) => m.role === 'system');
@@ -543,39 +566,5 @@ export class OpenAICompatProvider extends BaseProvider {
   }
 }
 
-/**
- * Parse a text-protocol tool call from model output. The injectToolPrompt
- * convention asks the model to emit: {"tool":"<name>","args":{...}}.
- * Returns a ToolCall if the content is (or contains) such JSON, else null.
- * Tolerates surrounding prose / fenced code blocks.
- */
-function parseTextToolCall(content: string): ToolCall | null {
-  const text = content.trim();
-  if (!text) return null;
-  // Find the first JSON object that looks like a tool call.
-  const candidates: string[] = [];
-  // Fenced ```json ... ```
-  const fenced = text.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/u);
-  if (fenced?.[1]) candidates.push(fenced[1]);
-  // Bare {...}
-  const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start >= 0 && end > start) candidates.push(text.slice(start, end + 1));
-
-  for (const candidate of candidates) {
-    try {
-      const parsed = JSON.parse(candidate) as { tool?: unknown; name?: unknown; args?: unknown; arguments?: unknown };
-      const name = typeof parsed.tool === 'string' ? parsed.tool : (typeof parsed.name === 'string' ? parsed.name : '');
-      if (!name) continue;
-      const rawArgs = parsed.args ?? parsed.arguments ?? {};
-      const args = (rawArgs && typeof rawArgs === 'object') ? rawArgs as Record<string, unknown> : {};
-      return {
-        name,
-        arguments: args,
-        id: `textcall_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`,
-      };
-    } catch { /* try next candidate */ }
-  }
-  return null;
-}
-
+// Re-exported for backwards compatibility (tests import from here).
+export { parseTextToolCall } from '../tools/TextToolProtocol.js';
