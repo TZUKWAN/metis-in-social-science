@@ -58,6 +58,7 @@ const PAGE_LABEL_KEYS: Record<Page, string> = {
   artifacts: 'nav.artifacts',
   office: 'nav.office',
   kanban: 'nav.kanban',
+  autonomous: 'autonomous.title',
   timeline: 'nav.timeline',
   latex: 'nav.latexEditor',
   pdf: 'nav.pdfReader',

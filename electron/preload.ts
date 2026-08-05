@@ -25,6 +25,14 @@ import {
   decodeGoalSummaryResponse,
 } from '../engine/runtime/GoalRuntimeContract.js';
 import {
+  AUTONOMOUS_CHANNELS,
+  AUTONOMOUS_CONTRACT_VERSION,
+  decodeAutonomousLiveEvent,
+  decodeAutonomousStartRequest,
+  decodeAutonomousControlRequest,
+  type AutonomousLiveEvent,
+} from '../engine/runtime/AutonomousRuntimeContract.js';
+import {
   createArtifactListRecovery,
   decodeArtifactContentRequest,
   decodeArtifactContentResponse,
@@ -292,6 +300,15 @@ type GoalStepStartEvent = Extract<GoalLiveEvent, { type: 'step-start' }>;
 type GoalStepCompleteEvent = Extract<GoalLiveEvent, { type: 'step-complete' }>;
 type GoalStepFailedEvent = Extract<GoalLiveEvent, { type: 'step-failed' }>;
 type GoalProgressEvent = Extract<GoalLiveEvent, { type: 'progress' }>;
+
+// Autonomous research live event subtypes (typed narrowing for subscribers).
+type AutonomousEngineStartedEvent = Extract<AutonomousLiveEvent, { type: 'engine-started' }>;
+type AutonomousPhaseStartedEvent = Extract<AutonomousLiveEvent, { type: 'phase-started' }>;
+type AutonomousStepEvent = Extract<AutonomousLiveEvent, { type: 'step-start' | 'step-complete' | 'step-failed' }>;
+type AutonomousReflectionEvent = Extract<AutonomousLiveEvent, { type: 'reflection' }>;
+type AutonomousProgressEvent = Extract<AutonomousLiveEvent, { type: 'progress' }>;
+type AutonomousEngineCompletedEvent = Extract<AutonomousLiveEvent, { type: 'engine-completed' }>;
+type AutonomousEngineInterruptedEvent = Extract<AutonomousLiveEvent, { type: 'engine-interrupted' }>;
 
 async function invokeSetupWithProgress<T>(
   channel: 'setup:probe' | 'setup:save',
@@ -945,6 +962,81 @@ const api = {
     };
     ipcRenderer.on('goal:progress', handler);
     return () => { ipcRenderer.removeListener('goal:progress', handler); };
+  },
+
+  // ── Autonomous research engine ───────────────────────────
+  autonomousStart: async (request: { goal: string; projectId?: string; sessionId?: string }) => {
+    const decoded = decodeAutonomousStartRequest({ version: AUTONOMOUS_CONTRACT_VERSION, ...request });
+    if (!decoded) return { ok: false, error: 'invalid_request' };
+    return ipcRenderer.invoke(AUTONOMOUS_CHANNELS.start, decoded) as Promise<{ ok: boolean; sessionId?: string; error?: string }>;
+  },
+  autonomousControl: async (request: { sessionId: string; action: 'pause' | 'resume' | 'interrupt'; reason?: string }) => {
+    const decoded = decodeAutonomousControlRequest({ version: AUTONOMOUS_CONTRACT_VERSION, ...request });
+    if (!decoded) return { ok: false, code: 'invalid_request' };
+    return ipcRenderer.invoke(AUTONOMOUS_CHANNELS.control, decoded) as Promise<{ ok: boolean; code?: string }>;
+  },
+  autonomousListSessions: async () => ipcRenderer.invoke(AUTONOMOUS_CHANNELS.listSessions) as Promise<{ sessions: Array<{ sessionId: string; goal: string; executions: number; savedAt: number }> }>,
+  onAutonomousEngineStarted: (callback: (data: AutonomousEngineStartedEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: unknown) => {
+      const decoded = decodeAutonomousLiveEvent(data);
+      if (decoded && decoded.type === 'engine-started') callback(decoded);
+    };
+    ipcRenderer.on(AUTONOMOUS_CHANNELS.live.engineStarted, handler);
+    return () => { ipcRenderer.removeListener(AUTONOMOUS_CHANNELS.live.engineStarted, handler); };
+  },
+  onAutonomousPhaseStarted: (callback: (data: AutonomousPhaseStartedEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: unknown) => {
+      const decoded = decodeAutonomousLiveEvent(data);
+      if (decoded && decoded.type === 'phase-started') callback(decoded);
+    };
+    ipcRenderer.on(AUTONOMOUS_CHANNELS.live.phaseStarted, handler);
+    return () => { ipcRenderer.removeListener(AUTONOMOUS_CHANNELS.live.phaseStarted, handler); };
+  },
+  onAutonomousStep: (callback: (data: AutonomousStepEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: unknown) => {
+      const decoded = decodeAutonomousLiveEvent(data);
+      if (decoded && (decoded.type === 'step-start' || decoded.type === 'step-complete' || decoded.type === 'step-failed')) callback(decoded);
+    };
+    ipcRenderer.on(AUTONOMOUS_CHANNELS.live.stepStart, handler);
+    ipcRenderer.on(AUTONOMOUS_CHANNELS.live.stepComplete, handler);
+    ipcRenderer.on(AUTONOMOUS_CHANNELS.live.stepFailed, handler);
+    return () => {
+      ipcRenderer.removeListener(AUTONOMOUS_CHANNELS.live.stepStart, handler);
+      ipcRenderer.removeListener(AUTONOMOUS_CHANNELS.live.stepComplete, handler);
+      ipcRenderer.removeListener(AUTONOMOUS_CHANNELS.live.stepFailed, handler);
+    };
+  },
+  onAutonomousReflection: (callback: (data: AutonomousReflectionEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: unknown) => {
+      const decoded = decodeAutonomousLiveEvent(data);
+      if (decoded && decoded.type === 'reflection') callback(decoded);
+    };
+    ipcRenderer.on(AUTONOMOUS_CHANNELS.live.reflection, handler);
+    return () => { ipcRenderer.removeListener(AUTONOMOUS_CHANNELS.live.reflection, handler); };
+  },
+  onAutonomousProgress: (callback: (data: AutonomousProgressEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: unknown) => {
+      const decoded = decodeAutonomousLiveEvent(data);
+      if (decoded && decoded.type === 'progress') callback(decoded);
+    };
+    ipcRenderer.on(AUTONOMOUS_CHANNELS.live.progress, handler);
+    return () => { ipcRenderer.removeListener(AUTONOMOUS_CHANNELS.live.progress, handler); };
+  },
+  onAutonomousCompleted: (callback: (data: AutonomousEngineCompletedEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: unknown) => {
+      const decoded = decodeAutonomousLiveEvent(data);
+      if (decoded && decoded.type === 'engine-completed') callback(decoded);
+    };
+    ipcRenderer.on(AUTONOMOUS_CHANNELS.live.engineCompleted, handler);
+    return () => { ipcRenderer.removeListener(AUTONOMOUS_CHANNELS.live.engineCompleted, handler); };
+  },
+  onAutonomousInterrupted: (callback: (data: AutonomousEngineInterruptedEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: unknown) => {
+      const decoded = decodeAutonomousLiveEvent(data);
+      if (decoded && decoded.type === 'engine-interrupted') callback(decoded);
+    };
+    ipcRenderer.on(AUTONOMOUS_CHANNELS.live.engineInterrupted, handler);
+    return () => { ipcRenderer.removeListener(AUTONOMOUS_CHANNELS.live.engineInterrupted, handler); };
   },
 
   // ── Chat streaming ───────────────────────────────────────

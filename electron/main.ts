@@ -80,6 +80,17 @@ import {
 } from '../engine/runtime/WorkspaceAgentsContract.js';
 import { GoalEngine } from '../engine/goal/GoalEngine.js';
 import type { Goal } from '../engine/goal/GoalPlanner.js';
+import { WorkflowEngine } from '../engine/workflow/WorkflowEngine.js';
+import { ResearchEventBus } from '../engine/research/ResearchEventBus.js';
+import { AutonomousPlanner } from '../engine/research/AutonomousPlanner.js';
+import { AutonomousResearchEngine } from '../engine/research/AutonomousResearchEngine.js';
+import {
+  AUTONOMOUS_CONTRACT_VERSION,
+  AUTONOMOUS_CHANNELS,
+  decodeAutonomousStartRequest,
+  decodeAutonomousControlRequest,
+  decodeAutonomousLiveEvent,
+} from '../engine/runtime/AutonomousRuntimeContract.js';
 import { parseLatexLog } from '../engine/latex/LatexLogParser.js';
 import type { WorkflowDefinition, WorkflowHooks } from '../engine/workflow/types.js';
 import { MCPManager } from '../engine/mcp/MCPManager.js';
@@ -394,6 +405,10 @@ let provider: OpenAICompatProvider | null = null;
 let memoryManager: MemoryManager | null = null;
 let learningEngine: LearningEngine | null = null;
 let goalEngine: GoalEngine | null = null;
+let autonomousEngine: AutonomousResearchEngine | null = null;
+let researchEventBus: ResearchEventBus | null = null;
+/** Active autonomous session id (single concurrent run for now). */
+let activeAutonomousSessionId: string | null = null;
 let mcpManager: MCPManager | null = null;
 let skillRegistry: SkillRegistry | null = null;
 let personalizationRepository: PersonalizationRepository | null = null;
@@ -770,6 +785,84 @@ function presentGoalSummary(goal: { id: string; status: unknown; createdAt: numb
     status: goal.status,
     createdAt: goal.createdAt,
   };
+}
+
+// ─── Autonomous research helpers ──────────────────────────────
+
+/**
+ * Map an internal ResearchEvent (producer shape) to a live-event payload that
+ * satisfies AutonomousLiveEventSchema (renderer-consumable). Adds the contract
+ * version + monotonic sequence the renderer expects.
+ */
+function toLivePayload(
+  evt: import('../engine/research/ResearchEventBus.js').ResearchEvent,
+  sessionId: string,
+  sequence: number,
+): unknown {
+  const base = { version: AUTONOMOUS_CONTRACT_VERSION, sessionId, sequence };
+  switch (evt.type) {
+    case 'engine-started':
+      return { ...base, type: 'engine-started', goal: evt.goal, plan: evt.plan };
+    case 'phase-started':
+      return { ...base, type: 'phase-started', phase: evt.phase, phaseIteration: evt.phaseIteration, phaseName: evt.phaseName };
+    case 'step-start':
+    case 'step-complete':
+    case 'step-failed':
+      return { ...base, type: evt.type, phase: evt.phase, stepId: evt.stepId, stepName: evt.stepName, output: evt.output, error: evt.error };
+    case 'reflection':
+      return {
+        ...base, type: 'reflection', phase: evt.phase, decision: evt.decision,
+        nextPhase: evt.nextPhase, qualityScore: evt.qualityScore, reasoning: evt.reasoning, revisionNote: evt.revisionNote,
+      };
+    case 'progress':
+      return { ...base, type: 'progress', completedPhases: evt.completedPhases, totalPhases: evt.totalPhases, currentPhase: evt.currentPhase };
+    case 'engine-completed':
+      return { ...base, type: 'engine-completed', summary: evt.summary, artifactIds: evt.artifactIds };
+    case 'engine-interrupted':
+      return { ...base, type: 'engine-interrupted', reason: evt.reason };
+    default:
+      return null;
+  }
+}
+
+function channelForEvent(evt: import('../engine/research/ResearchEventBus.js').ResearchEvent): string | null {
+  const C = AUTONOMOUS_CHANNELS.live;
+  switch (evt.type) {
+    case 'engine-started': return C.engineStarted;
+    case 'phase-started': return C.phaseStarted;
+    case 'step-start': return C.stepStart;
+    case 'step-complete': return C.stepComplete;
+    case 'step-failed': return C.stepFailed;
+    case 'reflection': return C.reflection;
+    case 'progress': return C.progress;
+    case 'engine-completed': return C.engineCompleted;
+    case 'engine-interrupted': return C.engineInterrupted;
+    default: return null;
+  }
+}
+
+/**
+ * Subscribe the LearningEngine to the research event bus so autonomous output
+ * feeds back into memory (the "hook extends learning scenarios" goal). This is
+ * the closed loop: research produces knowledge → learning persists it → future
+ * research/prompts benefit from it.
+ */
+function subscribeLearningToResearchBus(
+  bus: ResearchEventBus,
+  learning: import('../engine/learning/LearningEngine.js').LearningEngine | null,
+): void {
+  if (!learning) return;
+  bus.subscribe((evt) => {
+    try {
+      if (evt.type === 'step-complete' && evt.output && evt.output.length > 40) {
+        // Treat substantial step outputs as experience worth remembering.
+        learning.rememberAutonomousOutput?.(evt.phase, evt.stepName, evt.output);
+      }
+      if (evt.type === 'reflection' && evt.decision === 'advance') {
+        learning.rememberAutonomousDecision?.(evt.phase, evt.reasoning);
+      }
+    } catch { /* learning must never break the research bus */ }
+  });
 }
 
 function presentPaper(
@@ -1152,6 +1245,21 @@ function initProviderAndAgent(): void {
     console.log('[Main] initProviderAndAgent: agentLoop created:', !!agentLoop);
     if (agentLoop) {
       goalEngine = new GoalEngine(agentLoop, memoryManager);
+      // Autonomous research engine: composes a dedicated WorkflowEngine (bound
+      // to this agentLoop) + reflective planner + event bus. Live steering
+      // reuses the global queue so pause/interrupt share the control channel.
+      const autonomousWorkflowEngine = new WorkflowEngine(agentLoop);
+      researchEventBus = new ResearchEventBus();
+      const planner = new AutonomousPlanner({ provider });
+      autonomousEngine = new AutonomousResearchEngine({
+        workflowEngine: autonomousWorkflowEngine,
+        planner,
+        eventBus: researchEventBus,
+        liveSteering: liveSteeringQueue,
+        store: store ?? undefined,
+      });
+      // Hook closure: learning ingests durable knowledge from autonomous output.
+      subscribeLearningToResearchBus(researchEventBus, learningEngine);
     }
   } else {
     console.warn('[Main] initProviderAndAgent: store is null, skipping agentLoop creation');
@@ -4581,6 +4689,120 @@ function setupIPC(): void {
       return deleted ? { ok: true } : { ok: false, error: 'not_found' };
     } catch {
       return { ok: false, error: 'unauthorized_renderer' };
+    }
+  });
+
+  // ── Autonomous Research Engine ─────────────────────────
+  // Full-autonomy loop (idea → experiment → analysis → paper) with live event
+  // streaming and live-steering pause/interrupt. Mirrors the goal IPC shape.
+  ipcMain.handle(AUTONOMOUS_CHANNELS.start, async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+    } catch {
+      return { ok: false, error: 'unauthorized_renderer' };
+    }
+    const request = decodeAutonomousStartRequest(rawRequest);
+    if (!request) return { ok: false, error: 'invalid_request' };
+    if (!autonomousEngine || !researchEventBus) return { ok: false, error: 'engine_unavailable' };
+    if (activeAutonomousSessionId) return { ok: false, error: 'session_active' };
+
+    const sessionId = request.sessionId ?? `auto_${Date.now().toString(36)}`;
+    activeAutonomousSessionId = sessionId;
+    const sender = event.sender;
+    let sequence = 0;
+    // One subscription per run: forward every bus event to the renderer after
+    // schema validation. Unsubscribed when the run resolves.
+    const unsubscribe = researchEventBus.subscribe((evt) => {
+      if (sender.isDestroyed()) return;
+      const livePayload = toLivePayload(evt, sessionId, sequence++);
+      const decoded = decodeAutonomousLiveEvent(livePayload);
+      if (decoded) {
+        const channel = channelForEvent(evt);
+        if (channel) sender.send(channel, decoded);
+      }
+    });
+
+    // Fire and forget: the run streams events; we return the sessionId at once.
+    void (async () => {
+      try {
+        await autonomousEngine.run(request.goal, sessionId, request.projectId);
+      } catch (err) {
+        console.error('[Main] autonomous run failed:', err);
+      } finally {
+        unsubscribe();
+        if (activeAutonomousSessionId === sessionId) activeAutonomousSessionId = null;
+      }
+    })();
+
+    return { ok: true, sessionId };
+  });
+
+  ipcMain.handle(AUTONOMOUS_CHANNELS.control, async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = decodeAutonomousControlRequest(rawRequest);
+      if (!request) return { ok: false, code: 'invalid_request' };
+      if (!autonomousEngine || !activeAutonomousSessionId) {
+        return { ok: false, code: 'no_active_session' };
+      }
+      if (request.action === 'interrupt') {
+        const stopped = autonomousEngine.interrupt(request.sessionId, request.reason ?? 'user_interrupt');
+        return { ok: stopped, code: stopped ? 'applied' : 'no_active_session' };
+      }
+      if (request.action === 'pause') {
+        // Pause = enqueue a live-steering interrupt; resume re-runs from UI.
+        try {
+          liveSteeringQueue.enqueue({
+            type: 'interrupt',
+            id: `auto_interrupt_${Date.now()}`,
+            sessionId: request.sessionId,
+            sequence: Date.now(),
+            createdAt: new Date().toISOString(),
+            reason: request.reason ?? 'user_pause',
+          });
+          return { ok: true, code: 'applied' };
+        } catch {
+          return { ok: false, code: 'invalid_request' };
+        }
+      }
+      // resume: no-op for now (a new start resumes from checkpoint via listSessions)
+      return { ok: true, code: 'applied' };
+    } catch {
+      return { ok: false, code: 'invalid_request' };
+    }
+  });
+
+  ipcMain.handle(AUTONOMOUS_CHANNELS.listSessions, (event) => {
+    try {
+      requireRendererMainFrame(event);
+      if (!autonomousEngine || !store) return { sessions: [] };
+      // Checkpoints are stored as memory rows under the autonomous_checkpoint category.
+      const rows = store.getMemoryByCategory('autonomous_checkpoint');
+      return {
+        sessions: rows.map((r) => {
+          try {
+            const data = JSON.parse(r.value);
+            return { sessionId: r.key.replace('autonomous:session:', ''), goal: data.goal, executions: data.executions, savedAt: data.savedAt };
+          } catch { return null; }
+        }).filter(Boolean),
+      };
+    } catch {
+      return { sessions: [] };
+    }
+  });
+
+  ipcMain.handle(AUTONOMOUS_CHANNELS.resumeSession, async (event, rawSessionId: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const sessionId = typeof rawSessionId === 'string' ? rawSessionId : '';
+      if (!sessionId || !autonomousEngine) return { ok: false, error: 'invalid_request' };
+      const checkpoint = autonomousEngine.loadCheckpoint(sessionId);
+      if (!checkpoint) return { ok: false, error: 'no_checkpoint' };
+      // Resume = start a fresh run with the same goal (checkpoint output already
+      // persisted as findings/artifacts). Full mid-loop resume is a future enhancement.
+      return { ok: true, goal: checkpoint.goal };
+    } catch {
+      return { ok: false, error: 'invalid_request' };
     }
   });
 

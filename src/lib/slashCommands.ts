@@ -17,6 +17,7 @@ export interface SlashCommand {
 export const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'chat', description: '纯聊天（跳过场景匹配和任务检测）', hasArg: true, requiresArg: true, argPlaceholder: '输入聊天内容…' },
   { name: 'goal', description: '创建目标任务（自动拆解为工作流，同步到看板）', hasArg: true, requiresArg: true, argPlaceholder: '输入任务描述…' },
+  { name: 'autonomous', description: '启动自主科研（idea→实验→分析→论文全自动闭环）', hasArg: true, requiresArg: true, argPlaceholder: '输入研究目标…' },
   { name: 'task', description: '同 /goal（创建目标任务）', hasArg: true, requiresArg: true, argPlaceholder: '输入任务描述…' },
   { name: 'scenario', description: '切换到指定场景', hasArg: true, requiresArg: true, argPlaceholder: '输入场景名称…' },
   { name: 'search', description: '打开全文搜索（Ctrl+K）', hasArg: true, requiresArg: true, argPlaceholder: '输入搜索关键词…' },

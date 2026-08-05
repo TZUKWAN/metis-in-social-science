@@ -271,6 +271,36 @@ export class LearningEngine {
     if (parts.length === 0) return '';
     return '\n\n---\n\n' + parts.join('\n\n');
   }
+
+  // ─── 自主科研事件订阅（hook 闭环） ───────────────────────
+
+  /**
+   * Ingest a substantial output produced by the autonomous research engine.
+   * Stored as an experience so future research/prompts can reuse it. This is
+   * the consumer side of the ResearchEventBus subscription.
+   */
+  rememberAutonomousOutput(phase: string, stepName: string, output: string): void {
+    if (!this.memory) return;
+    try {
+      const trimmed = output.slice(0, 2000);
+      this.memory.set(
+        `auto:${phase}:${Date.now()}:${Math.floor(Math.random() * 1e6)}`,
+        `[${phase}/${stepName}] ${trimmed}`,
+        'autonomous_output',
+      );
+    } catch { /* ignore */ }
+  }
+
+  /** Ingest a reflection decision (advance/redo/rollback) as a learned rule. */
+  rememberAutonomousDecision(phase: string, reasoning: string): void {
+    if (!this.memory) return;
+    try {
+      this.memory.recordKeyDecision(
+        `自主科研·${phase}阶段通过：${reasoning.slice(0, 200)}`,
+        'autonomous research reflection',
+      );
+    } catch { /* ignore */ }
+  }
 }
 
 // ─── 内部工具 ────────────────────────────────────────────────

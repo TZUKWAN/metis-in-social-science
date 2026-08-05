@@ -29,6 +29,7 @@ const LatexPreviewPage = lazy(() => import('./pages/LatexPreviewPage'));
 const PdfReaderPage = lazy(() => import('./pages/PdfReaderPage'));
 const OfficeDocumentPage = lazy(() => import('./pages/OfficeDocumentPage'));
 const TaskBoardPage = lazy(() => import('./pages/TaskBoardPage'));
+const AutonomousResearchPage = lazy(() => import('./pages/AutonomousResearchPage'));
 const OnboardingTour = lazy(() => import('./components/OnboardingTour'));
 const GoalPage = lazy(() => import('./pages/GoalPage'));
 const CollectionsPage = lazy(() => import('./pages/CollectionsPage'));
@@ -116,6 +117,7 @@ function legacyPageToEntry(page: Page): { entry: TopLevelEntry; mode: WorkspaceM
     case 'graph':
     case 'artifacts':
     case 'kanban':
+    case 'autonomous':
     case 'timeline':
     case 'experiments':
       return { entry: 'projects', mode: 'analyze' };
@@ -130,7 +132,7 @@ function legacyPageToEntry(page: Page): { entry: TopLevelEntry; mode: WorkspaceM
 
 // ─── Evals Page ───
 
-type StandalonePage = 'dashboard' | 'goal' | 'collections' | 'tags' | 'timeline' | 'latex' | 'experiments' | 'evals' | 'office' | 'kanban';
+type StandalonePage = 'dashboard' | 'goal' | 'collections' | 'tags' | 'timeline' | 'latex' | 'experiments' | 'evals' | 'office' | 'kanban' | 'autonomous';
 
 function resolveStandalonePage(page: Page, diagnosticMode: boolean): StandalonePage | null {
   switch (page) {
@@ -143,6 +145,7 @@ function resolveStandalonePage(page: Page, diagnosticMode: boolean): StandaloneP
     case 'experiments':
     case 'office':
     case 'kanban':
+    case 'autonomous':
       return page;
     case 'evals':
       return diagnosticMode ? page : null;
@@ -603,6 +606,7 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
       case 'experiments': return <ExperimentsPage />;
       case 'office': return <OfficeDocumentPage />;
       case 'kanban': return <TaskBoardPage />;
+      case 'autonomous': return <AutonomousResearchPage />;
       case 'evals': return uiMode === 'diagnostic' ? <EvalsPage /> : null;
       default: return null;
     }

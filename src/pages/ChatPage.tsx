@@ -1565,6 +1565,20 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
         await handleGoalFlow(arg);
         return;
       }
+      case 'autonomous': {
+        if (!arg) { reply('用法：/autonomous <研究目标>'); return; }
+        try {
+          const result = await window.metis?.autonomousStart?.({ goal: arg });
+          if (result?.ok) {
+            reply(`🚀 已启动自主科研（目标：${arg}）。请打开「自主科研」面板查看 idea→实验→分析→论文 的实时进度，或用 /stop 中断。`);
+          } else {
+            reply(`启动失败：${result?.error ?? '未知错误'}。可能已有任务在运行，或引擎未就绪。`);
+          }
+        } catch (err) {
+          reply(`启动异常：${err instanceof Error ? err.message : String(err)}`);
+        }
+        return;
+      }
       case 'scenario': {
         if (!arg) { reply('用法：/scenario <名称>'); return; }
         const matched = matchScenarioTrigger(arg, scenarios);
