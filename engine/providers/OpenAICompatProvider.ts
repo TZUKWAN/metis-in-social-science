@@ -77,10 +77,16 @@ const MODEL_CAPS: Record<string, Partial<ProviderCapabilities>> = {
   'deepseek-reasoner': { maxContextTokens: 64000, maxOutputTokens: 8192, nativeToolCalling: false, streaming: true, thinking: true },
   'claude-3-5-sonnet': { maxContextTokens: 200000, maxOutputTokens: 8192, nativeToolCalling: true, streaming: true, thinking: false },
   'claude-3-5-haiku': { maxContextTokens: 200000, maxOutputTokens: 8192, nativeToolCalling: true, streaming: true, thinking: false },
-  // Qwen3.5 / Qwen3.6 series
-  'qwen3.5': { maxContextTokens: 128000, maxOutputTokens: 8192, nativeToolCalling: true, streaming: true, thinking: false },
-  'qwen3.5-122b-a10b': { maxContextTokens: 128000, maxOutputTokens: 8192, nativeToolCalling: true, streaming: true, thinking: false },
-  'qwen3.6': { maxContextTokens: 128000, maxOutputTokens: 8192, nativeToolCalling: true, streaming: true, thinking: false },
+  // Qwen3.5 / Qwen3.6 series — these are thinking models (reasoning_content).
+  // Some OpenAI-compatible gateways reject the native `tools` field for these
+  // models with HTTP 400; the text tool protocol (injectToolPrompt) is the
+  // reliable path. enable_thinking defaults off for stability + token budget.
+  'qwen3.5': { maxContextTokens: 128000, maxOutputTokens: 16384, nativeToolCalling: false, streaming: true, thinking: true },
+  'qwen3.5-122b-a10b': { maxContextTokens: 128000, maxOutputTokens: 16384, nativeToolCalling: false, streaming: true, thinking: true },
+  'qwen3.5-35b-a3b': { maxContextTokens: 128000, maxOutputTokens: 16384, nativeToolCalling: false, streaming: true, thinking: true },
+  'qwen3.5-27b': { maxContextTokens: 128000, maxOutputTokens: 16384, nativeToolCalling: false, streaming: true, thinking: true },
+  'qwen3-30b-a3b': { maxContextTokens: 128000, maxOutputTokens: 16384, nativeToolCalling: false, streaming: true, thinking: true },
+  'qwen3.6': { maxContextTokens: 128000, maxOutputTokens: 16384, nativeToolCalling: false, streaming: true, thinking: true },
   // Small / lightweight models (7B-14B class)
   'qwen2.5-14b': { maxContextTokens: 32768, maxOutputTokens: 4096, nativeToolCalling: true, streaming: true, thinking: false },
   'qwen2.5-7b': { maxContextTokens: 32768, maxOutputTokens: 2048, nativeToolCalling: true, streaming: true, thinking: false },
@@ -107,7 +113,11 @@ const DEFAULT_CAPS: Omit<ProviderCapabilities, 'model'> = {
   thinking: false,
   maxContextTokens: 32000,
   maxOutputTokens: 4096,
-  retryableStatusCodes: [429, 500, 502, 503, 504],
+  // 400 is included: some OpenAI-compatible gateways intermittently proxy
+  // upstream errors (reasoning models, warm-up) as transient 400s that clear
+  // on retry. Non-retryable 400s (genuine bad request) fail fast after the
+  // retry budget is exhausted.
+  retryableStatusCodes: [400, 429, 500, 502, 503, 504],
 };
 
 function detectCapabilities(model: string): ProviderCapabilities {
@@ -303,6 +313,16 @@ export class OpenAICompatProvider extends BaseProvider {
       body.thinking = { type: 'enabled' };
     }
 
+    // Qwen3-style thinking models: the vLLM/serving runtime accepts an
+    // `enable_thinking` flag (and chat_template_kwargs). Default OFF for
+    // stability and token budget — the agent loop turns it ON explicitly via
+    // params.thinking=true when deep reasoning is required (e.g. reflection).
+    if (this.caps.thinking) {
+      const enableThinking = params?.thinking === true;
+      body.enable_thinking = enableThinking;
+      body.chat_template_kwargs = { enable_thinking: enableThinking };
+    }
+
     return body;
   }
 
@@ -452,10 +472,23 @@ export class OpenAICompatProvider extends BaseProvider {
     // Parse reasoning (for models that support thinking)
     const reasoning = (message?.reasoning_content as string) ?? undefined;
 
+    // Text tool protocol: when the model does not support native function
+    // calling, injectToolPrompt asks it to emit {"tool":"<name>","args":{...}}.
+    // Parse that JSON out of the content so the agent loop sees real toolCalls.
+    let finalContent = content;
+    let finalToolCalls = toolCalls;
+    if (toolCalls.length === 0 && !this.caps.nativeToolCalling && content) {
+      const parsed = parseTextToolCall(content);
+      if (parsed) {
+        finalToolCalls = [parsed];
+        finalContent = ''; // the content was a tool call, not prose
+      }
+    }
+
     return {
-      content,
+      content: finalContent,
       reasoning,
-      toolCalls,
+      toolCalls: finalToolCalls,
       finishReason,
       usage,
       raw: json,
@@ -509,3 +542,40 @@ export class OpenAICompatProvider extends BaseProvider {
     throw lastError ?? new Error('Retry failed');
   }
 }
+
+/**
+ * Parse a text-protocol tool call from model output. The injectToolPrompt
+ * convention asks the model to emit: {"tool":"<name>","args":{...}}.
+ * Returns a ToolCall if the content is (or contains) such JSON, else null.
+ * Tolerates surrounding prose / fenced code blocks.
+ */
+function parseTextToolCall(content: string): ToolCall | null {
+  const text = content.trim();
+  if (!text) return null;
+  // Find the first JSON object that looks like a tool call.
+  const candidates: string[] = [];
+  // Fenced ```json ... ```
+  const fenced = text.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/u);
+  if (fenced?.[1]) candidates.push(fenced[1]);
+  // Bare {...}
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start >= 0 && end > start) candidates.push(text.slice(start, end + 1));
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as { tool?: unknown; name?: unknown; args?: unknown; arguments?: unknown };
+      const name = typeof parsed.tool === 'string' ? parsed.tool : (typeof parsed.name === 'string' ? parsed.name : '');
+      if (!name) continue;
+      const rawArgs = parsed.args ?? parsed.arguments ?? {};
+      const args = (rawArgs && typeof rawArgs === 'object') ? rawArgs as Record<string, unknown> : {};
+      return {
+        name,
+        arguments: args,
+        id: `textcall_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`,
+      };
+    } catch { /* try next candidate */ }
+  }
+  return null;
+}
+
