@@ -373,12 +373,15 @@ function ChatMessageItem({
   msg,
   onEdit,
   onRegenerate,
+  onLearnSkill,
   isLast,
   diagnosticMode,
 }: {
   msg: ChatMessage;
   onEdit?: (content: string) => void;
   onRegenerate?: () => void;
+  /** Learn the conversation up to this message as a reusable skill. */
+  onLearnSkill?: () => void;
   isLast?: boolean;
   diagnosticMode: boolean;
 }) {
@@ -450,6 +453,17 @@ function ChatMessageItem({
                 aria-label={t('common.edit')}
               >
                 {editIcon}
+              </button>
+            )}
+            {(msg.role === 'user' || msg.role === 'assistant') && onLearnSkill && (
+              <button
+                className="message-action-btn"
+                onClick={onLearnSkill}
+                title={t('chat.learnSkill')}
+                aria-label={t('chat.learnSkill')}
+                data-testid="learn-conversation-skill"
+              >
+                🧠
               </button>
             )}
             {msg.role === 'assistant' && isLast && onRegenerate && (
@@ -1638,6 +1652,37 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
         await handleInterrupt();
         return;
       }
+      case 'skill': {
+        // /skill [意图描述] — learn from the current conversation and install
+        // a reusable skill. The conversation history is sent to the AI which
+        // distills it into a structured systemPrompt + tool allow-list.
+        if (messages.length === 0) { reply('当前没有对话可学习。'); return; }
+        const convo = messages
+          .filter((m) => (m.role === 'user' || m.role === 'assistant') && m.content?.trim())
+          .map((m) => ({ role: m.role, content: m.content }));
+        if (convo.length < 2) { reply('对话太短，至少需要一轮问答才能学习。'); return; }
+        reply(`🧠 正在从 ${convo.length} 条对话中提取技能…`);
+        try {
+          const result = await window.metis?.generateSkillFromConversation?.({ messages: convo, userIntent: arg || undefined });
+          if (result?.ok && result.skill) {
+            const s = result.skill;
+            reply([
+              `✅ 技能「${s.name}」已生成并安装！`,
+              `用途：${s.description}`,
+              `工具：${s.allowedTools.length > 0 ? s.allowedTools.join(', ') : '（无）'}`,
+              `回合预算：${s.maxTurns}`,
+              `提取依据：${s.rationale}`,
+              ``,
+              `下次对话时在技能选择器中选择「${s.name}」即可复用这个工作流。`,
+            ].join('\n'));
+          } else {
+            reply(`技能生成失败：${result?.error ?? '未知错误'}`);
+          }
+        } catch (err) {
+          reply(`技能生成异常：${err instanceof Error ? err.message : String(err)}`);
+        }
+        return;
+      }
       case 'pause': {
         if (!activeGoalId) { reply('当前没有运行中的目标任务。'); return; }
         await metis?.pauseGoal?.(activeGoalId);
@@ -1842,6 +1887,40 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
   }
 
   // Edit a user message and resend
+  /** Learn messages 0..endIndex as a reusable skill, then install it immediately. */
+  async function handleLearnConversationSkill(endIndex: number, userIntent?: string): Promise<void> {
+    const skillNotice = (content: string) => ({ role: 'system' as const, content, timestamp: now() });
+    const selected = messages
+      .slice(0, endIndex + 1)
+      .filter((m) => (m.role === 'user' || m.role === 'assistant') && m.content?.trim())
+      .map((m) => ({ role: m.role, content: m.content }));
+    if (selected.length < 2) {
+      setMessages((prev) => [...prev, skillNotice('对话太短，至少需要一轮问答才能学习为技能。')]);
+      return;
+    }
+    setMessages((prev) => [...prev, skillNotice(`🧠 正在从选中的 ${selected.length} 条对话中提取技能…`)]);
+    try {
+      const result = await window.metis?.generateSkillFromConversation?.({ messages: selected, userIntent });
+      if (result?.ok && result.skill) {
+        const s = result.skill;
+        setMessages((prev) => [...prev, skillNotice([
+          `✅ 技能「${s.name}」已生成并安装！`,
+          `用途：${s.description}`,
+          `工具：${s.allowedTools.length > 0 ? s.allowedTools.join(', ') : '（无）'}`,
+          `回合预算：${s.maxTurns}`,
+          `提取依据：${s.rationale}`,
+        ].join('\n'))]);
+        // Refresh the in-memory dropdown so the skill is selectable immediately.
+        const updatedSkills = await window.metis?.listSkills?.();
+        if (Array.isArray(updatedSkills)) setSkills(updatedSkills);
+      } else {
+        setMessages((prev) => [...prev, skillNotice(`技能生成失败：${result?.error ?? '未知错误'}`)]);
+      }
+    } catch (err) {
+      setMessages((prev) => [...prev, skillNotice(`技能生成异常：${err instanceof Error ? err.message : String(err)}`)]);
+    }
+  }
+
   function handleEditMessage(index: number, newContent: string) {
     // Truncate messages after the edited one, then send the new content
     const truncated = messages.slice(0, index);
@@ -2103,6 +2182,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
                 diagnosticMode={diagnosticMode}
                 onEdit={msg.role === 'user' ? (content) => handleEditMessage(i, content) : undefined}
                 onRegenerate={msg.role === 'assistant' ? handleRegenerate : undefined}
+                onLearnSkill={(msg.role === 'user' || msg.role === 'assistant') ? () => void handleLearnConversationSkill(i) : undefined}
               />
             );
           })}

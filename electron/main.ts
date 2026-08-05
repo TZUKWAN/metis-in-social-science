@@ -95,6 +95,7 @@ import { parseLatexLog } from '../engine/latex/LatexLogParser.js';
 import type { WorkflowDefinition, WorkflowHooks } from '../engine/workflow/types.js';
 import { MCPManager } from '../engine/mcp/MCPManager.js';
 import { SkillRegistry, registerDefaultSkills } from '../engine/skills/SkillRegistry.js';
+import { SkillExtractor, type ExtractedSkill } from '../engine/skills/SkillExtractor.js';
 import { PersonalizationRepository } from '../engine/personalization/PersonalizationRepository.js';
 import { buildPptBuiltinDefinitions } from '../engine/personalization/PptBuiltinDefinitions.js';
 import { isFundingTemplateBuiltinDraftReady } from '../engine/personalization/FundingTemplateBuiltinDraft.js';
@@ -411,6 +412,8 @@ let researchEventBus: ResearchEventBus | null = null;
 let activeAutonomousSessionId: string | null = null;
 let mcpManager: MCPManager | null = null;
 let skillRegistry: SkillRegistry | null = null;
+let skillExtractor: SkillExtractor | null = null;
+const CUSTOM_SKILLS_MEMORY_KEY = 'skills:custom';
 let personalizationRepository: PersonalizationRepository | null = null;
 let personalizationRuntime: PersonalizationRuntimeService | null = null;
 let evidenceEnvelopes: EvidenceEnvelopeService | null = null;
@@ -1065,6 +1068,83 @@ function builtinToolNames(): string[] {
   return fundingTemplateTools
     ? [...names, ...fundingTemplateTools.getSpecs().map((tool) => tool.name)]
     : names;
+}
+
+// ─── Custom skill persistence (generated from conversations) ──
+
+/** Persisted shape of a user-generated skill. */
+interface PersistedCustomSkill {
+  id: string;
+  name: string;
+  description: string;
+  systemPrompt: string;
+  allowedTools: string[];
+  maxTurns: number;
+  rationale: string;
+  createdAt: number;
+}
+
+/** Register an extracted skill into the live SkillRegistry + persist it. */
+function installSkill(extracted: ExtractedSkill): void {
+  if (!skillRegistry) return;
+  // Unregister first so re-generating updates in place (register throws on dup id).
+  if (skillRegistry.has(extracted.id)) skillRegistry.unregister(extracted.id);
+  skillRegistry.register({
+    id: extracted.id,
+    name: extracted.name,
+    description: extracted.description,
+    category: 'custom',
+    systemPrompt: extracted.systemPrompt,
+    allowedTools: extracted.allowedTools,
+    maxTurns: extracted.maxTurns,
+    tags: ['auto-generated'],
+  });
+  // Persist.
+  if (store) {
+    const custom = loadCustomSkills();
+    const without = custom.filter((s) => s.id !== extracted.id);
+    without.push({
+      id: extracted.id,
+      name: extracted.name,
+      description: extracted.description,
+      systemPrompt: extracted.systemPrompt,
+      allowedTools: extracted.allowedTools,
+      maxTurns: extracted.maxTurns,
+      rationale: extracted.rationale,
+      createdAt: Date.now(),
+    });
+    store.setMemory(CUSTOM_SKILLS_MEMORY_KEY, JSON.stringify(without), 'custom_skills');
+  }
+}
+
+/** Load persisted custom skills (empty if none / store unavailable). */
+function loadCustomSkills(): PersistedCustomSkill[] {
+  if (!store) return [];
+  try {
+    const entry = store.getMemory(CUSTOM_SKILLS_MEMORY_KEY);
+    if (!entry?.value) return [];
+    const parsed = JSON.parse(entry.value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch { return []; }
+}
+
+/** Reload all persisted custom skills into the live registry at startup. */
+function loadAndInstallCustomSkills(): void {
+  const custom = loadCustomSkills();
+  for (const skill of custom) {
+    if (!skillRegistry?.has(skill.id)) {
+      skillRegistry?.register({
+        id: skill.id,
+        name: skill.name,
+        description: skill.description,
+        category: 'custom',
+        systemPrompt: skill.systemPrompt,
+        allowedTools: skill.allowedTools,
+        maxTurns: skill.maxTurns,
+        tags: ['auto-generated'],
+      });
+    }
+  }
 }
 
 /**
@@ -4815,6 +4895,8 @@ function setupIPC(): void {
         name: skill.name,
         description: skill.description,
         category: skill.category,
+        allowedTools: skill.allowedTools ?? [],
+        maxTurns: skill.maxTurns,
       })) ?? [];
     } catch {
       return [];
@@ -4859,6 +4941,69 @@ function setupIPC(): void {
       return { active: prompt ? 'active' : null };
     } catch {
       return { active: null };
+    }
+  });
+
+  // Generate a reusable skill from a selected conversation. The AI distills the
+  // conversation into a structured skill, which is then registered into the
+  // live SkillRegistry AND persisted so it survives restarts.
+  ipcMain.handle('skill:generateFromConversation', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+    } catch {
+      return { ok: false, error: 'unauthorized_renderer' };
+    }
+    if (!skillExtractor || !skillRegistry) {
+      return { ok: false, error: 'skill_engine_unavailable' };
+    }
+    const request = rawRequest as { messages?: unknown; userIntent?: unknown };
+    const rawMessages = Array.isArray(request?.messages) ? request.messages : [];
+    // Coerce to ChatMessage-like shape (role + content only).
+    const messages = rawMessages
+      .filter((m): m is { role: string; content: string } =>
+        typeof m === 'object' && m !== null && typeof (m as { content?: unknown }).content === 'string')
+      .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+    if (messages.length === 0) return { ok: false, error: 'no_messages' };
+
+    const userIntent = typeof request?.userIntent === 'string' ? request.userIntent : undefined;
+    const knownTools = builtinToolNames();
+
+    const extracted = await skillExtractor.extract({ messages, userIntent, knownTools });
+    if (!extracted) return { ok: false, error: 'conversation_too_short' };
+
+    // Install into the live registry (unregister first if id exists, so
+    // re-generating a skill updates it in place).
+    installSkill(extracted);
+
+    return {
+      ok: true,
+      skill: {
+        id: extracted.id,
+        name: extracted.name,
+        description: extracted.description,
+        systemPrompt: extracted.systemPrompt,
+        allowedTools: extracted.allowedTools,
+        maxTurns: extracted.maxTurns,
+        rationale: extracted.rationale,
+      },
+    };
+  });
+
+  ipcMain.handle('skill:deleteCustom', (event, rawId: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const id = typeof rawId === 'string' ? rawId : '';
+      if (!id || !skillRegistry || !store) return { ok: false, error: 'invalid' };
+      skillRegistry.unregister(id);
+      // Remove from persisted custom skills.
+      const custom = loadCustomSkills();
+      const filtered = custom.filter((s) => s.id !== id);
+      if (filtered.length !== custom.length) {
+        store.setMemory(CUSTOM_SKILLS_MEMORY_KEY, JSON.stringify(filtered), 'custom_skills');
+      }
+      return { ok: true };
+    } catch {
+      return { ok: false, error: 'delete_failed' };
     }
   });
 
@@ -5985,8 +6130,11 @@ app.whenReady().then(async () => {
     mcpManager = new MCPManager(store, new ToolRegistry());
   }
 
-  // Initialize skill registry with default skills
+  // Initialize skill registry with default skills + reload any custom skills
+  // the user generated in a previous session (persisted in the memory store).
   skillRegistry = registerDefaultSkills();
+  skillExtractor = new SkillExtractor(provider ?? undefined);
+  loadAndInstallCustomSkills();
 
 
 

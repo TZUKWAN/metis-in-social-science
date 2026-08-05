@@ -1067,6 +1067,13 @@ const api = {
   getSkill: (id: string) => ipcRenderer.invoke('skill:get', id),
   setActiveSkill: (id: string | null) => ipcRenderer.invoke('skill:setActive', id),
   getActiveSkill: () => ipcRenderer.invoke('skill:getActive'),
+  generateSkillFromConversation: async (request: { messages: Array<{ role: string; content: string }>; userIntent?: string }) =>
+    ipcRenderer.invoke('skill:generateFromConversation', request) as Promise<{
+      ok: boolean;
+      error?: string;
+      skill?: { id: string; name: string; description: string; systemPrompt: string; allowedTools: string[]; maxTurns: number; rationale: string };
+    }>,
+  deleteCustomSkill: (id: string) => ipcRenderer.invoke('skill:deleteCustom', id) as Promise<{ ok: boolean; error?: string }>,
 
   listPersonalization: async (rawRequest: PersonalizationListRequest) => {
     const request = PersonalizationListRequestSchema.safeParse(rawRequest);

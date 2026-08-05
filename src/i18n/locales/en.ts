@@ -129,6 +129,7 @@ const en = {
     copied: 'Copied',
     copy: 'Copy',
     regenerate: 'Regenerate',
+    learnSkill: 'Learn a reusable skill from this conversation',
     cancel: 'Cancel',
     saveResend: 'Save & Resend',
     skill: 'Skill:',

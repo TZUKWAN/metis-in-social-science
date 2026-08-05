@@ -107,6 +107,21 @@ describe('text tool protocol (Qwen3 thinking models)', () => {
     expect(response.content).toContain('下午三点');
   });
 
+  it('does not misparse ordinary JSON with a name field as a tool call', async () => {
+    server = await startServer(() => ({
+      choices: [{
+        message: { role: 'assistant', content: '{"id":"rag-review","name":"RAG Review","systemPrompt":"steps"}' },
+        finish_reason: 'stop',
+      }],
+      usage: { prompt_tokens: 5, completion_tokens: 15, total_tokens: 20 },
+    }));
+    const provider = makeProvider(server.port, 'Qwen3.5-122B-A10B');
+
+    const response = await provider.complete([{ role: 'user', content: 'generate a skill' }]);
+    expect(response.toolCalls).toHaveLength(0);
+    expect(response.content).toContain('rag-review');
+  });
+
   it('sends enable_thinking=false by default, true when params.thinking=true', async () => {
     server = await startServer(() => ({
       choices: [{ message: { role: 'assistant', content: 'OK' }, finish_reason: 'stop' }],

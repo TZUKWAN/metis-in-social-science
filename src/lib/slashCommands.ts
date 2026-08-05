@@ -24,6 +24,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'paper', description: '快速添加文献到当前项目', hasArg: true, requiresArg: true, argPlaceholder: '输入论文标题或 DOI…' },
   { name: 'note', description: '快速记笔记到当前项目', hasArg: true, requiresArg: true, argPlaceholder: '输入笔记内容…' },
   { name: 'export', description: '导出当前会话或文献库', hasArg: true, requiresArg: false, argPlaceholder: '输入格式（chat/bibtex/csv/html，默认 chat）…' },
+  { name: 'skill', description: '从当前对话学习并生成一个可复用技能（自动安装）', hasArg: true, requiresArg: false, argPlaceholder: '描述这个技能的用途（可选）…' },
   { name: 'stop', description: '中断当前运行的任务', hasArg: false },
   { name: 'pause', description: '暂停当前目标', hasArg: false },
   { name: 'resume', description: '恢复暂停的目标', hasArg: false },

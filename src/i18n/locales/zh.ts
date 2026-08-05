@@ -131,6 +131,7 @@ const zh: Locale = {
     copied: '已复制',
     copy: '复制',
     regenerate: '重新生成',
+    learnSkill: '从这段对话学习为可复用技能',
     cancel: '取消',
     saveResend: '保存并重发',
     skill: '技能：',

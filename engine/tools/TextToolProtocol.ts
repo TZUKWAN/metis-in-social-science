@@ -34,13 +34,16 @@ export function parseTextToolCall(content: string): ToolCall | null {
 
   for (const candidate of candidates) {
     try {
-      const parsed = JSON.parse(candidate) as { tool?: unknown; name?: unknown; args?: unknown; arguments?: unknown };
-      const name = typeof parsed.tool === 'string' ? parsed.tool : (typeof parsed.name === 'string' ? parsed.name : '');
-      if (!name) continue;
+      const parsed = JSON.parse(candidate) as { tool?: unknown; args?: unknown; arguments?: unknown };
+      // Only recognize the {"tool": "...", "args": {...}} shape from
+      // injectToolPrompt. We intentionally do NOT accept "name" as a tool
+      // indicator — that would misparse ordinary JSON (e.g. skill definitions
+      // that happen to have a "name" field) as tool calls.
+      if (typeof parsed.tool !== 'string' || !parsed.tool) continue;
       const rawArgs = parsed.args ?? parsed.arguments ?? {};
       const args = (rawArgs && typeof rawArgs === 'object') ? rawArgs as Record<string, unknown> : {};
       return {
-        name,
+        name: parsed.tool,
         arguments: args,
         id: `textcall_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`,
       };
