@@ -1017,12 +1017,18 @@ async function main() {
   const launchSurface = await run(`({
     input: Boolean(document.querySelector('[data-testid="aw-start-input"]')),
     count: Boolean(document.querySelector('[data-testid="aw-start-count"]')),
+    mode: Boolean(document.querySelector('[data-testid="aw-start-mode"]')),
+    method: Boolean(document.querySelector('[data-testid="aw-start-method"]')),
+    output: Boolean(document.querySelector('[data-testid="aw-start-output"]')),
     start: Boolean(document.querySelector('[data-testid="aw-start-button"]')),
     metrics: document.querySelectorAll('[data-testid="aw-metrics"] .aw-metric').length,
     countLabel: Boolean(document.querySelector('[data-testid="aw-start-count"]')?.getAttribute('aria-label')),
   })`);
   check('自主科研', '工作台提供精简启动条与四项全局指标', launchSurface.input === true
     && launchSurface.count === true
+    && launchSurface.mode === true
+    && launchSurface.method === true
+    && launchSurface.output === true
     && launchSurface.start === true
     && launchSurface.metrics === 4
     && launchSurface.countLabel === true,

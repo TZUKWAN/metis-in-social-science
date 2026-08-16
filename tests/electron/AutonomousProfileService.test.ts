@@ -65,6 +65,25 @@ describe('AutonomousProfileService', () => {
     expect(context).toContain('制度分析');
   });
 
+  it('buildContext 支持本次运行的方法/输出覆盖（标记本次运行覆盖）', () => {
+    const service = new AutonomousProfileService(tmpDir);
+    service.saveProfile({ constraints: { methodPreference: 'quantitative', outputForm: 'report' } });
+    const context = service.buildContext({ prompt: 'x' }, { method: 'qualitative', output: 'journal_article' });
+    expect(context).toContain('方法偏好：定性（本次运行覆盖）');
+    expect(context).toContain('成果形式：期刊论文（本次运行覆盖）');
+    expect(context).not.toContain('方法偏好：定量');
+    expect(context).not.toContain('成果形式：研究报告');
+  });
+
+  it('buildContext 无覆盖时沿用画像约束且不标记', () => {
+    const service = new AutonomousProfileService(tmpDir);
+    service.saveProfile({ constraints: { methodPreference: 'mixed', outputForm: 'journal_article' } });
+    const context = service.buildContext({ prompt: 'x' });
+    expect(context).toContain('方法偏好：混合方法');
+    expect(context).toContain('成果形式：期刊论文');
+    expect(context).not.toContain('本次运行覆盖');
+  });
+
   it('关闭画像注入后 buildContext 不含画像块', () => {
     const service = new AutonomousProfileService(tmpDir);
     service.saveProfile({ injectUserProfile: false });

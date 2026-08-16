@@ -684,17 +684,23 @@ autoWorkspace.registerIpc();
 ipcMain.handle('autonomous:generateBatch', async (event, raw: unknown) => {
   try {
     requireRendererMainFrame(event);
-    const input = raw as { prompt?: unknown; count?: unknown };
+    const input = raw as { prompt?: unknown; count?: unknown; method?: unknown; output?: unknown };
     const prompt = typeof input?.prompt === 'string' ? input.prompt.trim().slice(0, 2000) : '';
     const count = Math.min(5, Math.max(1, Math.trunc(Number(input?.count)) || autonomousProfile.getProfile().defaultBatchSize));
     if (!prompt) return { ok: false, error: 'empty_prompt' };
     const activeProvider = provider;
     if (!activeProvider) return { ok: false, error: 'provider_unavailable' };
+    const method = (['any', 'quantitative', 'qualitative', 'mixed'] as const).includes(input?.method as never)
+      ? input.method as 'any' | 'quantitative' | 'qualitative' | 'mixed'
+      : undefined;
+    const output = (['any', 'journal_article', 'report'] as const).includes(input?.output as never)
+      ? input.output as 'any' | 'journal_article' | 'report'
+      : undefined;
 
-    // 上下文：提示词 + 独立约束 + 用户画像（memory/learning）。
+    // 上下文：提示词 + 独立约束 + 用户画像（memory/learning）；方法/输出可本次覆盖。
     const memoryContext = memoryManager?.buildMemoryContext(undefined) ?? '';
     const learningContext = learningEngine?.buildLearningContext(undefined) ?? '';
-    const context = autonomousProfile.buildContext({ prompt, memoryContext, learningContext });
+    const context = autonomousProfile.buildContext({ prompt, memoryContext, learningContext }, { method, output });
 
     // 排除已有项目主题（避免重复选题）。
     const existingTitles = researchRepository?.listProjects().map((project) => project.title).slice(0, 50) ?? [];
@@ -730,11 +736,16 @@ ipcMain.handle('autonomous:generateBatch', async (event, raw: unknown) => {
         key: `auto-${Date.now().toString(36)}-${index}`,
       }));
     if (valid.length === 0) return { ok: false, error: 'no_valid_topics' };
+    // 每次运行的本次覆盖（方法/输出），追加到 goal 尾部供引擎执行。
+    const perRunOverrides = [
+      method ? `- 本次执行方法：${method === 'quantitative' ? '定量' : method === 'qualitative' ? '定性' : method === 'mixed' ? '混合方法' : '不限'}` : '',
+      output ? `- 本次输出形式：${output === 'journal_article' ? '期刊论文' : output === 'report' ? '研究报告' : '不限'}` : '',
+    ].filter(Boolean).join('\n');
     // 每个选题的完整 goal = 用户上下文 + 选题本身。
     const entries = valid.map((topic) => ({
       key: topic.key,
       title: topic.title,
-      goalPrompt: `${context}\n\n## 本次选题（与其他选题独立执行）\n题目：${topic.title}\n研究问题：${topic.researchQuestion}\n选题理由：${topic.rationale}`,
+      goalPrompt: `${context}\n\n## 本次选题（与其他选题独立执行）\n题目：${topic.title}\n研究问题：${topic.researchQuestion}\n选题理由：${topic.rationale}${perRunOverrides ? `\n${perRunOverrides}` : ''}`,
     }));
     const added = researchAgenda.enqueueAutonomousBatch(entries, 1);
     return {

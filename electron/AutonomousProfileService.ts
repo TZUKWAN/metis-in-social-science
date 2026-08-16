@@ -134,17 +134,22 @@ export class AutonomousProfileService {
   }
 
   /** 组装自主科研的用户上下文：提示词 + 独立约束（含硬规则）+ 用户画像。 */
-  buildContext(input: { prompt: string; memoryContext?: string; learningContext?: string }): string {
+  buildContext(
+    input: { prompt: string; memoryContext?: string; learningContext?: string },
+    overrides?: { method?: AutonomousConstraints['methodPreference']; output?: AutonomousConstraints['outputForm'] },
+  ): string {
     const blocks: string[] = [];
     const trimmedPrompt = input.prompt.trim();
     if (trimmedPrompt) {
       blocks.push(`## 用户本次指令\n${trimmedPrompt}`);
     }
     const c = this.profile.constraints;
+    const method = overrides?.method ?? c.methodPreference;
+    const output = overrides?.output ?? c.outputForm;
     const constraintLines: string[] = [];
     if (c.fieldPreference.trim()) constraintLines.push(`- 研究领域偏好：${c.fieldPreference}`);
-    constraintLines.push(`- 方法偏好：${methodLabel(c.methodPreference)}`);
-    constraintLines.push(`- 成果形式：${outputLabel(c.outputForm)}`);
+    constraintLines.push(`- 方法偏好：${methodLabel(method)}${overrides?.method ? '（本次运行覆盖）' : ''}`);
+    constraintLines.push(`- 成果形式：${outputLabel(output)}${overrides?.output ? '（本次运行覆盖）' : ''}`);
     constraintLines.push(`- 期刊层次目标：${c.journalTier === 'core' ? '核心期刊（CSSCI/SSCI 水平）' : c.journalTier === 'general' ? '一般公开学术出版物' : '不限'}`);
     constraintLines.push(`- 写作语言：${c.language === 'zh' ? '中文' : '英文'}`);
     if (c.lengthTarget.trim()) constraintLines.push(`- 篇幅目标：${c.lengthTarget}`);

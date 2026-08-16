@@ -141,12 +141,15 @@ async function main() {
     const launcher = await cdp.evaluate(`(() => ({
       input: Boolean(document.querySelector('[data-testid="aw-start-input"]')),
       count: Boolean(document.querySelector('[data-testid="aw-start-count"]')),
+      mode: Boolean(document.querySelector('[data-testid="aw-start-mode"]')),
+      method: Boolean(document.querySelector('[data-testid="aw-start-method"]')),
+      output: Boolean(document.querySelector('[data-testid="aw-start-output"]')),
       start: Boolean(document.querySelector('[data-testid="aw-start-button"]')),
       consoleBtn: Boolean(document.querySelector('[data-testid="aw-open-console"]')),
       metricsCount: document.querySelectorAll('[data-testid="aw-metrics"] .aw-metric').length,
       metricValues: Array.from(document.querySelectorAll('[data-testid="aw-metrics"] .aw-metric__value')).map((el) => Number(el.textContent)),
     }))()`);
-    record('顶部精简启动条（方向/数量/开始/旧控制台）齐全', launcher.input && launcher.count && launcher.start && launcher.consoleBtn);
+    record('顶部精简启动条（方向/模式/方法/输出/数量/开始/高级控制台）齐全', launcher.input && launcher.count && launcher.mode && launcher.method && launcher.output && launcher.start && launcher.consoleBtn);
     record('四项全局指标渲染', launcher.metricsCount === 4, JSON.stringify(launcher.metricValues));
 
     const overview = await cdp.evaluate(`window.metis.getAutoWorkspaceOverview([])`);

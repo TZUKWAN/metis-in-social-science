@@ -918,7 +918,7 @@ const api = {
   }>,
   saveAutonomousProfile: async (request: Record<string, unknown>) => ipcRenderer.invoke('autonomousProfile:save', request) as Promise<{ version: 1 }>,
   getAutonomousHardRules: async () => ipcRenderer.invoke('autonomousProfile:hardRules') as Promise<string[]>,
-  generateAutonomousBatch: async (request: { prompt: string; count: number }) =>
+  generateAutonomousBatch: async (request: { prompt: string; count: number; method?: 'any' | 'quantitative' | 'qualitative' | 'mixed'; output?: 'any' | 'journal_article' | 'report' }) =>
     ipcRenderer.invoke('autonomous:generateBatch', request) as Promise<{
       ok: boolean; error?: string; added?: number; raw?: string;
       topics?: Array<{ title: string; researchQuestion: string; rationale: string }>;

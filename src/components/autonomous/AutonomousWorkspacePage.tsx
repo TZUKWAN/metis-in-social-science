@@ -6,7 +6,7 @@
  * 运行事件流来自既有引擎（onAutonomousStep/Reflection/Progress）；
  * 项目内容来自 autoWorkspace 真实数据 IPC。无任何审批节点。
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from '../../i18n';
 import { researchWorkspaceStore, useResearchWorkspaceStore } from '../../research/researchWorkspaceStore';
 import AiLiveRail, { type LiveFeed } from './AiLiveRail';
@@ -33,6 +33,11 @@ export default function AutonomousWorkspacePage({ onOpenConsole }: { onOpenConso
   const [subNav, setSubNav] = useState<string>('overview');
   const [prompt, setPrompt] = useState('');
   const [count, setCount] = useState(3);
+  const [method, setMethod] = useState<'any' | 'quantitative' | 'qualitative' | 'mixed'>('any');
+  const [output, setOutput] = useState<'journal_article' | 'report'>('journal_article');
+  const [mode, setMode] = useState<'single' | 'continuous'>('single');
+  const modeRef = useRef(mode);
+  useEffect(() => { modeRef.current = mode; }, [mode]);
   const [generating, setGenerating] = useState(false);
   const [feed, setFeed] = useState<LiveFeed | null>(null);
   const [runningProjectId, setRunningProjectId] = useState<string | null>(null);
@@ -107,6 +112,17 @@ export default function AutonomousWorkspacePage({ onOpenConsole }: { onOpenConso
       setRunningProjectId(null);
       void reloadOverview([]);
       void reloadDetail(activeProjectId);
+      // 连续模式：完成后自动推进议程中的下一个自主选题。
+      if (modeRef.current === 'continuous') {
+        void (async () => {
+          const agendaState = await window.metis?.getAgendaState?.();
+          const head = agendaState?.queue?.[0];
+          const decision = await window.metis?.decideAgendaNext?.();
+          if (decision?.action === 'run_next' && head?.autonomous === true && head.goalPrompt) {
+            await window.metis?.autonomousStart?.({ goal: head.goalPrompt, projectId: head.projectId ?? undefined });
+          }
+        })();
+      }
     }) ?? (() => {});
     return () => { offStep(); offReflection(); offProgress(); offCompleted(); };
   }, [reloadOverview, reloadDetail, activeProjectId]);
@@ -115,7 +131,7 @@ export default function AutonomousWorkspacePage({ onOpenConsole }: { onOpenConso
     const metis = window.metis;
     if (!metis?.generateAutonomousBatch || !prompt.trim() || generating) return;
     setGenerating(true);
-    const result = await metis.generateAutonomousBatch({ prompt: prompt.trim(), count });
+    const result = await metis.generateAutonomousBatch({ prompt: prompt.trim(), count, method, output });
     setGenerating(false);
     if (result.ok) {
       setPrompt('');
@@ -149,6 +165,20 @@ export default function AutonomousWorkspacePage({ onOpenConsole }: { onOpenConso
           placeholder={t('autoWs.startPlaceholder')}
           data-testid="aw-start-input"
         />
+        <select className="settings-input aw-topbar__select" value={mode} onChange={(event) => setMode(event.target.value as 'single' | 'continuous')} aria-label={t('autoWs.modeLabel')} data-testid="aw-start-mode">
+          <option value="single">{t('autoWs.modeSingle')}</option>
+          <option value="continuous">{t('autoWs.modeContinuous')}</option>
+        </select>
+        <select className="settings-input aw-topbar__select" value={method} onChange={(event) => setMethod(event.target.value as 'any' | 'quantitative' | 'qualitative' | 'mixed')} aria-label={t('autoWs.methodLabel')} data-testid="aw-start-method">
+          <option value="any">{t('autoWs.methodAny')}</option>
+          <option value="quantitative">{t('autoWs.methodQuantitative')}</option>
+          <option value="qualitative">{t('autoWs.methodQualitative')}</option>
+          <option value="mixed">{t('autoWs.methodMixed')}</option>
+        </select>
+        <select className="settings-input aw-topbar__select" value={output} onChange={(event) => setOutput(event.target.value as 'journal_article' | 'report')} aria-label={t('autoWs.outputLabel')} data-testid="aw-start-output">
+          <option value="journal_article">{t('autoWs.outputJournal')}</option>
+          <option value="report">{t('autoWs.outputReport')}</option>
+        </select>
         <select className="settings-input aw-topbar__select" value={count} onChange={(event) => setCount(Number(event.target.value))} aria-label={t('autoWs.countLabel')} data-testid="aw-start-count">
           {[1, 2, 3, 4, 5].map((value) => (
             <option key={value} value={value}>{t('autoWs.countOption', { count: value })}</option>

@@ -1,8 +1,8 @@
 {
-  "startedAt": "2026-08-16T15:26:36.124Z",
+  "startedAt": "2026-08-16T15:52:56.474Z",
   "mode": "real-electron-hidden-window-isolated-profile",
   "providerKind": "deterministic-local-openai-compatible-test-server",
-  "isolatedProfile": "C:\\Users\\lauze\\AppData\\Local\\Temp\\metis-platform-sim-P5cnVs",
+  "isolatedProfile": "C:\\Users\\lauze\\AppData\\Local\\Temp\\metis-platform-sim-oXw0j1",
   "checks": [
     {
       "category": "隔离",
@@ -14,7 +14,7 @@
       "category": "隔离",
       "name": "使用独立临时用户目录",
       "ok": true,
-      "detail": "C:\\Users\\lauze\\AppData\\Local\\Temp\\metis-platform-sim-P5cnVs"
+      "detail": "C:\\Users\\lauze\\AppData\\Local\\Temp\\metis-platform-sim-oXw0j1"
     },
     {
       "category": "启动",
@@ -48,7 +48,7 @@
       "category": "导航",
       "name": "科研项目可打开",
       "ok": true,
-      "detail": "latency=318ms"
+      "detail": "latency=322ms"
     },
     {
       "category": "导航",
@@ -70,7 +70,7 @@
       "category": "项目",
       "name": "新项目进入持久研究仓库",
       "ok": true,
-      "detail": "project-727b87b0-59e3-410d-ab3c-48d9df0dc040"
+      "detail": "project-f28cd2ed-1469-4f9b-a7fb-309c89c5ce68"
     },
     {
       "category": "资料",
@@ -82,7 +82,7 @@
       "category": "研究对象",
       "name": "资料、证据、编码和论断均可写入项目",
       "ok": true,
-      "detail": "[{\"success\":true,\"code\":\"created\",\"projectId\":\"project-727b87b0-59e3-410d-ab3c-48d9df0dc040\",\"resourceKind\":\"source\",\"resourceId\":\"platform-source-1\"},{\"success\":true,\"code\":\"created\",\"projectId\":\"project-727b87b0-59e3-410d-ab3c-48d9df0dc040\",\"resourceKind\":\"evidence\",\"resourceId\":\"platform-evidence-1\"},{\"success\":true,\"code\":\"created\",\"projectId\":\"project-727b87b0-59e3-410d-ab3c-48d9df0dc040\",\"resourceKind\":\"note_code\",\"resourceId\":\"platform-code-1\"},{\"success\":true,\"code\":\"created\",\"projectId\":\"project-727b87b0-59e3-410d-ab3c-48d9df0dc040\",\"resourceKind\":\"claim\",\"resourceId\":\"platform-claim-1\"}]"
+      "detail": "[{\"success\":true,\"code\":\"created\",\"projectId\":\"project-f28cd2ed-1469-4f9b-a7fb-309c89c5ce68\",\"resourceKind\":\"source\",\"resourceId\":\"platform-source-1\"},{\"success\":true,\"code\":\"created\",\"projectId\":\"project-f28cd2ed-1469-4f9b-a7fb-309c89c5ce68\",\"resourceKind\":\"evidence\",\"resourceId\":\"platform-evidence-1\"},{\"success\":true,\"code\":\"created\",\"projectId\":\"project-f28cd2ed-1469-4f9b-a7fb-309c89c5ce68\",\"resourceKind\":\"note_code\",\"resourceId\":\"platform-code-1\"},{\"success\":true,\"code\":\"created\",\"projectId\":\"project-f28cd2ed-1469-4f9b-a7fb-309c89c5ce68\",\"resourceKind\":\"claim\",\"resourceId\":\"platform-claim-1\"}]"
     },
     {
       "category": "研究对象",
@@ -94,7 +94,7 @@
       "category": "研究成果",
       "name": "研究产物以版本化草稿保存",
       "ok": true,
-      "detail": "{\"success\":true,\"code\":\"versioned\",\"projectId\":\"project-727b87b0-59e3-410d-ab3c-48d9df0dc040\",\"resourceKind\":\"artifact_version\",\"resourceId\":\"platform-artifact-1\",\"version\":1}"
+      "detail": "{\"success\":true,\"code\":\"versioned\",\"projectId\":\"project-f28cd2ed-1469-4f9b-a7fb-309c89c5ce68\",\"resourceKind\":\"artifact_version\",\"resourceId\":\"platform-artifact-1\",\"version\":1}"
     },
     {
       "category": "研究对象",
@@ -153,7 +153,7 @@
       "category": "导航",
       "name": "协同对话可打开",
       "ok": true,
-      "detail": "latency=9ms"
+      "detail": "latency=13ms"
     },
     {
       "category": "导航",
@@ -177,7 +177,7 @@
       "category": "协同对话",
       "name": "Metis 对话直接链接当前科研项目",
       "ok": true,
-      "detail": "{\"select\":true,\"linkedValue\":\"project-727b87b0-59e3-410d-ab3c-48d9df0dc040\",\"expected\":\"project-727b87b0-59e3-410d-ab3c-48d9df0dc040\",\"noProjectNotice\":false}"
+      "detail": "{\"select\":true,\"linkedValue\":\"project-f28cd2ed-1469-4f9b-a7fb-309c89c5ce68\",\"expected\":\"project-f28cd2ed-1469-4f9b-a7fb-309c89c5ce68\",\"noProjectNotice\":false}"
     },
     {
       "category": "研究对话",
@@ -239,7 +239,7 @@
       "category": "导航",
       "name": "科研项目可打开",
       "ok": true,
-      "detail": "latency=8ms"
+      "detail": "latency=9ms"
     },
     {
       "category": "导航",
@@ -262,13 +262,13 @@
       "category": "任务",
       "name": "可在看板通过界面创建项目研究任务记录",
       "ok": true,
-      "detail": "{\"goalId\":\"goal_1786894033059_8s18he\",\"label\":\"核对模拟档案的来源边界\",\"status\":\"ready\",\"createdAt\":1786894033059,\"projectId\":\"project-727b87b0-59e3-410d-ab3c-48d9df0dc040\"}"
+      "detail": "{\"goalId\":\"goal_1786895613556_7kv41a\",\"label\":\"核对模拟档案的来源边界\",\"status\":\"ready\",\"createdAt\":1786895613556,\"projectId\":\"project-f28cd2ed-1469-4f9b-a7fb-309c89c5ce68\"}"
     },
     {
       "category": "任务",
       "name": "看板新建任务继承当前活动项目",
       "ok": true,
-      "detail": "{\"expectedProjectId\":\"project-727b87b0-59e3-410d-ab3c-48d9df0dc040\",\"actual\":\"project-727b87b0-59e3-410d-ab3c-48d9df0dc040\"}"
+      "detail": "{\"expectedProjectId\":\"project-f28cd2ed-1469-4f9b-a7fb-309c89c5ce68\",\"actual\":\"project-f28cd2ed-1469-4f9b-a7fb-309c89c5ce68\"}"
     },
     {
       "category": "任务",
@@ -313,7 +313,7 @@
       "category": "导航",
       "name": "设置可打开",
       "ok": true,
-      "detail": "latency=62ms"
+      "detail": "latency=50ms"
     },
     {
       "category": "导航",
@@ -341,7 +341,7 @@
       "category": "导航",
       "name": "场景中心可打开",
       "ok": true,
-      "detail": "latency=321ms"
+      "detail": "latency=314ms"
     },
     {
       "category": "导航",
@@ -404,7 +404,7 @@
       "category": "导航",
       "name": "自主科研可打开",
       "ok": true,
-      "detail": "latency=21ms"
+      "detail": "latency=23ms"
     },
     {
       "category": "导航",
@@ -416,7 +416,7 @@
       "category": "自主科研",
       "name": "工作台提供精简启动条与四项全局指标",
       "ok": true,
-      "detail": "{\"input\":true,\"count\":true,\"start\":true,\"metrics\":4,\"countLabel\":true}"
+      "detail": "{\"input\":true,\"count\":true,\"mode\":true,\"method\":true,\"output\":true,\"start\":true,\"metrics\":4,\"countLabel\":true}"
     },
     {
       "category": "自主科研",
@@ -444,7 +444,7 @@
       "category": "自主科研",
       "name": "自主研究完成且未停在人工确认",
       "ok": true,
-      "detail": "{\"completed\":{\"version\":1,\"sessionId\":\"auto_msvyksvh\",\"sequence\":51,\"type\":\"engine-completed\",\"summary\":\"研究目标：利用当前项目资料探索地方救济制度的演变及其证据边界\\n\\n研究成果：\\n# 模拟研究响应\\n\\n这是后台平台体验测试的受控响应，用来验证真实界面、流式通信、工具调用与持久化链路。\\n请求摘要：研究目标：利用当前项目资料探索地方救济制度的演变及其证据边界\\n\\n论文结构（研究者定义，不可增删）：\\n1. 引言\\n2. 研究问题与背景\\n3. 方法与资料\\n4. 发现与分析\\n5. 结论\\n\\n前序阶段证据与论证：\\n## 阶段「question_formulation」的产出\\n# 模拟研究响应\\n\\n这是后台平台体验测试的受控响应，用来验证真实界面、流式通信、工具调用与持久化链路。\\n请求摘要：[status=ok code=ok] Tool result suppressed\\n\\n## 研究\\n\\n## 研究边界\\n没有声称完成真实外部检索，学术判断保持草稿。\\n\\n## 下一步\\n继续核对来源、证据锚点、论断与研究产物之间的可追溯关系。\\n\\n最终反思：方法阶段已执行完毕，产物与限制均已记录。\",\"artifactIds\":[\"auto-artifact-6430917dc1bd864546b2bf5807d02a73\",\"auto-artifact-379c5f06fca4bccd46f48d760401f2f3\",\"auto-artifact-e4949be91602e2f0950ae19f79811bca\",\"auto-artifact-94d0a0f7ddcf2d4e6362173c91f11ff4\",\"auto-artifact-f80cf4ef6659a68cd8244f4350e4aeb4\",\"auto-artifact-864e4f43313b1039d19ef9fcb7e8aaf2\",\"auto-artifact-b0ad70233e8569210a28731621fe9bea\",\"auto-artifact-d465ee6f28e2d6bbe23856866e9f2560\",\"auto-artifact-70526af41fb0e299a540b01e06335609\",\"auto-artifact-41e76fb7a66a4f10c6bb3270ed2f412e\"]},\"failed\":null}"
+      "detail": "{\"completed\":{\"version\":1,\"sessionId\":\"auto_msvzio81\",\"sequence\":51,\"type\":\"engine-completed\",\"summary\":\"研究目标：利用当前项目资料探索地方救济制度的演变及其证据边界\\n\\n研究成果：\\n# 模拟研究响应\\n\\n这是后台平台体验测试的受控响应，用来验证真实界面、流式通信、工具调用与持久化链路。\\n请求摘要：研究目标：利用当前项目资料探索地方救济制度的演变及其证据边界\\n\\n论文结构（研究者定义，不可增删）：\\n1. 引言\\n2. 研究问题与背景\\n3. 方法与资料\\n4. 发现与分析\\n5. 结论\\n\\n前序阶段证据与论证：\\n## 阶段「question_formulation」的产出\\n# 模拟研究响应\\n\\n这是后台平台体验测试的受控响应，用来验证真实界面、流式通信、工具调用与持久化链路。\\n请求摘要：[status=ok code=ok] Tool result suppressed\\n\\n## 研究\\n\\n## 研究边界\\n没有声称完成真实外部检索，学术判断保持草稿。\\n\\n## 下一步\\n继续核对来源、证据锚点、论断与研究产物之间的可追溯关系。\\n\\n最终反思：方法阶段已执行完毕，产物与限制均已记录。\",\"artifactIds\":[\"auto-artifact-0f09ebe63aec354d1df409b882df145a\",\"auto-artifact-e5202cdc87a3d169509cb338d75171b8\",\"auto-artifact-ed1df4b0dc44b9ef64eecbc10daa0317\",\"auto-artifact-e8c304b0e2885d4f5e5c133ce382a41c\",\"auto-artifact-e534d0acf6260305db313c8e65ee8d9e\",\"auto-artifact-919f62ba6a5261f7a329f3cb2bd7ba34\",\"auto-artifact-db3917f18b3e098fe8ae5041b7b4c08b\",\"auto-artifact-1a97f3fbae4cdd76632a1509c2b6ab7c\",\"auto-artifact-76c8e22e1028910dae19d713ff0a3efc\",\"auto-artifact-6e1db83400d0d5bc61d763db769542e5\"]},\"failed\":null}"
     },
     {
       "category": "自主科研",
@@ -468,7 +468,7 @@
       "category": "工作区",
       "name": "独立自主运行完成（工作区走查数据源）",
       "ok": true,
-      "detail": "[\"auto-artifact-6037c809d841b171ef733bde3ca0cb0f\",\"auto-artifact-f5921da69bdee99"
+      "detail": "[\"auto-artifact-2ee4a50f5ae951f3d94d458441cfdb2d\",\"auto-artifact-d9fb9ec5a1ee4ab"
     },
     {
       "category": "导航",
@@ -675,7 +675,7 @@
     {
       "name": "自主科研",
       "title": "metis-workbench",
-      "textLength": 673,
+      "textLength": 707,
       "activeTopNavIds": [
         "autonomous"
       ],
@@ -690,7 +690,7 @@
     {
       "name": "自主科研",
       "title": "metis-workbench",
-      "textLength": 4235,
+      "textLength": 4269,
       "activeTopNavIds": [
         "autonomous"
       ],
@@ -740,27 +740,27 @@
   },
   "metrics": {
     "navigation.projects.ms": 2,
-    "navigation.converse.ms": 9,
+    "navigation.converse.ms": 13,
     "chatSessionCount": {
       "persisted": 2,
       "activeMeta": "",
       "visibleMessages": 2
     },
-    "navigation.settings.ms": 62,
-    "navigation.personalization.ms": 321,
+    "navigation.settings.ms": 50,
+    "navigation.personalization.ms": 314,
     "navigation.autonomous.ms": 5,
     "renderer": {
-      "usedJSHeapSize": 69271414,
-      "totalJSHeapSize": 106955818,
+      "usedJSHeapSize": 69273344,
+      "totalJSHeapSize": 104336872,
       "domNodes": 123
     },
     "processMemoryKb": {
-      "residentSet": 223692,
-      "private": 169660,
+      "residentSet": 243744,
+      "private": 176096,
       "shared": 800
     }
   },
-  "finishedAt": "2026-08-16T15:27:34.981Z",
+  "finishedAt": "2026-08-16T15:53:55.224Z",
   "summary": {
     "passed": 97,
     "failed": 0,
