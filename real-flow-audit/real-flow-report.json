@@ -1,0 +1,72 @@
+{
+  "startedAt": "2026-08-10T10:09:28.072Z",
+  "steps": [
+    {
+      "name": "首启向导出现（未配置）",
+      "ok": true
+    },
+    {
+      "name": "向导三项配置填写",
+      "ok": true,
+      "detail": "true"
+    },
+    {
+      "name": "真实探测通过并进入主界面（https://api.deepseek.com / deepseek-v4-flash）",
+      "ok": true
+    },
+    {
+      "name": "设置状态 configured + hasApiKey",
+      "ok": true,
+      "detail": "{\"configured\":true,\"hasApiKey\":true,\"model\":\"deepseek-v4-flash\"}"
+    },
+    {
+      "name": "设置响应不回显 API 密钥",
+      "ok": true
+    },
+    {
+      "name": "创建项目「真实流程测试项目」",
+      "ok": true
+    },
+    {
+      "name": "对话输入研究问题",
+      "ok": true
+    },
+    {
+      "name": "真实模型返回实质性回答（非错误占位）",
+      "ok": true,
+      "detail": "failed=false len=264"
+    },
+    {
+      "name": "会话出现在左侧「进行中」列表",
+      "ok": true
+    },
+    {
+      "name": "AI 论文解读（真实调用成功）",
+      "ok": true,
+      "detail": "len=411"
+    },
+    {
+      "name": "AI LaTeX 润色（真实调用成功）",
+      "ok": true,
+      "detail": "\"The results show that the treatment has a significant effect.\""
+    },
+    {
+      "name": "重载后不再强制进入首启向导（已配置）",
+      "ok": true
+    },
+    {
+      "name": "重载后 configured 保持",
+      "ok": true
+    },
+    {
+      "name": "重载后项目持久",
+      "ok": true
+    }
+  ],
+  "issues": [],
+  "consoleErrors": [],
+  "failed": 0,
+  "passed": 14,
+  "uniqueConsoleErrors": [],
+  "finishedAt": "2026-08-10T10:12:54.487Z"
+}

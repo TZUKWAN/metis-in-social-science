@@ -47,7 +47,6 @@ function resetStore() {
     collections: [],
     selectedCollection: null,
     workflowRuns: [],
-    weeklyReadingGoal: 5,
     locale: 'zh',
     theme: 'light',
     isHydrated: true,

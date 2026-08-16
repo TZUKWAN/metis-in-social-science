@@ -87,17 +87,19 @@ describe('METIS-102 ResearchLifecycle state machine', () => {
     expect(canTransitionResearchLifecycle('draft', 'completed')).toBe(false);
   });
 
-  it('rejects leaving the terminal archived state', () => {
+  it('allows leaving the archived state only to recoverable targets', () => {
     for (const s of ALL_STATES) {
-      if (s === 'archived') continue;
-      expect(canTransitionResearchLifecycle('archived', s), `archived -> ${s}`).toBe(false);
+      if (s === 'archived') continue; // 幂等自转移恒允许
+      const expected = s === 'draft' || s === 'completed' || s === 'reviewing';
+      expect(canTransitionResearchLifecycle('archived', s), `archived -> ${s}`).toBe(expected);
     }
     expect(isTerminalResearchLifecycle('archived')).toBe(true);
   });
 
   it('throws a descriptive error on illegal transitions via assert helper', () => {
     expect(() => assertResearchLifecycleTransition('draft', 'running')).toThrowError(/Illegal research lifecycle transition.*draft.*running/);
-    expect(() => assertResearchLifecycleTransition('archived', 'draft')).toThrowError(/Illegal research lifecycle transition.*archived.*draft/);
+    // archived -> running 仍非法（只能恢复到 draft/completed/reviewing）。
+    expect(() => assertResearchLifecycleTransition('archived', 'running')).toThrowError(/Illegal research lifecycle transition.*archived.*running/);
   });
 
   it('does not throw for legal transitions via assert helper', () => {

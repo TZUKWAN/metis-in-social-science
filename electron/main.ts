@@ -27,6 +27,13 @@ import { spawnSync, exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import os from 'node:os';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+
+// Windows occlusion tracking can throttle — or fully stall — input delivery to
+// windows the OS reports as occluded. This is common on VMs / remote-desktop
+// sessions and manifests as wheel/click events never reaching the renderer.
+// Disabling the optimization costs nothing on normal desktops and restores
+// reliable input everywhere. Must run before app ready.
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 import {
   createLayoutAcceptanceMetadata,
   extractLayoutAcceptanceToken,
@@ -41,17 +48,40 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 import * as pty from 'node-pty';
 import { PersistenceStore, setSharedStore } from '../engine/persistence/PersistenceStore.js';
+import { BrowserService, type BrowserBounds } from './BrowserService.js';
+import { CollabService } from './CollabService.js';
+import { LiteratureSearchService } from './LiteratureSearchService.js';
+import { RESEARCH_CAPABILITY_TASKS } from '../engine/evals/research-capability-suite.js';
+import { extendSciSsciIssns } from '../engine/literature/CoreJournalLists.js';
+import { detectStage } from '../engine/research/StageDetector.js';
+import { JobQueueService } from './JobQueueService.js';
+import { ResearchJournalService } from './ResearchJournalService.js';
+import { MethodLibraryService } from './MethodLibraryService.js';
+import { SubmissionTrackerService } from './SubmissionTrackerService.js';
+import { LiteratureWatchService } from './LiteratureWatchService.js';
+import { ResearchAgendaService } from './ResearchAgendaService.js';
+import { CloudSyncService } from './CloudSyncService.js';
+import { AutonomousProfileService } from './AutonomousProfileService.js';
+import { AutonomousWorkspaceService } from './AutonomousWorkspaceService.js';
+import { setBrowserControlBridge } from '../engine/tools/browser-tools.js';
 import { BackupService } from './BackupService.js';
 import { WeChatBotService } from './WeChatBotService.js';
 import { IlinkClient } from '../engine/im/IlinkClient.js';
 import {
   PROJECT_ARCHIVE_EXT,
+  PROJECT_ARCHIVE_LEGACY_EXTS,
   exportProjectArchive,
   importProjectArchive,
 } from '../engine/export/ProjectArchiveExporter.js';
 import { UpdateCheckerService } from './UpdateCheckerService.js';
 import { AutoUpdaterService } from './AutoUpdaterService.js';
 import { ZoteroImportService } from './ZoteroImportService.js';
+import {
+  LOCATION_POINTER_VERSION,
+  resolveDataDir,
+  validateTargetLocation,
+  writeLocationPointer,
+} from './StorageLocation.js';
 import { ResearchRepository } from '../engine/persistence/ResearchRepository.js';
 import { OpenAICompatProvider } from '../engine/providers/OpenAICompatProvider.js';
 import { AgentLoop } from '../engine/core/AgentLoop.js';
@@ -78,12 +108,33 @@ import {
   decodeWorkspaceAgentsWriteRequest,
   decodeWorkspaceAgentsGetRequest,
 } from '../engine/runtime/WorkspaceAgentsContract.js';
-import { GoalEngine } from '../engine/goal/GoalEngine.js';
+import { GoalEngine, type GoalExecutionOptions } from '../engine/goal/GoalEngine.js';
 import type { Goal } from '../engine/goal/GoalPlanner.js';
+import type { GoalPersistence } from '../engine/goal/GoalPersistence.js';
+import { createGoalPersistence } from './GoalPersistenceStore.js';
 import { WorkflowEngine } from '../engine/workflow/WorkflowEngine.js';
 import { ResearchEventBus } from '../engine/research/ResearchEventBus.js';
+import { ResearchStrategyStore } from '../engine/persistence/ResearchStrategyStore.js';
+import {
+  decodeStrategySaveRequest,
+  decodeStrategyDeleteRequest,
+  decodeStrategySetDefaultRequest,
+  decodePaperStructureSaveRequest,
+  decodePaperStructureDeleteRequest,
+  type ResearchStrategy,
+  type PaperStructureTemplate,
+} from '../engine/runtime/ResearchStrategyContract.js';
 import { AutonomousPlanner } from '../engine/research/AutonomousPlanner.js';
 import { AutonomousResearchEngine } from '../engine/research/AutonomousResearchEngine.js';
+import {
+  applyAutonomousResearchEvent,
+  beginAutonomousResearchRun,
+  createAutonomousResearchArtifactSink,
+  ensureAutonomousResearchProject,
+} from '../engine/research/AutonomousResearchPersistence.js';
+import { collectPdfCandidates } from '../engine/research/UnpaywallClient.js';
+import { resolveDoi } from '../engine/research/DoiResolver.js';
+import { searchWorks } from '../engine/research/CrossrefClient.js';
 import {
   AUTONOMOUS_CONTRACT_VERSION,
   AUTONOMOUS_CHANNELS,
@@ -92,12 +143,11 @@ import {
   decodeAutonomousLiveEvent,
 } from '../engine/runtime/AutonomousRuntimeContract.js';
 import { parseLatexLog } from '../engine/latex/LatexLogParser.js';
-import type { WorkflowDefinition, WorkflowHooks } from '../engine/workflow/types.js';
+import type { WorkflowDefinition, WorkflowHooks, WorkflowRun } from '../engine/workflow/types.js';
 import { MCPManager } from '../engine/mcp/MCPManager.js';
 import { SkillRegistry, registerDefaultSkills } from '../engine/skills/SkillRegistry.js';
 import { SkillExtractor, type ExtractedSkill } from '../engine/skills/SkillExtractor.js';
 import { PersonalizationRepository } from '../engine/personalization/PersonalizationRepository.js';
-import { buildPptBuiltinDefinitions } from '../engine/personalization/PptBuiltinDefinitions.js';
 import { isFundingTemplateBuiltinDraftReady } from '../engine/personalization/FundingTemplateBuiltinDraft.js';
 import { PersonalizationRuntimeService } from './PersonalizationRuntimeService.js';
 import { projectMetisRulesFromWorkspace } from './ProjectMetisRulesBridge.js';
@@ -161,6 +211,7 @@ import type { EvalTaskSpec } from '../engine/evals/types.js';
 import {
   createChatTurnErrorResponse,
   runPersistedChatTurn,
+  runEphemeralChatTurn,
 } from './ChatTurnService.js';
 import { compileScenarioExecutionManifest, runPersistedScenarioWorkflow } from './ScenarioWorkflowService.js';
 import { isAuthorizedRendererMainFrame } from './RendererAuthorization.js';
@@ -180,12 +231,16 @@ import {
   decodeAgentControlResponse,
 } from '../engine/runtime/LiveSteeringContract.js';
 import {
+  createGoalWorkflowRecovery,
+  decodeGoalChangedEvent,
   decodeGoalCreateResponse,
   decodeGoalListResponse,
   decodeGoalPlanResponse,
   decodeGoalSummaryResponse,
+  decodeGoalWorkflowResponse,
   GOAL_PLAN_LABEL,
   GOAL_PLAN_STEP_LABEL,
+  GOAL_RUNTIME_LIMITS,
   GoalCreateRequestSchema,
   GoalIdRequestSchema,
   GoalRefineRequestSchema,
@@ -311,9 +366,27 @@ import {
 import {
   FirstRunSetupService,
   createFirstRunSecureStorage,
+  type FirstRunSecureStorage,
   type PreparedSetupRuntime,
   type SetupRuntimeBuildContext,
 } from './FirstRunSetupService.js';
+import { ProviderProfileStore } from './ProviderProfileStore.js';
+import {
+  PROVIDER_PROFILE_CONTRACT_VERSION,
+  createProviderProfileListRecovery,
+  createProviderProfileMutationRecovery,
+  decodeProjectProviderOverride,
+  decodeProviderProfileDeleteRequest,
+  decodeProviderProfileListRequest,
+  decodeProviderProfileSaveRequest,
+  decodeProviderProfileSwitchRequest,
+  decodeProviderProfileResetRequest,
+  resolveProviderProfileBinding,
+  ProjectProviderOverrideSchema,
+  ProviderProfileIdSchema,
+  type ProviderProfileBinding,
+  type ProviderProfileMutationResponse,
+} from '../engine/runtime/ProviderProfileContract.js';
 import { OpenAISetupProbeTransport } from './OpenAISetupProbeTransport.js';
 import {
   SETUP_RUNTIME_CONTRACT_VERSION,
@@ -392,6 +465,9 @@ let backupTimer: NodeJS.Timeout | null = null;
 let updateChecker: UpdateCheckerService | null = null;
 let autoUpdaterService: AutoUpdaterService | null = null;
 let zoteroImportService: ZoteroImportService | null = null;
+/** Project targeted by the current zotero:import request (read by the
+ *  lazily-created service's linkToProject callback). */
+let zoteroImportTargetProjectId: string | undefined;
 // Latest auto-update event, kept for the renderer to query on demand.
 let lastUpdateEvent: { type: string; version?: string; percent?: number; message?: string } = { type: 'idle' };
 let researchRepository: ResearchRepository | null = null;
@@ -400,12 +476,23 @@ let researchMedia: ResearchMediaService | null = null;
 let weChatBotService: WeChatBotService | null = null;
 let startupReady = false;
 let firstRunSetup: FirstRunSetupService | null = null;
+let providerProfileStore: ProviderProfileStore | null = null;
+let providerProfileStorage: FirstRunSecureStorage | null = null;
 let runtimeGeneration = 0;
 let agentLoop: AgentLoop | null = null;
 let provider: OpenAICompatProvider | null = null;
 let memoryManager: MemoryManager | null = null;
 let learningEngine: LearningEngine | null = null;
 let goalEngine: GoalEngine | null = null;
+/** Lazily-created durable goal store (rebound to the same sqlite store). */
+let goalPersistence: GoalPersistence | null = null;
+let researchStrategyStoreInstance: ResearchStrategyStore | null = null;
+function strategyStore(): ResearchStrategyStore | null {
+  if (!researchStrategyStoreInstance && store) {
+    researchStrategyStoreInstance = new ResearchStrategyStore(store);
+  }
+  return researchStrategyStoreInstance;
+}
 let autonomousEngine: AutonomousResearchEngine | null = null;
 let researchEventBus: ResearchEventBus | null = null;
 /** Active autonomous session id (single concurrent run for now). */
@@ -445,6 +532,20 @@ interface ActiveChatRun {
   nextSequence: number;
 }
 const activeChatRuns = new Map<string, ActiveChatRun>();
+/**
+ * O15: 多模型对比回合的运行登记。key 为 `${sessionId}::${profileId}`，
+ * 与 activeChatRuns 分离——同一会话的多个 profile 对比调用是合法并行，
+ * 但同一 profile 的重复并发与「正常回合 + 对比回合」混跑都要拦住。
+ */
+const activeCompareRuns = new Map<string, { ownerWebContentsId: number; controller: AbortController }>();
+/** O15: 判断某会话是否已有对比回合在跑（供正常回合入口做互斥）。 */
+function hasCompareRunForSession(sessionId: string): boolean {
+  const prefix = `${sessionId}::`;
+  for (const key of activeCompareRuns.keys()) {
+    if (key.startsWith(prefix)) return true;
+  }
+  return false;
+}
 const liveSteeringQueue = new InMemoryLiveSteeringQueue();
 let experimentScriptAdapter: ExperimentScriptAdapter | null = null;
 let caReceiptSecret: Buffer | null = null; // Current Affairs HMAC signing key
@@ -483,7 +584,580 @@ const activeTerminals = new Map<string, ActiveTerminalSession>();
 
 let requestCounter = 0;
 
-const DATA_DIR = path.join(app.getPath('userData'), 'metis-data');
+// Lazy browser service (created on first use; needs the main window + store).
+let browserService: BrowserService | null = null;
+function ensureBrowserService(): BrowserService | null {
+  const win = getMainWindow();
+  if (!win || win.isDestroyed()) return null;
+  if (!browserService) {
+    browserService = new BrowserService({ window: win, dataDir: DATA_DIR, store: store ?? null });
+  }
+  return browserService;
+}
+
+// 协同对话视图（第三方 AI 网页版）：独立持久分区，与研究浏览器互不干扰。
+let collabService: CollabService | null = null;
+function ensureCollabService(): CollabService | null {
+  const win = getMainWindow();
+  if (!win || win.isDestroyed()) return null;
+  if (!collabService) {
+    collabService = new CollabService({ window: win });
+  }
+  return collabService;
+}
+
+// 内置文献检索服务（无状态，直接实例化）。
+const literatureSearchService = new LiteratureSearchService();
+
+// Agent-visible browser bridge (kimi-bridge style control for chat/strategy runs).
+setBrowserControlBridge({
+  navigate: async (url) => {
+    const service = ensureBrowserService();
+    return service ? service.navigate(url) : { ok: false, error: 'browser_unavailable' };
+  },
+  back: () => ensureBrowserService()?.goBack(),
+  forward: () => ensureBrowserService()?.goForward(),
+  reload: () => ensureBrowserService()?.reload(),
+  click: (x, y) => ensureBrowserService()?.click(x, y),
+  type: (text) => ensureBrowserService()?.type(text),
+  scroll: (deltaX, deltaY) => ensureBrowserService()?.scroll(deltaX, deltaY),
+  screenshot: async () => {
+    const service = ensureBrowserService();
+    return service ? service.screenshot() : { ok: false, error: 'browser_unavailable' };
+  },
+  extract: async () => {
+    const service = ensureBrowserService();
+    return service ? service.extract() : { ok: false, error: 'browser_unavailable' };
+  },
+  collect: async () => {
+    const service = ensureBrowserService();
+    return service ? service.collect() : { ok: false, error: 'browser_unavailable' };
+  },
+});
+
+// ── Storage location ──────────────────────────────────────────
+// The data directory is user-configurable (Settings → 存储位置). Only a tiny
+// pointer file lives in `userData`; everything else follows DATA_DIR. Any
+// pending relocation runs here, before any database handle is opened.
+const USER_DATA_DIR = app.getPath('userData');
+const DEFAULT_DATA_DIR = path.join(USER_DATA_DIR, 'metis-data');
+const resolvedLocation = resolveDataDir(USER_DATA_DIR, (message) => console.log(`[Main] ${message}`));
+const DATA_DIR = resolvedLocation.dataDir;
+if (resolvedLocation.migrated) {
+  console.log('[Main] Data directory migrated to:', DATA_DIR);
+} else if (resolvedLocation.migrationError) {
+  console.error(
+    `[Main] Data directory migration failed (${resolvedLocation.migrationError}) — continuing at:`,
+    DATA_DIR,
+  );
+}
+
+// 后台作业队列（T10）：PDF 全文抽取等长任务，断点可恢复。
+const jobQueueService = new JobQueueService({ dataDir: DATA_DIR, store: null });
+jobQueueService.registerIpc();
+
+// 方法库（T4）：跑通的做法沉淀为可参数化重放的资产。
+const methodLibrary = new MethodLibraryService(DATA_DIR);
+methodLibrary.registerIpc();
+
+// 投稿管理（T20）：状态跟踪 + 退修意见 + 修改说明信。
+const submissionTracker = new SubmissionTrackerService(DATA_DIR);
+submissionTracker.registerIpc();
+
+// 文献订阅监控（T25）：关键词定期查新，新文献入库待审（不自动下载）。
+const literatureWatch = new LiteratureWatchService(DATA_DIR);
+literatureWatch.registerIpc();
+
+// 研究议程（T24）：自主科研自动接续队列（每项目上限 + 总量上限 + 冷却 + 可见通知）。
+const researchAgenda = new ResearchAgendaService(DATA_DIR);
+researchAgenda.registerIpc();
+
+// 自主科研独立配置 + 用户画像（自主改造 A/B）。
+const autonomousProfile = new AutonomousProfileService(DATA_DIR);
+autonomousProfile.registerIpc();
+
+// 自主科研工作区数据（重构 R1）：研究内容直展的真实数据组装。
+const autoWorkspace = new AutonomousWorkspaceService(null, null);
+autoWorkspace.registerIpc();
+
+// 批量选题生成（B）：提示词 + 画像 + 约束 → N 个差异化选题，批量入队自主议程。
+ipcMain.handle('autonomous:generateBatch', async (event, raw: unknown) => {
+  try {
+    requireRendererMainFrame(event);
+    const input = raw as { prompt?: unknown; count?: unknown };
+    const prompt = typeof input?.prompt === 'string' ? input.prompt.trim().slice(0, 2000) : '';
+    const count = Math.min(5, Math.max(1, Math.trunc(Number(input?.count)) || autonomousProfile.getProfile().defaultBatchSize));
+    if (!prompt) return { ok: false, error: 'empty_prompt' };
+    const activeProvider = provider;
+    if (!activeProvider) return { ok: false, error: 'provider_unavailable' };
+
+    // 上下文：提示词 + 独立约束 + 用户画像（memory/learning）。
+    const memoryContext = memoryManager?.buildMemoryContext(undefined) ?? '';
+    const learningContext = learningEngine?.buildLearningContext(undefined) ?? '';
+    const context = autonomousProfile.buildContext({ prompt, memoryContext, learningContext });
+
+    // 排除已有项目主题（避免重复选题）。
+    const existingTitles = researchRepository?.listProjects().map((project) => project.title).slice(0, 50) ?? [];
+
+    const systemPrompt = [
+      '你是人文社科科研选题专家。基于用户指令、约束与画像，生成互不相同的候选研究选题。',
+      `要求生成 ${count} 个选题。每个选题必须与其他选题、与已有项目在研究问题上有实质差异。`,
+      existingTitles.length > 0 ? `已有项目（避免重复）：${existingTitles.join('；')}` : '',
+      '只输出一个 JSON 数组，不要 Markdown 代码块，格式：[{"title":"项目名（10-20字）","researchQuestion":"具体可研究的问题","rationale":"为什么值得做（结合用户画像/约束，30-60字）"}]',
+    ].filter(Boolean).join('\n');
+
+    const response = await activeProvider.complete([
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: context },
+    ]);
+    const text = (response.content ?? '').trim().replace(/^```(?:json)?/u, '').replace(/```$/u, '').trim();
+    const start = text.indexOf('[');
+    const end = text.lastIndexOf(']');
+    if (start < 0 || end <= start) return { ok: false, error: 'parse_failed', raw: text.slice(0, 200) };
+    let topics: Array<{ title?: unknown; researchQuestion?: unknown; rationale?: unknown }>;
+    try {
+      topics = JSON.parse(text.slice(start, end + 1)) as typeof topics;
+    } catch {
+      return { ok: false, error: 'parse_failed', raw: text.slice(0, 200) };
+    }
+    const valid = topics
+      .filter((topic) => typeof topic?.title === 'string' && typeof topic?.researchQuestion === 'string' && (topic.title as string).trim())
+      .slice(0, count)
+      .map((topic, index) => ({
+        title: (topic.title as string).trim().slice(0, 120),
+        researchQuestion: (topic.researchQuestion as string).trim().slice(0, 1000),
+        rationale: typeof topic.rationale === 'string' ? topic.rationale.trim().slice(0, 500) : '',
+        key: `auto-${Date.now().toString(36)}-${index}`,
+      }));
+    if (valid.length === 0) return { ok: false, error: 'no_valid_topics' };
+    // 每个选题的完整 goal = 用户上下文 + 选题本身。
+    const entries = valid.map((topic) => ({
+      key: topic.key,
+      title: topic.title,
+      goalPrompt: `${context}\n\n## 本次选题（与其他选题独立执行）\n题目：${topic.title}\n研究问题：${topic.researchQuestion}\n选题理由：${topic.rationale}`,
+    }));
+    const added = researchAgenda.enqueueAutonomousBatch(entries, 1);
+    return {
+      ok: true,
+      added,
+      topics: valid.map((topic) => ({ title: topic.title, researchQuestion: topic.researchQuestion, rationale: topic.rationale })),
+    };
+  } catch (err) {
+    return { ok: false, error: String((err as Error).message ?? err).slice(0, 200) };
+  }
+});
+
+// 自主条目的项目落库：创建新 research project（执行端在接续自主条目时调用）。
+ipcMain.handle('autonomous:createProjectFor', (event, raw: unknown) => {
+  try {
+    requireRendererMainFrame(event);
+    const input = raw as { title?: unknown; researchQuestion?: unknown };
+    const title = typeof input?.title === 'string' ? input.title.trim().slice(0, 200) : '';
+    if (!title || !researchRepository) return { ok: false, projectId: null };
+    const now = Date.now();
+    const projectId = `project-auto-${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    researchRepository.createProject({
+      id: projectId,
+      title,
+      originalIntent: '',
+      researchQuestion: typeof input?.researchQuestion === 'string' ? input.researchQuestion.slice(0, 2000) : '',
+      lifecycle: 'draft',
+      methodology: '',
+      discipline: '',
+      metadata: { source: 'autonomous' },
+      createdAt: now,
+      updatedAt: now,
+      archivedAt: null,
+      version: 1,
+      source: 'autonomous',
+      deletedAt: null,
+    });
+    return { ok: true, projectId };
+  } catch {
+    return { ok: false, projectId: null };
+  }
+});
+
+// 自定义 ISSN 白名单导入（T1 补全路径）：用户可导入官方 JCR/CSSCI 目录。
+const CUSTOM_ISSN_PATH = path.join(DATA_DIR, 'custom-issns.json');
+function loadCustomIssns(): void {
+  try {
+    if (!fs.existsSync(CUSTOM_ISSN_PATH)) return;
+    const list = JSON.parse(fs.readFileSync(CUSTOM_ISSN_PATH, 'utf8')) as string[];
+    if (Array.isArray(list)) extendSciSsciIssns(list);
+  } catch { /* 脏文件忽略 */ }
+}
+loadCustomIssns();
+ipcMain.handle('settings:importIssnList', async (event) => {
+  try {
+    requireRendererMainFrame(event);
+    const { dialog } = await import('electron');
+    const picked = await dialog.showOpenDialog({
+      title: '选择 ISSN 清单文件（每行一个 ISSN）',
+      filters: [{ name: '文本/CSV', extensions: ['txt', 'csv', 'tsv'] }],
+      properties: ['openFile'],
+    });
+    if (picked.canceled || !picked.filePaths[0]) return { ok: false, added: 0 };
+    const content = fs.readFileSync(picked.filePaths[0]!, 'utf8');
+    const candidates = content.split(/[\r\n,;\t]+/u).map((line) => line.trim()).filter(Boolean);
+    const added = extendSciSsciIssns(candidates);
+    if (added > 0) {
+      const previous = fs.existsSync(CUSTOM_ISSN_PATH)
+        ? (JSON.parse(fs.readFileSync(CUSTOM_ISSN_PATH, 'utf8')) as string[])
+        : [];
+      fs.writeFileSync(CUSTOM_ISSN_PATH, JSON.stringify([...new Set([...previous, ...candidates])], null, 1), 'utf8');
+    }
+    return { ok: true, added, totalCandidates: candidates.length };
+  } catch (err) {
+    return { ok: false, added: 0, error: String((err as Error).message ?? err).slice(0, 160) };
+  }
+});
+
+// ── ASR 访谈转写（T23）：走当前已配置的 OpenAI 兼容 audio 端点 ──
+ipcMain.handle('dialog:openAudio', async (event) => {
+  try {
+    requireRendererMainFrame(event);
+    const { dialog } = await import('electron');
+    const result = await dialog.showOpenDialog({
+      title: '选择要转写的音频文件',
+      filters: [{ name: '音频', extensions: ['mp3', 'wav', 'm4a', 'webm', 'ogg', 'flac'] }],
+      properties: ['openFile'],
+    });
+    return result.canceled ? null : result.filePaths[0] ?? null;
+  } catch {
+    return null;
+  }
+});
+
+ipcMain.handle('transcribe:audio', async (event, raw: unknown) => {
+  try {
+    requireRendererMainFrame(event);
+    const request = raw as { filePath?: unknown; language?: unknown };
+    const filePath = typeof request?.filePath === 'string' ? request.filePath : '';
+    if (!filePath || !fs.existsSync(filePath)) return { ok: false, error: 'file_not_found' };
+    const config = currentConfig;
+    if (!config?.baseUrl || !config.apiKey) {
+      return { ok: false, error: 'provider_not_configured', hint: '请先在设置中配置模型连接（ baseUrl + API Key ）。' };
+    }
+    const audioModel = (config as { audioModel?: string }).audioModel || config.model;
+    const bytes = fs.readFileSync(filePath);
+    const form = new FormData();
+    form.append('file', new Blob([new Uint8Array(bytes)]), path.basename(filePath));
+    form.append('model', audioModel);
+    if (typeof request?.language === 'string' && request.language) form.append('language', request.language);
+    const base = config.baseUrl.replace(/\/+$/u, '');
+    const url = /\/chat\/completions$/u.test(base) ? base.replace(/\/chat\/completions$/u, '/audio/transcriptions') : `${base}/audio/transcriptions`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${config.apiKey}` },
+      body: form,
+      signal: AbortSignal.timeout(300_000),
+    });
+    if (!response.ok) {
+      const detail = (await response.text()).slice(0, 200);
+      return {
+        ok: false,
+        error: `audio_http_${response.status}`,
+        hint: `当前端点/模型（${audioModel}）可能不支持音频转写：${detail}`,
+      };
+    }
+    const payload = await response.json() as { text?: string };
+    const text = typeof payload.text === 'string' ? payload.text : '';
+    if (!text.trim()) return { ok: false, error: 'empty_transcript' };
+    return { ok: true, text: text.slice(0, 100_000), model: audioModel };
+  } catch (err) {
+    return { ok: false, error: String((err as Error).message ?? err).slice(0, 200) };
+  }
+});
+
+// 概念图谱（T28）：从项目真实数据（资料/编码/论断）组装节点与边。
+ipcMain.handle('concept:getGraph', (event, rawProjectId: unknown) => {  try {
+    requireRendererMainFrame(event);
+    const projectId = typeof rawProjectId === 'string' ? rawProjectId : '';
+    const repo = researchRepository;
+    if (!projectId || !repo) return null;
+    const sources = repo.listSources(projectId).slice(0, 60).map((source) => ({
+      id: source.id, kind: 'source' as const, label: source.title.slice(0, 40),
+    }));
+    const codes = repo.listNoteCodes(projectId).slice(0, 80).map((code) => ({
+      id: code.id, kind: 'code' as const, label: code.code.slice(0, 30), evidenceId: code.evidenceId,
+    }));
+    const claims = repo.listClaims(projectId).slice(0, 80).map((claim) => ({
+      id: claim.id, kind: 'claim' as const, label: claim.statement.slice(0, 60),
+    }));
+    const links = repo.listClaimEvidenceLinks(projectId).map((link) => {
+      const evidence = repo.getEvidence(link.evidenceId);
+      const sourceId = evidence?.sourceId ?? null;
+      return { claimId: link.claimId, evidenceId: link.evidenceId, sourceId };
+    });
+    // 边：论断—证据挂接的资料；若证据被编码过，同时连 编码—论断。
+    const edges: Array<{ from: string; to: string; kind: 'supports' | 'coded' }> = [];
+    for (const link of links) {
+      if (link.sourceId) edges.push({ from: link.claimId, to: link.sourceId, kind: 'supports' });
+      for (const code of codes) {
+        if (code.evidenceId && code.evidenceId === link.evidenceId) {
+          edges.push({ from: link.claimId, to: code.id, kind: 'coded' });
+        }
+      }
+    }
+    const nodes = [...sources.map(({ id, kind, label }) => ({ id, kind, label })),
+      ...codes.map(({ id, kind, label }) => ({ id, kind, label })),
+      ...claims];
+    return { nodes, edges };
+  } catch {
+    return null;
+  }
+});
+
+  // ── PDF bulk import (T26): native file picker for real paths ──
+  ipcMain.handle('dialog:openPdf', async (event) => {
+    try {
+      requireRendererMainFrame(event);
+      const { dialog } = await import('electron');
+      const result = await dialog.showOpenDialog({
+        title: '选择要导入的 PDF 文献',
+        filters: [{ name: 'PDF 文献', extensions: ['pdf'] }],
+        properties: ['openFile', 'multiSelections'],
+      });
+      return result.canceled ? [] : result.filePaths;
+    } catch {
+      return [];
+    }
+  });
+
+// PDF 批量导入（T26 冷启动）：拷入 dataDir/papers + Crossref 元数据反查 + 入队全文抽取。
+// 请求可带 projectId：有自定义目录时归档到 projectDir/pdfs（批2）。
+ipcMain.handle('import:pdfFiles', async (event, raw: unknown, rawProjectId?: unknown) => {
+  try {
+    requireRendererMainFrame(event);
+    const files = Array.isArray(raw) ? (raw as unknown[]).filter((f): f is string => typeof f === 'string') : [];
+    if (files.length === 0 || !store) return { ok: true, imported: 0, enriched: 0 };
+    let outDir = path.join(DATA_DIR, 'papers');
+    try {
+      if (typeof rawProjectId === 'string' && rawProjectId && researchRepository) {
+        const project = researchRepository.getProject(rawProjectId, false);
+        const projectDir = (project?.metadata as { projectDir?: string } | undefined)?.projectDir;
+        if (projectDir) outDir = path.join(projectDir, 'pdfs');
+      }
+    } catch { /* 回退默认目录 */ }
+    fs.mkdirSync(outDir, { recursive: true });
+    let imported = 0;
+    let enriched = 0;
+    for (const source of files.slice(0, 50)) {
+      if (!fs.existsSync(source) || !/\.pdf$/iu.test(source)) continue;
+      const dest = path.join(outDir, `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}-${path.basename(source).replace(/[^\w.-]/gu, '_').slice(0, 120)}`);
+      fs.copyFileSync(source, dest);
+      const baseTitle = path.basename(source, '.pdf').replace(/[_-]+/gu, ' ').trim().slice(0, 300);
+      let title = baseTitle || path.basename(source);
+      let authors: string[] = [];
+      let year = 0;
+      let venue = '';
+      let doi = '';
+      // Crossref 题名反查（尽力而为，失败不阻塞导入）。
+      try {
+        const url = `https://api.crossref.org/works?query.bibliographic=${encodeURIComponent(baseTitle)}&rows=1&select=title,author,issued,container-title,DOI`;
+        const response = await fetch(url, {
+          headers: { 'User-Agent': 'Metis-Workbench/0.1 (mailto:metis-workbench@localhost)' },
+          signal: AbortSignal.timeout(12_000),
+        });
+        if (response.ok) {
+          const payload = await response.json() as { message?: { items?: Array<{ title?: string[]; author?: Array<{ given?: string; family?: string }>; issued?: { 'date-parts'?: number[][] }; 'container-title'?: string[]; DOI?: string }> } };
+          const hit = payload.message?.items?.[0];
+          if (hit && hit.title?.[0]) {
+            title = hit.title[0]!;
+            authors = (hit.author ?? []).map((a) => [a.given, a.family].filter(Boolean).join(' ')).filter(Boolean).slice(0, 12);
+            year = hit.issued?.['date-parts']?.[0]?.[0] ?? 0;
+            venue = hit['container-title']?.[0] ?? '';
+            doi = hit.DOI ?? '';
+            enriched += 1;
+          }
+        }
+      } catch { /* 离线/超时：保留文件名题录 */ }
+      const paperId = `paper-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      store.savePaper({
+        id: paperId,
+        title,
+        authors,
+        year,
+        venue,
+        abstract: '',
+        doi,
+        arxivId: '',
+        pdfPath: dest,
+        pdfUrl: '',
+        tags: ['imported:pdf'],
+        notes: '',
+        readStatus: 'unread',
+        rating: 0,
+        addedAt: Date.now(),
+      });
+      jobQueueService.enqueueExtract(paperId, dest);
+      imported += 1;
+    }
+    return { ok: true, imported, enriched };
+  } catch (err) {
+    return { ok: false, imported: 0, enriched: 0, error: String((err as Error).message ?? err).slice(0, 200) };
+  }
+});
+
+// 研究日志（T27）：惰性依赖 repository/goalEngine/store，请求时取最新引用。
+ipcMain.handle('research:resumeBrief', (event, rawProjectId: unknown) => {
+  try {
+    requireRendererMainFrame(event);
+    const projectId = typeof rawProjectId === 'string' ? rawProjectId : '';
+    if (!projectId) return null;
+    const liveJournal = new ResearchJournalService(researchRepository, goalEngine, store);
+    return liveJournal.buildResumeBrief(projectId);
+  } catch {
+    return null;
+  }
+});
+
+// 科研阶段（T5）：存储于 project.metadata.stage，与 lifecycle 状态机正交。
+ipcMain.handle('research:getStage', (event, rawProjectId: unknown) => {
+  try {
+    requireRendererMainFrame(event);
+    const projectId = typeof rawProjectId === 'string' ? rawProjectId : '';
+    if (!projectId || !researchRepository) return null;
+    const project = researchRepository.getProject(projectId, false);
+    return (project?.metadata as { stage?: string } | undefined)?.stage ?? null;
+  } catch {
+    return null;
+  }
+});
+ipcMain.handle('research:setStage', (event, rawRequest: unknown) => {
+  try {
+    requireRendererMainFrame(event);
+    const request = rawRequest as { projectId?: unknown; stage?: unknown };
+    const projectId = typeof request?.projectId === 'string' ? request.projectId : '';
+    const stage = typeof request?.stage === 'string' ? request.stage.slice(0, 32) : '';
+    if (!projectId || !researchRepository) return { ok: false };
+    const project = researchRepository.getProject(projectId, false);
+    if (!project) return { ok: false };
+    researchRepository.updateProject(projectId, {
+      metadata: { ...project.metadata, ...(stage ? { stage } : {}) },
+    });
+    return { ok: true };
+  } catch {
+    return { ok: false };
+  }
+});
+
+// ── 项目归档/恢复/删除（批1）────────────────────────────────
+ipcMain.handle('research:archiveProject', (event, rawProjectId: unknown) => {
+  try {
+    requireRendererMainFrame(event);
+    const projectId = typeof rawProjectId === 'string' ? rawProjectId : '';
+    if (!projectId || !researchRepository) return { ok: false };
+    const project = researchRepository.getProject(projectId, false);
+    if (!project || project.lifecycle === 'archived') return { ok: false };
+    // 归档前记住原生命周期，恢复时转回。
+    researchRepository.updateProject(projectId, {
+      lifecycle: 'archived',
+      metadata: { ...project.metadata, preArchiveLifecycle: project.lifecycle },
+    });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String((err as Error).message ?? err).slice(0, 160) };
+  }
+});
+ipcMain.handle('research:restoreProject', (event, rawProjectId: unknown) => {
+  try {
+    requireRendererMainFrame(event);
+    const projectId = typeof rawProjectId === 'string' ? rawProjectId : '';
+    if (!projectId || !researchRepository) return { ok: false };
+    const project = researchRepository.getProject(projectId, false);
+    if (!project || project.lifecycle !== 'archived') return { ok: false };
+    const prior = (project.metadata as { preArchiveLifecycle?: string }).preArchiveLifecycle;
+    const target = prior === 'completed' || prior === 'reviewing' ? prior : 'draft';
+    researchRepository.updateProject(projectId, {
+      lifecycle: target,
+      metadata: { ...project.metadata, preArchiveLifecycle: undefined },
+    });
+    return { ok: true, restoredLifecycle: target };
+  } catch (err) {
+    return { ok: false, error: String((err as Error).message ?? err).slice(0, 160) };
+  }
+});
+ipcMain.handle('research:deleteProject', (event, rawProjectId: unknown) => {
+  try {
+    requireRendererMainFrame(event);
+    const projectId = typeof rawProjectId === 'string' ? rawProjectId : '';
+    if (!projectId || !researchRepository) return { ok: false };
+    const removed = researchRepository.softDeleteProject(projectId);
+    return { ok: removed };
+  } catch {
+    return { ok: false };
+  }
+});
+
+// ── 项目自定义目录（批2）：PDF 归档位置，默认数据目录自动管理 ──
+ipcMain.handle('dialog:openDirectory', async (event) => {
+  try {
+    requireRendererMainFrame(event);
+    const { dialog } = await import('electron');
+    const result = await dialog.showOpenDialog({
+      title: '选择项目文件夹（PDF 将归档到其 pdfs 子目录）',
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    return result.canceled ? null : result.filePaths[0] ?? null;
+  } catch {
+    return null;
+  }
+});
+ipcMain.handle('research:setProjectDir', (event, rawRequest: unknown) => {
+  try {
+    requireRendererMainFrame(event);
+    const request = rawRequest as { projectId?: unknown; projectDir?: unknown };
+    const projectId = typeof request?.projectId === 'string' ? request.projectId : '';
+    const projectDir = typeof request?.projectDir === 'string' ? request.projectDir.trim().slice(0, 500) : '';
+    if (!projectId || !researchRepository) return { ok: false };
+    const project = researchRepository.getProject(projectId, false);
+    if (!project) return { ok: false };
+    researchRepository.updateProject(projectId, {
+      metadata: { ...project.metadata, ...(projectDir ? { projectDir } : { projectDir: undefined }) },
+    });
+    return { ok: true };
+  } catch {
+    return { ok: false };
+  }
+});
+
+// ── AI 阶段自动判定（批3）：实时规则评分，用户不可手选 ──
+ipcMain.handle('research:detectStage', (event, rawProjectId: unknown) => {
+  try {
+    requireRendererMainFrame(event);
+    const projectId = typeof rawProjectId === 'string' ? rawProjectId : '';
+    if (!projectId || !researchRepository || !store) return null;
+    const project = researchRepository.getProject(projectId, false);
+    if (!project) return null;
+    const papers = store.getPapers().filter((paper) => paper.projectId === projectId);
+    const goals = (goalEngine?.listGoals() ?? []).filter((goal) => goal.projectId === projectId);
+    const artifacts = researchRepository.listArtifacts(projectId);
+    const noteCodes = researchRepository.listNoteCodes(projectId);
+    const runs = researchRepository.listRuns(projectId);
+    const latestRun = runs.sort((a, b) => b.updatedAt - a.updatedAt)[0] ?? null;
+    const transcripts = store.raw.prepare(
+      "SELECT COUNT(*) as c FROM notes WHERE project_id = ? AND tags LIKE '%type:transcript%'",
+    ).get(projectId) as { c: number };
+    const submissions = new SubmissionTrackerService(DATA_DIR).list(projectId).length;
+    const result = detectStage({
+      paperCount: papers.length,
+      paperWithPdfCount: papers.filter((paper) => Boolean(paper.pdfPath)).length,
+      completedTasks: goals.filter((goal) => goal.status === 'completed').length,
+      openTasks: goals.filter((goal) => goal.status !== 'completed').length,
+      artifactCount: artifacts.length,
+      noteCodeCount: noteCodes.length,
+      transcriptCount: transcripts.c,
+      researchQuestionFilled: Boolean(project.researchQuestion.trim()),
+      lastRunStatus: latestRun?.status ?? null,
+      submissionCount: submissions,
+    });
+    return result;
+  } catch {
+    return null;
+  }
+});
 
 // ── Custom app scheme for the production renderer ─────────────
 // file:// URLs cannot load ESM bundles (Chromium blocks module scripts with a
@@ -505,8 +1179,11 @@ const TERMINAL_WORKSPACE_DIR = path.join(DATA_DIR, 'terminal-workspace');
 const DB_PATH = path.join(DATA_DIR, 'metis.db');
 const CONFIG_PATH = path.join(DATA_DIR, 'provider-config.json');
 const SETUP_CONFIG_PATH = path.join(DATA_DIR, 'provider-setup.json');
-const PROVIDERS_PATH = path.join(DATA_DIR, 'providers.json');
 const THEME_PATH = path.join(DATA_DIR, 'theme.txt');
+
+// WebDAV 云备份（T33）：用户自填服务器；启动时应用恢复暂存（DB_PATH 已就绪）。
+const cloudSync = new CloudSyncService(DATA_DIR, DB_PATH);
+cloudSync.registerIpc();
 const layoutAcceptanceToken = extractLayoutAcceptanceToken(process.argv);
 export const layoutAcceptanceEntryPath = path.resolve(__dirname, '../../dist/index.html');
 const rendererEntryUrl = process.env.VITE_DEV_SERVER_URL
@@ -781,13 +1458,200 @@ function presentGoalPlan(goalId: string, workflow: WorkflowDefinition) {
   });
 }
 
-function presentGoalSummary(goal: { id: string; status: unknown; createdAt: number }) {
+function presentGoalSummary(
+  goal: { id: string; description?: unknown; status: unknown; createdAt: number; projectId?: string },
+  checkpoint?: { resumable: boolean; completedSteps: number; totalSteps: number },
+) {
+  // UX-GOAL-001: 看板/列表展示持久化的 goal.description，而不是统一占位
+  // 标题。空值或损坏记录才回退到固定兜底文案。
+  const rawDescription = typeof goal.description === 'string' ? goal.description.trim() : '';
+  const label = rawDescription
+    ? rawDescription.slice(0, GOAL_RUNTIME_LIMITS.labelChars)
+    : 'Research goal';
   return {
     goalId: goal.id,
-    label: 'Research goal',
+    label,
     status: goal.status,
     createdAt: goal.createdAt,
+    ...(goal.projectId ? { projectId: goal.projectId } : {}),
+    // O14: 附带 checkpoint 摘要，渲染端据此显示「从上次断点继续」。
+    ...(checkpoint ? { checkpoint } : {}),
   };
+}
+
+/** O14: 读取 goal 的 checkpoint 摘要；无持久化 run 时返回 undefined。 */
+function goalCheckpointSummary(goalId: string): { resumable: boolean; completedSteps: number; totalSteps: number } | undefined {
+  if (!goalEngine) return undefined;
+  const info = goalEngine.getCheckpointInfo(goalId);
+  if (!info.hasCheckpoint) return undefined;
+  return { resumable: info.resumable, completedSteps: info.completedSteps, totalSteps: info.totalSteps };
+}
+
+// ─── O17: 工作流可视化 presenter ──────────────────────────────
+
+/** 契约文本上限，与 GoalRuntimeContract 的 WORKFLOW_VIEW_TEXT_LIMIT 对齐。 */
+const WORKFLOW_VIEW_TEXT_LIMIT = 20_000;
+// eslint-disable-next-line no-control-regex
+const WORKFLOW_VIEW_UNSAFE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu;
+
+/** 契约化清洗：去控制字符（保留换行/回车）并截断到上限。 */
+function workflowViewText(value: unknown, limit = WORKFLOW_VIEW_TEXT_LIMIT): string {
+  if (typeof value !== 'string') return '';
+  return value.replace(WORKFLOW_VIEW_UNSAFE, ' ').slice(0, limit);
+}
+
+function workflowViewId(value: unknown): string {
+  return workflowViewText(value, 200).replace(/\s+/gu, ' ').trim();
+}
+
+/** 验收标准 → 人类可读摘要串（kind + 值/描述）。 */
+function presentAcceptanceCriteria(criteria: readonly import('../engine/workflow/AcceptanceCriteria.js').AcceptanceCriterion[] | undefined): string[] | undefined {
+  if (!criteria || criteria.length === 0) return undefined;
+  return criteria.map((criterion) => {
+    const note = criterion.description?.trim();
+    const base = note ? `${note}` : criterion.kind;
+    return workflowViewText(`${base} (${criterion.kind}: ${criterion.value})`, 500);
+  });
+}
+
+/**
+ * O17: 把 GoalEngine 的只读视图映射为契约形状。所有自由文本都在这里
+ * 截断清洗，保证渲染端拿到的内容可直接安全渲染。
+ */
+function presentGoalWorkflow(
+  goalId: string,
+  view: { workflow: WorkflowDefinition; run: WorkflowRun | undefined },
+) {
+  const { workflow, run } = view;
+  const stepIds = new Set(workflow.steps.map((step) => step.id));
+  const dependencies: Record<string, string[]> = {};
+  for (const [stepId, deps] of Object.entries(workflow.dependencies)) {
+    if (!stepIds.has(stepId)) continue;
+    dependencies[stepId] = deps.filter((dep) => stepIds.has(dep));
+  }
+  const KNOWN_STEP_STATUSES = new Set(['pending', 'running', 'completed', 'failed', 'skipped']);
+  const stepResults: Record<string, {
+    status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
+    output: string;
+    retryCount: number;
+    failureReasons?: string[];
+    decisionRequired?: boolean;
+  }> = {};
+  for (const [stepId, result] of Object.entries(run?.stepResults ?? {})) {
+    if (!stepIds.has(stepId)) continue;
+    stepResults[stepId] = {
+      status: (KNOWN_STEP_STATUSES.has(result.status) ? result.status : 'pending') as 'pending' | 'running' | 'completed' | 'failed' | 'skipped',
+      output: workflowViewText(result.output),
+      retryCount: Number.isFinite(result.retryCount) ? Math.max(0, Math.floor(result.retryCount)) : 0,
+      ...(result.failureReasons?.length ? { failureReasons: result.failureReasons.map((reason) => workflowViewText(reason, 500)) } : {}),
+      ...(result.decisionRequired ? { decisionRequired: true } : {}),
+    };
+  }
+  return {
+    success: true as const,
+    goalId,
+    workflow: {
+      id: workflowViewId(workflow.id) || 'workflow',
+      name: workflowViewText(workflow.name, 500),
+      description: workflowViewText(workflow.description, 2000),
+      version: workflowViewId(workflow.version) || '1',
+      steps: workflow.steps.map((step) => ({
+        id: step.id,
+        name: workflowViewText(step.name, 500),
+        description: workflowViewText(step.description, 2000),
+        prompt: workflowViewText(step.prompt),
+        tools: step.tools.map((tool) => workflowViewId(tool)).filter(Boolean),
+        maxTurns: Number.isFinite(step.maxTurns) ? Math.max(0, Math.floor(step.maxTurns)) : 0,
+        ...(presentAcceptanceCriteria(step.acceptanceCriteria) ? { acceptanceCriteria: presentAcceptanceCriteria(step.acceptanceCriteria) } : {}),
+      })),
+      dependencies,
+    },
+    stepResults,
+  };
+}
+
+/**
+ * O13: 解析 goal 执行的 provider 绑定。goal 所属项目存在覆盖时，用覆盖
+ * profile 的配置（含解密 key）构建临时 AgentLoop，使该项目真正以独立模型
+ * 执行；任何一步不可用都回退全局运行时，绑定如实记录实际生效来源。
+ */
+function resolveGoalExecutionOptions(goal: { projectId?: string }): GoalExecutionOptions {
+  // 全局参考：激活 profile 优先；无 profile 体系时退回 currentConfig。
+  const globalRef = (() => {
+    const listed = providerProfileStore?.list();
+    if (listed?.ok) {
+      const active = listed.value.profiles.find((p) => p.isActive);
+      if (active) return { profileId: active.id as string, model: active.model };
+    }
+    return { profileId: null, model: currentConfig?.model ?? '' };
+  })();
+  const globalBinding: ProviderProfileBinding = {
+    source: 'global',
+    profileId: globalRef.profileId,
+    model: globalRef.model,
+  };
+  if (!goal.projectId || !researchRepository) return { providerBinding: globalBinding };
+  const override = researchRepository.getProjectProviderOverride(goal.projectId);
+  if (!override) return { providerBinding: globalBinding };
+
+  const overrideProfileModel = (() => {
+    if (!override.providerProfileId || !providerProfileStore) return undefined;
+    const listed = providerProfileStore.list();
+    if (!listed.ok) return undefined;
+    return listed.value.profiles.find((p) => p.id === override.providerProfileId)?.model;
+  })();
+  const binding = resolveProviderProfileBinding(globalRef, override, overrideProfileModel);
+
+  // 覆盖运行时：覆盖 profile 的完整配置，或基于当前配置仅换模型。
+  let overrideConfig: ProviderConfig | null = null;
+  if (override.providerProfileId && providerProfileStore) {
+    const result = providerProfileStore.configFor(override.providerProfileId);
+    if (result.ok && result.value.apiKey) {
+      overrideConfig = override.model ? { ...result.value, model: override.model } : result.value;
+    }
+  } else if (override.model && currentConfig?.apiKey) {
+    overrideConfig = { ...currentConfig, model: override.model };
+  }
+  if (!overrideConfig) {
+    console.warn('[Main] O13: project provider override unavailable; falling back to global runtime', { projectId: goal.projectId });
+    return { providerBinding: globalBinding };
+  }
+  try {
+    const overrideProvider = createProvider(overrideConfig);
+    const loop = createAgentLoop(overrideProvider, buildRuntimeRegistry(), approvalStore ?? undefined, [], overrideConfig);
+    return { providerBinding: binding, agentOverride: loop.agentLoop };
+  } catch (error) {
+    console.warn('[Main] O13: failed to build override runtime; falling back to global', error);
+    return { providerBinding: globalBinding };
+  }
+}
+
+/** Durable goal store bound to the shared sqlite PersistenceStore. */
+function currentGoalPersistence(): GoalPersistence | undefined {
+  if (store && !goalPersistence) {
+    goalPersistence = createGoalPersistence(store);
+  }
+  return goalPersistence ?? undefined;
+}
+
+/**
+ * Broadcast a goal state change to the renderer (chat cards and the kanban
+ * board both refresh from this). Payload is contract-validated before send;
+ * an invalid payload is dropped rather than risking a mis-shaped event.
+ */
+function broadcastGoalChanged(sender: Electron.WebContents, goal: Goal, statusOverride?: Goal['status'] | 'cancelled') {
+  try {
+    const event = decodeGoalChangedEvent({
+      goalId: goal.id,
+      label: goal.description,
+      status: statusOverride ?? goal.status,
+      priority: goal.priority,
+      createdAt: goal.createdAt,
+    });
+    if (event) sender.send('goal:changed', event);
+  } catch {
+    // Broadcast must never break the caller.
+  }
 }
 
 // ─── Autonomous research helpers ──────────────────────────────
@@ -805,7 +1669,7 @@ function toLivePayload(
   const base = { version: AUTONOMOUS_CONTRACT_VERSION, sessionId, sequence };
   switch (evt.type) {
     case 'engine-started':
-      return { ...base, type: 'engine-started', goal: evt.goal, plan: evt.plan };
+      return { ...base, type: 'engine-started', goal: evt.goal, plan: evt.plan, method: evt.method };
     case 'phase-started':
       return { ...base, type: 'phase-started', phase: evt.phase, phaseIteration: evt.phaseIteration, phaseName: evt.phaseName };
     case 'step-start':
@@ -821,8 +1685,14 @@ function toLivePayload(
       return { ...base, type: 'progress', completedPhases: evt.completedPhases, totalPhases: evt.totalPhases, currentPhase: evt.currentPhase };
     case 'engine-completed':
       return { ...base, type: 'engine-completed', summary: evt.summary, artifactIds: evt.artifactIds };
+    case 'engine-failed':
+      return { ...base, type: 'engine-failed', reason: evt.reason, completedPhases: evt.completedPhases, recoverable: evt.recoverable };
     case 'engine-interrupted':
       return { ...base, type: 'engine-interrupted', reason: evt.reason };
+    case 'engine-paused':
+      return { ...base, type: 'engine-paused', reason: evt.reason };
+    case 'engine-resumed':
+      return { ...base, type: 'engine-resumed', completedPhases: evt.completedPhases };
     default:
       return null;
   }
@@ -839,7 +1709,10 @@ function channelForEvent(evt: import('../engine/research/ResearchEventBus.js').R
     case 'reflection': return C.reflection;
     case 'progress': return C.progress;
     case 'engine-completed': return C.engineCompleted;
+    case 'engine-failed': return C.engineFailed;
     case 'engine-interrupted': return C.engineInterrupted;
+    case 'engine-paused': return C.enginePaused;
+    case 'engine-resumed': return C.engineResumed;
     default: return null;
   }
 }
@@ -875,7 +1748,11 @@ function presentPaper(
   pdfCapability?: import('../engine/runtime/FileCapabilityContract.js').FileCapabilityDescriptor;
 } {
   const { pdfPath, ...safePaper } = paper;
-  if (!pdfPath) return safePaper;
+  // The renderer contract has no null projectId — drop unlinked papers' id.
+  const summary = safePaper.projectId === null
+    ? { ...safePaper, projectId: undefined }
+    : safePaper;
+  if (!pdfPath) return summary;
   const issued = fileCapabilities.issue({
     path: pdfPath,
     kind: 'file',
@@ -884,8 +1761,30 @@ function presentPaper(
     operations: ['file', 'read', 'extract'],
   }, owner);
   return issued.success
-    ? { ...safePaper, pdfCapability: issued.capability }
-    : safePaper;
+    ? { ...summary, pdfCapability: issued.capability }
+    : summary;
+}
+
+/**
+ * Link a canonical library paper to a project-local research source. The
+ * repository owns the many-to-many relation and keeps each project's evidence
+ * chain isolated while the paper remains globally reusable.
+ */
+function linkPaperToProjectSource(
+  paper: { id: string; title: string; authors: string[]; year: number; venue: string; doi?: string; arxivId?: string },
+  projectId: string,
+): boolean {
+  if (!store || !researchRepository) return false;
+  return researchRepository.linkLibraryPaperToProject({
+    paperId: paper.id,
+    projectId,
+    title: paper.title,
+    authors: paper.authors,
+    year: paper.year,
+    venue: paper.venue,
+    ...(paper.doi ? { doi: paper.doi } : {}),
+    ...(paper.arxivId ? { arxivId: paper.arxivId } : {}),
+  }) !== undefined;
 }
 
 async function isPdfFile(filePath: string): Promise<boolean> {
@@ -893,8 +1792,7 @@ async function isPdfFile(filePath: string): Promise<boolean> {
     const stat = await fs.promises.stat(filePath);
     if (!stat.isFile() || stat.size < 5) return false;
     const handle = await fs.promises.open(filePath, 'r');
-    try {
-      const header = Buffer.alloc(5);
+    try {      const header = Buffer.alloc(5);
       await handle.read(header, 0, header.length, 0);
       return header.toString('ascii') === '%PDF-';
     } finally {
@@ -963,11 +1861,16 @@ async function setAcceptanceContentSize(
 
   const measuredContent = window.getContentBounds();
   const measuredRenderer = await getAcceptanceRendererSize(window);
+  const display = screen.getDisplayMatching(window.getBounds());
   throw new Error(
     'Native content size did not converge: ' +
     `requested=${width}x${height}, ` +
     `content=${measuredContent.width}x${measuredContent.height}, ` +
-    `renderer=${measuredRenderer.width}x${measuredRenderer.height}`,
+    `renderer=${measuredRenderer.width}x${measuredRenderer.height}, ` +
+    `outer=${window.getBounds().width}x${window.getBounds().height}, ` +
+    `minWidth=${window.getMinimumSize()[0]}, ` +
+    `scaleFactor=${display?.scaleFactor ?? 'unknown'}, ` +
+    `zoomFactor=${window.webContents.getZoomFactor?.() ?? 'unknown'}`,
   );
 }
 
@@ -990,11 +1893,22 @@ function createAgentLoop(
   registry?: ToolRegistry,
   sharedApprovalStore?: ApprovalStore,
   additionalRegistrations: readonly PersonalizationMcpToolRegistration[] = [],
+  config: ProviderConfig = currentConfig ?? {
+    baseUrl: '',
+    apiKey: '',
+    model: '',
+    timeout: 30_000,
+    maxRetries: 2,
+    retryBackoffSeconds: 1,
+  },
 ): { agentLoop: AgentLoop; approvalStore: ApprovalStore } {
   const toolRegistry = registry ?? new ToolRegistry();
   const hooks = new HookBus();
   const dispatcher = new ToolDispatcher(toolRegistry, hooks);
-  registerBuiltinTools(toolRegistry, dispatcher, { store: store ?? undefined });
+  registerBuiltinTools(toolRegistry, dispatcher, {
+    store: store ?? undefined,
+    researchRepository: researchRepository ?? undefined,
+  });
   fundingTemplateTools?.register(toolRegistry, dispatcher);
   for (const registration of additionalRegistrations) {
     toolRegistry.register(registration.spec);
@@ -1008,7 +1922,7 @@ function createAgentLoop(
 
   // Context compression: user-declared maxContextTokens overrides auto-detect;
   // 70% threshold triggers compression; LLM summarizer activates for old messages.
-  const userMaxContext = currentConfig?.maxContextTokens ?? 0;
+  const userMaxContext = config.maxContextTokens ?? 0;
   const effectiveMaxContext = userMaxContext > 0 ? userMaxContext : (caps.maxContextTokens > 0 ? caps.maxContextTokens : 32_000);
 
   const contextEngine = new ContextEngine({
@@ -1162,18 +2076,122 @@ function auditFundingTemplateToolRegistration(
   return new Set(registry.list().map((tool) => tool.name));
 }
 
+function providerProfileListFailure(
+  operationId: string,
+  result: { code: string },
+) {
+  return {
+    ok: false as const,
+    contractVersion: PROVIDER_PROFILE_CONTRACT_VERSION,
+    operationId,
+    code: result.code,
+  };
+}
+
+function providerProfileMutationResponse(
+  operationId: string,
+  action: 'saved' | 'switched' | 'deleted' | 'reset',
+  result: { ok: true; value: { revision: number; profile?: import('../engine/runtime/ProviderProfileContract.js').ProviderProfileSummary; activeId?: string | null } } | { ok: false; code: string; currentRevision?: number },
+): ProviderProfileMutationResponse {
+  if (!result.ok) {
+    return {
+      ok: false,
+      contractVersion: PROVIDER_PROFILE_CONTRACT_VERSION,
+      operationId,
+      code: result.code as import('../engine/runtime/ProviderProfileContract.js').ProviderProfileErrorCode,
+      ...(result.currentRevision === undefined ? {} : { currentRevision: result.currentRevision }),
+    };
+  }
+  return {
+    ok: true,
+    contractVersion: PROVIDER_PROFILE_CONTRACT_VERSION,
+    operationId,
+    action,
+    revision: result.value.revision,
+    ...(result.value.profile === undefined ? {} : { profile: result.value.profile }),
+    activeId: result.value.activeId ?? (result.value.profile?.isActive ? result.value.profile.id : null),
+  };
+}
+
+function providerProfileRuntimeContext(
+  config: ProviderConfig,
+  reason: SetupRuntimeBuildContext['reason'],
+): SetupRuntimeBuildContext {
+  const maxContextTokens = config.maxContextTokens && config.maxContextTokens > 0
+    ? config.maxContextTokens
+    : 32_000;
+  return {
+    config,
+    capabilities: {
+      streaming: true,
+      nativeToolCalling: false,
+      structuredOutput: false,
+      maxContextTokens: null,
+      multimodal: config.vision === true,
+    },
+    strategy: {
+      tier: 'standard',
+      maxTurnsPerStep: 12,
+      maxToolsPerTurn: 32,
+      maxRetries: config.maxRetries,
+      reviewEveryNTurns: 3,
+      forceStructuredOutput: false,
+      contextBudgetTokens: maxContextTokens,
+      maxOutputTokens: 16_384,
+      nativeToolCalling: false,
+    },
+    previousConfigVersion: runtimeGeneration,
+    nextConfigVersion: runtimeGeneration + 1,
+    reason,
+    signal: new AbortController().signal,
+  };
+}
+
+function deactivateProviderRuntime(reason: string): void {
+  for (const [sessionId, run] of activeChatRuns) {
+    run.controller.abort();
+    liveSteeringQueue.clear(sessionId);
+    activeChatRuns.delete(sessionId);
+    activeFundingToolScopes.delete(sessionId);
+  }
+  if (activeAutonomousSessionId) autonomousEngine?.interrupt(activeAutonomousSessionId, reason);
+  activeAutonomousSessionId = null;
+  provider = null;
+  agentLoop = null;
+  goalEngine = null;
+  autonomousEngine = null;
+  researchEventBus = null;
+  currentConfig = null;
+  runtimeGeneration += 1;
+}
+
 function prepareProviderRuntime(context: SetupRuntimeBuildContext): PreparedSetupRuntime {
   if (!store) throw new Error('Persistence is unavailable');
-  const runtimeMemoryManager = memoryManager ?? new MemoryManager(store, DATA_DIR);
-  memoryManager = runtimeMemoryManager;
-  // WorkspaceAgentsManager now requires explicit projectId per request
-  const candidateProvider = createProvider(context.config as ProviderConfig);
+  const runtimeStore = store;
+  const runtimeMemoryManager = memoryManager ?? new MemoryManager(runtimeStore, DATA_DIR);
+  // WorkspaceAgentsManager now requires explicit projectId per request.
+  const candidateConfig = { ...context.config } as ProviderConfig;
+  const candidateProvider = createProvider(candidateConfig);
   const candidateLoop = createAgentLoop(
     candidateProvider,
     buildRuntimeRegistry(),
     approvalStore ?? undefined,
+    [],
+    candidateConfig,
   );
-  const candidateGoalEngine = new GoalEngine(candidateLoop.agentLoop, runtimeMemoryManager);
+  const candidateGoalEngine = new GoalEngine(candidateLoop.agentLoop, runtimeMemoryManager, currentGoalPersistence());
+  const candidateWorkflowEngine = new WorkflowEngine(candidateLoop.agentLoop);
+  const candidateResearchEventBus = new ResearchEventBus();
+  const candidateAutonomousEngine = new AutonomousResearchEngine({
+    workflowEngine: candidateWorkflowEngine,
+    planner: new AutonomousPlanner({ provider: candidateProvider }),
+    eventBus: candidateResearchEventBus,
+    liveSteering: liveSteeringQueue,
+    store: runtimeStore,
+    artifactSink: researchRepository
+      ? createAutonomousResearchArtifactSink(researchRepository)
+      : undefined,
+  });
   let state: 'prepared' | 'committed' | 'discarded' = 'prepared';
 
   return {
@@ -1181,12 +2199,27 @@ function prepareProviderRuntime(context: SetupRuntimeBuildContext): PreparedSetu
       if (state !== 'prepared' || context.signal.aborted) {
         throw new Error('Candidate runtime is unavailable');
       }
+      // No old provider request may survive the configuration generation swap.
+      for (const [sessionId, run] of activeChatRuns) {
+        run.controller.abort();
+        liveSteeringQueue.clear(sessionId);
+        activeChatRuns.delete(sessionId);
+        activeFundingToolScopes.delete(sessionId);
+      }
+      if (activeAutonomousSessionId) autonomousEngine?.interrupt(activeAutonomousSessionId, 'provider_reconfigured');
+      activeAutonomousSessionId = null;
+
       runtimeGeneration = context.nextConfigVersion;
-      currentConfig = { ...context.config } as ProviderConfig;
+      currentConfig = candidateConfig;
       provider = candidateProvider;
       agentLoop = candidateLoop.agentLoop;
       approvalStore = candidateLoop.approvalStore;
+      memoryManager = runtimeMemoryManager;
       goalEngine = candidateGoalEngine;
+      researchEventBus = candidateResearchEventBus;
+      autonomousEngine = candidateAutonomousEngine;
+      learningEngine = new LearningEngine({ memory: runtimeMemoryManager, provider: candidateProvider, store: runtimeStore });
+      subscribeLearningToResearchBus(candidateResearchEventBus, learningEngine);
       state = 'committed';
     },
     async discard(): Promise<void> {
@@ -1241,7 +2274,7 @@ function loadConfig(): ProviderConfig | null {
 
 const SETTINGS_PATH = path.join(DATA_DIR, 'settings.json');
 
-interface PersistedSettings { theme: string; weeklyReadingGoal: number; providerVision: boolean; providerMaxContextTokens: number; }
+interface PersistedSettings { theme: string; providerVision: boolean; providerMaxContextTokens: number; setupSkipped: boolean; }
 
 function loadPersistedSettings(): PersistedSettings {
   try {
@@ -1249,32 +2282,47 @@ function loadPersistedSettings(): PersistedSettings {
       const raw = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf-8'));
       return {
         theme: raw.theme || 'light',
-        weeklyReadingGoal: Number(raw.weeklyReadingGoal) || 5,
         providerVision: raw.providerVision === true,
         providerMaxContextTokens: Number(raw.providerMaxContextTokens) > 0 ? Number(raw.providerMaxContextTokens) : 0,
+        setupSkipped: raw.setupSkipped === true,
       };
     }
   } catch { /* ignore */ }
   // Backward compat: read old theme.txt
   try {
     if (fs.existsSync(THEME_PATH)) {
-      return { theme: fs.readFileSync(THEME_PATH, 'utf-8').trim() || 'light', weeklyReadingGoal: 5, providerVision: false, providerMaxContextTokens: 0 };
+      return { theme: fs.readFileSync(THEME_PATH, 'utf-8').trim() || 'light', providerVision: false, providerMaxContextTokens: 0, setupSkipped: false };
     }
   } catch { /* ignore */ }
-  return { theme: 'light', weeklyReadingGoal: 5, providerVision: false, providerMaxContextTokens: 0 };
+  return { theme: 'light', providerVision: false, providerMaxContextTokens: 0, setupSkipped: false };
 }
 
 function loadTheme(): string { return loadPersistedSettings().theme; }
-function loadWeeklyReadingGoal(): number { return loadPersistedSettings().weeklyReadingGoal; }
 function loadProviderVision(): boolean { return loadPersistedSettings().providerVision; }
 function loadProviderMaxContextTokens(): number { return loadPersistedSettings().providerMaxContextTokens; }
+function loadSetupSkipped(): boolean { return loadPersistedSettings().setupSkipped; }
 
-function saveSettings(theme: string, weeklyReadingGoal: number, providerVision: boolean, providerMaxContextTokens: number): boolean {
+function saveSettings(theme: string, providerVision: boolean, providerMaxContextTokens: number): boolean {
   try {
-    fs.writeFileSync(SETTINGS_PATH, JSON.stringify({ theme, weeklyReadingGoal, providerVision, providerMaxContextTokens }), 'utf-8');
+    // Merge so unrelated persisted keys (setupSkipped) survive a theme update.
+    const merged = { ...loadPersistedSettings(), theme, providerVision, providerMaxContextTokens };
+    fs.writeFileSync(SETTINGS_PATH, JSON.stringify(merged), 'utf-8');
     return true;
   } catch (err) {
     console.warn('Failed to save settings:', err);
+    return false;
+  }
+}
+
+/** Persist the user's explicit 「稍后配置」 choice so the first-run wizard does
+ *  not reappear on every launch. Research execution stays provider-gated. */
+function saveSetupSkipped(): boolean {
+  try {
+    const merged = { ...loadPersistedSettings(), setupSkipped: true };
+    fs.writeFileSync(SETTINGS_PATH, JSON.stringify(merged), 'utf-8');
+    return true;
+  } catch (err) {
+    console.warn('Failed to persist setup-skip flag:', err);
     return false;
   }
 }
@@ -1324,7 +2372,7 @@ function initProviderAndAgent(): void {
     approvalStore = loopResult.approvalStore;
     console.log('[Main] initProviderAndAgent: agentLoop created:', !!agentLoop);
     if (agentLoop) {
-      goalEngine = new GoalEngine(agentLoop, memoryManager);
+      goalEngine = new GoalEngine(agentLoop, memoryManager, currentGoalPersistence());
       // Autonomous research engine: composes a dedicated WorkflowEngine (bound
       // to this agentLoop) + reflective planner + event bus. Live steering
       // reuses the global queue so pause/interrupt share the control channel.
@@ -1337,6 +2385,9 @@ function initProviderAndAgent(): void {
         eventBus: researchEventBus,
         liveSteering: liveSteeringQueue,
         store: store ?? undefined,
+        artifactSink: researchRepository
+          ? createAutonomousResearchArtifactSink(researchRepository)
+          : undefined,
       });
       // Hook closure: learning ingests durable knowledge from autonomous output.
       subscribeLearningToResearchBus(researchEventBus, learningEngine);
@@ -1352,7 +2403,13 @@ function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
-    minWidth: 1000,
+    // Automated product simulations run against the real renderer and IPC
+    // stack but must not steal focus from the researcher's desktop. This flag
+    // is intentionally process-local and is never enabled by normal launches.
+    show: process.env.METIS_BACKGROUND_AUDIT !== '1',
+    // The acceptance run needs to exercise the real narrow-shell bands, so it
+    // may shrink the window below the product minimum of 1000px.
+    minWidth: layoutAcceptanceToken ? 320 : 1000,
     minHeight: 700,
     title: 'Metis Research Workbench',
     webPreferences: {
@@ -1629,9 +2686,15 @@ function setupIPC(): void {
       requireRendererMainFrame(event);
       const request = decodeSetupSaveRequest(rawRequest);
       if (!request.ok || !firstRunSetup) return decodeSetupSaveResponse(null);
-      return await firstRunSetup.save(request.value, { owner: setupOwnerFor(event) }, (progress) => {
+      const result = await firstRunSetup.save(request.value, { owner: setupOwnerFor(event) }, (progress) => {
         if (!event.sender.isDestroyed()) event.sender.send('setup:progress', progress);
       });
+      // First-run setup remains a secure bootstrap path. Once it succeeds, make
+      // the same runtime configuration visible as the first encrypted profile.
+      if (result.success && providerProfileStore && currentConfig) {
+        await providerProfileStore.ensureActiveFromConfig(currentConfig);
+      }
+      return result;
     } catch {
       return decodeSetupSaveResponse(null);
     }
@@ -1979,7 +3042,7 @@ function setupIPC(): void {
       requireRendererMainFrame(event);
       const decoded = decodeSessionCreateRequest(rawRequest);
       if (!decoded.ok || !store) return decodeSessionMutationResult(null);
-      store.createSession(decoded.value.sessionId);
+      store.createSession(decoded.value.sessionId, undefined, decoded.value.projectId);
       return decodeSessionMutationResult({ success: true, code: 'created' });
     } catch {
       return decodeSessionMutationResult(null);
@@ -2264,6 +3327,7 @@ function setupIPC(): void {
 
     // Pre-defined eval tasks that exercise core engine capabilities
     const tasks: EvalTaskSpec[] = [
+      ...RESEARCH_CAPABILITY_TASKS,
       {
         id: 'basic-completion',
         prompt: 'Respond with exactly the word "hello" and nothing else.',
@@ -2703,9 +3767,9 @@ function setupIPC(): void {
         hasApiKey: true,
         needsReauth: false,
         theme: currentTheme,
-        weeklyReadingGoal: loadWeeklyReadingGoal(),
         providerVision: loadProviderVision(),
         providerMaxContextTokens: loadProviderMaxContextTokens(),
+        setupSkipped: true,
       });
     }
     if (!currentConfig) {
@@ -2714,9 +3778,9 @@ function setupIPC(): void {
         hasApiKey: false,
         needsReauth: false,
         theme: currentTheme,
-        weeklyReadingGoal: loadWeeklyReadingGoal(),
         providerVision: loadProviderVision(),
         providerMaxContextTokens: loadProviderMaxContextTokens(),
+        setupSkipped: loadSetupSkipped(),
       });
     }
     return decodeSettingsView({
@@ -2726,10 +3790,20 @@ function setupIPC(): void {
       hasApiKey: !!currentConfig.apiKey,
       needsReauth: !currentConfig.apiKey,
       theme: currentTheme,
-      weeklyReadingGoal: loadWeeklyReadingGoal(),
       providerVision: loadProviderVision(),
       providerMaxContextTokens: loadProviderMaxContextTokens(),
+      setupSkipped: loadSetupSkipped(),
     });
+  });
+
+  // ── First-run setup skip persistence ─────────────────────
+  ipcMain.handle('settings:markSetupSkipped', (event) => {
+    try {
+      requireRendererMainFrame(event);
+    } catch {
+      return { ok: false, error: 'unauthorized_renderer' };
+    }
+    return { ok: saveSetupSkipped() };
   });
 
   // ── Update check ─────────────────────────────────────────
@@ -2849,18 +3923,420 @@ function setupIPC(): void {
     }
   });
 
+  // ── O13: 项目级 provider/model 覆盖 ───────────────────────
+  // 覆盖存于 projects.metadata.providerOverride；读取经 zod 校验，损坏数据
+  // 一律视为无覆盖。写入只允许 contract 定义的字段。
+  ipcMain.handle('project:getProviderOverride', (event, rawProjectId: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      if (!researchRepository || typeof rawProjectId !== 'string' || !rawProjectId) {
+        return { ok: false as const, code: 'invalid_request' as const };
+      }
+      const override = researchRepository.getProjectProviderOverride(rawProjectId);
+      return { ok: true as const, override };
+    } catch {
+      return { ok: false as const, code: 'invalid_request' as const };
+    }
+  });
+
+  ipcMain.handle('project:setProviderOverride', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = rawRequest as { projectId?: unknown; override?: unknown };
+      if (!researchRepository || typeof request?.projectId !== 'string' || !request.projectId) {
+        return { ok: false as const, code: 'invalid_request' as const };
+      }
+      // override 为 null 表示清除；否则必须通过 contract 校验。
+      if (request.override === null) {
+        const cleared = researchRepository.setProjectProviderOverride(request.projectId, null);
+        return cleared ? { ok: true as const } : { ok: false as const, code: 'not_found' as const };
+      }
+      const parsed = ProjectProviderOverrideSchema.safeParse(request.override);
+      if (!parsed.success || !decodeProjectProviderOverride(parsed.data)) {
+        return { ok: false as const, code: 'invalid_request' as const };
+      }
+      // 引用的 profile 必须真实存在，防止写入悬空覆盖。
+      if (parsed.data.providerProfileId) {
+        const listed = providerProfileStore?.list();
+        const exists = listed?.ok === true && listed.value.profiles.some((p) => p.id === parsed.data.providerProfileId);
+        if (!exists) return { ok: false as const, code: 'not_found' as const };
+      }
+      const saved = researchRepository.setProjectProviderOverride(request.projectId, parsed.data);
+      return saved ? { ok: true as const } : { ok: false as const, code: 'not_found' as const };
+    } catch {
+      return { ok: false as const, code: 'invalid_request' as const };
+    }
+  });
+
   ipcMain.handle('project:pickArchive', async (event) => {
     try {
       const win = requireRendererMainFrame(event);
       const selected = await dialog.showOpenDialog(win, {
         properties: ['openFile'],
-        filters: [{ name: 'Metis Project Archive', extensions: ['metisproj'] }],
+        filters: [{
+          name: 'Metis Project Archive',
+          extensions: [PROJECT_ARCHIVE_EXT.slice(1), ...PROJECT_ARCHIVE_LEGACY_EXTS.map((ext) => ext.slice(1))],
+        }],
       });
       return { canceled: selected.canceled, path: selected.canceled ? undefined : selected.filePaths[0] };
     } catch {
       return { canceled: true, path: undefined };
     }
   });
+
+  // ── Storage location (user-configurable data directory) ──────
+  ipcMain.handle('storage:getLocation', (event) => {
+    try {
+      requireRendererMainFrame(event);
+      return {
+        ok: true,
+        dataDir: DATA_DIR,
+        defaultDir: DEFAULT_DATA_DIR,
+        usingDefault: path.resolve(DATA_DIR) === path.resolve(DEFAULT_DATA_DIR),
+      };
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  });
+
+  ipcMain.handle('storage:chooseLocation', async (event) => {
+    try {
+      const win = requireRendererMainFrame(event);
+      const selected = await dialog.showOpenDialog(win, {
+        properties: ['openDirectory', 'createDirectory'],
+        title: 'Select Metis data directory',
+      });
+      return { canceled: selected.canceled, path: selected.canceled ? undefined : selected.filePaths[0] };
+    } catch {
+      return { canceled: true, path: undefined };
+    }
+  });
+
+  ipcMain.handle('storage:setLocation', (event, rawTarget: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const target = typeof rawTarget === 'string' && rawTarget.trim() ? rawTarget.trim() : '';
+      if (!target) return { ok: false, error: 'location_invalid_path' };
+      const current = DATA_DIR;
+      if (path.resolve(target) === path.resolve(current)) {
+        return { ok: true, restarting: false, dataDir: current };
+      }
+      const validation = validateTargetLocation(target, USER_DATA_DIR);
+      if (!validation.ok) return { ok: false, error: `location_${validation.reason}` };
+      const written = writeLocationPointer(USER_DATA_DIR, {
+        version: LOCATION_POINTER_VERSION,
+        dataDir: target,
+        pendingMigrateFrom: current,
+      });
+      if (!written) return { ok: false, error: 'location_pointer_write_failed' };
+      // Relaunch so the migration runs before any data handle is opened.
+      setTimeout(() => {
+        app.relaunch();
+        app.quit();
+      }, 200);
+      return { ok: true, restarting: true, dataDir: target };
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  });
+
+  ipcMain.handle('storage:openFolder', async (event) => {
+    try {
+      requireRendererMainFrame(event);
+      const errorMessage = await shell.openPath(DATA_DIR);
+      return { ok: !errorMessage, error: errorMessage || undefined };
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  });
+
+  // ── Research browser (embedded WebContentsView) ──────────────
+  ipcMain.handle('browser:show', (event, rawBounds: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const service = ensureBrowserService();
+      if (!service) return { ok: false, error: 'browser_unavailable' };
+      const bounds = parseBrowserBounds(rawBounds);
+      if (!bounds) return { ok: false, error: 'browser_invalid_bounds' };
+      // 与协同对话视图互斥：同一时间只显示一个嵌入视图。
+      collabService?.hide();
+      service.show(bounds);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  });
+
+  ipcMain.handle('browser:hide', (event) => {
+    try {
+      requireRendererMainFrame(event);
+      browserService?.hide();
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  });
+
+  ipcMain.handle('browser:setBounds', (event, rawBounds: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const bounds = parseBrowserBounds(rawBounds);
+      if (!bounds || !browserService) return { ok: false, error: 'browser_invalid_bounds' };
+      browserService.setBounds(bounds);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  });
+
+  ipcMain.handle('browser:navigate', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const service = ensureBrowserService();
+      if (!service) return { ok: false, error: 'browser_unavailable' };
+      const url = typeof raw === 'string' ? raw : '';
+      return await service.navigate(url);
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  });
+
+  ipcMain.handle('browser:back', (event) => { try { requireRendererMainFrame(event); browserService?.goBack(); return { ok: true }; } catch { return { ok: false, error: 'browser_denied' }; } });
+  ipcMain.handle('browser:forward', (event) => { try { requireRendererMainFrame(event); browserService?.goForward(); return { ok: true }; } catch { return { ok: false, error: 'browser_denied' }; } });
+  ipcMain.handle('browser:reload', (event) => { try { requireRendererMainFrame(event); browserService?.reload(); return { ok: true }; } catch { return { ok: false, error: 'browser_denied' }; } });
+  ipcMain.handle('browser:stop', (event) => { try { requireRendererMainFrame(event); browserService?.stop(); return { ok: true }; } catch { return { ok: false, error: 'browser_denied' }; } });
+
+  ipcMain.handle('browser:focusRenderer', (event) => {
+    try {
+      requireRendererMainFrame(event);
+      event.sender.focus();
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  });
+
+  // ── 协同对话（第三方 AI 网页版 WebContentsView） ─────────────
+  ipcMain.handle('collab:show', (event, rawBounds: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const service = ensureCollabService();
+      if (!service) return { ok: false, error: 'collab_unavailable' };
+      const bounds = parseBrowserBounds(rawBounds);
+      if (!bounds) return { ok: false, error: 'collab_invalid_bounds' };
+      // 与研究浏览器视图互斥：同一时间只显示一个嵌入视图。
+      browserService?.hide();
+      service.show(bounds);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  });
+
+  ipcMain.handle('collab:hide', (event) => {
+    try {
+      requireRendererMainFrame(event);
+      collabService?.hide();
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  });
+
+  ipcMain.handle('collab:setBounds', (event, rawBounds: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const bounds = parseBrowserBounds(rawBounds);
+      if (!bounds || !collabService) return { ok: false, error: 'collab_invalid_bounds' };
+      collabService.setBounds(bounds);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  });
+
+  ipcMain.handle('collab:navigate', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const service = ensureCollabService();
+      if (!service) return { ok: false, error: 'collab_unavailable' };
+      const url = typeof raw === 'string' ? raw : '';
+      return await service.navigate(url);
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  });
+
+  // ── 内置文献检索（NCPSSD 中文 + OpenAlex 英文，LIT-SEARCH-01） ──
+  ipcMain.handle('literature:search', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      if (typeof rawRequest !== 'object' || rawRequest === null) {
+        return { ok: false, code: 'literature_invalid_request', recovery: 'retry_with_valid_query' };
+      }
+      const request = rawRequest as { query?: unknown; sources?: unknown; page?: unknown; pageSize?: unknown; coreOnly?: unknown };
+      const sources = Array.isArray(request.sources)
+        ? request.sources.filter((source): source is 'ncpssd' | 'openalex' => source === 'ncpssd' || source === 'openalex')
+        : [];
+      return await literatureSearchService.search({
+        query: typeof request.query === 'string' ? request.query : '',
+        sources,
+        page: typeof request.page === 'number' ? request.page : 1,
+        pageSize: typeof request.pageSize === 'number' ? request.pageSize : 10,
+        coreOnly: request.coreOnly !== false,
+      });
+    } catch {
+      return { ok: false, code: 'literature_source_unavailable', recovery: 'retry_later_or_change_source' };
+    }
+  });
+
+  ipcMain.handle('browser:state', (event) => {
+    try {
+      requireRendererMainFrame(event);
+      const service = ensureBrowserService();
+      return service ? { ok: true, state: service.getState() } : { ok: false, error: 'browser_unavailable' };
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  });
+
+  ipcMain.handle('browser:click', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const service = ensureBrowserService();
+      if (!service) return { ok: false, error: 'browser_unavailable' };
+      const { x, y } = (raw as { x?: number; y?: number }) ?? {};
+      if (typeof x !== 'number' || typeof y !== 'number') return { ok: false, error: 'browser_invalid_point' };
+      service.click(x, y);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  });
+
+  ipcMain.handle('browser:type', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const service = ensureBrowserService();
+      if (!service) return { ok: false, error: 'browser_unavailable' };
+      const text = typeof raw === 'string' ? raw.slice(0, 4000) : '';
+      if (!text) return { ok: false, error: 'browser_invalid_text' };
+      service.type(text);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  });
+
+  ipcMain.handle('browser:key', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const service = ensureBrowserService();
+      if (!service) return { ok: false, error: 'browser_unavailable' };
+      const keyCode = typeof raw === 'string' ? raw : '';
+      if (!keyCode) return { ok: false, error: 'browser_invalid_key' };
+      service.key(keyCode);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  });
+
+  ipcMain.handle('browser:scroll', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const service = ensureBrowserService();
+      if (!service) return { ok: false, error: 'browser_unavailable' };
+      const { deltaX, deltaY } = (raw as { deltaX?: number; deltaY?: number }) ?? {};
+      service.scroll(Number(deltaX) || 0, Number(deltaY) || 0);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  });
+
+  ipcMain.handle('browser:screenshot', async (event) => {
+    try {
+      requireRendererMainFrame(event);
+      const service = ensureBrowserService();
+      if (!service) return { ok: false, error: 'browser_unavailable' };
+      return await service.screenshot();
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  });
+
+  ipcMain.handle('browser:extract', async (event) => {
+    try {
+      requireRendererMainFrame(event);
+      const service = ensureBrowserService();
+      if (!service) return { ok: false, error: 'browser_unavailable' };
+      return await service.extract();
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  });
+
+  ipcMain.handle('browser:collect', async (event) => {
+    try {
+      requireRendererMainFrame(event);
+      const service = ensureBrowserService();
+      if (!service) return { ok: false, error: 'browser_unavailable' };
+      return await service.collect();
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  });
+
+  ipcMain.handle('browser:listDownloads', (event) => {
+    try {
+      requireRendererMainFrame(event);
+      const service = ensureBrowserService();
+      if (!service) return { ok: false, error: 'browser_unavailable' };
+      return { ok: true, downloads: service.listPendingDownloads() };
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  });
+
+  ipcMain.handle('browser:acceptDownload', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const service = ensureBrowserService();
+      if (!service) return { ok: false, error: 'browser_unavailable' };
+      const request = (raw as { id?: string; projectId?: string | null }) ?? {};
+      if (!request.id) return { ok: false, error: 'download_not_found' };
+      // 项目自定义目录优先（批2）：PDF 归档到 projectDir/pdfs。
+      let projectDir: string | null = null;
+      try {
+        if (request.projectId && researchRepository) {
+          const project = researchRepository.getProject(request.projectId, false);
+          projectDir = (project?.metadata as { projectDir?: string } | undefined)?.projectDir ?? null;
+        }
+      } catch { /* 目录读取失败回退默认 */ }
+      const outcome = await service.acceptDownload({ id: request.id, projectId: request.projectId ?? null, projectDir });
+      // PDF 归档成功后自动入队全文抽取（T2：AI 可读全文的入口）。
+      if (outcome.ok && outcome.paperId && outcome.savedPath) {
+        jobQueueService.enqueueExtract(outcome.paperId, outcome.savedPath);
+      }
+      return outcome;
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  });
+
+  ipcMain.handle('browser:cancelDownload', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const id = typeof raw === 'string' ? raw : '';
+      if (!id || !browserService) return { ok: false, error: 'download_not_found' };
+      browserService.cancelDownload(id);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  });
+
 
   // ── WeChat Bot (METIS-WX-1, iLink protocol — same as ZCode) ──
   ipcMain.handle('wechat:getStatus', (event) => {
@@ -3255,19 +4731,65 @@ function setupIPC(): void {
       return { ok: false, imported: 0, merged: 0, skipped: 0, error: 'unauthorized_renderer', items: [] };
     }
     if (!store) return { ok: false, imported: 0, merged: 0, skipped: 0, error: 'store_unavailable', items: [] };
-    const request = rawRequest as { userId?: string; groupId?: string; query?: string; maxItems?: number };
+    const request = rawRequest as { libraryType?: unknown; libraryId?: unknown; query?: unknown; maxItems?: unknown; projectId?: unknown };
+    const libraryType = request.libraryType === 'personal' || request.libraryType === 'group' ? request.libraryType : undefined;
+    const libraryId = typeof request.libraryId === 'string' ? request.libraryId.trim() : '';
+    if (!libraryType || !libraryId || libraryId.length > 128 || !/^[0-9]+$/u.test(libraryId)) {
+      return { ok: false, imported: 0, merged: 0, skipped: 0, error: 'invalid_library_identity', items: [] };
+    }
+    const projectId = typeof request.projectId === 'string' && request.projectId.length > 0 ? request.projectId : undefined;
+    if (projectId && researchRepository && !researchRepository.listProjects().some((p) => p.id === projectId)) {
+      return { ok: false, imported: 0, merged: 0, skipped: 0, error: 'project_not_found', items: [] };
+    }
+    zoteroImportTargetProjectId = projectId;
     if (!zoteroImportService) {
       zoteroImportService = new ZoteroImportService({
         store,
         apiKeyResolver: () => personalizationSecretVault?.resolve('{{secret:ZOTERO_API_KEY}}') ?? undefined,
+        linkToProject: (paper) => {
+          if (zoteroImportTargetProjectId) linkPaperToProjectSource(paper, zoteroImportTargetProjectId);
+        },
       });
     }
     return zoteroImportService.import({
-      userId: String(request.userId ?? ''),
-      groupId: request.groupId ? String(request.groupId) : undefined,
-      query: request.query ? String(request.query) : undefined,
+      libraryType,
+      libraryId,
+      query: typeof request.query === 'string' ? request.query : undefined,
       maxItems: typeof request.maxItems === 'number' ? request.maxItems : 20,
+      projectId,
     });
+  });
+
+  // Secure Zotero connection probe: the main process resolves the vault key and
+  // contacts the Zotero API itself. The renderer never receives the key.
+  ipcMain.handle('zotero:probe', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+    } catch {
+      return { ok: false, error: 'unauthorized_renderer' };
+    }
+    const request = rawRequest as { libraryType?: unknown; libraryId?: unknown };
+    const libraryType = request.libraryType === 'personal' || request.libraryType === 'group' ? request.libraryType : undefined;
+    const libraryId = typeof request.libraryId === 'string' ? request.libraryId.trim() : '';
+    if (!libraryType || !libraryId || !/^[0-9]{1,128}$/u.test(libraryId)) {
+      return { ok: false, error: 'invalid_library_identity' };
+    }
+    const apiKey = personalizationSecretVault?.resolve('{{secret:ZOTERO_API_KEY}}');
+    if (!apiKey) return { ok: false, error: 'zotero_not_configured' };
+    try {
+      const { searchZoteroLibrary } = await import('../engine/research/ZoteroClient.js');
+      const result = await searchZoteroLibrary({
+        apiKey,
+        libraryType,
+        libraryId,
+        query: '',
+        start: 0,
+        maxResults: 1,
+      });
+      return { ok: true, totalResults: result.totalResults };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message.slice(0, 200) : 'zotero_probe_failed' };
+    }
   });
 
   ipcMain.handle('settings:set', (event, rawRequest: unknown) => {
@@ -3276,10 +4798,9 @@ function setupIPC(): void {
       const request = decodeSettingsUpdateRequest(rawRequest);
       if (!request) return createSettingsMutationFailure('secure_setup_required');
 
-      const goal = request.weeklyReadingGoal ?? loadWeeklyReadingGoal();
       const vision = request.providerVision ?? loadProviderVision();
       const maxContext = request.providerMaxContextTokens ?? loadProviderMaxContextTokens();
-      const ok = saveSettings(request.theme, goal, vision, maxContext);
+      const ok = saveSettings(request.theme, vision, maxContext);
       if (!ok) return createSettingsMutationFailure('settings_update_unavailable');
       currentTheme = request.theme;
       if (currentConfig) currentConfig.maxContextTokens = maxContext > 0 ? maxContext : undefined;
@@ -3289,110 +4810,156 @@ function setupIPC(): void {
     }
   });
 
-  // ── Multi-provider management ────────────────────────────
-  // Stores named provider configs in providers.json; the active one is loaded
-  // into the runtime provider/agentLoop on switch.
-  ipcMain.handle('provider:list', (event) => {
-    try {
-      requireRendererMainFrame(event);
-      if (!fs.existsSync(PROVIDERS_PATH)) return { providers: [], activeId: null };
-      const data = JSON.parse(fs.readFileSync(PROVIDERS_PATH, 'utf-8')) as { providers?: Array<{ id: string; name: string; baseUrl: string; model: string; vision?: boolean; maxContextTokens?: number }>; activeId?: string };
-      return { providers: data.providers ?? [], activeId: data.activeId ?? null };
-    } catch {
-      return { providers: [], activeId: null };
-    }
-  });
-
-  ipcMain.handle('provider:save', (event, rawRequest: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const request = rawRequest as { id?: unknown; name?: unknown; baseUrl?: unknown; apiKey?: unknown; model?: unknown; vision?: unknown; maxContextTokens?: unknown };
-      const id = typeof request?.id === 'string' ? request.id : `prov_${Date.now().toString(36)}`;
-      const name = typeof request?.name === 'string' ? request.name : '未命名';
-      const baseUrl = typeof request?.baseUrl === 'string' ? request.baseUrl : '';
-      const apiKey = typeof request?.apiKey === 'string' ? request.apiKey : '';
-      const model = typeof request?.model === 'string' ? request.model : '';
-      const vision = request?.vision === true;
-      const maxContextTokens = typeof request?.maxContextTokens === 'number' && request.maxContextTokens > 0 ? Math.floor(request.maxContextTokens) : undefined;
-      if (!baseUrl || !apiKey || !model) return { ok: false, error: 'missing_fields' };
-
-      // Load existing providers list.
-      let data: { providers: Array<{ id: string; name: string; baseUrl: string; model: string; apiKey: string; vision?: boolean; maxContextTokens?: number }>; activeId?: string };
-      try {
-        data = fs.existsSync(PROVIDERS_PATH)
-          ? JSON.parse(fs.readFileSync(PROVIDERS_PATH, 'utf-8'))
-          : { providers: [] };
-      } catch { data = { providers: [] }; }
-
-      // Upsert by id.
-      const idx = data.providers.findIndex((p) => p.id === id);
-      const entry = { id, name, baseUrl, model, apiKey, vision, maxContextTokens };
-      if (idx >= 0) data.providers[idx] = entry;
-      else data.providers.push(entry);
-
-      fs.writeFileSync(PROVIDERS_PATH, JSON.stringify(data, null, 2), 'utf-8');
-      return { ok: true, id };
-    } catch (err) {
-      return { ok: false, error: (err as Error)?.message ?? 'save_failed' };
-    }
-  });
-
-  ipcMain.handle('provider:switch', (event, rawId: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const id = typeof rawId === 'string' ? rawId : '';
-      if (!id) return { ok: false, error: 'invalid_id' };
-      if (!fs.existsSync(PROVIDERS_PATH)) return { ok: false, error: 'no_providers' };
-
-      const data = JSON.parse(fs.readFileSync(PROVIDERS_PATH, 'utf-8')) as { providers: Array<{ id: string; name: string; baseUrl: string; model: string; apiKey: string; vision?: boolean; maxContextTokens?: number }>; activeId?: string };
-      const target = data.providers.find((p) => p.id === id);
-      if (!target) return { ok: false, error: 'not_found' };
-
-      // Build a ProviderConfig and create a new provider + agentLoop.
-      const config: ProviderConfig = {
-        baseUrl: target.baseUrl,
-        apiKey: target.apiKey,
-        model: target.model,
-        timeout: currentConfig?.timeout ?? 30000,
-        maxRetries: currentConfig?.maxRetries ?? 2,
-        retryBackoffSeconds: currentConfig?.retryBackoffSeconds ?? 1,
-        ...(target.vision ? { vision: true } : {}),
-        // Per-provider context window wins; otherwise fall back to the global setting.
-        ...(target.maxContextTokens && target.maxContextTokens > 0
-          ? { maxContextTokens: target.maxContextTokens }
-          : loadProviderMaxContextTokens() > 0 ? { maxContextTokens: loadProviderMaxContextTokens() } : {}),
+  // ── Secure named provider profiles ────────────────────────
+  // API keys are encrypted in the main-process-only profile store. Every
+  // response is projected through a strict public DTO; neither plaintext nor
+  // ciphertext can reach the renderer.
+  ipcMain.handle('providerProfiles:list', createSecureIpcHandler({
+    authorize: requireRendererMainFrame,
+    decode: ([rawRequest]) => {
+      const request = decodeProviderProfileListRequest(rawRequest);
+      return request.ok ? decoded(request.value) : rejected();
+    },
+    execute: (request) => ({ request, result: providerProfileStore?.list() ?? { ok: false as const, code: 'runtime_unavailable' as const } }),
+    present: ({ request, result }) => {
+      if (!result.ok) return providerProfileListFailure(request.operationId, result);
+      return {
+        ok: true as const,
+        contractVersion: PROVIDER_PROFILE_CONTRACT_VERSION,
+        operationId: request.operationId,
+        revision: result.value.revision,
+        profiles: result.value.profiles,
       };
-      const newProvider = createProvider(config);
-      const loopResult = createAgentLoop(newProvider);
-      // Swap the globals atomically.
-      provider = newProvider;
-      agentLoop = loopResult.agentLoop;
-      currentConfig = { ...config };
-      runtimeGeneration += 1;
+    },
+    recover: () => createProviderProfileListRecovery(),
+  }));
 
-      // Update activeId in providers.json.
-      data.activeId = id;
-      fs.writeFileSync(PROVIDERS_PATH, JSON.stringify(data, null, 2), 'utf-8');
-      return { ok: true, name: target.name, model: target.model };
-    } catch (err) {
-      return { ok: false, error: (err as Error)?.message ?? 'switch_failed' };
-    }
-  });
+  ipcMain.handle('providerProfiles:save', createSecureIpcHandler({
+    authorize: requireRendererMainFrame,
+    decode: ([rawRequest]) => {
+      const request = decodeProviderProfileSaveRequest(rawRequest);
+      return request.ok ? decoded(request.value) : rejected();
+    },
+    execute: async (request) => {
+      if (!providerProfileStore || !store) return { request, result: { ok: false as const, code: 'runtime_unavailable' as const } };
+      const before = providerProfileStore.list();
+      if (!before.ok) return { request, result: before };
+      const previousProfile = request.id ? before.value.profiles.find((profile) => profile.id === request.id) : undefined;
+      const previousConfig = previousProfile ? providerProfileStore.configFor(previousProfile.id) : undefined;
+      if (previousConfig && !previousConfig.ok) return { request, result: previousConfig };
+      const candidateConfig = providerProfileStore.configForSave(request);
+      if (!candidateConfig.ok) return { request, result: candidateConfig };
 
-  ipcMain.handle('provider:delete', (event, rawId: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const id = typeof rawId === 'string' ? rawId : '';
-      if (!id || !fs.existsSync(PROVIDERS_PATH)) return { ok: false, error: 'invalid' };
-      const data = JSON.parse(fs.readFileSync(PROVIDERS_PATH, 'utf-8')) as { providers: Array<{ id: string }>; activeId?: string };
-      data.providers = data.providers.filter((p) => p.id !== id);
-      if (data.activeId === id) data.activeId = undefined;
-      fs.writeFileSync(PROVIDERS_PATH, JSON.stringify(data, null, 2), 'utf-8');
-      return { ok: true };
-    } catch {
-      return { ok: false, error: 'delete_failed' };
-    }
-  });
+      let candidate: PreparedSetupRuntime;
+      try {
+        candidate = prepareProviderRuntime(providerProfileRuntimeContext(candidateConfig.value, 'save'));
+      } catch {
+        return { request, result: { ok: false as const, code: 'runtime_rebuild_failed' as const } };
+      }
+
+      const saved = await providerProfileStore.save(request);
+      if (!saved.ok) {
+        await candidate.discard();
+        return { request, result: saved };
+      }
+      if (!saved.value.profile.isActive) {
+        await candidate.discard();
+        return { request, result: saved };
+      }
+      try {
+        await candidate.commitAndAbortPrevious();
+        return { request, result: saved };
+      } catch {
+        await candidate.discard();
+        // The profile record is rolled back only if no concurrent revision
+        // superseded it. Runtime and disk therefore remain one transaction.
+        const rolledBack = await providerProfileStore.restoreAfterFailedSave({
+          id: previousProfile?.id ?? null,
+          name: previousProfile?.name ?? '',
+          config: previousConfig?.ok ? previousConfig.value : null,
+          activeId: before.value.profiles.find((profile) => profile.isActive)?.id ?? null,
+        }, saved.value.revision);
+        return {
+          request,
+          result: rolledBack.ok
+            ? { ok: false as const, code: 'runtime_rebuild_failed' as const }
+            : { ok: false as const, code: 'io_error' as const },
+        };
+      }
+    },
+    present: ({ request, result }) => providerProfileMutationResponse(request.operationId, 'saved', result),
+    recover: () => createProviderProfileMutationRecovery(),
+  }));
+
+  ipcMain.handle('providerProfiles:switch', createSecureIpcHandler({
+    authorize: requireRendererMainFrame,
+    decode: ([rawRequest]) => {
+      const request = decodeProviderProfileSwitchRequest(rawRequest);
+      return request.ok ? decoded(request.value) : rejected();
+    },
+    execute: async (request) => {
+      if (!providerProfileStore || !store) return { request, result: { ok: false as const, code: 'runtime_unavailable' as const } };
+      const config = providerProfileStore.configFor(request.id);
+      if (!config.ok) return { request, result: config };
+      try {
+        const candidate = prepareProviderRuntime(providerProfileRuntimeContext(config.value, 'restore'));
+        const persisted = await providerProfileStore.activate(request);
+        if (!persisted.ok) {
+          await candidate.discard();
+          return { request, result: persisted };
+        }
+        await candidate.commitAndAbortPrevious();
+        return { request, result: persisted };
+      } catch {
+        return { request, result: { ok: false as const, code: 'runtime_rebuild_failed' as const } };
+      }
+    },
+    present: ({ request, result }) => providerProfileMutationResponse(request.operationId, 'switched', result),
+    recover: () => createProviderProfileMutationRecovery(),
+  }));
+
+  ipcMain.handle('providerProfiles:delete', createSecureIpcHandler({
+    authorize: requireRendererMainFrame,
+    decode: ([rawRequest]) => {
+      const request = decodeProviderProfileDeleteRequest(rawRequest);
+      return request.ok ? decoded(request.value) : rejected();
+    },
+    execute: async (request) => {
+      if (!providerProfileStore) return { request, result: { ok: false as const, code: 'runtime_unavailable' as const } };
+      const listed = providerProfileStore.list();
+      const targetWasActive = listed.ok && listed.value.profiles.some((profile) => profile.id === request.id && profile.isActive);
+      const result = await providerProfileStore.delete(request);
+      if (result.ok && targetWasActive && result.value.activeId) {
+        const replacement = providerProfileStore.configFor(result.value.activeId);
+        if (!replacement.ok) return { request, result: { ok: false as const, code: 'runtime_rebuild_failed' as const } };
+        try {
+          const candidate = prepareProviderRuntime(providerProfileRuntimeContext(replacement.value, 'restore'));
+          await candidate.commitAndAbortPrevious();
+        } catch {
+          return { request, result: { ok: false as const, code: 'runtime_rebuild_failed' as const } };
+        }
+      }
+      return { request, result };
+    },
+    present: ({ request, result }) => providerProfileMutationResponse(request.operationId, 'deleted', result),
+    recover: () => createProviderProfileMutationRecovery(),
+  }));
+
+  ipcMain.handle('providerProfiles:reset', createSecureIpcHandler({
+    authorize: requireRendererMainFrame,
+    decode: ([rawRequest]) => {
+      const request = decodeProviderProfileResetRequest(rawRequest);
+      return request.ok ? decoded(request.value) : rejected();
+    },
+    execute: async (request) => {
+      if (!providerProfileStore) return { request, result: { ok: false as const, code: 'runtime_unavailable' as const } };
+      const result = await providerProfileStore.reset(request.expectedRevision);
+      if (result.ok) deactivateProviderRuntime('provider_profiles_reset');
+      return { request, result };
+    },
+    present: ({ request, result }) => providerProfileMutationResponse(request.operationId, 'reset', result),
+    recover: () => createProviderProfileMutationRecovery(),
+  }));
 
   // ── Agent Chat (streaming mode) ─────────────────────────
   ipcMain.handle('agent:chat', async (
@@ -3440,6 +5007,22 @@ function setupIPC(): void {
 
     // Resolve skill prompt if skillId provided
     let skillPrompt: string | undefined;
+
+    // 研究阶段上下文（T5/T27）：AI 感知项目当前阶段与上次进展，回答贴合阶段。
+    try {
+      if (projectId && researchRepository) {
+        const project = researchRepository.getProject(projectId, false);
+        const stage = (project?.metadata as { stage?: string } | undefined)?.stage;
+        const brief = new ResearchJournalService(researchRepository, goalEngine, store).buildResumeBrief(projectId);
+        const stageBlock: string[] = [];
+        if (stage) stageBlock.push(`[研究阶段] ${stage}（选题topic/文献literature/设计design/数据data/分析analysis/写作writing/投稿submission/修订revision；请按该阶段调整协助方式）`);
+        if (brief && brief.lastActivityAt) stageBlock.push(`[上次进展] ${brief.summaryText}`);
+        if (stageBlock.length > 0) {
+          skillPrompt = [stageBlock.join('\n'), skillPrompt].filter(Boolean).join('\n\n');
+        }
+      }
+    } catch { /* 阶段上下文必须不破坏对话 */ }
+
     if (skillId && skillRegistry) {
       const skill = skillRegistry.get(skillId);
       if (skill) {
@@ -3522,7 +5105,7 @@ function setupIPC(): void {
       return createChatTurnErrorResponse(requestId, 'error', 'scenario_workflow_unavailable');
     }
 
-    if (activeChatRuns.has(sessionId)) {
+    if (activeChatRuns.has(sessionId) || hasCompareRunForSession(sessionId)) {
       return createChatTurnErrorResponse(requestId, 'error', 'agent_run_active');
     }
     const activeRun: ActiveChatRun = {
@@ -3607,42 +5190,67 @@ function setupIPC(): void {
         preferredAgentLoops.set(model, preferredLoop);
         return preferredLoop;
       };
-      const response = scenarioCompilation.useCoordinator && resolvedManifest && resolvedSystemPrompt && personalizationRepository
-        ? await runPersistedScenarioWorkflow({
-            agentLoop: runAgentLoop,
-            agentLoopForModel,
-            store,
-            repository: personalizationRepository,
-            sessionId,
-            messages,
-            requestId,
-            manifest: resolvedManifest,
-            mode,
-            signal: activeRun.controller.signal,
-            liveSteering: liveSteeringQueue,
-            projectId: resolvedManifest.projectId ?? projectId,
-            isCurrentRuntime: () => runtimeGeneration === requestRuntimeGeneration,
-          })
-        : await runPersistedChatTurn({
-            agentLoop: runAgentLoop,
-            store,
-            sessionId,
-            messages,
-            requestId,
-            skillPrompt,
-            allowedTools,
-            maxTurns,
-            taskContractHash,
-            promptStackHash,
-            fullAccess,
-            signal: activeRun.controller.signal,
-            liveSteering: liveSteeringQueue,
-            options: { mode },
-            projectId,
-            isCurrentRuntime: () => runtimeGeneration === requestRuntimeGeneration,
+      // Stream the model's tokens (and reasoning, when the model emits it) to
+      // the requesting renderer. Registered on the loop that actually runs so
+      // MCP-expanded loops stream too; unregistered when the turn settles.
+      const forwardModelStream = (
+        ctx: import('../engine/core/HookBus.js').HookContext,
+      ): import('../engine/core/HookBus.js').HookContext => {
+        const payload = ctx as unknown as {
+          sessionId?: unknown; content?: unknown; reasoning?: unknown; isFinished?: unknown;
+        };
+        try {
+          if (event.sender.isDestroyed()) return ctx;
+          event.sender.send('chat:stream-chunk', {
+            sessionId: typeof payload.sessionId === 'string' ? payload.sessionId : sessionId,
+            content: typeof payload.content === 'string' ? payload.content : '',
+            reasoning: typeof payload.reasoning === 'string' ? payload.reasoning : undefined,
+            isFinished: payload.isFinished === true,
           });
+        } catch { /* stream forwarding must never break the turn */ }
+        return ctx;
+      };
+      runAgentLoop.registerHook('model.stream_chunk', forwardModelStream, { name: 'chat-stream-forward' });
+      try {
+        const response = scenarioCompilation.useCoordinator && resolvedManifest && resolvedSystemPrompt && personalizationRepository
+          ? await runPersistedScenarioWorkflow({
+              agentLoop: runAgentLoop,
+              agentLoopForModel,
+              store,
+              repository: personalizationRepository,
+              sessionId,
+              messages,
+              requestId,
+              manifest: resolvedManifest,
+              mode,
+              signal: activeRun.controller.signal,
+              liveSteering: liveSteeringQueue,
+              projectId: resolvedManifest.projectId ?? projectId,
+              isCurrentRuntime: () => runtimeGeneration === requestRuntimeGeneration,
+            })
+          : await runPersistedChatTurn({
+              agentLoop: runAgentLoop,
+              store,
+              sessionId,
+              messages,
+              requestId,
+              skillPrompt,
+              allowedTools,
+              maxTurns,
+              taskContractHash,
+              promptStackHash,
+              fullAccess,
+              signal: activeRun.controller.signal,
+              liveSteering: liveSteeringQueue,
+              options: { mode },
+              projectId,
+              isCurrentRuntime: () => runtimeGeneration === requestRuntimeGeneration,
+            });
 
-      return response;
+        return response;
+      } finally {
+        runAgentLoop.unregisterHook('model.stream_chunk', 'chat-stream-forward');
+      }
     } catch {
       console.error('[Main] agent chat failed');
       return createChatTurnErrorResponse(requestId, 'error', 'agent_chat_failed');
@@ -3665,6 +5273,136 @@ function setupIPC(): void {
         liveSteeringQueue.clear(sessionId);
       }
       activeFundingToolScopes.delete(sessionId);
+    }
+  });
+
+  // ── O15: 多模型同会话对比（指定 profile 的临时回合） ─────────
+  // 渲染端在「多模型对比」模式下对选中的每个 profile 并行调用一次本处理器；
+  // 这里用 ProviderProfileStore.configFor(profileId) 解密出完整配置，构建
+  // 临时 provider + AgentLoop 跑一轮。与 agent:chat 的差异：
+  //   - 不在主进程落库（对比的 N 个并行调用若各自落库会把用户消息写 N 遍，
+  //     持久化由渲染端统一做一次）；
+  //   - 不参与 scenario / 个性化清单 / MCP 工具扩展（对比的目标是同一提示下
+  //     不同模型的原始回答，变量越少越公平）；
+  //   - 流式分片额外带 profileId，渲染端按模型路由到各自的气泡。
+  ipcMain.handle('agent:chatWithProfile', async (
+    event,
+    rawProfileId: unknown,
+    rawSessionId: unknown,
+    rawMessages: unknown,
+    rawSkillId?: unknown,
+    rawOptions?: unknown,
+  ) => {
+    const requestId = `chatcmp_${++requestCounter}`;
+    try {
+      requireRendererMainFrame(event);
+    } catch {
+      return createChatTurnErrorResponse(requestId, 'error', 'unauthorized_renderer');
+    }
+    if (!providerProfileStore || !store) {
+      console.error('[Main] profile chat is unavailable');
+      return createChatTurnErrorResponse(requestId, 'error', 'agent_not_initialized');
+    }
+    const profileIdParsed = ProviderProfileIdSchema.safeParse(rawProfileId);
+    if (!profileIdParsed.success) {
+      return createChatTurnErrorResponse(requestId, 'error', 'invalid_chat_request');
+    }
+    const profileId = profileIdParsed.data;
+
+    const request = AgentChatRequestSchema.safeParse({
+      version: CHAT_RUNTIME_CONTRACT_VERSION,
+      turnId: requestId,
+      sessionId: rawSessionId,
+      messages: rawMessages,
+      skillId: rawSkillId,
+      projectId: typeof rawOptions === 'object' && rawOptions !== null
+        ? (rawOptions as { projectId?: unknown }).projectId
+        : undefined,
+      mode: typeof rawOptions === 'object' && rawOptions !== null
+        ? (rawOptions as { mode?: unknown }).mode
+        : undefined,
+    });
+    if (!request.success) {
+      return createChatTurnErrorResponse(requestId, 'error', 'invalid_chat_request');
+    }
+    const { sessionId, messages, skillId, projectId } = request.data;
+
+    // 与正常回合同会话互斥；同一 profile 的重复并发也要拦住。
+    if (activeChatRuns.has(sessionId)) {
+      return createChatTurnErrorResponse(requestId, 'error', 'agent_run_active');
+    }
+    const runKey = `${sessionId}::${profileId}`;
+    if (activeCompareRuns.has(runKey)) {
+      return createChatTurnErrorResponse(requestId, 'error', 'agent_run_active');
+    }
+
+    const configResult = providerProfileStore.configFor(profileId);
+    if (!configResult.ok || !configResult.value.apiKey) {
+      return createChatTurnErrorResponse(requestId, 'error', 'profile_unavailable');
+    }
+    const profileConfig = configResult.value;
+
+    // 与正常聊天一致：指定了 skill 时注入其系统提示。
+    let skillPrompt: string | undefined;
+    if (skillId && skillRegistry) {
+      const skill = skillRegistry.get(skillId);
+      if (skill) {
+        skillPrompt = skill.systemPrompt;
+      }
+    }
+
+    const compareRun = { ownerWebContentsId: event.sender.id, controller: new AbortController() };
+    activeCompareRuns.set(runKey, compareRun);
+    try {
+      const compareProvider = createProvider(profileConfig);
+      const compareLoop = createAgentLoop(
+        compareProvider,
+        buildRuntimeRegistry(),
+        approvalStore ?? undefined,
+        [],
+        profileConfig,
+      ).agentLoop;
+      // 流式转发：与正常回合同一个通道，但额外带 profileId 供渲染端按模型
+      // 分气泡；转发失败绝不能打断回合。
+      const forwardCompareStream = (
+        ctx: import('../engine/core/HookBus.js').HookContext,
+      ): import('../engine/core/HookBus.js').HookContext => {
+        const payload = ctx as unknown as {
+          sessionId?: unknown; content?: unknown; reasoning?: unknown; isFinished?: unknown;
+        };
+        try {
+          if (event.sender.isDestroyed()) return ctx;
+          event.sender.send('chat:stream-chunk', {
+            sessionId: typeof payload.sessionId === 'string' ? payload.sessionId : sessionId,
+            content: typeof payload.content === 'string' ? payload.content : '',
+            reasoning: typeof payload.reasoning === 'string' ? payload.reasoning : undefined,
+            isFinished: payload.isFinished === true,
+            profileId,
+          });
+        } catch { /* stream forwarding must never break the turn */ }
+        return ctx;
+      };
+      compareLoop.registerHook('model.stream_chunk', forwardCompareStream, { name: 'chat-compare-stream-forward' });
+      try {
+        return await runEphemeralChatTurn({
+          agentLoop: compareLoop,
+          sessionId,
+          messages,
+          requestId,
+          skillPrompt,
+          signal: compareRun.controller.signal,
+          projectId,
+        });
+      } finally {
+        compareLoop.unregisterHook('model.stream_chunk', 'chat-compare-stream-forward');
+      }
+    } catch {
+      console.error('[Main] profile chat failed');
+      return createChatTurnErrorResponse(requestId, 'error', 'agent_chat_failed');
+    } finally {
+      if (activeCompareRuns.get(runKey) === compareRun) {
+        activeCompareRuns.delete(runKey);
+      }
     }
   });
 
@@ -3920,6 +5658,7 @@ function setupIPC(): void {
         notes: paper.notes,
         readStatus: paper.readStatus,
         rating: paper.rating,
+        ...(existing?.projectId === undefined ? {} : { projectId: existing.projectId }),
         addedAt: paper.addedAt,
       });
       return decodeLibraryMutationResult({ success: true, code: 'saved' });
@@ -3938,6 +5677,36 @@ function setupIPC(): void {
       return createLibraryMutationFailure();
     }
   });
+  ipcMain.handle('paper:linkToProject', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = rawRequest as { paperId?: unknown; projectId?: unknown; link?: unknown };
+      const paperId = typeof request?.paperId === 'string' ? request.paperId : '';
+      if (!paperId || !store) return { ok: false, error: 'invalid_request' };
+      const paper = store.getPapers().find((item) => item.id === paperId);
+      if (!paper) return { ok: false, error: 'not_found' };
+      const projectId = typeof request?.projectId === 'string' ? request.projectId : '';
+      if (!projectId) return { ok: false, error: 'invalid_request' };
+      const link = request?.link !== false;
+      if (!link) {
+        if (!researchRepository) return { ok: false, error: 'repository_unavailable' };
+        const removed = researchRepository.unlinkLibraryPaperFromProject(paperId, projectId);
+        return removed ? { ok: true } : { ok: false, error: 'not_linked' };
+      }
+      const linked = linkPaperToProjectSource({
+        id: paper.id,
+        title: paper.title,
+        authors: paper.authors,
+        year: paper.year,
+        venue: paper.venue,
+        doi: paper.doi,
+        arxivId: paper.arxivId,
+      }, projectId);
+      return linked ? { ok: true } : { ok: false, error: 'project_not_found' };
+    } catch {
+      return { ok: false, error: 'unauthorized_renderer' };
+    }
+  });
   ipcMain.handle('paper:downloadPdf', async (event, rawRequest: unknown) => {
     try {
       requireRendererMainFrame(event);
@@ -3945,25 +5714,51 @@ function setupIPC(): void {
       const request = decodePaperIdRequest(rawRequest);
       if (!request.ok || !store) return createPaperDownloadFailure();
       const paper = store.getPapers().find((item) => item.id === request.value.paperId);
-      if (!paper?.pdfUrl) return createPaperDownloadFailure();
+      if (!paper) return createPaperDownloadFailure();
       const title = paper.title
         // eslint-disable-next-line no-control-regex -- filesystem display names must reject control characters
         .replace(/[\\/:*?"<>|\u0000-\u001f\u007f]/gu, ' ')
         .replace(/\s+/gu, ' ')
         .trim()
         .slice(0, 180) || 'paper';
-      const downloaded = await secureDownloads.download({
-        mode: 'controlled-source',
-        resource: 'pdf',
-        sourceId: paper.id,
-        maxBytes: 128 * 1024 * 1024,
-        timeoutMs: 60_000,
-        maxRedirects: 4,
-      }, {
-        directory: PAPERS_DIR,
-        displayName: `${title}.pdf`,
+
+      // O3: multi-source PDF fallback. Collect ordered candidates
+      // (Unpaywall → arXiv → existing pdfUrl) and try each until one succeeds.
+      const candidates = await collectPdfCandidates({
+        doi: paper.doi || undefined,
+        arxivId: paper.arxivId || undefined,
+        pdfUrl: paper.pdfUrl || undefined,
       });
-      if (!downloaded.ok) return createPaperDownloadFailure();
+      if (candidates.length === 0) return createPaperDownloadFailure();
+
+      let downloaded: { ok: true; resolvedPath: string; publicResult: { displayName: string; byteLength: number; sha256: string } } | { ok: false } = { ok: false };
+      // O3: transparent per-source attempt log (JabRef Event Log style).
+      const attemptLog: Array<{ url: string; ok: boolean }> = [];
+      for (const candidateUrl of candidates) {
+        const attempt = await secureDownloads.download({
+          mode: 'clean-url' as const,
+          url: candidateUrl,
+          resource: 'pdf',
+          maxBytes: 128 * 1024 * 1024,
+          timeoutMs: 60_000,
+          maxRedirects: 4,
+        }, {
+          directory: PAPERS_DIR,
+          displayName: `${title}.pdf`,
+        });
+        attemptLog.push({ url: candidateUrl, ok: attempt.ok });
+        if (attempt.ok) {
+          downloaded = attempt;
+          break;
+        }
+      }
+      if (!downloaded.ok) {
+        // Surface which sources were tried so the user can diagnose (e.g. an
+        // anti-leech rejection on one origin but not another).
+        console.warn(`[paper:downloadPdf] all ${attemptLog.length} source(s) failed for ${paper.id}:`,
+          attemptLog.map((a) => `${a.url} → ${a.ok ? 'ok' : 'failed'}`).join('; '));
+        return createPaperDownloadFailure();
+      }
       store.savePaper({ ...paper, pdfPath: downloaded.resolvedPath, pdfText: '' });
       const issued = fileCapabilities.issue({
         path: downloaded.resolvedPath,
@@ -3983,6 +5778,67 @@ function setupIPC(): void {
       });
     } catch {
       return createPaperDownloadFailure();
+    }
+  });
+
+  // O4: re-match a collected paper's metadata from a user-supplied DOI or title.
+  // Used by the "补全元数据" affordance when collection yielded no DOI/PDF.
+  ipcMain.handle('paper:reconcile', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = rawRequest as { paperId?: string; doi?: string; title?: string };
+      if (!request || typeof request !== 'object' || !request.paperId || !store) {
+        return { ok: false, error: 'invalid_request' };
+      }
+      const paper = store.getPapers().find((item) => item.id === request.paperId);
+      if (!paper) return { ok: false, error: 'paper_not_found' };
+
+      const doiInput = (request.doi ?? '').trim().replace(/^https?:\/\/doi\.org\//i, '').replace(/^doi:\s*/i, '');
+      const titleInput = (request.title ?? '').trim();
+
+      let resolvedDoi: string | undefined;
+      if (doiInput && /^10\./.test(doiInput)) {
+        resolvedDoi = doiInput;
+      } else if (titleInput.length >= 5) {
+        // Search CrossRef by title and accept a high-overlap match.
+        const { works } = await searchWorks({ query: titleInput, limit: 3 });
+        const target = new Set(titleInput.toLowerCase().split(/\s+/).filter((t) => t.length > 2));
+        for (const w of works) {
+          const cand = new Set(w.title.toLowerCase().split(/\s+/).filter((t) => t.length > 2));
+          let overlap = 0;
+          for (const tok of target) if (cand.has(tok)) overlap++;
+          if (overlap / Math.max(1, Math.min(target.size, cand.size)) >= 0.6 && w.doi) {
+            resolvedDoi = w.doi;
+            break;
+          }
+        }
+      }
+      if (!resolvedDoi) return { ok: false, error: 'no_match' };
+
+      const meta = await resolveDoi(resolvedDoi);
+      const merged = {
+        ...paper,
+        doi: resolvedDoi,
+        title: meta?.title?.trim() || paper.title,
+        authors: meta?.authors?.length ? meta.authors : paper.authors,
+        year: meta?.year ?? paper.year,
+        venue: meta?.venue ?? paper.venue,
+        abstract: meta?.abstract ?? paper.abstract,
+      };
+      store.savePaper(merged);
+      return {
+        ok: true,
+        paper: {
+          title: merged.title,
+          authors: merged.authors,
+          year: merged.year,
+          venue: merged.venue,
+          doi: merged.doi,
+          abstract: merged.abstract,
+        },
+      };
+    } catch (error) {
+      return { ok: false, error: String((error as Error).message ?? error) };
     }
   });
 
@@ -4034,6 +5890,8 @@ function setupIPC(): void {
       if (!note || !store) return createLibraryMutationFailure();
       store.saveNote({
         id: note.id,
+        scope: note.scope,
+        projectId: note.projectId,
         title: note.title,
         content: note.content,
         tags: note.tags,
@@ -4464,6 +6322,41 @@ function setupIPC(): void {
     }
   });
 
+  // O12: white-box visibility into the AI's automatic memories (key_decision /
+  // preference / fact). Lets the user see, audit, and delete what the engine
+  // remembered — closing the black-box gap vs LobeChat's editable memory.
+  ipcMain.handle('memory:listByCategory', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = rawRequest as { category?: string; projectId?: string };
+      const category = typeof request?.category === 'string' ? request.category : '';
+      const projectId = typeof request?.projectId === 'string' ? request.projectId : undefined;
+      if (!category || !memoryManager) return [];
+      return memoryManager.getByCategory(category, projectId).map((entry) => ({
+        key: entry.key,
+        value: entry.value,
+        category: entry.category,
+        updatedAt: entry.updatedAt,
+      }));
+    } catch {
+      return [];
+    }
+  });
+
+  ipcMain.handle('memory:deleteByKey', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = rawRequest as { key?: string; projectId?: string };
+      const key = typeof request?.key === 'string' ? request.key : '';
+      const projectId = typeof request?.projectId === 'string' ? request.projectId : undefined;
+      if (!key || !memoryManager) return { ok: false, error: 'invalid_request' };
+      memoryManager.delete(key, projectId);
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: String((error as Error).message ?? error) };
+    }
+  });
+
   // ── Project Metis.md (CAS-protected; legacy AGENTS.md migration) ──
   // Manager registry keyed by strictly-validated projectId.
   // On startup: scan existing projects from DATA_DIR/projects/.
@@ -4523,15 +6416,17 @@ function setupIPC(): void {
     }
   });
   // ── Goal Engine ─────────────────────────────────────────
-  ipcMain.handle('goal:create', (event, rawDescription: unknown, rawContext?: unknown) => {
+  ipcMain.handle('goal:create', (event, rawDescription: unknown, rawContext?: unknown, rawProjectId?: unknown) => {
     try {
       requireRendererMainFrame(event);
       if (!goalEngine) return decodeGoalCreateResponse(null);
       const request = GoalCreateRequestSchema.parse({
         description: rawDescription,
         context: rawContext,
+        projectId: typeof rawProjectId === 'string' ? rawProjectId : undefined,
       });
-      const goal = goalEngine.createGoal(request.description, request.context);
+      const goal = goalEngine.createGoal(request.description, request.context, request.projectId);
+      broadcastGoalChanged(event.sender, goal);
       return decodeGoalCreateResponse({
         success: true,
         goalId: goal.id,
@@ -4548,10 +6443,24 @@ function setupIPC(): void {
       const { goalId } = GoalIdRequestSchema.parse({ goalId: rawGoalId });
       const goal = goalEngine.getGoal(goalId);
       return goal
-        ? decodeGoalSummaryResponse({ success: true, goal: presentGoalSummary(goal) })
+        ? decodeGoalSummaryResponse({ success: true, goal: presentGoalSummary(goal, goalCheckpointSummary(goal.id)) })
         : decodeGoalSummaryResponse(null);
     } catch {
       return decodeGoalSummaryResponse(null);
+    }
+  });
+  // O17: 工作流可视化——返回 goal 的 WorkflowDefinition（契约化截断）与最新
+  // run 的步骤状态，供渲染端 WorkflowGraph 只读渲染 DAG 节点图。
+  ipcMain.handle('goal:getWorkflow', (event, rawGoalId: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      if (!goalEngine) return createGoalWorkflowRecovery();
+      const { goalId } = GoalIdRequestSchema.parse({ goalId: rawGoalId });
+      const view = goalEngine.getWorkflowView(goalId);
+      if (!view) return createGoalWorkflowRecovery();
+      return decodeGoalWorkflowResponse(presentGoalWorkflow(goalId, view));
+    } catch {
+      return createGoalWorkflowRecovery();
     }
   });
   ipcMain.handle('goal:list', (event) => {
@@ -4560,7 +6469,7 @@ function setupIPC(): void {
       if (!goalEngine) return decodeGoalListResponse(null);
       return decodeGoalListResponse({
         success: true,
-        goals: goalEngine.listGoals().map(presentGoalSummary),
+        goals: goalEngine.listGoals().map((goal) => presentGoalSummary(goal, goalCheckpointSummary(goal.id))),
       });
     } catch {
       return decodeGoalListResponse(null);
@@ -4572,6 +6481,8 @@ function setupIPC(): void {
       if (!goalEngine) return decodeGoalPlanResponse(null);
       const { goalId } = GoalIdRequestSchema.parse({ goalId: rawGoalId });
       const result = await goalEngine.generatePlan(goalId);
+      const goal = goalEngine.getGoal(goalId);
+      if (goal) broadcastGoalChanged(event.sender, goal);
       return presentGoalPlan(goalId, result.workflow);
     } catch {
       return decodeGoalPlanResponse(null);
@@ -4586,18 +6497,32 @@ function setupIPC(): void {
         feedback: rawFeedback,
       });
       const result = await goalEngine.refinePlan(request.goalId, request.feedback);
+      const goal = goalEngine.getGoal(request.goalId);
+      if (goal) broadcastGoalChanged(event.sender, goal);
       return presentGoalPlan(request.goalId, result.workflow);
     } catch {
       return decodeGoalPlanResponse(null);
     }
   });
-  ipcMain.handle('goal:updatePlan', (event) => {
+  ipcMain.handle('goal:updatePlan', async (event, rawGoalId: unknown, rawWorkflow: unknown) => {
     try {
       requireRendererMainFrame(event);
+      const goalId = RuntimeIdSchema.parse(rawGoalId);
+      // O17: the renderer builds a WorkflowDefinition-shaped object; decode it
+      // leniently (structure is validated by GoalPlanner.validatePlan below).
+      if (!goalEngine || typeof rawWorkflow !== 'object' || rawWorkflow === null) {
+        return { valid: false, errors: ['goal_plan_update_unavailable'], warnings: [] };
+      }
+      const workflow = rawWorkflow as WorkflowDefinition;
+      const result = goalEngine.updatePlan(goalId, workflow);
+      if (result.valid) {
+        const goal = goalEngine.getGoal(goalId);
+        if (goal) broadcastGoalChanged(event.sender, goal);
+      }
+      return { valid: result.valid, errors: result.errors, warnings: result.warnings };
     } catch {
-      // Fixed response below.
+      return { valid: false, errors: ['goal_plan_update_unavailable'], warnings: [] };
     }
-    return { valid: false, errors: ['goal_plan_update_unavailable'], warnings: [] };
   });
   ipcMain.handle('goal:execute', async (event, rawGoalId: unknown) => {
     let goalId: string;
@@ -4659,7 +6584,12 @@ function setupIPC(): void {
       },
     };
     try {
-      await goalEngine.executeGoal(goalId, hooks);
+      // O13: 解析项目级 provider 覆盖（无覆盖时返回全局绑定）。
+      const executeTarget = goalEngine.getGoal(goalId);
+      const executionOptions = executeTarget ? resolveGoalExecutionOptions(executeTarget) : undefined;
+      await goalEngine.executeGoal(goalId, hooks, executionOptions);
+      const goal = goalEngine.getGoal(goalId);
+      if (goal) broadcastGoalChanged(event.sender, goal);
       return { success: true };
     } catch {
       return { success: false, code: 'goal_execution_unavailable' };
@@ -4671,6 +6601,8 @@ function setupIPC(): void {
       const { goalId } = GoalIdRequestSchema.parse({ goalId: rawGoalId });
       if (!goalEngine) return { success: false };
       goalEngine.cancelGoal(goalId);
+      const goal = goalEngine.getGoal(goalId);
+      if (goal) broadcastGoalChanged(event.sender, goal);
       return { success: true };
     } catch {
       return { success: false };
@@ -4684,7 +6616,33 @@ function setupIPC(): void {
         ? undefined
         : RuntimeIdSchema.parse(rawFromStepId);
       if (!goalEngine) return { success: false, code: 'goal_execution_unavailable' };
-      await goalEngine.resumeGoal(goalId, fromStepId);
+      // O13/O14: resume 同样解析项目级 provider 覆盖；fromStepId 省略时
+      // 由 GoalEngine 从 checkpoint 推导恢复点。
+      const resumeTarget = goalEngine.getGoal(goalId);
+      const executionOptions = resumeTarget ? resolveGoalExecutionOptions(resumeTarget) : undefined;
+      await goalEngine.resumeGoal(goalId, fromStepId, undefined, executionOptions);
+      const goal = goalEngine.getGoal(goalId);
+      if (goal) broadcastGoalChanged(event.sender, goal);
+      return { success: true };
+    } catch {
+      return { success: false, code: 'goal_execution_unavailable' };
+    }
+  });
+  // O7: human decision on an escalated step (retry / skip / stop).
+  ipcMain.handle('goal:resolveStepDecision', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = rawRequest as { goalId?: string; action?: string };
+      const goalId = typeof request?.goalId === 'string' ? request.goalId : '';
+      const action = request?.action;
+      if (!goalId || (action !== 'retry' && action !== 'skip' && action !== 'stop') || !goalEngine) {
+        return { success: false, code: 'invalid_request' };
+      }
+      const goal = goalEngine.getGoal(goalId);
+      const executionOptions = goal ? resolveGoalExecutionOptions(goal) : undefined;
+      await goalEngine.resolveStepDecision(goalId, action, undefined, executionOptions);
+      const updated = goalEngine.getGoal(goalId);
+      if (updated) broadcastGoalChanged(event.sender, updated);
       return { success: true };
     } catch {
       return { success: false, code: 'goal_execution_unavailable' };
@@ -4696,6 +6654,8 @@ function setupIPC(): void {
       const { goalId } = GoalIdRequestSchema.parse({ goalId: rawGoalId });
       if (!goalEngine) return { success: false };
       goalEngine.cancelGoal(goalId);
+      const goal = goalEngine.getGoal(goalId);
+      if (goal) broadcastGoalChanged(event.sender, goal);
       return { success: true };
     } catch {
       return { success: false };
@@ -4739,6 +6699,10 @@ function setupIPC(): void {
       const valid = new Set(['draft', 'planning', 'ready', 'running', 'paused', 'completed', 'failed']);
       if (!goalId || !valid.has(status) || !goalEngine) return { ok: false, error: 'invalid_request' };
       const updated = goalEngine.setStatus(goalId, status as Goal['status']);
+      if (updated) {
+        const goal = goalEngine.getGoal(goalId);
+        if (goal) broadcastGoalChanged(event.sender, goal);
+      }
       return updated ? { ok: true } : { ok: false, error: 'not_found' };
     } catch {
       return { ok: false, error: 'unauthorized_renderer' };
@@ -4754,6 +6718,10 @@ function setupIPC(): void {
       const valid = new Set(['low', 'medium', 'high', 'urgent']);
       if (!goalId || !valid.has(priority) || !goalEngine) return { ok: false, error: 'invalid_request' };
       const updated = goalEngine.setPriority(goalId, priority as Goal['priority']);
+      if (updated) {
+        const goal = goalEngine.getGoal(goalId);
+        if (goal) broadcastGoalChanged(event.sender, goal);
+      }
       return updated ? { ok: true } : { ok: false, error: 'not_found' };
     } catch {
       return { ok: false, error: 'unauthorized_renderer' };
@@ -4765,7 +6733,13 @@ function setupIPC(): void {
       requireRendererMainFrame(event);
       const goalId = typeof rawGoalId === 'string' ? rawGoalId : '';
       if (!goalId || !goalEngine) return { ok: false, error: 'invalid_request' };
+      const goal = goalEngine.getGoal(goalId);
       const deleted = goalEngine.deleteGoal(goalId);
+      if (deleted && goal) {
+        // Deletion is presented to open cards as a cancellation so chat cards
+        // never dangle; the board reloads and the card disappears.
+        broadcastGoalChanged(event.sender, goal, 'cancelled');
+      }
       return deleted ? { ok: true } : { ok: false, error: 'not_found' };
     } catch {
       return { ok: false, error: 'unauthorized_renderer' };
@@ -4775,6 +6749,62 @@ function setupIPC(): void {
   // ── Autonomous Research Engine ─────────────────────────
   // Full-autonomy loop (idea → experiment → analysis → paper) with live event
   // streaming and live-steering pause/interrupt. Mirrors the goal IPC shape.
+
+  /**
+   * Start (or resume) an autonomous run and stream every bus event to the
+   * requesting renderer. `goal` null means "resume from checkpoint". The run
+   * is fire-and-forget; the session id is returned to the caller immediately.
+   */
+  function spawnAutonomousRun(
+    sender: Electron.WebContents,
+    sessionId: string,
+    goal: string | null,
+    projectId?: string,
+    strategy?: ResearchStrategy,
+    structure?: PaperStructureTemplate,
+  ): void {
+    let sequence = 0;
+    // One subscription per run: forward every bus event to the renderer after
+    // schema validation. Unsubscribed when the run resolves.
+    const unsubscribe = researchEventBus!.subscribe((evt) => {
+      if (projectId && researchRepository) {
+        try { applyAutonomousResearchEvent(researchRepository, projectId, evt); } catch { /* UI streaming must continue */ }
+      }
+      if (sender.isDestroyed()) return;
+      const livePayload = toLivePayload(evt, sessionId, sequence++);
+      const decoded = decodeAutonomousLiveEvent(livePayload);
+      if (decoded) {
+        const channel = channelForEvent(evt);
+        if (channel) sender.send(channel, decoded);
+      }
+    });
+    void (async () => {
+      try {
+        if (goal !== null) {
+          if (strategy) {
+            await autonomousEngine!.runWithStrategy(goal, sessionId, strategy, { projectId, structure });
+          } else {
+            await autonomousEngine!.run(goal, sessionId, projectId);
+          }
+        } else {
+          await autonomousEngine!.resume(sessionId);
+        }
+      } catch (err) {
+        console.error('[Main] autonomous run failed:', err);
+        researchEventBus?.emit({
+          type: 'engine-failed',
+          sessionId,
+          reason: `自主科研运行发生未预期异常：${err instanceof Error ? err.message : String(err)}`.slice(0, 20_000),
+          completedPhases: 0,
+          recoverable: true,
+        });
+      } finally {
+        unsubscribe();
+        if (activeAutonomousSessionId === sessionId) activeAutonomousSessionId = null;
+      }
+    })();
+  }
+
   ipcMain.handle(AUTONOMOUS_CHANNELS.start, async (event, rawRequest: unknown) => {
     try {
       requireRendererMainFrame(event);
@@ -4786,35 +6816,127 @@ function setupIPC(): void {
     if (!autonomousEngine || !researchEventBus) return { ok: false, error: 'engine_unavailable' };
     if (activeAutonomousSessionId) return { ok: false, error: 'session_active' };
 
+    // Strategy-driven runs execute the user-defined research workflow instead
+    // of the default four-stage pipeline.
+    let strategy: ResearchStrategy | undefined;
+    let structure: PaperStructureTemplate | undefined;
+    if (request.strategyId) {
+      if (!strategyStore() || !store) return { ok: false, error: 'strategy_unavailable' };
+      strategy = strategyStore()!.getStrategy(request.strategyId);
+      if (!strategy) return { ok: false, error: 'strategy_not_found' };
+    }
+    if (request.structureId) {
+      if (!strategyStore() || !store) return { ok: false, error: 'structure_unavailable' };
+      structure = strategyStore()!.getStructure(request.structureId);
+      if (!structure) return { ok: false, error: 'structure_not_found' };
+    }
+
     const sessionId = request.sessionId ?? `auto_${Date.now().toString(36)}`;
+    if (!researchRepository) return { ok: false, error: 'research_repository_unavailable' };
+    if (researchRepository.getRun(sessionId, true)) return { ok: false, error: 'session_exists' };
+    let resolvedProjectId: string;
+    try {
+      const resolution = ensureAutonomousResearchProject(researchRepository, {
+        goal: request.goal,
+        requestedProjectId: request.projectId,
+      });
+      if (!resolution) {
+        return { ok: false, error: request.projectId ? 'project_not_found' : 'project_creation_failed' };
+      }
+      resolvedProjectId = resolution.projectId;
+      beginAutonomousResearchRun(researchRepository, {
+        sessionId,
+        projectId: resolvedProjectId,
+        goal: request.goal,
+      });
+    } catch {
+      return { ok: false, error: 'project_creation_failed' };
+    }
     activeAutonomousSessionId = sessionId;
-    const sender = event.sender;
-    let sequence = 0;
-    // One subscription per run: forward every bus event to the renderer after
-    // schema validation. Unsubscribed when the run resolves.
-    const unsubscribe = researchEventBus.subscribe((evt) => {
-      if (sender.isDestroyed()) return;
-      const livePayload = toLivePayload(evt, sessionId, sequence++);
-      const decoded = decodeAutonomousLiveEvent(livePayload);
-      if (decoded) {
-        const channel = channelForEvent(evt);
-        if (channel) sender.send(channel, decoded);
-      }
-    });
+    spawnAutonomousRun(event.sender, sessionId, request.goal, resolvedProjectId, strategy, structure);
 
-    // Fire and forget: the run streams events; we return the sessionId at once.
-    void (async () => {
-      try {
-        await autonomousEngine.run(request.goal, sessionId, request.projectId);
-      } catch (err) {
-        console.error('[Main] autonomous run failed:', err);
-      } finally {
-        unsubscribe();
-        if (activeAutonomousSessionId === sessionId) activeAutonomousSessionId = null;
-      }
-    })();
+    return { ok: true, sessionId, projectId: resolvedProjectId };
+  });
 
-    return { ok: true, sessionId };
+  // ── Research strategy & paper structure management ─────────
+  ipcMain.handle('strategy:list', (event) => {
+    try {
+      requireRendererMainFrame(event);
+      if (!strategyStore() || !store) return { ok: false, strategies: [] };
+      return { ok: true, strategies: strategyStore()!.listStrategies() };
+    } catch {
+      return { ok: false, strategies: [] };
+    }
+  });
+  ipcMain.handle('strategy:save', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = decodeStrategySaveRequest(rawRequest);
+      if (!request || !strategyStore() || !store) return { ok: false, error: 'invalid_request' };
+      strategyStore()!.saveStrategy({ ...request.strategy, updatedAt: Date.now() });
+      return { ok: true };
+    } catch {
+      return { ok: false, error: 'unauthorized_renderer' };
+    }
+  });
+  ipcMain.handle('strategy:delete', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = decodeStrategyDeleteRequest(rawRequest);
+      if (!request || !strategyStore() || !store) return { ok: false, error: 'invalid_request' };
+      strategyStore()!.deleteStrategy(request.strategyId);
+      return { ok: true };
+    } catch {
+      return { ok: false, error: 'unauthorized_renderer' };
+    }
+  });
+  ipcMain.handle('strategy:setDefault', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = decodeStrategySetDefaultRequest(rawRequest);
+      if (!request || !strategyStore() || !store) return { ok: false, error: 'invalid_request' };
+      const strategy = strategyStore()!.getStrategy(request.strategyId);
+      if (!strategy) return { ok: false, error: 'not_found' };
+      for (const existing of strategyStore()!.listStrategies()) {
+        if (existing.id === strategy.id) continue;
+        strategyStore()!.saveStrategy({ ...existing, isDefault: false, updatedAt: Date.now() });
+      }
+      strategyStore()!.saveStrategy({ ...strategy, isDefault: true, updatedAt: Date.now() });
+      return { ok: true };
+    } catch {
+      return { ok: false, error: 'unauthorized_renderer' };
+    }
+  });
+  ipcMain.handle('structure:list', (event) => {
+    try {
+      requireRendererMainFrame(event);
+      if (!strategyStore() || !store) return { ok: false, templates: [] };
+      return { ok: true, templates: strategyStore()!.listStructures() };
+    } catch {
+      return { ok: false, templates: [] };
+    }
+  });
+  ipcMain.handle('structure:save', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = decodePaperStructureSaveRequest(rawRequest);
+      if (!request || !strategyStore() || !store) return { ok: false, error: 'invalid_request' };
+      strategyStore()!.saveStructure({ ...request.template, updatedAt: Date.now() });
+      return { ok: true };
+    } catch {
+      return { ok: false, error: 'unauthorized_renderer' };
+    }
+  });
+  ipcMain.handle('structure:delete', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = decodePaperStructureDeleteRequest(rawRequest);
+      if (!request || !strategyStore() || !store) return { ok: false, error: 'invalid_request' };
+      strategyStore()!.deleteStructure(request.templateId);
+      return { ok: true };
+    } catch {
+      return { ok: false, error: 'unauthorized_renderer' };
+    }
   });
 
   ipcMain.handle(AUTONOMOUS_CHANNELS.control, async (event, rawRequest: unknown) => {
@@ -4822,31 +6944,43 @@ function setupIPC(): void {
       requireRendererMainFrame(event);
       const request = decodeAutonomousControlRequest(rawRequest);
       if (!request) return { ok: false, code: 'invalid_request' };
-      if (!autonomousEngine || !activeAutonomousSessionId) {
-        return { ok: false, code: 'no_active_session' };
+      if (!autonomousEngine || !researchEventBus) {
+        return { ok: false, code: 'invalid_request' };
       }
       if (request.action === 'interrupt') {
         const stopped = autonomousEngine.interrupt(request.sessionId, request.reason ?? 'user_interrupt');
         return { ok: stopped, code: stopped ? 'applied' : 'no_active_session' };
       }
       if (request.action === 'pause') {
-        // Pause = enqueue a live-steering interrupt; resume re-runs from UI.
+        // Real cooperative pause: mark the session so the loop stops at the
+        // next phase boundary, and nudge the live-steering queue so a running
+        // phase can also stop at its next step boundary.
+        const paused = autonomousEngine.pause(request.sessionId);
+        if (!paused) return { ok: false, code: 'no_active_session' };
         try {
           liveSteeringQueue.enqueue({
             type: 'interrupt',
             id: `auto_interrupt_${Date.now()}`,
             sessionId: request.sessionId,
             sequence: Date.now(),
-            createdAt: new Date().toISOString(),
+            createdAt: Date.now(),
             reason: request.reason ?? 'user_pause',
           });
-          return { ok: true, code: 'applied' };
-        } catch {
-          return { ok: false, code: 'invalid_request' };
-        }
+        } catch { /* steering nudge is best-effort */ }
+        return { ok: true, code: 'applied' };
       }
-      // resume: no-op for now (a new start resumes from checkpoint via listSessions)
-      return { ok: true, code: 'applied' };
+      if (request.action === 'resume') {
+        // Resume a paused session from its persisted checkpoint. A paused
+        // session is no longer in memory (activeAutonomousSessionId is null),
+        // so this branch intentionally bypasses the active-session guard.
+        if (activeAutonomousSessionId) return { ok: false, code: 'no_active_session' };
+        const checkpoint = autonomousEngine.loadCheckpoint(request.sessionId);
+        if (!checkpoint) return { ok: false, code: 'not_found' };
+        activeAutonomousSessionId = request.sessionId;
+        spawnAutonomousRun(event.sender, request.sessionId, null, checkpoint.projectId);
+        return { ok: true, code: 'applied' };
+      }
+      return { ok: false, code: 'invalid_request' };
     } catch {
       return { ok: false, code: 'invalid_request' };
     }
@@ -4861,10 +6995,24 @@ function setupIPC(): void {
       return {
         sessions: rows.map((r) => {
           try {
-            const data = JSON.parse(r.value);
-            return { sessionId: r.key.replace('autonomous:session:', ''), goal: data.goal, executions: data.executions, savedAt: data.savedAt };
+            const data = JSON.parse(r.value) as Record<string, unknown>;
+            const sessionId = r.key.replace('autonomous:session:', '');
+            const goal = typeof data.goal === 'string' ? data.goal : '';
+            if (!sessionId || !goal) return null;
+            const run = researchRepository?.getRun(sessionId, true);
+            if (run && (run.status === 'completed' || run.status === 'cancelled')) return null;
+            return {
+              sessionId,
+              goal,
+              projectId: typeof data.projectId === 'string' ? data.projectId : run?.projectId,
+              executions: typeof data.executions === 'number' ? data.executions : 0,
+              completedPhases: Array.isArray(data.history) ? data.history.length : 0,
+              savedAt: typeof data.savedAt === 'number' ? data.savedAt : r.updatedAt,
+              state: data.state === 'running' ? 'running' : 'paused',
+              failureReason: typeof data.failureReason === 'string' ? data.failureReason : undefined,
+            };
           } catch { return null; }
-        }).filter(Boolean),
+        }).filter((session): session is NonNullable<typeof session> => session !== null),
       };
     } catch {
       return { sessions: [] };
@@ -4875,11 +7023,14 @@ function setupIPC(): void {
     try {
       requireRendererMainFrame(event);
       const sessionId = typeof rawSessionId === 'string' ? rawSessionId : '';
-      if (!sessionId || !autonomousEngine) return { ok: false, error: 'invalid_request' };
+      if (!sessionId || !autonomousEngine || !researchEventBus) return { ok: false, error: 'invalid_request' };
       const checkpoint = autonomousEngine.loadCheckpoint(sessionId);
       if (!checkpoint) return { ok: false, error: 'no_checkpoint' };
-      // Resume = start a fresh run with the same goal (checkpoint output already
-      // persisted as findings/artifacts). Full mid-loop resume is a future enhancement.
+      if (activeAutonomousSessionId) return { ok: false, error: 'session_active' };
+      // Real mid-loop resume from the persisted checkpoint (completed phases
+      // are not re-executed).
+      activeAutonomousSessionId = sessionId;
+      spawnAutonomousRun(event.sender, sessionId, null, checkpoint.projectId);
       return { ok: true, goal: checkpoint.goal };
     } catch {
       return { ok: false, error: 'invalid_request' };
@@ -5107,6 +7258,211 @@ function setupIPC(): void {
       };
     } catch {
       return { ok: false, code: 'definition_corrupt', issues: ['Invalid personalization request'] };
+    }
+  });
+
+  // ── AI 辅助创建场景：描述需求 → 生成场景 + 智能体 + 工作流 ──
+  const isRecord = (value: unknown): value is Record<string, unknown> => (
+    typeof value === 'object' && value !== null && !Array.isArray(value)
+  );
+  function parseAiScenarioGeneration(answer: string): {
+    scenario: { name: string; description: string; triggerPhrases: string[]; deliverable: string };
+    agents: Array<{ name: string; role: string; systemPrompt: string; skillIds: string[]; toolIds: string[]; mcpIds: string[]; maxTurns: number }>;
+    workflow: Array<{ name: string; description: string; agent: string; skillIds: string[]; toolIds: string[]; mcpIds: string[]; maxTurns: number }>;
+    rules: string;
+    paperStructure: Array<{ title: string; instruction: string }> | null;
+  } | null {
+    const cleaned = answer.replace(/```(?:json)?/gu, '').trim();
+    const start = cleaned.indexOf('{');
+    const end = cleaned.lastIndexOf('}');
+    if (start < 0 || end <= start) return null;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(cleaned.slice(start, end + 1));
+    } catch {
+      return null;
+    }
+    if (!isRecord(parsed)) return null;
+    const scenario = isRecord(parsed.scenario) ? parsed.scenario : null;
+    const agents = Array.isArray(parsed.agents) ? parsed.agents : [];
+    const workflow = Array.isArray(parsed.workflow) ? parsed.workflow : [];
+    if (!scenario || agents.length === 0 || agents.length > 4 || workflow.length > 12) return null;
+    const str = (value: unknown, maximum: number): string => (
+      typeof value === 'string' ? value.trim().slice(0, maximum) : ''
+    );
+    const strList = (value: unknown): string[] => (
+      Array.isArray(value)
+        ? value.map((item) => typeof item === 'string' ? item.trim() : '').filter(Boolean).slice(0, 64)
+        : []
+    );
+    const turns = (value: unknown): number => (
+      typeof value === 'number' && Number.isFinite(value)
+        ? Math.min(100, Math.max(1, Math.floor(value)))
+        : 12
+    );
+    const normalizedAgents = agents
+      .filter((item): item is Record<string, unknown> => isRecord(item))
+      .map((item) => ({
+        name: str(item.name, 30),
+        role: str(item.role, 100),
+        systemPrompt: str(item.systemPrompt, 600),
+        skillIds: strList(item.skillIds),
+        toolIds: strList(item.toolIds),
+        mcpIds: strList(item.mcpIds),
+        maxTurns: turns(item.maxTurns),
+      }))
+      .filter((item) => item.name)
+      .slice(0, 4);
+    if (normalizedAgents.length === 0) return null;
+    const agentNames = new Set(normalizedAgents.map((item) => item.name));
+    const normalizedWorkflow = workflow
+      .filter((item): item is Record<string, unknown> => isRecord(item))
+      .map((item) => ({
+        name: str(item.name, 100),
+        description: str(item.description, 150),
+        agent: str(item.agent, 30),
+        skillIds: strList(item.skillIds),
+        toolIds: strList(item.toolIds),
+        mcpIds: strList(item.mcpIds),
+        maxTurns: turns(item.maxTurns),
+      }))
+      .filter((step) => step.name && agentNames.has(step.agent))
+      .slice(0, 12);
+    const rules = typeof parsed.rules === 'string' ? parsed.rules.trim().slice(0, 1500) : '';
+    const rawStructure = Array.isArray(parsed.paperStructure) ? parsed.paperStructure : [];
+    const paperStructure = rawStructure
+      .filter((item): item is Record<string, unknown> => isRecord(item))
+      .map((item) => ({
+        title: str(item.title, 80),
+        instruction: str(item.instruction, 250) || str(item.style, 120),
+      }))
+      .filter((section) => section.title)
+      .slice(0, 16);
+    return {
+      scenario: {
+        name: str(scenario.name, 40) || (normalizedAgents[0]?.name ?? '研究场景'),
+        description: str(scenario.description, 200),
+        triggerPhrases: strList(scenario.triggerPhrases).slice(0, 12),
+        deliverable: str(scenario.deliverable, 200),
+      },
+      agents: normalizedAgents,
+      workflow: normalizedWorkflow,
+      rules,
+      paperStructure: paperStructure.length > 0 ? paperStructure : null,
+    };
+  }
+
+  ipcMain.handle('personalization:aiGenerateScenario', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      if (!isRecord(rawRequest)) return { ok: false, code: 'invalid_request' };
+      const description = typeof rawRequest.description === 'string' ? rawRequest.description.trim() : '';
+      if (description.length < 2 || description.length > 2000) {
+        return { ok: false, code: 'invalid_request' };
+      }
+      const rawDefinitions = Array.isArray(rawRequest.definitions) ? rawRequest.definitions : [];
+      const definitions = rawDefinitions
+        .filter((item): item is Record<string, unknown> => isRecord(item))
+        .map((item) => ({
+          id: typeof item.id === 'string' ? item.id : '',
+          kind: typeof item.kind === 'string' ? item.kind : 'unknown',
+          name: typeof item.name === 'string' ? item.name : '',
+          description: typeof item.description === 'string' ? item.description : '',
+        }))
+        .filter((item) => item.id && item.name)
+        .slice(0, 500);
+      if (!agentLoop) return { ok: false, code: 'agent_not_initialized' };
+      const catalog = definitions.length > 0
+        ? definitions.map((d) => `- ${d.kind}「${d.name}」 id=${d.id}${d.description ? `：${d.description}` : ''}`).join('\n')
+        : '（暂无现有定义）';
+      const systemPrompt = [
+        '你是一个人文社科研究场景设计助手。用户用一句话描述他想要的研究场景，你需要输出一个可直接落地的场景设计。',
+        '要求：',
+        '1. 只输出一个 JSON 对象，不要输出任何解释、前后缀或 Markdown 代码围栏。',
+        '2. JSON 结构：',
+        '   { "scenario": { "name": "场景名称(不超过40字)", "description": "场景说明(不超过200字)", "triggerPhrases": ["触发词1","触发词2"], "deliverable": "最终交付物描述(可选，不超过200字)" },',
+        '     "agents": [ { "name": "智能体名称(不超过30字)", "role": "角色", "systemPrompt": "系统指令(不超过600字)", "skillIds": ["已有技能id"], "toolIds": ["工具id"], "mcpIds": ["已有MCP id"], "maxTurns": 12 } ],',
+        '     "workflow": [ { "name": "步骤名称", "description": "步骤说明(不超过150字)", "agent": "智能体名称(必须是 agents 中的名称)", "skillIds": [], "toolIds": [], "mcpIds": [], "maxTurns": 12 } ],',
+        '     "rules": "场景记忆 Metis.md 文档（Markdown，不超过1500字）：写明该场景的研究目标、资料与证据边界、输出规范与工作习惯，供场景内智能体遵守",',
+        '     "paperStructure": [ { "title": "章节标题(如：引言)", "instruction": "该章节写作指引与文风要求(不超过250字)" } ] }',
+        '3. agents 数量 1-2 个；workflow 步骤 2-6 个，按执行顺序排列。',
+        '4. paperStructure 必须覆盖：引言 + 2-4 个主体章节 + 结论；每个章节给出针对性写作指引（该写什么、怎么论证、文风如何）。',
+        '5. skillIds/mcpIds 只能从下面“现有定义清单”中选择，没有合适的不填。toolIds 可参考：read_file、write_file、search_web、summarize_text、compare_items、list_sources、extract_evidence、link_evidence、draft_claim、save_artifact。',
+        '6. systemPrompt 用中文，写明该智能体在这个场景中的职责、行为边界与输出要求。',
+        `现有定义清单：\n${catalog}`,
+      ].join('\n');
+      const answer = await runEphemeralChatTurn({
+        agentLoop,
+        sessionId: `ai-scenario-${Date.now().toString(36)}`,
+        messages: [{ role: 'user', content: `用户需求：${description}` }],
+        requestId: `ai_gen_${++requestCounter}`,
+        skillPrompt: systemPrompt,
+      });
+      if (answer.status !== 'completed' || !answer.answer.trim()) {
+        return { ok: false, code: 'generation_failed', message: answer.diagnostics?.[0]?.code ?? answer.status };
+      }
+      const parsed = parseAiScenarioGeneration(answer.answer);
+      if (!parsed) return { ok: false, code: 'parse_failed' };
+      return { ok: true, ...parsed };
+    } catch {
+      return { ok: false, code: 'generation_failed' };
+    }
+  });
+
+  // ── 论文结构模板识别：粘贴模板（如国社科申请书）→ AI 解析为逐节写作指引 ──
+  ipcMain.handle('personalization:parsePaperTemplate', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      if (!isRecord(rawRequest)) return { ok: false, code: 'invalid_request' };
+      const text = typeof rawRequest.text === 'string' ? rawRequest.text.trim() : '';
+      if (text.length < 10 || text.length > 20_000) {
+        return { ok: false, code: 'invalid_request' };
+      }
+      if (!agentLoop) return { ok: false, code: 'agent_not_initialized' };
+      const systemPrompt = [
+        '你是论文结构模板解析助手。用户粘贴一份研究模板（如国家社科基金申请书、论文写作规范、学位论文结构），你需要把它解析为可编辑的章节结构。',
+        '要求：',
+        '1. 只输出一个 JSON 对象：{ "sections": [ { "title": "章节标题", "instruction": "该章节的写作指引：写什么内容、如何论证、文风要求（不超过250字）" } ] }。',
+        '2. 章节按模板出现的顺序排列；模板中未明确列出的必要章节（如引言、结论）应补充进去。',
+        '3. 章节数量 3-12 个；instruction 用中文，具体到该章节的写作任务与质量要求。',
+        '4. 不要输出任何解释、前后缀或 Markdown 代码围栏。',
+      ].join('\n');
+      const answer = await runEphemeralChatTurn({
+        agentLoop,
+        sessionId: `ai-template-${Date.now().toString(36)}`,
+        messages: [{ role: 'user', content: `模板内容：\n${text}` }],
+        requestId: `ai_tpl_${++requestCounter}`,
+        skillPrompt: systemPrompt,
+      });
+      if (answer.status !== 'completed' || !answer.answer.trim()) {
+        return { ok: false, code: 'generation_failed', message: answer.diagnostics?.[0]?.code ?? answer.status };
+      }
+      const cleaned = answer.answer.replace(/```(?:json)?/gu, '').trim();
+      const start = cleaned.indexOf('{');
+      const end = cleaned.lastIndexOf('}');
+      if (start < 0 || end <= start) return { ok: false, code: 'parse_failed' };
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(cleaned.slice(start, end + 1));
+      } catch {
+        return { ok: false, code: 'parse_failed' };
+      }
+      if (!isRecord(parsed) || !Array.isArray(parsed.sections)) return { ok: false, code: 'parse_failed' };
+      const str = (value: unknown, maximum: number): string => (
+        typeof value === 'string' ? value.trim().slice(0, maximum) : ''
+      );
+      const sections = parsed.sections
+        .filter((item): item is Record<string, unknown> => isRecord(item))
+        .map((item) => ({
+          title: str(item.title, 80),
+          instruction: str(item.instruction, 250) || str(item.style, 120),
+        }))
+        .filter((section) => section.title)
+        .slice(0, 16);
+      if (sections.length < 3) return { ok: false, code: 'parse_failed' };
+      return { ok: true, sections };
+    } catch {
+      return { ok: false, code: 'generation_failed' };
     }
   });
 
@@ -5677,6 +8033,18 @@ function setupIPC(): void {
 
 // ─── App Lifecycle ────────────────────────────────────────────
 
+
+function parseBrowserBounds(raw: unknown): BrowserBounds | null {
+  const r = raw as { x?: unknown; y?: unknown; width?: unknown; height?: unknown } | null;
+  if (!r) return null;
+  const x = Number(r.x);
+  const y = Number(r.y);
+  const width = Number(r.width);
+  const height = Number(r.height);
+  if (![x, y, width, height].every((n) => Number.isFinite(n)) || width <= 0 || height <= 0) return null;
+  return { x, y, width, height };
+}
+
 // Enforce a single application instance per userData directory. Without this,
 // launching the app again opens a second instance that contends for the same
 // disk cache (producing "Unable to move the cache: access denied") and the
@@ -5740,11 +8108,20 @@ app.whenReady().then(async () => {
     allowedEnvironmentKeys: ['ELECTRON_RUN_AS_NODE'],
   });
 
-  // Initialize secure storage with Electron's safeStorage (must be after app.whenReady)
+  // Initialize secure storage with Electron's safeStorage (must be after app.whenReady).
+  // Provider profiles never use the generic in-memory fallback: the store below
+  // accepts only the explicitly OS-protected adapter.
   if (safeStorage && safeStorage.isEncryptionAvailable()) {
     initSecureStorage(safeStorage);
   } else {
-    console.warn('[Main] Electron safeStorage not available — config encryption will use fallback.');
+    console.warn('[Main] Electron safeStorage not available — provider profiles remain unavailable.');
+  }
+  providerProfileStorage = createFirstRunSecureStorage(safeStorage);
+  try {
+    providerProfileStore = new ProviderProfileStore(DATA_DIR, providerProfileStorage);
+  } catch {
+    providerProfileStore = null;
+    providerProfileStorage = null;
   }
   // Background auto-update (unsigned NSIS builds update fine when
   // verifyUpdateCodeSignature is false). Non-fatal: failures only emit an
@@ -5823,6 +8200,19 @@ app.whenReady().then(async () => {
   try {
     store = new PersistenceStore(DB_PATH);
     setSharedStore(store);
+    jobQueueService.attachStore(store);
+    literatureWatch.attachStore(store);
+    literatureWatch.start();
+    autoWorkspace.attach(null, store);
+    // T33：如用户从云端暂存了恢复备份，现在应用（旧库自动另存）。
+    if (cloudSync.applyStagedRestoreIfNeeded()) {
+      store.close();
+      store = new PersistenceStore(DB_PATH);
+      setSharedStore(store);
+      jobQueueService.attachStore(store);
+      literatureWatch.attachStore(store);
+      autoWorkspace.attach(null, store);
+    }
     // Rolling automatic backups: snapshot on startup, then every 6 hours.
     // Failures are non-fatal and only logged — backups must never block the app.
     try {
@@ -5880,12 +8270,6 @@ app.whenReady().then(async () => {
       console.warn('[Main] Funding template services unavailable:', (error as Error)?.message);
     }
     personalizationRepository = new PersonalizationRepository(store.raw, citationTruthSecret ?? undefined);
-    // Seed built-in PPT scenario (idempotent: skips definitions that already exist).
-    try {
-      personalizationRepository.seedBuiltins(buildPptBuiltinDefinitions());
-    } catch (err) {
-      console.warn('[Main] PPT scenario seed skipped:', (err as Error)?.message);
-    }
     personalizationRuntime = new PersonalizationRuntimeService(
       personalizationRepository,
       citationTruthSecret ?? undefined,
@@ -6071,6 +8455,7 @@ app.whenReady().then(async () => {
       fileCapabilities,
       managedRoot: RESEARCH_MEDIA_DIR,
     });
+    autoWorkspace.attach(researchRepository, null);
     researchRuntime = new ResearchRuntimeService(
       researchRepository,
       researchMedia,
@@ -6170,6 +8555,39 @@ app.whenReady().then(async () => {
   }
   currentTheme = loadTheme();
   if (!setupRestored) initProviderAndAgent();
+
+  // The profile envelope becomes the authoritative multi-model source after a
+  // successful migration. A failure intentionally leaves the existing setup
+  // runtime untouched and exposes only a fixed unavailable state to the UI.
+  if (providerProfileStore) {
+    const initialized = await providerProfileStore.initialize(currentConfig);
+    if (!initialized.ok) {
+      providerProfileStore = null;
+      providerProfileStorage = null;
+    } else {
+      const profiles = providerProfileStore.list();
+      const active = profiles.ok ? profiles.value.profiles.find((profile) => profile.isActive) : undefined;
+      if (!active) {
+        // A safe envelope with no active profile is an explicit user reset;
+        // never resurrect a legacy setup configuration on restart.
+        deactivateProviderRuntime('provider_profiles_unconfigured');
+      } else {
+        const activeConfig = providerProfileStore.configFor(active.id);
+        if (activeConfig.ok) {
+          try {
+            const candidate = prepareProviderRuntime(providerProfileRuntimeContext(activeConfig.value, 'restore'));
+            await candidate.commitAndAbortPrevious();
+          } catch {
+            // The profile file remains authoritative; an unusable active profile
+            // does not silently fall back to an older configuration source.
+            deactivateProviderRuntime('provider_profile_restore_failed');
+          }
+        } else {
+          deactivateProviderRuntime('provider_profile_restore_failed');
+        }
+      }
+    }
+  }
   startupReady = true;
 
   app.on('activate', () => {
@@ -6233,3 +8651,4 @@ app.on('before-quit', () => {
   researchRuntime = null;
   researchMedia = null;
 });
+

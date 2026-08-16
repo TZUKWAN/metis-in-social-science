@@ -133,6 +133,7 @@ function presentSource(value: Source) {
   const parsed = ResearchSourceDtoSchema.safeParse({
     id: value.id,
     projectId: value.projectId,
+    libraryPaperId: value.libraryPaperId ?? null,
     kind: value.kind,
     title: value.title,
     authors: value.authors,

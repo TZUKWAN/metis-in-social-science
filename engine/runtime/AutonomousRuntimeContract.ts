@@ -48,7 +48,15 @@ const SequenceSchema = z.number().int().min(0).max(AUTONOMOUS_LIMITS.phaseSequen
 
 const ShortTextSchema = boundedText(AUTONOMOUS_LIMITS.shortTextChars);
 
-export const ResearchPhaseKindSchema = z.enum(['idea', 'experiment', 'analysis', 'paper']);
+export const ResearchPhaseKindSchema = z.enum([
+  // Legacy natural-science phases remain decodable for checkpoint compatibility.
+  'idea', 'experiment', 'paper',
+  // Humanities and social-science research actions.
+  'question_formulation', 'literature_review', 'source_discovery', 'screening',
+  'conceptual_analysis', 'source_criticism', 'research_design', 'data_collection',
+  'coding', 'data_preparation', 'statistics', 'analysis', 'triangulation',
+  'argumentation', 'synthesis', 'quality_audit', 'writing',
+]);
 export type ResearchPhaseKind = z.infer<typeof ResearchPhaseKindSchema>;
 
 // ─── Start request ────────────────────────────────────────────
@@ -58,12 +66,17 @@ export const AutonomousStartRequestSchema = z.strictObject({
   sessionId: RuntimeIdSchema.optional(),
   goal: boundedText(AUTONOMOUS_LIMITS.goalTextChars).min(1),
   projectId: RuntimeIdSchema.optional(),
+  /** User-defined research strategy id; when set the run follows its phases. */
+  strategyId: RuntimeIdSchema.optional(),
+  /** Paper structure template id for the writing action (strategy mode). */
+  structureId: RuntimeIdSchema.optional(),
 });
 export type AutonomousStartRequest = z.infer<typeof AutonomousStartRequestSchema>;
 
 export const AutonomousStartResponseSchema = z.strictObject({
   ok: z.boolean(),
   sessionId: RuntimeIdSchema.optional(),
+  projectId: RuntimeIdSchema.optional(),
   error: ShortTextSchema.optional(),
 });
 export type AutonomousStartResponse = z.infer<typeof AutonomousStartResponseSchema>;
@@ -83,7 +96,7 @@ export type AutonomousControlRequest = z.infer<typeof AutonomousControlRequestSc
 
 export const AutonomousControlResponseSchema = z.strictObject({
   ok: z.boolean(),
-  code: z.enum(['applied', 'no_active_session', 'invalid_request']).optional(),
+  code: z.enum(['applied', 'no_active_session', 'invalid_request', 'not_found']).optional(),
 });
 export type AutonomousControlResponse = z.infer<typeof AutonomousControlResponseSchema>;
 
@@ -103,6 +116,13 @@ export const AutonomousEngineStartedEventSchema = z.strictObject({
     phase: ResearchPhaseKindSchema,
     name: ShortTextSchema,
   })).min(1),
+  method: z.strictObject({
+    family: z.enum(['theoretical', 'qualitative', 'historical', 'quantitative', 'mixed', 'general']),
+    name: ShortTextSchema,
+    rationale: boundedText(AUTONOMOUS_LIMITS.reflectionChars),
+    confidence: z.number().min(0).max(1),
+    selectedBy: z.enum(['automatic_heuristic', 'automatic_provider', 'researcher']),
+  }).optional(),
 });
 
 export const AutonomousPhaseStartedEventSchema = z.strictObject({
@@ -152,10 +172,30 @@ export const AutonomousEngineCompletedEventSchema = z.strictObject({
   artifactIds: z.array(RuntimeIdSchema).default([]),
 });
 
+export const AutonomousEngineFailedEventSchema = z.strictObject({
+  ...AutonomousLiveEventCommonSchema,
+  type: z.literal('engine-failed'),
+  reason: boundedText(AUTONOMOUS_LIMITS.errorChars),
+  completedPhases: z.number().int().min(0).max(AUTONOMOUS_LIMITS.phases),
+  recoverable: z.boolean(),
+});
+
 export const AutonomousEngineInterruptedEventSchema = z.strictObject({
   ...AutonomousLiveEventCommonSchema,
   type: z.literal('engine-interrupted'),
   reason: ShortTextSchema,
+});
+
+export const AutonomousEnginePausedEventSchema = z.strictObject({
+  ...AutonomousLiveEventCommonSchema,
+  type: z.literal('engine-paused'),
+  reason: ShortTextSchema,
+});
+
+export const AutonomousEngineResumedEventSchema = z.strictObject({
+  ...AutonomousLiveEventCommonSchema,
+  type: z.literal('engine-resumed'),
+  completedPhases: z.number().int().min(0).max(AUTONOMOUS_LIMITS.phases),
 });
 
 export const AutonomousLiveEventSchema = z.discriminatedUnion('type', [
@@ -165,7 +205,10 @@ export const AutonomousLiveEventSchema = z.discriminatedUnion('type', [
   AutonomousReflectionEventSchema,
   AutonomousProgressEventSchema,
   AutonomousEngineCompletedEventSchema,
+  AutonomousEngineFailedEventSchema,
   AutonomousEngineInterruptedEventSchema,
+  AutonomousEnginePausedEventSchema,
+  AutonomousEngineResumedEventSchema,
 ]);
 
 export type AutonomousLiveEvent = z.infer<typeof AutonomousLiveEventSchema>;
@@ -185,7 +228,10 @@ export const AUTONOMOUS_CHANNELS = Object.freeze({
     reflection: 'autonomous:reflection',
     progress: 'autonomous:progress',
     engineCompleted: 'autonomous:engine-completed',
+    engineFailed: 'autonomous:engine-failed',
     engineInterrupted: 'autonomous:engine-interrupted',
+    enginePaused: 'autonomous:engine-paused',
+    engineResumed: 'autonomous:engine-resumed',
   } as const,
 } as const);
 

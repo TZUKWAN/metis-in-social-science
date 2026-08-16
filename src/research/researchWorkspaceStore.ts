@@ -48,6 +48,7 @@ export type ResearchWorkspaceSection =
   | 'claims'
   | 'artifacts'
   | 'runs'
+  | 'goals'
   | 'recycle_bin';
 
 export type ResearchWorkspaceSelection =
@@ -398,6 +399,8 @@ function firstSelectionForSection(
         ? { kind: 'project', id: snapshot.project.id }
         : null;
     }
+    case 'goals':
+      return null;
   }
 }
 
@@ -445,7 +448,7 @@ export interface ResearchWorkspaceState {
   setActiveSection(section: ResearchWorkspaceSection): void;
   selectItem(selection: ResearchWorkspaceSelection): void;
   loadProjects(): Promise<void>;
-  setActiveProject(projectId: string): Promise<void>;
+  setActiveProject(projectId: string | null): Promise<void>;
   refreshActiveProject(): Promise<void>;
   refreshWorkspace(): Promise<void>;
   createProject(input: ResearchProjectCreateInput): Promise<ResearchMutationResult>;
@@ -642,7 +645,7 @@ export function createResearchWorkspaceStore(
           activeProjectId: projectId,
           snapshot: null,
           activeSection: 'project',
-          selection: { kind: 'project', id: projectId },
+          selection: projectId ? { kind: 'project', id: projectId } : null,
           isRecycleBinOpen: false,
           error: null,
         });

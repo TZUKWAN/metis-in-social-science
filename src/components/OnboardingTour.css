@@ -5,21 +5,30 @@
 .onboarding-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.4);
-  z-index: 50;
+  z-index: 80;
   display: flex;
   align-items: flex-end;
   justify-content: center;
-  padding-bottom: 60px;
+  padding: clamp(18px, 4vh, 46px);
+  background: color-mix(in srgb, var(--bg-body) 32%, transparent);
+  backdrop-filter: blur(3px);
 }
 
 .onboarding-card {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 20px 24px;
-  max-width: 400px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.2);
+  width: min(100%, 460px);
+  padding: 24px;
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--bg-card) 97%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--border));
+  border-radius: var(--radius, 6px);
+  box-shadow: 0 18px 54px rgb(15 23 42 / 18%);
+}
+.onboarding-card:focus-visible { outline: 2px solid var(--focus-ring-color); outline-offset: 3px; }
+.onboarding-spotlight-target {
+  position: relative !important;
+  z-index: 81 !important;
+  outline: 2px solid var(--accent) !important;
+  outline-offset: 3px !important;
 }
 
 .onboarding-step-indicator {
@@ -29,23 +38,19 @@
 }
 
 .onboarding-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
+  width: 18px;
+  height: 2px;
+  border-radius: 999px;
   background: var(--border);
 }
 
-.onboarding-dot.active {
-  background: var(--primary);
-}
-
-.onboarding-dot.done {
-  background: var(--status-completed);
-}
+.onboarding-dot.active { background: var(--accent); }
+.onboarding-dot.done { background: var(--status-completed); }
 
 .onboarding-title {
-  font-size: 15px;
-  font-weight: 600;
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
   color: var(--text-primary);
   margin: 0 0 8px;
 }
@@ -53,8 +58,8 @@
 .onboarding-desc {
   font-size: 13px;
   color: var(--text-secondary);
-  line-height: 1.6;
-  margin: 0 0 16px;
+  line-height: 1.7;
+  margin: 0 0 20px;
 }
 
 .onboarding-actions {

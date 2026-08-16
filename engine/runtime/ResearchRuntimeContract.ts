@@ -450,6 +450,7 @@ export const ResearchProjectDtoSchema = z.strictObject({
 const ResearchSourceDtoBaseSchema = z.strictObject({
   id: RuntimeIdSchema,
   projectId: RuntimeIdSchema,
+  libraryPaperId: RuntimeIdSchema.nullable().optional(),
   kind: ResearchSourceKindSchema,
   title: ResearchDisplayTitleSchema,
   authors: AuthorsSchema,

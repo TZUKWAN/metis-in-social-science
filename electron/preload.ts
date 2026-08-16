@@ -18,11 +18,14 @@ import {
   type GoalLiveEvent,
 } from '../engine/runtime/ChatRuntimeContract.js';
 import {
+  decodeGoalChangedEvent,
   decodeGoalCreateResponse,
   decodeGoalExecutionResult,
   decodeGoalListResponse,
   decodeGoalPlanResponse,
   decodeGoalSummaryResponse,
+  decodeGoalWorkflowResponse,
+  type GoalChangedEvent,
 } from '../engine/runtime/GoalRuntimeContract.js';
 import {
   AUTONOMOUS_CHANNELS,
@@ -154,6 +157,22 @@ import {
   decodeSettingsProviderProbeRequest,
   type SettingsProviderProbeRequest,
 } from '../engine/runtime/SetupRuntimeContract.js';
+import {
+  createProviderProfileListRecovery,
+  createProviderProfileMutationRecovery,
+  decodeProviderProfileDeleteRequest,
+  decodeProviderProfileListRequest,
+  decodeProviderProfileListResponse,
+  decodeProviderProfileMutationResponse,
+  decodeProviderProfileResetRequest,
+  decodeProviderProfileSaveRequest,
+  decodeProviderProfileSwitchRequest,
+  type ProviderProfileDeleteRequest,
+  type ProviderProfileListRequest,
+  type ProviderProfileResetRequest,
+  type ProviderProfileSaveRequest,
+  type ProviderProfileSwitchRequest,
+} from '../engine/runtime/ProviderProfileContract.js';
 import {
   createExportFailure,
   decodeExportRequest,
@@ -303,12 +322,15 @@ type GoalProgressEvent = Extract<GoalLiveEvent, { type: 'progress' }>;
 
 // Autonomous research live event subtypes (typed narrowing for subscribers).
 type AutonomousEngineStartedEvent = Extract<AutonomousLiveEvent, { type: 'engine-started' }>;
+type AutonomousEngineFailedEvent = Extract<AutonomousLiveEvent, { type: 'engine-failed' }>;
 type AutonomousPhaseStartedEvent = Extract<AutonomousLiveEvent, { type: 'phase-started' }>;
 type AutonomousStepEvent = Extract<AutonomousLiveEvent, { type: 'step-start' | 'step-complete' | 'step-failed' }>;
 type AutonomousReflectionEvent = Extract<AutonomousLiveEvent, { type: 'reflection' }>;
 type AutonomousProgressEvent = Extract<AutonomousLiveEvent, { type: 'progress' }>;
 type AutonomousEngineCompletedEvent = Extract<AutonomousLiveEvent, { type: 'engine-completed' }>;
 type AutonomousEngineInterruptedEvent = Extract<AutonomousLiveEvent, { type: 'engine-interrupted' }>;
+type AutonomousEnginePausedEvent = Extract<AutonomousLiveEvent, { type: 'engine-paused' }>;
+type AutonomousEngineResumedEvent = Extract<AutonomousLiveEvent, { type: 'engine-resumed' }>;
 
 async function invokeSetupWithProgress<T>(
   channel: 'setup:probe' | 'setup:save',
@@ -540,8 +562,8 @@ const api = {
   },
 
   // ── Session ────────────────────────────────────────────
-  createSession: async (sessionId: string) => {
-    const decoded = decodeSessionCreateRequest({ sessionId });
+  createSession: async (sessionId: string, projectId?: string) => {
+    const decoded = decodeSessionCreateRequest({ sessionId, ...(projectId ? { projectId } : {}) });
     if (!decoded.ok) return decodeSessionMutationResult(null);
     return decodeSessionMutationResult(
       await ipcRenderer.invoke('session:create', decoded.value),
@@ -672,13 +694,16 @@ const api = {
 
   // ── Settings ───────────────────────────────────────────
   getSettings: async () => decodeSettingsView(await ipcRenderer.invoke('settings:get')),
+  markSetupSkipped: async () => ipcRenderer.invoke('settings:markSetupSkipped') as Promise<{ ok: boolean; error?: string }>,
   checkForUpdates: async () => ipcRenderer.invoke('update:check') as Promise<unknown>,
   getUpdateStatus: async () => ipcRenderer.invoke('update:status') as Promise<unknown>,
   downloadUpdate: async () => ipcRenderer.invoke('update:download') as Promise<unknown>,
   installUpdate: async () => ipcRenderer.invoke('update:install') as Promise<unknown>,
   listBackups: async () => ipcRenderer.invoke('backup:list') as Promise<{ backups: Array<{ path: string; name: string }> }>,
   restoreBackup: async (backupPath: string) => ipcRenderer.invoke('backup:restore', { backupPath }) as Promise<{ ok: boolean; error?: string }>,
-  importZotero: async (request: unknown) => ipcRenderer.invoke('zotero:import', request) as Promise<unknown>,
+  importZotero: async (request: { libraryType: 'personal' | 'group'; libraryId: string; query?: string; maxItems?: number; projectId?: string }) => ipcRenderer.invoke('zotero:import', request) as Promise<{ ok: boolean; imported: number; merged: number; skipped: number; error?: string; items: Array<{ title: string; merged: boolean }> }>,
+  probeZotero: async (request: { libraryType: 'personal' | 'group'; libraryId: string }) => ipcRenderer.invoke('zotero:probe', request) as Promise<{ ok: boolean; totalResults?: number; error?: string }>,
+  linkPaperToProject: async (request: { paperId: string; projectId: string; link?: boolean }) => ipcRenderer.invoke('paper:linkToProject', request) as Promise<{ ok: boolean; error?: string }>,
   exportProject: async (request: { projectId: string; destPath?: string }) =>
     ipcRenderer.invoke('project:export', request) as Promise<{ ok: boolean; path?: string; error?: string; manifest?: unknown }>,
   importProject: async (request: { archivePath: string; projectId?: string; overwrite?: boolean }) =>
@@ -687,7 +712,297 @@ const api = {
     success: boolean;
     projects: Array<{ id: string; title: string; updatedAt: number; archivedAt: number | null }>;
   }>,
+  // ── O13: 项目级 provider/model 覆盖 ──
+  getProjectProviderOverride: async (projectId: string) =>
+    ipcRenderer.invoke('project:getProviderOverride', projectId) as Promise<
+      { ok: true; override: import('../engine/runtime/ProviderProfileContract.js').ProjectProviderOverride | null }
+      | { ok: false; code: string }
+    >,
+  setProjectProviderOverride: async (request: {
+    projectId: string;
+    override: import('../engine/runtime/ProviderProfileContract.js').ProjectProviderOverride | null;
+  }) =>
+    ipcRenderer.invoke('project:setProviderOverride', request) as Promise<{ ok: boolean; code?: string }>,
   pickProjectArchive: async () => ipcRenderer.invoke('project:pickArchive') as Promise<{ canceled: boolean; path?: string }>,
+  // ── Storage location (user-configurable data directory) ──
+  storageGetLocation: async () => ipcRenderer.invoke('storage:getLocation') as Promise<{
+    ok: boolean;
+    dataDir?: string;
+    defaultDir?: string;
+    usingDefault?: boolean;
+    error?: string;
+  }>,
+  storageChooseLocation: async () => ipcRenderer.invoke('storage:chooseLocation') as Promise<{ canceled: boolean; path?: string }>,
+  storageSetLocation: async (target: string) => ipcRenderer.invoke('storage:setLocation', target) as Promise<{
+    ok: boolean;
+    restarting?: boolean;
+    dataDir?: string;
+    error?: string;
+  }>,
+  storageOpenFolder: async () => ipcRenderer.invoke('storage:openFolder') as Promise<{ ok: boolean; error?: string }>,
+  // ── Research browser (embedded WebContentsView) ──
+  browserShow: async (bounds: { x: number; y: number; width: number; height: number }) =>
+    ipcRenderer.invoke('browser:show', bounds) as Promise<{ ok: boolean; error?: string }>,
+  browserHide: async () => ipcRenderer.invoke('browser:hide') as Promise<{ ok: boolean; error?: string }>,
+  browserSetBounds: async (bounds: { x: number; y: number; width: number; height: number }) =>
+    ipcRenderer.invoke('browser:setBounds', bounds) as Promise<{ ok: boolean; error?: string }>,
+  browserNavigate: async (url: string) => ipcRenderer.invoke('browser:navigate', url) as Promise<{ ok: boolean; url?: string; error?: string }>,
+  browserBack: async () => ipcRenderer.invoke('browser:back') as Promise<{ ok: boolean; error?: string }>,
+  browserForward: async () => ipcRenderer.invoke('browser:forward') as Promise<{ ok: boolean; error?: string }>,
+  browserReload: async () => ipcRenderer.invoke('browser:reload') as Promise<{ ok: boolean; error?: string }>,
+  browserStop: async () => ipcRenderer.invoke('browser:stop') as Promise<{ ok: boolean; error?: string }>,
+  browserFocusRenderer: async () => ipcRenderer.invoke('browser:focusRenderer') as Promise<{ ok: boolean; error?: string }>,
+  // ── 协同对话（第三方 AI 网页版 WebContentsView） ──
+  collabShow: async (bounds: { x: number; y: number; width: number; height: number }) =>
+    ipcRenderer.invoke('collab:show', bounds) as Promise<{ ok: boolean; error?: string }>,
+  collabHide: async () => ipcRenderer.invoke('collab:hide') as Promise<{ ok: boolean; error?: string }>,
+  collabSetBounds: async (bounds: { x: number; y: number; width: number; height: number }) =>
+    ipcRenderer.invoke('collab:setBounds', bounds) as Promise<{ ok: boolean; error?: string }>,
+  collabNavigate: async (url: string) => ipcRenderer.invoke('collab:navigate', url) as Promise<{ ok: boolean; url?: string; error?: string }>,
+  // ── 内置文献检索 ──
+  literatureSearch: async (request: { query: string; sources: Array<'ncpssd' | 'openalex'>; page?: number; pageSize?: number; coreOnly?: boolean }) =>
+    ipcRenderer.invoke('literature:search', request) as Promise<{
+      ok: boolean;
+      code?: string;
+      recovery?: string;
+      results?: Array<{
+        id: string;
+        source: 'ncpssd' | 'openalex';
+        title: string;
+        authors: string[];
+        year: number;
+        venue: string;
+        abstract: string;
+        doi?: string;
+        url?: string;
+        pdfUrl?: string;
+        citationCount?: number;
+        tags: string[];
+        core: boolean;
+      }>;
+      total?: number;
+      warnings?: string[];
+    }>,
+  // ── Background job queue (T10): long tasks like PDF full-text extraction ──
+  listJobs: async () => ipcRenderer.invoke('jobs:list') as Promise<Array<{
+    id: string;
+    kind: string;
+    label: string;
+    status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
+    progress: number;
+    progressNote: string;
+    error: string | null;
+    finishedAt: number | null;
+  }>>,
+  cancelJob: async (jobId: string) => ipcRenderer.invoke('jobs:cancel', jobId) as Promise<{ ok: boolean }>,
+  retryJob: async (jobId: string) => ipcRenderer.invoke('jobs:retry', jobId) as Promise<{ ok: boolean }>,
+  extractBacklog: async () => ipcRenderer.invoke('jobs:extractBacklog') as Promise<{ ok: boolean; jobId: string | null }>,
+  getResumeBrief: async (projectId: string) => ipcRenderer.invoke('research:resumeBrief', projectId) as Promise<{
+    projectId: string;
+    generatedAt: number;
+    lastActivityAt: number | null;
+    openTasks: number;
+    runningTasks: number;
+    lastCompletedTask: string | null;
+    lastRunStatus: string | null;
+    lastRunAt: number | null;
+    artifactCount: number;
+    lastArtifactTitle: string | null;
+    lastArtifactAt: number | null;
+    paperCount: number;
+    lastPaperTitle: string | null;
+    summaryText: string;
+  } | null>,
+  getProjectStage: async (projectId: string) => ipcRenderer.invoke('research:getStage', projectId) as Promise<string | null>,
+  setProjectStage: async (projectId: string, stage: string) =>
+    ipcRenderer.invoke('research:setStage', { projectId, stage }) as Promise<{ ok: boolean }>,
+  archiveProject: async (projectId: string) => ipcRenderer.invoke('research:archiveProject', projectId) as Promise<{ ok: boolean; error?: string }>,
+  restoreProject: async (projectId: string) => ipcRenderer.invoke('research:restoreProject', projectId) as Promise<{ ok: boolean; restoredLifecycle?: string; error?: string }>,
+  deleteProject: async (projectId: string) => ipcRenderer.invoke('research:deleteProject', projectId) as Promise<{ ok: boolean }>,
+  openDirectoryDialog: async () => ipcRenderer.invoke('dialog:openDirectory') as Promise<string | null>,
+  setProjectDir: async (projectId: string, projectDir: string) => ipcRenderer.invoke('research:setProjectDir', { projectId, projectDir }) as Promise<{ ok: boolean }>,
+  detectStage: async (projectId: string) => ipcRenderer.invoke('research:detectStage', projectId) as Promise<{ stage: string; rationale: string[] } | null>,
+  // ── Method library (T4): reusable research workflows ──
+  listMethods: async () => ipcRenderer.invoke('methods:list') as Promise<Array<{
+    id: string;
+    name: string;
+    description: string;
+    params: Record<string, string>;
+    steps: Array<{ template: string }>;
+    confirmEachStep: boolean;
+    sourceProjectId: string | null;
+    createdAt: number;
+    updatedAt: number;
+    runCount: number;
+    lastRunAt: number | null;
+  }>>,
+  createMethod: async (request: { name: string; description?: string; steps: Array<{ template: string }>; confirmEachStep?: boolean; sourceProjectId?: string | null }) =>
+    ipcRenderer.invoke('methods:create', request) as Promise<{ id: string } | null>,
+  updateMethod: async (request: { id: string; name?: string; description?: string; steps?: Array<{ template: string }>; confirmEachStep?: boolean }) =>
+    ipcRenderer.invoke('methods:update', request) as Promise<{ id: string } | null>,
+  deleteMethod: async (methodId: string) => ipcRenderer.invoke('methods:delete', methodId) as Promise<boolean>,
+  renderMethod: async (methodId: string, params: Record<string, string>) =>
+    ipcRenderer.invoke('methods:render', { id: methodId, params }) as Promise<Array<{ instruction: string }> | null>,
+  recordMethodRun: async (request: { id: string; projectId: string | null; params: Record<string, string>; outcome: 'applied' | 'cancelled' }) =>
+    ipcRenderer.invoke('methods:recordRun', request) as Promise<void>,
+  // ── Submission tracking (T20) ──
+  listSubmissions: async (projectId?: string) => ipcRenderer.invoke('submissions:list', projectId ?? null) as Promise<Array<{
+    id: string;
+    projectId: string | null;
+    artifactId: string | null;
+    title: string;
+    journal: string;
+    status: 'submitted' | 'under_review' | 'revise' | 'accepted' | 'published' | 'rejected';
+    submittedAt: number;
+    updatedAt: number;
+    comments: Array<{ id: string; text: string; resolved: boolean; revisionNote: string; createdAt: number }>;
+    notes: string;
+  }>>,
+  createSubmission: async (request: { title: string; journal: string; projectId?: string | null; artifactId?: string | null; status?: string; notes?: string }) =>
+    ipcRenderer.invoke('submissions:create', request) as Promise<{ id: string } | null>,
+  updateSubmissionStatus: async (id: string, status: string) => ipcRenderer.invoke('submissions:updateStatus', { id, status }) as Promise<{ id: string } | null>,
+  addSubmissionComment: async (id: string, text: string) => ipcRenderer.invoke('submissions:addComment', { id, text }) as Promise<{ id: string } | null>,
+  resolveSubmissionComment: async (request: { id: string; commentId: string; resolved: boolean; revisionNote?: string }) =>
+    ipcRenderer.invoke('submissions:resolveComment', request) as Promise<{ id: string } | null>,
+  deleteSubmission: async (id: string) => ipcRenderer.invoke('submissions:delete', id) as Promise<boolean>,
+  buildResponseLetter: async (id: string) => ipcRenderer.invoke('submissions:responseLetter', id) as Promise<string | null>,
+  // ── Literature watch (T25) ──
+  listWatchSubscriptions: async () => ipcRenderer.invoke('watch:list') as Promise<Array<{
+    id: string;
+    query: string;
+    sources: Array<'ncpssd' | 'openalex'>;
+    coreOnly: boolean;
+    createdAt: number;
+    lastCheckedAt: number | null;
+    lastNewCount: number;
+  }>>,
+  addWatchSubscription: async (request: { query: string; sources?: Array<'ncpssd' | 'openalex'>; coreOnly?: boolean }) =>
+    ipcRenderer.invoke('watch:add', request) as Promise<{ id: string } | null>,
+  removeWatchSubscription: async (id: string) => ipcRenderer.invoke('watch:remove', id) as Promise<boolean>,
+  checkWatchNow: async (id: string) => ipcRenderer.invoke('watch:checkNow', id) as Promise<{ ok: boolean; newCount: number; error?: string }>,
+  // ── PDF bulk import (T26) ──
+  importPdfFiles: async (files: string[]) => ipcRenderer.invoke('import:pdfFiles', files) as Promise<{ ok: boolean; imported: number; enriched: number; error?: string }>,
+  openPdfDialog: async () => ipcRenderer.invoke('dialog:openPdf') as Promise<string[]>,
+  // ── Research agenda (T24) ──
+  getAgendaState: async () => ipcRenderer.invoke('agenda:getState') as Promise<{
+    queue: Array<{ projectId: string; title: string; runsCompleted: number; maxRuns: number; enqueuedAt: number; autonomous?: boolean; goalPrompt?: string }>;
+    autoContinue: boolean;
+    cooldownMs: number;
+    lastAdvanceAt: number | null;
+  }>,
+  enqueueAgenda: async (request: { projectId: string; title: string; maxRuns?: number }) =>
+    ipcRenderer.invoke('agenda:enqueue', request) as Promise<{ projectId: string } | { error: string }>,
+  removeAgenda: async (projectId: string) => ipcRenderer.invoke('agenda:remove', projectId) as Promise<boolean>,
+  moveAgenda: async (projectId: string, direction: 'up' | 'down') => ipcRenderer.invoke('agenda:move', { projectId, direction }) as Promise<boolean>,
+  setAgendaAutoContinue: async (enabled: boolean) => ipcRenderer.invoke('agenda:setAutoContinue', enabled) as Promise<{ autoContinue: boolean }>,
+  reportAgendaCompletion: async (request: { projectId: string; success: boolean }) =>
+    ipcRenderer.invoke('agenda:reportCompletion', request) as Promise<{ action: string; projectId: string | null; waitMs?: number; note: string }>,
+  decideAgendaNext: async () => ipcRenderer.invoke('agenda:decideNext') as Promise<{ action: string; projectId: string | null; waitMs?: number; note: string }>,
+  enqueueAgendaBatch: async (request: { entries: Array<{ key: string; title: string; goalPrompt: string }>; maxRuns?: number }) =>
+    ipcRenderer.invoke('agenda:enqueueBatch', request) as Promise<{ added: number }>,
+  // ── Autonomous profile & batch topics (自主改造 A/B) ──
+  getAutonomousProfile: async () => ipcRenderer.invoke('autonomousProfile:get') as Promise<{
+    version: 1;
+    defaultPrompt: string;
+    defaultBatchSize: number;
+    injectUserProfile: boolean;
+    constraints: {
+      fieldPreference: string;
+      methodPreference: 'any' | 'quantitative' | 'qualitative' | 'mixed';
+      outputForm: 'any' | 'journal_article' | 'report';
+      journalTier: 'any' | 'core' | 'general';
+      language: 'zh' | 'en';
+      lengthTarget: string;
+      customRules: string[];
+    };
+  }>,
+  saveAutonomousProfile: async (request: Record<string, unknown>) => ipcRenderer.invoke('autonomousProfile:save', request) as Promise<{ version: 1 }>,
+  getAutonomousHardRules: async () => ipcRenderer.invoke('autonomousProfile:hardRules') as Promise<string[]>,
+  generateAutonomousBatch: async (request: { prompt: string; count: number }) =>
+    ipcRenderer.invoke('autonomous:generateBatch', request) as Promise<{
+      ok: boolean; error?: string; added?: number; raw?: string;
+      topics?: Array<{ title: string; researchQuestion: string; rationale: string }>;
+    }>,
+  createProjectForAutonomous: async (request: { title: string; researchQuestion?: string }) =>
+    ipcRenderer.invoke('autonomous:createProjectFor', request) as Promise<{ ok: boolean; projectId: string | null }>,
+  // ── Autonomous workspace (重构 R1) ──
+  getAutoWorkspaceOverview: async (runningProjectIds: string[]) => ipcRenderer.invoke('autoWorkspace:overview', runningProjectIds) as Promise<{
+    projects: Array<{ id: string; title: string; status: 'running' | 'idle' | 'completed'; currentPhase: string | null; progressPercent: number; updatedAt: number; artifactCount: number; evidenceCount: number }>;
+    metrics: { running: number; decisions24h: number; evidenceToday: number; newFindings7d: number };
+  }>,
+  getAutoWorkspaceDetail: async (projectId: string) => ipcRenderer.invoke('autoWorkspace:detail', projectId) as Promise<{
+    question: { text: string; version: number; updatedAt: number; history: Array<{ version: number; text: string; at: number; note: string }> };
+    coreJudgments: Array<{ id: string; text: string; confidence: number; at: number }>;
+    newFindings: Array<{ id: string; text: string; confidence: number; at: number; origin: string }>;
+    uncertainties: Array<{ text: string; reason: string }>;
+    artifacts: Array<{ id: string; title: string; artifactType: string; version: number; updatedAt: number; contentPreview: string; aiEditing: boolean; fileCount: number }>;
+    decisions: Array<{ id: string; at: number; decision: string; note: string; before: string; after: string }>;
+    timeline: Array<{ at: number; kind: string; text: string }>;
+    stats: { evidenceCount: number; claimCount: number; sourceCount: number; artifactCount: number };
+    latestRun: { status: string; updatedAt: number; completedPhases: number | null; totalPhases: number | null } | null;
+  } | null>,
+  // ── Concept graph (T28) ──
+  getConceptGraph: async (projectId: string) => ipcRenderer.invoke('concept:getGraph', projectId) as Promise<{
+    nodes: Array<{ id: string; kind: 'source' | 'code' | 'claim'; label: string }>;
+    edges: Array<{ from: string; to: string; kind: 'supports' | 'coded' }>;
+  } | null>,
+  // ── ASR transcription (T23) ──
+  openAudioDialog: async () => ipcRenderer.invoke('dialog:openAudio') as Promise<string | null>,
+  transcribeAudio: async (request: { filePath: string; language?: string }) =>
+    ipcRenderer.invoke('transcribe:audio', request) as Promise<{ ok: boolean; text?: string; model?: string; error?: string; hint?: string }>,
+  // ── WebDAV cloud backup (T33) ──
+  getCloudSyncConfig: async () => ipcRenderer.invoke('cloudSync:getConfig') as Promise<{ configured: boolean; url?: string; username?: string }>,
+  saveCloudSyncConfig: async (request: { url: string; username: string; password: string }) =>
+    ipcRenderer.invoke('cloudSync:saveConfig', request) as Promise<{ ok: boolean }>,
+  clearCloudSyncConfig: async () => ipcRenderer.invoke('cloudSync:clearConfig') as Promise<{ ok: boolean }>,
+  testCloudSync: async () => ipcRenderer.invoke('cloudSync:test') as Promise<{ ok: boolean; error?: string }>,
+  backupToCloud: async () => ipcRenderer.invoke('cloudSync:backup') as Promise<{ ok: boolean; objectName?: string; error?: string }>,
+  listCloudBackups: async () => ipcRenderer.invoke('cloudSync:listBackups') as Promise<string[]>,
+  stageCloudRestore: async (objectName: string) => ipcRenderer.invoke('cloudSync:stageRestore', objectName) as Promise<{ ok: boolean; error?: string }>,
+  importIssnList: async () => ipcRenderer.invoke('settings:importIssnList') as Promise<{ ok: boolean; added: number; totalCandidates?: number; error?: string }>,
+  onJobsChanged: (callback: (jobs: Array<{ id: string; kind: string; label: string; status: string; progress: number; progressNote: string; error: string | null; finishedAt: number | null }>) => void): (() => void) => {
+    const handler = (_event: unknown, jobs: Parameters<typeof callback>[0]) => callback(jobs);
+    ipcRenderer.on('jobs:changed', handler as never);
+    return () => { ipcRenderer.removeListener('jobs:changed', handler as never); };
+  },
+  browserState: async () => ipcRenderer.invoke('browser:state') as Promise<{
+    ok: boolean;
+    state?: { url: string; title: string; loading: boolean; canGoBack: boolean; canGoForward: boolean };
+    error?: string;
+  }>,
+  browserClick: async (x: number, y: number) => ipcRenderer.invoke('browser:click', { x, y }) as Promise<{ ok: boolean; error?: string }>,
+  browserType: async (text: string) => ipcRenderer.invoke('browser:type', text) as Promise<{ ok: boolean; error?: string }>,
+  browserKey: async (keyCode: string) => ipcRenderer.invoke('browser:key', keyCode) as Promise<{ ok: boolean; error?: string }>,
+  browserScroll: async (deltaX: number, deltaY: number) => ipcRenderer.invoke('browser:scroll', { deltaX, deltaY }) as Promise<{ ok: boolean; error?: string }>,
+  browserScreenshot: async () => ipcRenderer.invoke('browser:screenshot') as Promise<{ ok: boolean; imageBase64?: string; error?: string }>,
+  browserExtract: async () => ipcRenderer.invoke('browser:extract') as Promise<{
+    ok: boolean;
+    page?: { title: string; text: string; url: string; links: string[] };
+    error?: string;
+  }>,
+  browserCollect: async () => ipcRenderer.invoke('browser:collect') as Promise<{
+    ok: boolean;
+    paper?: { paperId: string; merged: boolean; title: string; doi?: string; metaSource?: 'complete' | 'crossref_enriched' | 'meta_only' | 'webpage' };
+    error?: string;
+  }>,
+  browserListDownloads: async () => ipcRenderer.invoke('browser:listDownloads') as Promise<{
+    ok: boolean;
+    downloads: Array<{ id: string; url: string; filename: string; mimeType: string; pageUrl: string; pageTitle: string }>;
+    error?: string;
+  }>,
+  browserAcceptDownload: async (id: string, projectId: string | null) =>
+    ipcRenderer.invoke('browser:acceptDownload', { id, projectId }) as Promise<{ ok: boolean; savedPath?: string; paperId?: string; error?: string }>,
+  browserCancelDownload: async (id: string) => ipcRenderer.invoke('browser:cancelDownload', id) as Promise<{ ok: boolean; error?: string }>,
+  onBrowserState: (callback: (state: { url: string; title: string; loading: boolean; canGoBack: boolean; canGoForward: boolean }) => void): (() => void) => {
+    const handler = (_event: unknown, state: unknown) => callback(state as Parameters<typeof callback>[0]);
+    ipcRenderer.on('browser:state', handler);
+    return () => { ipcRenderer.removeListener('browser:state', handler); };
+  },
+  onBrowserDownloadRequest: (callback: (download: { id: string; url: string; filename: string; mimeType: string; pageUrl: string; pageTitle: string }) => void): (() => void) => {
+    const handler = (_event: unknown, download: unknown) => callback(download as Parameters<typeof callback>[0]);
+    ipcRenderer.on('browser:download-request', handler);
+    return () => { ipcRenderer.removeListener('browser:download-request', handler); };
+  },
   // ── WeChat Bot (METIS-WX-1) ──
   wechatGetStatus: async () => ipcRenderer.invoke('wechat:getStatus') as Promise<{ ok: boolean; status?: unknown; error?: string }>,
   wechatBeginLogin: async () => ipcRenderer.invoke('wechat:beginLogin') as Promise<{ ok: boolean; qrContent?: string; error?: string }>,
@@ -706,10 +1021,46 @@ const api = {
   artifactListVersions: async (artifactId: string) => ipcRenderer.invoke('artifact:listVersions', artifactId) as Promise<{ versions: Array<{ version: number; createdAt: number; createdBy: string; contentPreview: string }> }>,
   artifactRestoreVersion: async (request: { artifactId: string; version: number }) => ipcRenderer.invoke('artifact:restoreVersion', request) as Promise<{ ok: boolean; version?: number; error?: string }>,
   officeCliStatus: async () => ipcRenderer.invoke('officecli:status') as Promise<{ available: boolean; binary: string; version?: string; error?: string }>,
-  providerList: async () => ipcRenderer.invoke('provider:list') as Promise<{ providers: Array<{ id: string; name: string; baseUrl: string; model: string; vision?: boolean; maxContextTokens?: number }>; activeId: string | null }>,
-  providerSave: async (request: { id?: string; name: string; baseUrl: string; apiKey: string; model: string; vision?: boolean; maxContextTokens?: number }) => ipcRenderer.invoke('provider:save', request) as Promise<{ ok: boolean; id?: string; error?: string }>,
-  providerSwitch: async (id: string) => ipcRenderer.invoke('provider:switch', id) as Promise<{ ok: boolean; name?: string; model?: string; error?: string }>,
-  providerDelete: async (id: string) => ipcRenderer.invoke('provider:delete', id) as Promise<{ ok: boolean; error?: string }>,
+  providerProfilesList: async (rawRequest: ProviderProfileListRequest) => {
+    const request = decodeProviderProfileListRequest(rawRequest);
+    if (!request.ok) return createProviderProfileListRecovery(rawRequest);
+    return decodeProviderProfileListResponse(
+      await ipcRenderer.invoke('providerProfiles:list', request.value),
+      request.value.operationId,
+    );
+  },
+  providerProfilesSave: async (rawRequest: ProviderProfileSaveRequest) => {
+    const request = decodeProviderProfileSaveRequest(rawRequest);
+    if (!request.ok) return createProviderProfileMutationRecovery(rawRequest);
+    return decodeProviderProfileMutationResponse(
+      await ipcRenderer.invoke('providerProfiles:save', request.value),
+      request.value.operationId,
+    );
+  },
+  providerProfilesSwitch: async (rawRequest: ProviderProfileSwitchRequest) => {
+    const request = decodeProviderProfileSwitchRequest(rawRequest);
+    if (!request.ok) return createProviderProfileMutationRecovery(rawRequest);
+    return decodeProviderProfileMutationResponse(
+      await ipcRenderer.invoke('providerProfiles:switch', request.value),
+      request.value.operationId,
+    );
+  },
+  providerProfilesDelete: async (rawRequest: ProviderProfileDeleteRequest) => {
+    const request = decodeProviderProfileDeleteRequest(rawRequest);
+    if (!request.ok) return createProviderProfileMutationRecovery(rawRequest);
+    return decodeProviderProfileMutationResponse(
+      await ipcRenderer.invoke('providerProfiles:delete', request.value),
+      request.value.operationId,
+    );
+  },
+  providerProfilesReset: async (rawRequest: ProviderProfileResetRequest) => {
+    const request = decodeProviderProfileResetRequest(rawRequest);
+    if (!request.ok) return createProviderProfileMutationRecovery(rawRequest);
+    return decodeProviderProfileMutationResponse(
+      await ipcRenderer.invoke('providerProfiles:reset', request.value),
+      request.value.operationId,
+    );
+  },
   officeCliNewDocument: async (ext: 'docx' | 'pptx' | 'xlsx', projectId?: string) => ipcRenderer.invoke('officecli:newDocument', ext, projectId) as Promise<{ success: boolean; filePath?: string; error?: string }>,
   officeCliExec: async (args: string[]) => ipcRenderer.invoke('officecli:exec', args) as Promise<{ success: boolean; data?: unknown; message?: string; error?: string }>,
   officeCliCreate: async (filePath: string) => ipcRenderer.invoke('officecli:create', filePath) as Promise<{ success: boolean; data?: unknown; message?: string; error?: string }>,
@@ -744,6 +1095,18 @@ const api = {
     const options = AgentChatOptionsSchema.safeParse(rawOptions);
     if (!options.success) return decodeAgentResponse(null);
     return decodeAgentResponse(await ipcRenderer.invoke('agent:chat', sessionId, messages, skillId, options.data));
+  },
+  /**
+   * O15: 多模型同会话对比——用指定 provider profile 跑一个临时对话回合。
+   * 主进程用 ProviderProfileStore.configFor(profileId) 构建临时 provider /
+   * AgentLoop，响应契约与 agentChat 完全一致（AgentResponse）；区别是该路径
+   * 不在主进程落库，对比消息的持久化由渲染端统一负责，避免 N 个 profile
+   * 各写一遍用户消息。
+   */
+  agentChatWithProfile: async (profileId: string, sessionId: string, messages: unknown[], skillId: string | undefined, rawOptions: AgentChatOptions) => {
+    const options = AgentChatOptionsSchema.safeParse(rawOptions);
+    if (!options.success) return decodeAgentResponse(null);
+    return decodeAgentResponse(await ipcRenderer.invoke('agent:chatWithProfile', profileId, sessionId, messages, skillId, options.data));
   },
   agentControl: async (rawRequest: AgentControlRequest) => {
     const request = AgentControlRequestSchema.safeParse(rawRequest);
@@ -781,6 +1144,12 @@ const api = {
     if (!request.ok) return createPaperDownloadFailure();
     return decodePaperDownloadResult(await ipcRenderer.invoke('paper:downloadPdf', request.value));
   },
+  reconcilePaper: async (request: { paperId: string; doi?: string; title?: string }) =>
+    ipcRenderer.invoke('paper:reconcile', request) as Promise<{
+      ok: boolean;
+      paper?: { title: string; authors: string[]; year: number; venue: string; doi?: string; abstract?: string };
+      error?: string;
+    }>,
 
   // ── Collections ────────────────────────────────────────
   listCollections: async () => decodeLibraryCollectionList(await ipcRenderer.invoke('collection:list')),
@@ -892,6 +1261,11 @@ const api = {
     if (!request) return createProjectMemoryMutationFailure();
     return decodeProjectMemoryMutationResult(await ipcRenderer.invoke('memory:setProject', request));
   },
+  // O12: white-box automatic memories (key_decision / preference / fact).
+  listMemoryByCategory: async (category: string, projectId?: string) =>
+    ipcRenderer.invoke('memory:listByCategory', { category, projectId }) as Promise<Array<{ key: string; value: string; category: string; updatedAt: number }>>,
+  deleteMemoryByKey: async (key: string, projectId?: string) =>
+    ipcRenderer.invoke('memory:deleteByKey', { key, projectId }) as Promise<{ ok: boolean; error?: string }>,
 
   // ── Project Metis.md (CAS-protected compatibility API) ──
   getWorkspaceAgents: async (projectId: string) => {
@@ -908,10 +1282,13 @@ const api = {
   },
 
   // ── Goal Engine ────────────────────────────────────────
-  createGoal: async (description: string, context?: string) =>
-    decodeGoalCreateResponse(await ipcRenderer.invoke('goal:create', description, context)),
+  createGoal: async (description: string, context?: string, projectId?: string) =>
+    decodeGoalCreateResponse(await ipcRenderer.invoke('goal:create', description, context, projectId)),
   getGoal: async (goalId: string) =>
     decodeGoalSummaryResponse(await ipcRenderer.invoke('goal:get', goalId)),
+  // O17: 读取 goal 的工作流定义 + 最新 run 步骤状态（WorkflowGraph 只读可视化）。
+  getGoalWorkflow: async (goalId: string) =>
+    decodeGoalWorkflowResponse(await ipcRenderer.invoke('goal:getWorkflow', goalId)),
   listGoals: async () => decodeGoalListResponse(await ipcRenderer.invoke('goal:list')),
   generatePlan: async (goalId: string) =>
     decodeGoalPlanResponse(await ipcRenderer.invoke('goal:generatePlan', goalId)),
@@ -923,6 +1300,8 @@ const api = {
   pauseGoal: (goalId: string) => ipcRenderer.invoke('goal:pause', goalId),
   resumeGoal: async (goalId: string, fromStepId?: string) =>
     decodeGoalExecutionResult(await ipcRenderer.invoke('goal:resume', goalId, fromStepId)),
+  resolveStepDecision: async (goalId: string, action: 'retry' | 'skip' | 'stop') =>
+    ipcRenderer.invoke('goal:resolveStepDecision', { goalId, action }) as Promise<{ success: boolean; code?: string }>,
   cancelGoal: (goalId: string) => ipcRenderer.invoke('goal:cancel', goalId),
   getGoalProgress: (goalId: string) => ipcRenderer.invoke('goal:getProgress', goalId),
   archiveGoal: (goalId: string) => ipcRenderer.invoke('goal:archive', goalId),
@@ -963,19 +1342,38 @@ const api = {
     ipcRenderer.on('goal:progress', handler);
     return () => { ipcRenderer.removeListener('goal:progress', handler); };
   },
+  onGoalChanged: (callback: (data: GoalChangedEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: unknown) => {
+      const decoded = decodeGoalChangedEvent(data);
+      if (decoded) callback(decoded);
+    };
+    ipcRenderer.on('goal:changed', handler);
+    return () => { ipcRenderer.removeListener('goal:changed', handler); };
+  },
 
   // ── Autonomous research engine ───────────────────────────
-  autonomousStart: async (request: { goal: string; projectId?: string; sessionId?: string }) => {
+  autonomousStart: async (request: { goal: string; projectId?: string; sessionId?: string; strategyId?: string; structureId?: string }) => {
     const decoded = decodeAutonomousStartRequest({ version: AUTONOMOUS_CONTRACT_VERSION, ...request });
     if (!decoded) return { ok: false, error: 'invalid_request' };
-    return ipcRenderer.invoke(AUTONOMOUS_CHANNELS.start, decoded) as Promise<{ ok: boolean; sessionId?: string; error?: string }>;
+    return ipcRenderer.invoke(AUTONOMOUS_CHANNELS.start, decoded) as Promise<{ ok: boolean; sessionId?: string; projectId?: string; error?: string }>;
   },
   autonomousControl: async (request: { sessionId: string; action: 'pause' | 'resume' | 'interrupt'; reason?: string }) => {
     const decoded = decodeAutonomousControlRequest({ version: AUTONOMOUS_CONTRACT_VERSION, ...request });
     if (!decoded) return { ok: false, code: 'invalid_request' };
     return ipcRenderer.invoke(AUTONOMOUS_CHANNELS.control, decoded) as Promise<{ ok: boolean; code?: string }>;
   },
-  autonomousListSessions: async () => ipcRenderer.invoke(AUTONOMOUS_CHANNELS.listSessions) as Promise<{ sessions: Array<{ sessionId: string; goal: string; executions: number; savedAt: number }> }>,
+  autonomousListSessions: async () => ipcRenderer.invoke(AUTONOMOUS_CHANNELS.listSessions) as Promise<{
+    sessions: Array<{
+      sessionId: string;
+      goal: string;
+      projectId?: string;
+      executions: number;
+      completedPhases: number;
+      savedAt: number;
+      state: 'running' | 'paused';
+      failureReason?: string;
+    }>;
+  }>,
   onAutonomousEngineStarted: (callback: (data: AutonomousEngineStartedEvent) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, data: unknown) => {
       const decoded = decodeAutonomousLiveEvent(data);
@@ -1030,6 +1428,14 @@ const api = {
     ipcRenderer.on(AUTONOMOUS_CHANNELS.live.engineCompleted, handler);
     return () => { ipcRenderer.removeListener(AUTONOMOUS_CHANNELS.live.engineCompleted, handler); };
   },
+  onAutonomousFailed: (callback: (data: AutonomousEngineFailedEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, raw: unknown) => {
+      const decoded = decodeAutonomousLiveEvent(raw);
+      if (decoded && decoded.type === 'engine-failed') callback(decoded);
+    };
+    ipcRenderer.on(AUTONOMOUS_CHANNELS.live.engineFailed, handler);
+    return () => ipcRenderer.removeListener(AUTONOMOUS_CHANNELS.live.engineFailed, handler);
+  },
   onAutonomousInterrupted: (callback: (data: AutonomousEngineInterruptedEvent) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, data: unknown) => {
       const decoded = decodeAutonomousLiveEvent(data);
@@ -1038,15 +1444,45 @@ const api = {
     ipcRenderer.on(AUTONOMOUS_CHANNELS.live.engineInterrupted, handler);
     return () => { ipcRenderer.removeListener(AUTONOMOUS_CHANNELS.live.engineInterrupted, handler); };
   },
+  onAutonomousPaused: (callback: (data: AutonomousEnginePausedEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: unknown) => {
+      const decoded = decodeAutonomousLiveEvent(data);
+      if (decoded && decoded.type === 'engine-paused') callback(decoded);
+    };
+    ipcRenderer.on(AUTONOMOUS_CHANNELS.live.enginePaused, handler);
+    return () => { ipcRenderer.removeListener(AUTONOMOUS_CHANNELS.live.enginePaused, handler); };
+  },
+  onAutonomousResumed: (callback: (data: AutonomousEngineResumedEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: unknown) => {
+      const decoded = decodeAutonomousLiveEvent(data);
+      if (decoded && decoded.type === 'engine-resumed') callback(decoded);
+    };
+    ipcRenderer.on(AUTONOMOUS_CHANNELS.live.engineResumed, handler);
+    return () => { ipcRenderer.removeListener(AUTONOMOUS_CHANNELS.live.engineResumed, handler); };
+  },
+  autonomousResumeSession: async (sessionId: string) => {
+    return ipcRenderer.invoke(AUTONOMOUS_CHANNELS.resumeSession, sessionId) as Promise<{ ok: boolean; goal?: string; error?: string }>;
+  },
+  strategyList: async () => ipcRenderer.invoke('strategy:list') as Promise<{ ok: boolean; strategies?: Array<Record<string, unknown>> }>,
+  strategySave: async (strategy: Record<string, unknown>) => ipcRenderer.invoke('strategy:save', { strategy }) as Promise<{ ok: boolean; error?: string }>,
+  strategyDelete: async (strategyId: string) => ipcRenderer.invoke('strategy:delete', { strategyId }) as Promise<{ ok: boolean; error?: string }>,
+  strategySetDefault: async (strategyId: string) => ipcRenderer.invoke('strategy:setDefault', { strategyId }) as Promise<{ ok: boolean; error?: string }>,
+  structureList: async () => ipcRenderer.invoke('structure:list') as Promise<{ ok: boolean; templates?: Array<Record<string, unknown>> }>,
+  structureSave: async (template: Record<string, unknown>) => ipcRenderer.invoke('structure:save', { template }) as Promise<{ ok: boolean; error?: string }>,
+  structureDelete: async (templateId: string) => ipcRenderer.invoke('structure:delete', { templateId }) as Promise<{ ok: boolean; error?: string }>,
 
   // ── Chat streaming ───────────────────────────────────────
-  onChatStreamChunk: (callback: (data: { sessionId?: string; content: string; isFinished: boolean }) => void) => {
+  // O15: 对比回合的流式分片额外携带 profileId，渲染端据此把 token 路由到
+  // 对应模型的气泡；普通回合不带该字段，行为与之前完全一致。
+  onChatStreamChunk: (callback: (data: { sessionId?: string; content: string; reasoning?: string; isFinished: boolean; profileId?: string }) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, data: unknown) => {
-      const chunk = data as { sessionId?: string; content?: string; isFinished?: boolean };
+      const chunk = data as { sessionId?: string; content?: string; reasoning?: string; isFinished?: boolean; profileId?: string };
       callback({
         sessionId: chunk.sessionId,
         content: chunk.content ?? '',
+        reasoning: chunk.reasoning,
         isFinished: chunk.isFinished ?? false,
+        ...(typeof chunk.profileId === 'string' ? { profileId: chunk.profileId } : {}),
       });
     };
     ipcRenderer.on('chat:stream-chunk', handler);
@@ -1084,6 +1520,27 @@ const api = {
     if (!response.ok) throw new TypeError(`Personalization list failed: ${response.code}`);
     return response;
   },
+
+  aiGenerateScenario: async (rawRequest: unknown) => (
+    ipcRenderer.invoke('personalization:aiGenerateScenario', rawRequest) as Promise<{
+      ok: boolean;
+      code?: string;
+      message?: string;
+      scenario?: { name: string; description: string; triggerPhrases: string[]; deliverable: string };
+      agents?: Array<{ name: string; role: string; systemPrompt: string; skillIds: string[]; toolIds: string[]; mcpIds: string[]; maxTurns: number }>;
+      workflow?: Array<{ name: string; description: string; agent: string; skillIds: string[]; toolIds: string[]; mcpIds: string[]; maxTurns: number }>;
+      rules?: string;
+      paperStructure?: Array<{ title: string; instruction: string }> | null;
+    }>
+  ),
+  aiParsePaperTemplate: async (rawRequest: unknown) => (
+    ipcRenderer.invoke('personalization:parsePaperTemplate', rawRequest) as Promise<{
+      ok: boolean;
+      code?: string;
+      message?: string;
+      sections?: Array<{ title: string; instruction: string }>;
+    }>
+  ),
   getPersonalization: async (rawRequest: PersonalizationGetRequest) => {
     const request = PersonalizationGetRequestSchema.safeParse(rawRequest);
     if (!request.success) return { ok: true as const, definition: null };

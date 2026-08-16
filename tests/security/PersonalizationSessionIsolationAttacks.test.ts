@@ -399,6 +399,8 @@ describe('immutable per-session personalization snapshots', () => {
     expect(digestResolvedManifestSnapshot(recovered.manifest)).toBe(recovered.manifest.manifestDigest);
     expect(recovered.manifest.manifestDigest).not.toBe(tampered.manifestDigest);
     expect(repository.getActiveRunManifest('hmac-session')?.manifestDigest).toBe(recovered.manifest.manifestDigest);
+    expect(repository.getActiveRunManifest('hmac-session')?.promptStack[0]?.content)
+      .not.toContain('MALICIOUS_PERSISTED_PROMPT');
   });
 });
 

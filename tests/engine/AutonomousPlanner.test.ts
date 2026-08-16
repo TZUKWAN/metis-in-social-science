@@ -19,6 +19,20 @@ describe('AutonomousPlanner', () => {
     expect(plan.phases[0]?.iteration).toBe(1);
   });
 
+  it('proposeResearchPlan automatically builds a historical research chain', async () => {
+    const planner = new AutonomousPlanner();
+    const plan = await planner.proposeResearchPlan('利用档案和报刊研究民国时期城市救济制度的演变');
+
+    expect(plan.methodSpec?.family).toBe('historical');
+    expect(plan.phases.map((phase) => phase.phase)).toEqual(expect.arrayContaining([
+      'source_discovery',
+      'source_criticism',
+      'triangulation',
+      'quality_audit',
+    ]));
+    expect(plan.phases.some((phase) => phase.phase === 'experiment')).toBe(false);
+  });
+
   it('pickNextPhase walks the plan in order and returns null when exhausted', () => {
     const planner = new AutonomousPlanner();
     const plan = planner.proposeInitialGoal('g');
@@ -104,5 +118,31 @@ describe('AutonomousPlanner', () => {
     expect(experimentPhases).toHaveLength(2);
     expect(experimentPhases[1]?.iteration).toBe(2);
     expect(plan.revisionNotes.experiment).toBe('fix the bug');
+  });
+
+  it('can insert a redo immediately at the execution cursor', () => {
+    const planner = new AutonomousPlanner();
+    const plan = planner.proposeInitialGoal('g');
+    planner.reviseForRedo(plan, 'idea', '补足反例', 1);
+
+    expect(plan.phases.map((phase) => phase.phase)).toEqual([
+      'idea', 'idea', 'experiment', 'analysis', 'paper',
+    ]);
+    expect(plan.phases[1]?.name).toContain('重做');
+  });
+
+  it('preserves downstream method phases when rolling back', () => {
+    const planner = new AutonomousPlanner();
+    const plan = planner.proposeInitialGoal('g');
+    const history: PhaseHistoryEntry[] = [
+      { phase: 'idea', iteration: 1, output: 'a' },
+      { phase: 'experiment', iteration: 2, output: 'b' },
+      { phase: 'analysis', iteration: 3, output: 'c' },
+    ];
+
+    planner.reviseForRollback(plan, history, 'experiment', '修正设计');
+
+    expect(history.map((entry) => entry.phase)).toEqual(['idea']);
+    expect(plan.phases.map((phase) => phase.phase)).toEqual(['idea', 'experiment', 'analysis', 'paper']);
   });
 });

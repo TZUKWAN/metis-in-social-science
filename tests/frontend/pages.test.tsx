@@ -10,17 +10,14 @@
 
 import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent, act, waitFor, within, cleanup } from '@testing-library/react';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { useMetisStore } from '../../src/store';
-import { formatCitation } from '../../src/utils/citations.js';
 import GoalCardInline, { type GoalCardData } from '../../src/components/GoalCardInline.js';
 import ProjectShell from '../../src/shell/ProjectShell.js';
 import type { ChatPageLayoutSlots } from '../../src/pages/ChatPage.js';
-import type { FileCapabilityDescriptor, FileCapabilityUseResult } from '../../engine/runtime/FileCapabilityContract.js';
-import type { PaperDownloadResult } from '../../engine/runtime/PaperRuntimeContract.js';
+import type { FileCapabilityDescriptor } from '../../engine/runtime/FileCapabilityContract.js';
 import { buildBuiltinPersonalizationDefinitions } from '../fixtures/personalization/legacyBuiltinDefinitions.js';
 import { setPendingChatIntent } from '../../src/lib/chatIntent.js';
+import { researchWorkspaceStore } from '../../src/research/researchWorkspaceStore.js';
 
 function makePdfCapability(overrides?: Partial<FileCapabilityDescriptor>): FileCapabilityDescriptor {
   const now = Date.now();
@@ -40,51 +37,6 @@ function makeMetisAPI(partial: Partial<typeof window.metis> = {}): typeof window
   return partial as typeof window.metis;
 }
 
-function makePaperDownloadResult(pdfCapability: FileCapabilityDescriptor, displayName = 'test-paper.pdf'): PaperDownloadResult {
-  return {
-    success: true,
-    code: 'paper_download_complete',
-    pdfCapability,
-    displayName,
-    byteLength: 1024,
-    sha256: '0'.repeat(64),
-  };
-}
-
-function makeFileCapabilityUseResult(
-  operation: 'extract',
-  capability: FileCapabilityDescriptor,
-  text: string,
-): ExtractFileCapabilityUseResult;
-function makeFileCapabilityUseResult(
-  operation: 'read',
-  capability: FileCapabilityDescriptor,
-  data: Uint8Array,
-): ReadFileCapabilityUseResult;
-function makeFileCapabilityUseResult(
-  operation: 'extract' | 'read',
-  capability: FileCapabilityDescriptor,
-  payload: string | Uint8Array,
-): FileCapabilityUseResult {
-  if (operation === 'extract') {
-    return {
-      success: true,
-      operation: 'extract',
-      capability,
-      text: payload as string,
-      truncated: false,
-    };
-  }
-  return {
-    success: true,
-    operation: 'read',
-    capability,
-    data: payload as Uint8Array,
-  };
-}
-
-type ExtractFileCapabilityUseResult = Extract<FileCapabilityUseResult, { operation: 'extract' }>;
-type ReadFileCapabilityUseResult = Extract<FileCapabilityUseResult, { operation: 'read' }>;
 
 // Polyfill browser APIs missing in jsdom (required by ReactFlow, Recharts, ChatPage, etc.)
 beforeAll(() => {
@@ -265,1260 +217,12 @@ function resetStore() {
     workflowRuns: [],
     selectedPaperId: null,
     experimentSearchQuery: '',
-    weeklyReadingGoal: 5,
     savedFilters: [],
     collections: [],
     selectedCollection: null,
   });
+  researchWorkspaceStore.setState({ activeProjectId: null });
 }
-
-// ─── PapersPage Tests ───────────────────────────────────────────
-
-describe('PapersPage', () => {
-  it('should render empty state when no papers', async () => {
-    resetStore();
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    expect(screen.getByText('未找到论文')).toBeDefined();
-    expect(screen.getByText('选择论文查看详情')).toBeDefined();
-    expect(screen.getByText(/库中有 0 篇论文/)).toBeDefined();
-  });
-
-  it('should render papers from store', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper());
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    expect(screen.getByText('Test Paper Title')).toBeDefined();
-    expect(screen.getByText(/Alice Smith/)).toBeDefined();
-  });
-
-  it('should show paper detail when clicked', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper());
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    fireEvent.click(screen.getByText('Test Paper Title'));
-    expect(screen.getByText('This is a test abstract about deep learning.')).toBeDefined();
-    expect(screen.getByText('Great paper')).toBeDefined();
-  });
-
-  it('selects a paper via Open button without toggling checkbox', async () => {
-    resetStore();
-    await useMetisStore.getState().addPaper(makePaper({ id: 'keyboard-paper' }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-
-    // Click the Open button to select the paper
-    const openBtn = screen.getByTestId('paper-open-button');
-    fireEvent.click(openBtn);
-    expect(useMetisStore.getState().selectedPaperId).toBe('keyboard-paper');
-
-    // Checkbox toggle should NOT select the paper row
-    act(() => useMetisStore.getState().setSelectedPaperId(null));
-    const checkbox = screen.getByTestId('paper-checkbox') as HTMLInputElement;
-    fireEvent.click(checkbox);
-    expect(useMetisStore.getState().selectedPaperId).toBeNull();
-    // But checkbox should still toggle
-    expect(checkbox.checked).toBe(true);
-  });
-
-  it('should filter papers by search query', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Deep Learning Basics', doi: '10.1234/p1' }));
-    useMetisStore.getState().addPaper(makePaper({ id: 'p2', title: 'Reinforcement Learning', doi: '10.1234/p2' }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    expect(screen.getByText('2 篇论文')).toBeDefined();
-    const searchInput = screen.getByPlaceholderText('搜索论文...');
-    fireEvent.change(searchInput, { target: { value: 'Reinforcement' } });
-    expect(screen.queryByText('Deep Learning Basics')).toBeNull();
-    expect(screen.getByText('Reinforcement Learning')).toBeDefined();
-    expect(screen.getByText('1 篇论文')).toBeDefined();
-  });
-
-  it('should show no-matching-papers message when filters return nothing', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ title: 'Deep Learning Basics' }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    const searchInput = screen.getByPlaceholderText('搜索论文...');
-    fireEvent.change(searchInput, { target: { value: 'ZZZ' } });
-    expect(screen.getByText('没有匹配的论文。')).toBeDefined();
-  });
-
-  it('should clear the paper search filter from the empty state', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ title: 'Deep Learning Basics' }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    const searchInput = screen.getByPlaceholderText('搜索论文...') as HTMLInputElement;
-    fireEvent.change(searchInput, { target: { value: 'ZZZ' } });
-    expect(screen.getByText('没有匹配的论文。')).toBeDefined();
-    fireEvent.click(screen.getByText('清除'));
-    expect(searchInput.value).toBe('');
-    expect(screen.getByText('Deep Learning Basics')).toBeDefined();
-  });
-
-  it('should focus search input when pressing / outside of inputs', async () => {
-    resetStore();
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    fireEvent.keyDown(window, { key: '/' });
-    const searchInput = screen.getByPlaceholderText('搜索论文...') as HTMLInputElement;
-    expect(document.activeElement).toBe(searchInput);
-  });
-
-  it('should open import modal on Add button click', async () => {
-    resetStore();
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    fireEvent.click(screen.getByText('+ 添加'));
-    expect(screen.getByText('导入论文')).toBeDefined();
-    expect(screen.getByPlaceholderText('粘贴 BibTeX、RIS、DOI、arXiv ID 或论文元数据...')).toBeDefined();
-  });
-
-  it('should import paper when text is entered and Import clicked', async () => {
-    resetStore();
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    fireEvent.click(screen.getByText('+ 添加'));
-    const textarea = screen.getByPlaceholderText('粘贴 BibTeX、RIS、DOI、arXiv ID 或论文元数据...');
-    fireEvent.change(textarea, { target: { value: 'New paper about transformers' } });
-    await act(async () => {
-      fireEvent.click(screen.getByText('导入'));
-    });
-    expect(useMetisStore.getState().papers.length).toBe(1);
-    expect(useMetisStore.getState().papers[0]!.title).toContain('New paper about transformers');
-  });
-
-  it('should show merged paper link when importing a duplicate', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Duplicate Merge Title', doi: '10.1234/dup' }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    fireEvent.click(screen.getByText('+ 添加'));
-    const textarea = screen.getByPlaceholderText('粘贴 BibTeX、RIS、DOI、arXiv ID 或论文元数据...');
-    const bibtex = `@article{dup,\n  title={Duplicate Merge Title},\n  author={Alice Smith},\n  year={2024}\n}`;
-    fireEvent.change(textarea, { target: { value: bibtex } });
-    await act(async () => {
-      fireEvent.click(screen.getByText('导入'));
-    });
-    expect(screen.getByText('已与现有论文合并（检测到重复）。')).toBeDefined();
-    const link = screen.getByText('查看：Duplicate Merge Title');
-    expect(link).toBeDefined();
-    await act(async () => { fireEvent.click(link); });
-    expect(useMetisStore.getState().selectedPaperId).toBe('p1');
-  });
-
-  it('should import paper from arXiv ID', async () => {
-    resetStore();
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = vi.fn(() => Promise.resolve({
-      ok: true,
-      status: 200,
-      text: () => Promise.resolve(`<?xml version="1.0"?>
-<feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
-  <entry>
-    <id>https://arxiv.org/abs/1706.03762</id>
-    <title>Attention Is All You Need</title>
-    <summary>We propose the Transformer.</summary>
-    <author><name>Ashish Vaswani</name></author>
-    <author><name>Noam Shazeer</name></author>
-    <published>2017-06-12T00:00:00Z</published>
-    <arxiv:primary_category term="cs.CL"/>
-  </entry>
-</feed>`),
-    } as Response));
-    try {
-      const { default: PapersPage } = await import('../../src/pages/PapersPage');
-      render(<PapersPage />);
-      fireEvent.click(screen.getByText('+ 添加'));
-      const textarea = screen.getByPlaceholderText('粘贴 BibTeX、RIS、DOI、arXiv ID 或论文元数据...');
-      fireEvent.change(textarea, { target: { value: '1706.03762' } });
-      await act(async () => {
-        fireEvent.click(screen.getByText('导入'));
-      });
-      const papers = useMetisStore.getState().papers;
-      expect(papers.length).toBe(1);
-      expect(papers[0]!.title).toBe('Attention Is All You Need');
-      expect(papers[0]!.arxivId).toBe('1706.03762');
-      expect(papers[0]!.pdfUrl).toBe('https://arxiv.org/pdf/1706.03762.pdf');
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-
-  it('should extract arXiv ID from arXiv URL and ar5iv URL', async () => {
-    resetStore();
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = vi.fn(() => Promise.resolve({
-      ok: true,
-      status: 200,
-      text: () => Promise.resolve(`<?xml version="1.0"?>
-<feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
-  <entry>
-    <id>https://arxiv.org/abs/2401.12345</id>
-    <title>Test From URL</title>
-    <summary>Summary.</summary>
-    <author><name>A U Thor</name></author>
-    <published>2024-01-01T00:00:00Z</published>
-    <arxiv:primary_category term="cs.CL"/>
-  </entry>
-</feed>`),
-    } as Response));
-    try {
-      const { default: PapersPage } = await import('../../src/pages/PapersPage');
-      render(<PapersPage />);
-      fireEvent.click(screen.getByText('+ 添加'));
-      const textarea = screen.getByPlaceholderText('粘贴 BibTeX、RIS、DOI、arXiv ID 或论文元数据...');
-      fireEvent.change(textarea, { target: { value: 'https://arxiv.org/abs/2401.12345' } });
-      await act(async () => {
-        fireEvent.click(screen.getByText('导入'));
-      });
-      const papers = useMetisStore.getState().papers;
-      expect(papers.length).toBe(1);
-      expect(papers[0]!.title).toBe('Test From URL');
-      expect(papers[0]!.arxivId).toBe('2401.12345');
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-
-  it('should auto-download PDF after importing from arXiv', async () => {
-    resetStore();
-    const originalFetch = globalThis.fetch;
-    const originalMetis = window.metis;
-    globalThis.fetch = vi.fn(() => Promise.resolve({
-      ok: true,
-      status: 200,
-      text: () => Promise.resolve(`<?xml version="1.0"?>
-<feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
-  <entry>
-    <id>https://arxiv.org/abs/1706.03762</id>
-    <title>Attention Is All You Need</title>
-    <summary>We propose the Transformer.</summary>
-    <author><name>Ashish Vaswani</name></author>
-    <published>2017-06-12T00:00:00Z</published>
-    <arxiv:primary_category term="cs.CL"/>
-  </entry>
-</feed>`),
-    } as Response));
-    const pdfCapability = makePdfCapability({ displayName: 'attention.pdf' });
-    window.metis = makeMetisAPI({
-      ...(originalMetis ?? {}),
-      savePaper: vi.fn(async () => {}),
-      downloadPaperPdf: vi.fn(async () => makePaperDownloadResult(pdfCapability, 'attention.pdf')),
-    });
-    try {
-      const { default: PapersPage } = await import('../../src/pages/PapersPage');
-      render(<PapersPage />);
-      fireEvent.click(screen.getByText('+ 添加'));
-      const textarea = screen.getByPlaceholderText('粘贴 BibTeX、RIS、DOI、arXiv ID 或论文元数据...');
-      fireEvent.change(textarea, { target: { value: '1706.03762' } });
-      await act(async () => {
-        fireEvent.click(screen.getByText('导入'));
-      });
-      await waitFor(() => {
-        const papers = useMetisStore.getState().papers;
-        expect(papers[0]?.pdfCapability?.capabilityId).toBe(pdfCapability.capabilityId);
-        expect(papers[0]?.pdfCapability?.displayName).toBe('attention.pdf');
-      });
-    } finally {
-      globalThis.fetch = originalFetch;
-      window.metis = originalMetis;
-    }
-  });
-
-  it('should delete a paper after confirming the delete dialog', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper());
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    fireEvent.click(screen.getByText('Test Paper Title'));
-    fireEvent.click(screen.getByText('删除'));
-    expect(screen.getByText('确认删除')).toBeDefined();
-    fireEvent.click(screen.getByTestId('confirm-delete'));
-    expect(useMetisStore.getState().papers.length).toBe(0);
-  });
-
-  it('should cancel paper deletion from the confirm dialog', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper());
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    fireEvent.click(screen.getByText('Test Paper Title'));
-    fireEvent.click(screen.getByText('删除'));
-    expect(screen.getByText('确认删除')).toBeDefined();
-    fireEvent.click(screen.getByText('取消'));
-    expect(useMetisStore.getState().papers.length).toBe(1);
-  });
-
-  it('should select all papers and mark them as read in bulk', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Paper One', doi: '10.1234/p1', readStatus: 'unread' }));
-    useMetisStore.getState().addPaper(makePaper({ id: 'p2', title: 'Paper Two', doi: '10.1234/p2', readStatus: 'unread' }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    const selectAll = screen.getByLabelText('全选') as HTMLInputElement;
-    fireEvent.click(selectAll);
-    expect(screen.getByText(/已选择 2 项/)).toBeDefined();
-    fireEvent.click(screen.getByText('标记为已读'));
-    const state = useMetisStore.getState();
-    expect(state.papers.every((p) => p.readStatus === 'read' && p.readAt && p.readAt > 0)).toBe(true);
-    expect(screen.queryByText(/已选择/)).toBeNull();
-  });
-
-  it('should delete selected papers in bulk after confirmation', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Paper One', doi: '10.1234/p1' }));
-    useMetisStore.getState().addPaper(makePaper({ id: 'p2', title: 'Paper Two', doi: '10.1234/p2' }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    const selectAll = screen.getByLabelText('全选') as HTMLInputElement;
-    fireEvent.click(selectAll);
-    expect(screen.getByText(/已选择 2 项/)).toBeDefined();
-    fireEvent.click(screen.getByText('删除所选'));
-    expect(screen.getByText('删除所选论文？')).toBeDefined();
-    fireEvent.click(screen.getByTestId('confirm-delete'));
-    await waitFor(() => expect(useMetisStore.getState().papers.length).toBe(0));
-  });
-
-  it('should star and unstar selected papers in bulk', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Paper One', doi: '10.1234/p1', starred: false }));
-    useMetisStore.getState().addPaper(makePaper({ id: 'p2', title: 'Paper Two', doi: '10.1234/p2', starred: false }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    const selectAll = screen.getByLabelText('全选') as HTMLInputElement;
-    fireEvent.click(selectAll);
-    fireEvent.click(screen.getByText('收藏所选'));
-    await waitFor(() => expect(useMetisStore.getState().papers.every((p) => p.starred)).toBe(true));
-
-    fireEvent.click(selectAll);
-    fireEvent.click(screen.getByText('取消收藏'));
-    await waitFor(() => expect(useMetisStore.getState().papers.every((p) => !p.starred)).toBe(true));
-  });
-
-  it('should set rating for selected papers in bulk', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Paper One', doi: '10.1234/p1', rating: 0 }));
-    useMetisStore.getState().addPaper(makePaper({ id: 'p2', title: 'Paper Two', doi: '10.1234/p2', rating: 2 }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    const selectAll = screen.getByLabelText('全选') as HTMLInputElement;
-    fireEvent.click(selectAll);
-
-    const ratingSelect = screen.getByLabelText('设置评分') as HTMLSelectElement;
-    fireEvent.change(ratingSelect, { target: { value: '4' } });
-
-    await waitFor(() => expect(useMetisStore.getState().papers.every((p) => p.rating === 4)).toBe(true));
-  });
-
-  it('should set read status for selected papers in bulk', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Paper One', doi: '10.1234/p1', readStatus: 'unread' }));
-    useMetisStore.getState().addPaper(makePaper({ id: 'p2', title: 'Paper Two', doi: '10.1234/p2', readStatus: 'unread' }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    const selectAll = screen.getByLabelText('全选') as HTMLInputElement;
-    fireEvent.click(selectAll);
-
-    const statusSelect = screen.getByLabelText('设置状态') as HTMLSelectElement;
-    fireEvent.change(statusSelect, { target: { value: 'skimmed' } });
-
-    await waitFor(() => expect(useMetisStore.getState().papers.every((p) => p.readStatus === 'skimmed')).toBe(true));
-  });
-
-  it('should add tags to selected papers in bulk', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Paper One', doi: '10.1234/p1', tags: ['existing'] }));
-    useMetisStore.getState().addPaper(makePaper({ id: 'p2', title: 'Paper Two', doi: '10.1234/p2', tags: [] }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    const selectAll = screen.getByLabelText('全选') as HTMLInputElement;
-    fireEvent.click(selectAll);
-
-    fireEvent.click(screen.getByText('添加标签'));
-    const input = screen.getByTestId('bulk-tag-input') as HTMLInputElement;
-    fireEvent.change(input, { target: { value: 'tag1, tag2' } });
-    fireEvent.click(screen.getByText('添加'));
-
-    await waitFor(() => {
-      const state = useMetisStore.getState();
-      expect(state.papers[0]?.tags).toContain('tag1');
-      expect(state.papers[0]?.tags).toContain('tag2');
-      expect(state.papers[1]?.tags).toContain('tag1');
-    });
-  });
-
-  it('should add selected papers to a collection in bulk', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Paper One', doi: '10.1234/p1' }));
-    useMetisStore.getState().addPaper(makePaper({ id: 'p2', title: 'Paper Two', doi: '10.1234/p2' }));
-    await useMetisStore.getState().addCollection({ id: 'c1', name: 'My Collection', description: '', paperIds: [], createdAt: Date.now() });
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    const selectAll = screen.getByLabelText('全选') as HTMLInputElement;
-    fireEvent.click(selectAll);
-    expect(screen.getByText(/已选择 2 项/)).toBeDefined();
-    const addSelect = screen.getByLabelText('添加到文集') as HTMLSelectElement;
-    fireEvent.change(addSelect, { target: { value: 'c1' } });
-    await waitFor(() => {
-      const collection = useMetisStore.getState().collections.find((c) => c.id === 'c1');
-      expect(collection?.paperIds).toContain('p1');
-      expect(collection?.paperIds).toContain('p2');
-    });
-  });
-
-  it('should remove selected papers from the active collection in bulk', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Paper One', doi: '10.1234/p1' }));
-    useMetisStore.getState().addPaper(makePaper({ id: 'p2', title: 'Paper Two', doi: '10.1234/p2' }));
-    useMetisStore.setState({
-      collections: [{ id: 'c1', name: 'My Collection', description: '', paperIds: ['p1', 'p2'], createdAt: Date.now() }],
-      paperFilter: { query: '', collectionId: 'c1' },
-    });
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    const selectAll = screen.getByLabelText('全选') as HTMLInputElement;
-    fireEvent.click(selectAll);
-    expect(screen.getByText(/已选择 2 项/)).toBeDefined();
-    fireEvent.click(screen.getByText('从文集移除'));
-    await waitFor(() => {
-      const collection = useMetisStore.getState().collections.find((c) => c.id === 'c1');
-      expect(collection?.paperIds).toHaveLength(0);
-    });
-  });
-
-  it('should sort papers by year descending', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Old', doi: '10.1234/p1', year: 2020 }));
-    useMetisStore.getState().addPaper(makePaper({ id: 'p2', title: 'Recent', doi: '10.1234/p2', year: 2022 }));
-    useMetisStore.getState().addPaper(makePaper({ id: 'p3', title: 'Mid', doi: '10.1234/p3', year: 2021 }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    const { container } = render(<PapersPage />);
-    const sortSelect = screen.getByLabelText('排序') as HTMLSelectElement;
-    fireEvent.change(sortSelect, { target: { value: 'year' } });
-    const titles = Array.from(container.querySelectorAll('.paper-title')).map((el) => el.textContent);
-    expect(titles).toEqual(['Recent', 'Mid', 'Old']);
-  });
-
-  it('should toggle star with correct aria-label and not affect selection', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ title: 'Starred Paper', starred: false }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    // Initial state: not starred, aria-label = "收藏" (zh) / "Star" (en)
-    const starBtn = screen.getByTestId('paper-star-button');
-    expect(starBtn.getAttribute('aria-label')).toBe('收藏');
-    expect(useMetisStore.getState().papers[0]!.starred).toBe(false);
-    // Click to star
-    fireEvent.click(starBtn);
-    expect(useMetisStore.getState().papers[0]!.starred).toBe(true);
-    expect(starBtn.getAttribute('aria-label')).toBe('取消收藏');
-    // Star button click must NOT select the paper row
-    expect(useMetisStore.getState().selectedPaperId).toBeNull();
-    // Click to unstar
-    fireEvent.click(starBtn);
-    expect(useMetisStore.getState().papers[0]!.starred).toBe(false);
-    expect(starBtn.getAttribute('aria-label')).toBe('收藏');
-  });
-
-  it('should filter papers by starred only', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Starred Paper', doi: '10.1234/p1', starred: true }));
-    useMetisStore.getState().addPaper(makePaper({ id: 'p2', title: 'Normal Paper', doi: '10.1234/p2' }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    const { container } = render(<PapersPage />);
-    const getTitles = () => Array.from(container.querySelectorAll('.paper-title')).map((el) => el.textContent);
-    expect(getTitles()).toHaveLength(2);
-    fireEvent.click(screen.getByRole('button', { name: /仅收藏/i }));
-    await waitFor(() => expect(getTitles()).toHaveLength(1));
-    expect(getTitles()[0]).toBe('Starred Paper');
-  });
-
-  it('should clear all paper filters', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Unread Paper', doi: '10.1234/p1', readStatus: 'unread' }));
-    useMetisStore.getState().addPaper(makePaper({ id: 'p2', title: 'Read Paper', doi: '10.1234/p2', readStatus: 'read' }));
-    useMetisStore.setState({ paperFilter: { query: '', readStatus: 'read' } });
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    const { container } = render(<PapersPage />);
-    const getTitles = () => Array.from(container.querySelectorAll('.paper-title')).map((el) => el.textContent);
-    expect(getTitles()).toHaveLength(1);
-    fireEvent.click(screen.getByRole('button', { name: /清空过滤/i }));
-    await waitFor(() => expect(getTitles()).toHaveLength(2));
-    expect(useMetisStore.getState().paperFilter.readStatus).toBeUndefined();
-  });
-
-  it('should record readAt when marking a paper as read', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ readStatus: 'unread' }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    fireEvent.click(screen.getByText('Test Paper Title'));
-    const statusSelect = screen.getByDisplayValue('未读') as HTMLSelectElement;
-    fireEvent.change(statusSelect, { target: { value: 'read' } });
-    const paper = useMetisStore.getState().papers[0]!;
-    expect(paper.readStatus).toBe('read');
-    expect(paper.readAt).toBeGreaterThan(0);
-  });
-
-  it('should open and use PDF Chat panel', async () => {
-    resetStore();
-    const pdfCapability = makePdfCapability();
-    useMetisStore.getState().addPaper(makePaper({ pdfCapability }));
-    const originalMetis = window.metis;
-    window.metis = makeMetisAPI({
-      useFileCapability: vi.fn(async () => makeFileCapabilityUseResult('extract', pdfCapability, 'PDF text content')),
-      agentChat: async () => completedAgentResponse('This is the answer.'),
-    });
-
-    try {
-      const { default: PapersPage } = await import('../../src/pages/PapersPage');
-      render(<PapersPage />);
-      fireEvent.click(screen.getByText('Test Paper Title'));
-      // Click the Open button in the detail panel (not the list row button)
-      const openButtons = screen.getAllByText('打开');
-      const detailOpenBtn = openButtons.find(btn => !btn.closest('ul.papers-list')) ?? openButtons[openButtons.length - 1]!;
-      fireEvent.click(detailOpenBtn);
-      const loadButton = screen.getByText('加载 PDF 进行问答');
-      await act(async () => {
-        fireEvent.click(loadButton);
-      });
-      expect(screen.getByText(/PDF 已加载/)).toBeDefined();
-      expect(window.metis?.useFileCapability).toHaveBeenCalledWith({
-        capabilityId: pdfCapability.capabilityId,
-        operation: 'extract',
-        maxChars: 12000,
-      });
-
-      const input = screen.getByPlaceholderText('问一个关于这篇论文的问题...');
-      fireEvent.change(input, { target: { value: 'What is the main contribution?' } });
-      await act(async () => {
-        fireEvent.click(screen.getByText('发送'));
-      });
-      expect(screen.getByText('This is the answer.')).toBeDefined();
-    } finally {
-      window.metis = originalMetis;
-    }
-  });
-
-  it('should generate summary and tags from PDF', async () => {
-    resetStore();
-    const pdfCapability = makePdfCapability();
-    useMetisStore.getState().addPaper(makePaper({ pdfCapability, abstract: '', tags: [] }));
-    const originalMetis = window.metis;
-    window.metis = makeMetisAPI({
-      useFileCapability: vi.fn(async () => makeFileCapabilityUseResult('extract', pdfCapability, 'PDF text content')),
-      agentChat: async () => completedAgentResponse(
-        JSON.stringify({ abstract: 'Generated summary.', tags: ['llm', 'generation'] }),
-      ),
-      savePaper: async () => {},
-    });
-
-    try {
-      const { default: PapersPage } = await import('../../src/pages/PapersPage');
-      render(<PapersPage />);
-      fireEvent.click(screen.getByText('Test Paper Title'));
-      const button = screen.getByText('生成摘要与标签');
-      await act(async () => {
-        fireEvent.click(button);
-      });
-      const updated = useMetisStore.getState().papers[0];
-      expect(updated?.abstract).toBe('Generated summary.');
-      expect(updated?.tags).toContain('llm');
-      expect(updated?.tags).toContain('generation');
-      expect(window.metis?.useFileCapability).toHaveBeenCalledWith({
-        capabilityId: pdfCapability.capabilityId,
-        operation: 'extract',
-        maxChars: 12000,
-      });
-    } finally {
-      window.metis = originalMetis;
-    }
-  });
-
-  it('should open export modal', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper());
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    fireEvent.click(screen.getByText('导出'));
-    expect(screen.getByText('导出库')).toBeDefined();
-    expect(screen.getByText('BibTeX')).toBeDefined();
-    expect(screen.getByText('CSV')).toBeDefined();
-  });
-
-  it('should format citations in APA, MLA, Chicago and IEEE', () => {
-    const paper = makePaper();
-    expect(formatCitation(paper, 'apa')).toContain('Smith, A.');
-    expect(formatCitation(paper, 'apa')).toContain('(2024)');
-    expect(formatCitation(paper, 'mla')).toContain('"Test Paper Title."');
-    expect(formatCitation(paper, 'chicago')).toContain('(2024)');
-    expect(formatCitation(paper, 'ieee')).toContain('“Test Paper Title,”');
-  });
-
-  it('should copy citation from paper list item', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper());
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    const buttons = screen.getAllByTitle('复制');
-    expect(buttons.length).toBeGreaterThan(0);
-    fireEvent.click(buttons[0]!);
-    expect(screen.getByText('已复制')).toBeDefined();
-  });
-
-  it('should open export citations modal and copy all', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper());
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    fireEvent.click(screen.getAllByText('导出引用')[0]!);
-    expect(screen.getAllByText('导出引用').length).toBe(2);
-    expect(screen.getByText('复制全部')).toBeDefined();
-    expect(screen.getByText('下载')).toBeDefined();
-    const textarea = screen.getByDisplayValue(/Smith, A./);
-    expect(textarea).toBeDefined();
-    fireEvent.click(screen.getByText('复制全部'));
-    expect(screen.getByText('已复制')).toBeDefined();
-  });
-
-  it('should batch index all unindexed PDFs', async () => {
-    resetStore();
-    const capA = makePdfCapability({ capabilityId: 'fc_paper_a_pdf_capability_0000000000000000' });
-    const capB = makePdfCapability({ capabilityId: 'fc_paper_b_pdf_capability_0000000000000000' });
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Paper A', doi: undefined, pdfCapability: capA }));
-    useMetisStore.getState().addPaper(makePaper({ id: 'p2', title: 'Paper B', doi: undefined, pdfCapability: capB }));
-    const originalMetis = window.metis;
-    window.metis = makeMetisAPI({
-      useFileCapability: vi.fn(async (request: { capabilityId: string }) =>
-        makeFileCapabilityUseResult(
-          'extract',
-          request.capabilityId === capA.capabilityId ? capA : capB,
-          'extracted pdf text content',
-        )),
-      savePaper: async () => {},
-    });
-
-    try {
-      const { default: PapersPage } = await import('../../src/pages/PapersPage');
-      render(<PapersPage />);
-      const button = screen.getByText('索引所有 PDF');
-      await act(async () => {
-        fireEvent.click(button);
-      });
-      const p1 = useMetisStore.getState().papers.find((p) => p.id === 'p1');
-      const p2 = useMetisStore.getState().papers.find((p) => p.id === 'p2');
-      expect(p1?.pdfText).toBe('extracted pdf text content');
-      expect(p2?.pdfText).toBe('extracted pdf text content');
-      expect(screen.getByText(/已索引/)).toBeDefined();
-      expect(window.metis?.useFileCapability).toHaveBeenCalledWith({
-        capabilityId: capA.capabilityId,
-        operation: 'extract',
-        maxChars: 50000,
-      });
-      expect(window.metis?.useFileCapability).toHaveBeenCalledWith({
-        capabilityId: capB.capabilityId,
-        operation: 'extract',
-        maxChars: 50000,
-      });
-    } finally {
-      window.metis = originalMetis;
-    }
-  });
-
-  it('should open RSS feed panel', async () => {
-    resetStore();
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    fireEvent.click(screen.getByText('管理'));
-    expect(screen.getByText('RSS 订阅')).toBeDefined();
-    expect(screen.getByPlaceholderText('RSS/Atom 订阅地址...')).toBeDefined();
-  });
-
-  it('should display linked notes and experiments in paper detail', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Linked Paper' }));
-    useMetisStore.getState().addNote(makeNote({ id: 'n1', title: 'Linked Note', linkedPaperIds: ['p1'] }));
-    useMetisStore.getState().addExperiment(makeExperiment({ id: 'e1', name: 'Linked Experiment', linkedPaperIds: ['p1'] }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    fireEvent.click(screen.getByText('Linked Paper'));
-    expect(screen.getByText('关联笔记')).toBeDefined();
-    expect(screen.getByText('Linked Note')).toBeDefined();
-    expect(screen.getByText('关联实验')).toBeDefined();
-    expect(screen.getByText('Linked Experiment')).toBeDefined();
-  });
-
-  it('should link and unlink notes and experiments from paper detail', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Linkable Paper' }));
-    useMetisStore.getState().addNote(makeNote({ id: 'n1', title: 'Note One', linkedPaperIds: [] }));
-    useMetisStore.getState().addExperiment(makeExperiment({ id: 'e1', name: 'Experiment One', linkedPaperIds: [] }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    fireEvent.click(screen.getByText('Linkable Paper'));
-    const noteCheckbox = screen.getByLabelText(/Note One/) as HTMLInputElement;
-    const expCheckbox = screen.getByLabelText(/Experiment One/) as HTMLInputElement;
-    expect(noteCheckbox.checked).toBe(false);
-    expect(expCheckbox.checked).toBe(false);
-    await act(async () => {
-      fireEvent.click(noteCheckbox);
-      fireEvent.click(expCheckbox);
-    });
-    expect(useMetisStore.getState().notes[0]!.linkedPaperIds).toContain('p1');
-    expect(useMetisStore.getState().experiments[0]!.linkedPaperIds).toContain('p1');
-    await act(async () => {
-      fireEvent.click(noteCheckbox);
-      fireEvent.click(expCheckbox);
-    });
-    expect(useMetisStore.getState().notes[0]!.linkedPaperIds).not.toContain('p1');
-    expect(useMetisStore.getState().experiments[0]!.linkedPaperIds).not.toContain('p1');
-  });
-
-  it('should display active tag chip and clear it', async () => {
-    resetStore();
-    useMetisStore.setState({
-      papers: [
-        makePaper({ id: 'p1', title: 'Paper One', tags: ['nlp'], rating: 0 }),
-        makePaper({ id: 'p2', title: 'Paper Two', tags: ['cv'], rating: 0 }),
-      ],
-    });
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    const { rerender } = render(<PapersPage />);
-    await act(async () => {
-      useMetisStore.getState().setPaperFilter({ tag: 'nlp' });
-    });
-    rerender(<PapersPage />);
-    expect(screen.getByText('标签：nlp')).toBeDefined();
-    const clearButton = screen.getByLabelText('清除标签过滤');
-    await act(async () => {
-      fireEvent.click(clearButton);
-    });
-    expect(useMetisStore.getState().paperFilter.tag).toBeUndefined();
-  });
-
-  it('should filter papers by clicking a tag in the list item', async () => {
-    resetStore();
-    useMetisStore.setState({
-      papers: [
-        makePaper({ id: 'p1', title: 'Paper One', tags: ['nlp'], rating: 0 }),
-        makePaper({ id: 'p2', title: 'Paper Two', tags: ['cv'], rating: 0 }),
-      ],
-    });
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    const tagButton = screen.getByRole('button', { name: 'nlp' });
-    await act(async () => {
-      fireEvent.click(tagButton);
-    });
-    expect(useMetisStore.getState().paperFilter.tag).toBe('nlp');
-    expect(screen.getByText('标签：nlp')).toBeDefined();
-    expect(screen.queryByText('Paper Two')).toBeNull();
-  });
-
-  it('should open DOI or arXiv URL from paper detail', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Linked Paper', doi: '10.1234/example' }));
-    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    fireEvent.click(screen.getByText('Linked Paper'));
-    const openButton = screen.getByText('打开原文');
-    fireEvent.click(openButton);
-    expect(openSpy).toHaveBeenCalledWith('https://doi.org/10.1234/example', '_blank', 'noopener,noreferrer');
-    openSpy.mockRestore();
-  });
-
-  it('should export single paper as BibTeX and CSV from detail', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Exportable Paper' }));
-    const blobSpy = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:fake');
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    fireEvent.click(screen.getByText('Exportable Paper'));
-    const bibButton = screen.getByText('导出 BibTeX');
-    const csvButton = screen.getByText('导出 CSV');
-    expect(bibButton).toBeDefined();
-    expect(csvButton).toBeDefined();
-    fireEvent.click(bibButton);
-    expect(blobSpy).toHaveBeenCalled();
-    blobSpy.mockRestore();
-  });
-
-  it('should display word and character count for paper notes', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Noted Paper', notes: 'Hello world 你好' }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    fireEvent.click(screen.getByText('Noted Paper'));
-    expect(screen.getByText('3 词')).toBeDefined();
-    expect(screen.getByText('14 字')).toBeDefined();
-  });
-
-  it('should add and remove paper references from the detail panel', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Attention Is All You Need', doi: '10.1234/a' }));
-    useMetisStore.getState().addPaper(makePaper({ id: 'p2', title: 'BERT: Pre-training', doi: '10.1234/b' }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    fireEvent.click(screen.getByText('Attention Is All You Need'));
-    expect(screen.getByText('暂无本地参考文献。从下拉菜单添加其他论文。')).toBeDefined();
-    const selects = screen.getAllByRole('combobox');
-    const refSelect = selects[selects.length - 1] as HTMLSelectElement;
-    fireEvent.change(refSelect, { target: { value: 'p2' } });
-    await act(async () => {
-      fireEvent.click(screen.getByText('添加引用'));
-    });
-    expect(screen.getAllByText('BERT: Pre-training').length).toBeGreaterThanOrEqual(2);
-    expect(useMetisStore.getState().papers.find((p) => p.id === 'p1')?.referenceIds).toEqual(['p2']);
-    await act(async () => {
-      fireEvent.click(screen.getByText('移除'));
-    });
-    expect(useMetisStore.getState().papers.find((p) => p.id === 'p1')?.referenceIds).toEqual([]);
-  });
-
-  it('should update reading progress and reading time from detail panel', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Progress Paper' }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    fireEvent.click(screen.getByText('Progress Paper'));
-    const slider = screen.getByRole('slider') as HTMLInputElement;
-    expect(slider.value).toBe('0');
-    fireEvent.change(slider, { target: { value: '75' } });
-    expect(useMetisStore.getState().papers.find((p) => p.id === 'p1')?.readingProgress).toBe(75);
-    await act(async () => {
-      fireEvent.click(screen.getByText('增加 5 分钟'));
-    });
-    expect(useMetisStore.getState().papers.find((p) => p.id === 'p1')?.readingTimeSeconds).toBe(300);
-  });
-  it('should archive and unarchive a paper from the detail panel', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Archive Me' }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    fireEvent.click(screen.getByText('Archive Me'));
-    await act(async () => {
-      fireEvent.click(screen.getByText('归档'));
-    });
-    expect(useMetisStore.getState().papers.find((p) => p.id === 'p1')?.archived).toBe(true);
-    expect(screen.getByText('0 篇论文')).toBeDefined();
-    await act(async () => {
-      fireEvent.click(screen.getByText('显示已归档'));
-    });
-    expect(screen.getAllByText('Archive Me').length).toBeGreaterThanOrEqual(2);
-    fireEvent.click(screen.getAllByText('Archive Me')[0]!);
-    await act(async () => {
-      fireEvent.click(screen.getByText('取消归档'));
-    });
-    expect(useMetisStore.getState().papers.find((p) => p.id === 'p1')?.archived).toBe(false);
-  });
-
-  it('should filter papers by priority', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'High Priority Paper', doi: '10.1234/p1', priority: 'high' }));
-    useMetisStore.getState().addPaper(makePaper({ id: 'p2', title: 'Low Priority Paper', doi: '10.1234/p2', priority: 'low' }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    expect(screen.getByText('2 篇论文')).toBeDefined();
-    const prioritySelect = screen.getByLabelText('优先级') as HTMLSelectElement;
-    fireEvent.change(prioritySelect, { target: { value: 'high' } });
-    expect(screen.getByText('High Priority Paper')).toBeDefined();
-    expect(screen.queryByText('Low Priority Paper')).toBeNull();
-    expect(screen.getByText('1 篇论文')).toBeDefined();
-  });
-
-  it('should set priority from detail panel', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Priority Paper' }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    fireEvent.click(screen.getByText('Priority Paper'));
-    const prioritySelect = screen.getByLabelText('设置优先级') as HTMLSelectElement;
-    fireEvent.change(prioritySelect, { target: { value: 'high' } });
-    expect(useMetisStore.getState().papers.find((p) => p.id === 'p1')?.priority).toBe('high');
-  });
-
-  it('should bulk set priority for selected papers', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Paper One' }));
-    useMetisStore.getState().addPaper(makePaper({ id: 'p2', title: 'Paper Two' }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    const checkboxes = screen.getAllByRole('checkbox');
-    fireEvent.click(checkboxes[0]!);
-    const bulkPrioritySelect = screen.getAllByLabelText('设置优先级')[0] as HTMLSelectElement;
-    fireEvent.change(bulkPrioritySelect, { target: { value: 'medium' } });
-    await act(async () => { /* flush updates */ });
-    expect(useMetisStore.getState().papers.find((p) => p.id === 'p1')?.priority).toBe('medium');
-    expect(useMetisStore.getState().papers.find((p) => p.id === 'p2')?.priority).toBeUndefined();
-  });
-
-  it('should display priority badge in paper list', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Badged Paper', priority: 'high' }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    const badges = screen.getAllByText('高').filter((el) => el.classList.contains('badge'));
-    expect(badges.length).toBeGreaterThan(0);
-  });
-
-  it('should sort papers by priority', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Low Paper', doi: '10.1234/p1', priority: 'low' }));
-    useMetisStore.getState().addPaper(makePaper({ id: 'p2', title: 'High Paper', doi: '10.1234/p2', priority: 'high' }));
-    useMetisStore.getState().addPaper(makePaper({ id: 'p3', title: 'Medium Paper', doi: '10.1234/p3', priority: 'medium' }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    const sortSelect = screen.getByLabelText('排序') as HTMLSelectElement;
-    fireEvent.change(sortSelect, { target: { value: 'priority' } });
-    const items = document.querySelectorAll('ul.papers-list li.paper-item');
-    expect(items[0]?.textContent).toContain('High Paper');
-    expect(items[1]?.textContent).toContain('Medium Paper');
-    expect(items[2]?.textContent).toContain('Low Paper');
-  });
-
-  it('should include priority column in CSV export', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'CSV Paper', priority: 'high' }));
-    let capturedCsv = '';
-    const originalBlob = global.Blob;
-    const blobSpy = vi.spyOn(global, 'Blob').mockImplementation(function (this: unknown, content?: BlobPart[], opts?: BlobPropertyBag) {
-      capturedCsv = (content ?? []).join('');
-      return new originalBlob([], opts);
-    });
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    fireEvent.click(screen.getByText('CSV Paper'));
-    await act(async () => { fireEvent.click(screen.getByText('导出 CSV')); });
-    blobSpy.mockRestore();
-    expect(capturedCsv).toContain('priority');
-    expect(capturedCsv).toContain('"high"');
-  });
-
-  it('should bulk archive and unarchive selected papers', async () => {
-    resetStore();
-    await useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Archive Bulk', doi: '10.1234/p1' }));
-    await useMetisStore.getState().addPaper(makePaper({ id: 'p2', title: 'Keep Active', doi: '10.1234/p2' }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    fireEvent.click(screen.getAllByTestId('paper-checkbox')[0]!);
-    await act(async () => { fireEvent.click(screen.getByText('归档所选')); });
-    expect(useMetisStore.getState().papers.find((p) => p.id === 'p1')?.archived).toBe(true);
-    expect(useMetisStore.getState().papers.find((p) => p.id === 'p2')?.archived ?? false).toBe(false);
-    await act(async () => { fireEvent.click(screen.getByText('显示已归档')); });
-    fireEvent.click(screen.getAllByTestId('paper-checkbox')[0]!);
-    await act(async () => { fireEvent.click(screen.getByText('取消归档所选')); });
-    expect(useMetisStore.getState().papers.find((p) => p.id === 'p1')?.archived).toBe(false);
-  });
-
-  it('should set and clear deadline from detail panel', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Deadline Paper' }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    fireEvent.click(screen.getByText('Deadline Paper'));
-    const dateInput = screen.getByLabelText('设置截止日期') as HTMLInputElement;
-    fireEvent.change(dateInput, { target: { value: '2026-06-15' } });
-    expect(useMetisStore.getState().papers.find((p) => p.id === 'p1')?.deadline).toBe('2026-06-15');
-    await act(async () => { fireEvent.click(screen.getByText('清除期限')); });
-    expect(useMetisStore.getState().papers.find((p) => p.id === 'p1')?.deadline).toBeUndefined();
-  });
-
-  it('should filter papers by deadline status', async () => {
-    resetStore();
-    const today = localDateString();
-    const yesterday = localDateString(new Date(Date.now() - 86400000));
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Due Today', doi: '10.1234/p1', deadline: today }));
-    useMetisStore.getState().addPaper(makePaper({ id: 'p2', title: 'Overdue Paper', doi: '10.1234/p2', deadline: yesterday }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    const deadlineSelect = screen.getByLabelText('截止日期') as HTMLSelectElement;
-    fireEvent.change(deadlineSelect, { target: { value: 'overdue' } });
-    expect(screen.queryByText('Due Today')).toBeNull();
-    expect(screen.getByText('Overdue Paper')).toBeDefined();
-  });
-
-  it('should sort papers by deadline', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Later Paper', doi: '10.1234/p1', deadline: '2026-06-20' }));
-    useMetisStore.getState().addPaper(makePaper({ id: 'p2', title: 'Sooner Paper', doi: '10.1234/p2', deadline: '2026-06-10' }));
-    useMetisStore.getState().addPaper(makePaper({ id: 'p3', title: 'No Deadline', doi: '10.1234/p3' }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    const sortSelect = screen.getByLabelText('排序') as HTMLSelectElement;
-    fireEvent.change(sortSelect, { target: { value: 'deadline' } });
-    const items = document.querySelectorAll('ul.papers-list li.paper-item');
-    expect(items[0]?.textContent).toContain('Sooner Paper');
-    expect(items[1]?.textContent).toContain('Later Paper');
-    expect(items[2]?.textContent).toContain('No Deadline');
-  });
-
-  it('should include deadline column in CSV export', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'CSV Deadline', deadline: '2026-06-15' }));
-    let capturedCsv = '';
-    const originalBlob = global.Blob;
-    const blobSpy = vi.spyOn(global, 'Blob').mockImplementation(function (this: unknown, content?: BlobPart[], opts?: BlobPropertyBag) {
-      capturedCsv = (content ?? []).join('');
-      return new originalBlob([], opts);
-    });
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    fireEvent.click(screen.getByText('CSV Deadline'));
-    await act(async () => { fireEvent.click(screen.getByText('导出 CSV')); });
-    blobSpy.mockRestore();
-    expect(capturedCsv).toContain('deadline');
-    expect(capturedCsv).toContain('"2026-06-15"');
-  });
-
-  it('should bulk set deadline for selected papers', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Paper One', doi: '10.1234/p1' }));
-    useMetisStore.getState().addPaper(makePaper({ id: 'p2', title: 'Paper Two', doi: '10.1234/p2' }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    fireEvent.click(screen.getAllByTestId('paper-checkbox')[0]!);
-    fireEvent.click(screen.getByText('设置期限'));
-    const dateInput = screen.getByTestId('bulk-deadline-input') as HTMLInputElement;
-    fireEvent.change(dateInput, { target: { value: '2026-07-01' } });
-    await act(async () => { fireEvent.click(screen.getAllByText('添加')[0]!); });
-    expect(useMetisStore.getState().papers.find((p) => p.id === 'p1')?.deadline).toBe('2026-07-01');
-    expect(useMetisStore.getState().papers.find((p) => p.id === 'p2')?.deadline).toBeUndefined();
-  });
-
-  it('should highlight overdue papers and show deadline date in list', async () => {
-    resetStore();
-    const yesterday = localDateString(new Date(Date.now() - 86400000));
-    useMetisStore.getState().addPaper(makePaper({ id: 'p1', title: 'Overdue Listed', deadline: yesterday }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    const item = screen.getByText('Overdue Listed').closest('li');
-    expect(item?.classList.contains('overdue')).toBe(true);
-    expect(screen.getByText(/2026-\d{2}-\d{2}/)).toBeDefined();
-  });
-
-  it('sanitizes search failures in normal mode without leaking the HTTP body', async () => {
-    resetStore();
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
-      ok: false,
-      status: 503,
-      statusText: 'Service Unavailable',
-      text: async () => 'INTERNAL_HTTP_BODY request_id=secret-trace',
-    } as Response);
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage uiMode="normal" />);
-    fireEvent.click(screen.getByText('搜索'));
-    fireEvent.change(screen.getByPlaceholderText('输入关键词、标题或作者...'), { target: { value: 'transformers' } });
-    await act(async () => { fireEvent.click(screen.getByText('查找论文')); });
-
-    expect(await screen.findByText('暂时无法完成文献搜索，请稍后重试。')).toBeDefined();
-    expect(screen.queryByText(/INTERNAL_HTTP_BODY|503|secret-trace/)).toBeNull();
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-  });
-
-  it('preserves raw operation details in diagnostic mode', async () => {
-    resetStore();
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
-      ok: false,
-      status: 503,
-      statusText: 'Service Unavailable',
-      text: async () => 'INTERNAL_HTTP_BODY request_id=diagnostic-trace',
-    } as Response);
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage uiMode="diagnostic" />);
-    fireEvent.click(screen.getByText('搜索'));
-    fireEvent.change(screen.getByPlaceholderText('输入关键词、标题或作者...'), { target: { value: 'transformers' } });
-    await act(async () => { fireEvent.click(screen.getByText('查找论文')); });
-
-    expect(await screen.findByText(/Semantic Scholar API error 503: INTERNAL_HTTP_BODY request_id=diagnostic-trace/)).toBeDefined();
-  });
-
-  it('removes Agent wording from normal PDF errors', async () => {
-    resetStore();
-    const pdfCapability = makePdfCapability();
-    useMetisStore.getState().addPaper(makePaper({ pdfCapability }));
-    const originalMetis = window.metis;
-    window.metis = makeMetisAPI({
-      useFileCapability: vi.fn(async () => makeFileCapabilityUseResult('extract', pdfCapability, 'PDF text content')),
-    });
-    try {
-      const { default: PapersPage } = await import('../../src/pages/PapersPage');
-      render(<PapersPage uiMode="normal" />);
-      fireEvent.click(screen.getByText('Test Paper Title'));
-      await act(async () => { fireEvent.click(screen.getByText('生成摘要与标签')); });
-
-      expect(screen.getByText('未能生成摘要与标签，请重试。')).toBeDefined();
-      expect(document.body.textContent).not.toMatch(/Agent/i);
-    } finally {
-      window.metis = originalMetis;
-    }
-  });
-
-  it('hides generated internal PDF filenames in normal mode', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({
-      title: 'Readable Paper Title',
-      pdfCapability: makePdfCapability({ displayName: 'paper_1720000000_ab12cd.pdf' }),
-    }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    fireEvent.click(screen.getByText('Readable Paper Title'));
-
-    expect(screen.getByText('Readable Paper Title（PDF）')).toBeDefined();
-    expect(screen.queryByText('paper_1720000000_ab12cd.pdf')).toBeNull();
-  });
-
-  it('shows the raw PDF basename in diagnostic mode', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({
-      title: 'Readable Paper Title',
-      pdfCapability: makePdfCapability({ displayName: 'paper_1720000000_ab12cd.pdf' }),
-    }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage uiMode="diagnostic" />);
-    fireEvent.click(screen.getByText('Readable Paper Title'));
-
-    expect(screen.getByText('paper_1720000000_ab12cd.pdf')).toBeDefined();
-  });
-
-  it('does not fall back to raw PDF paths when capability bridge is unavailable', async () => {
-    resetStore();
-    const pdfCapability = makePdfCapability();
-    useMetisStore.getState().addPaper(makePaper({ pdfCapability }));
-    const originalMetis = window.metis;
-    const fakeMetis = {
-      savePaper: async () => {},
-    } as unknown as typeof window.metis;
-    window.metis = fakeMetis;
-
-    try {
-      const { default: PapersPage } = await import('../../src/pages/PapersPage');
-      render(<PapersPage uiMode="normal" />);
-      fireEvent.click(screen.getByText('Test Paper Title'));
-      await act(async () => { fireEvent.click(screen.getByText('生成摘要与标签')); });
-
-      expect(screen.getByText('未能生成摘要与标签，请重试。')).toBeDefined();
-      expect(document.body.textContent).not.toContain('C:/');
-      expect(document.body.textContent).not.toContain('/tmp/');
-      expect(fakeMetis).not.toHaveProperty('useFileCapability');
-      expect(fakeMetis).not.toHaveProperty('downloadPaperPdf');
-      expect(fakeMetis).not.toHaveProperty('extractPdfText');
-      expect(fakeMetis).not.toHaveProperty('downloadPdf');
-      expect(fakeMetis).not.toHaveProperty('readFile');
-    } finally {
-      window.metis = originalMetis;
-    }
-  });
-
-  it('paper list items have Open button for selection', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper());
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    // Open button is focusable and selects the paper on click
-    const openBtn = screen.getByTestId('paper-open-button');
-    expect(openBtn).toBeDefined();
-    fireEvent.click(openBtn);
-    expect(useMetisStore.getState().selectedPaperId).toBe('test-paper-1');
-  });
-
-  it('row click selects paper but not when clicking inner buttons', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper());
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    // Checkbox click toggles selection without selecting the paper row
-    const checkbox = screen.getByTestId('paper-checkbox') as HTMLInputElement;
-    expect(checkbox).toBeDefined();
-    expect(checkbox.checked).toBe(false);
-    fireEvent.click(checkbox);
-    expect(checkbox.checked).toBe(true);
-    // But paper row should NOT be selected
-    expect(useMetisStore.getState().selectedPaperId).toBeNull();
-  });
-
-  it('PapersPage CSS cascade: paper-item renders with real class attribute', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper());
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    const { container } = render(<PapersPage />);
-    const item = container.querySelector('.paper-item');
-    expect(item).toBeDefined();
-    expect(item!.className).toContain('paper-item');
-    const badge = container.querySelector('.badge');
-    expect(badge).toBeDefined();
-    expect(badge!.className).toContain('badge');
-    expect(badge!.className).toContain('status-read');
-  });
-
-  it('CSS cascade: dark mode contrast -- paper-title uses text-primary from cascade', async () => {
-    document.documentElement.dataset.theme = 'dark';
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ title: 'Dark Paper' }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    const { container } = render(<PapersPage />);
-    const title = container.querySelector('.paper-title') as HTMLElement;
-    expect(title).toBeDefined();
-    const cs = getComputedStyle(title);
-    expect(cs.color).toBeTruthy();
-    document.documentElement.removeAttribute('data-theme');
-  });
-
-  it('CSS cascade: no dead/forced selectors — PapersPage.css classes resolve against AcademicTheme', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper());
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    const { container } = render(<PapersPage />);
-    // Selector-to-JSX coverage is verified in ThemeCascadeA11y.test.ts by
-    // reading the actual CSS and TSX sources; jsdom does not load Vite CSS.
-    expect(container.querySelector('.paper-item')).toBeDefined();
-  });
-
-  it('ARIA: papers-list uses semantic ul/li (no listbox/option)', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper());
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    const { container } = render(<PapersPage />);
-    const listbox = container.querySelector('[role="listbox"]');
-    expect(listbox).toBeNull();
-    const option = container.querySelector('[role="option"]');
-    expect(option).toBeNull();
-    const list = container.querySelector('ul.papers-list');
-    expect(list).toBeDefined();
-    const item = list!.querySelector('li.paper-item');
-    expect(item).toBeDefined();
-  });
-
-  it('renders the paper title and badge under dark theme', async () => {
-    document.documentElement.dataset.theme = 'dark';
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper({ title: 'Dark Test' }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    const { container } = render(<PapersPage />);
-    const title = container.querySelector('.paper-title') as HTMLElement;
-    expect(title).toBeDefined();
-    const cs = getComputedStyle(title);
-    expect(cs.color).toBeTruthy();
-    expect(container.querySelector('.badge')).toBeDefined();
-    // Final cascade contrast is calculated from real CSS in
-    // ThemeCascadeA11y.test.ts; jsdom has no Vite stylesheet pipeline.
-    document.documentElement.removeAttribute('data-theme');
-  });
-
-  it('forced-colors: 7 focus/contrast variables available in forced mode', () => {
-    // jsdom cannot activate forced-colors, so parse the real production CSS.
-    const css = readFileSync(join(process.cwd(), 'src', 'AcademicTheme.css'), 'utf8');
-    const forced = css.match(/@media \(forced-colors: active\)\s*\{([\s\S]*)\}\s*$/u)?.[1] ?? '';
-    for (const key of ['--border', '--accent', '--text-primary', '--bg-main', '--bg-card', '--focus-ring-color', '--text-on-accent']) {
-      expect(forced).toContain(key);
-    }
-  });
-});
 
 // ─── NotesPage Tests ───────────────────────────────────────────
 
@@ -1527,17 +231,18 @@ describe('NotesPage', () => {
     resetStore();
     const { default: NotesPage } = await import('../../src/pages/NotesPage');
     render(<NotesPage />);
-    expect(screen.getByText('暂无笔记，创建一个吧！')).toBeDefined();
-    expect(screen.getByText('选择或创建笔记')).toBeDefined();
+    expect(screen.getByText('当前项目暂无研究备忘录。')).toBeDefined();
+    expect(screen.getByText('选择或创建研究备忘录')).toBeDefined();
   });
 
   it('should create a new note on button click', async () => {
     resetStore();
     const { default: NotesPage } = await import('../../src/pages/NotesPage');
     render(<NotesPage />);
-    fireEvent.click(screen.getByText('+ 新建笔记'));
+    fireEvent.click(screen.getByText('+ 新建研究备忘录'));
     expect(useMetisStore.getState().notes.length).toBe(1);
-    expect(useMetisStore.getState().notes[0]!.title).toBe('新建笔记');
+    expect(useMetisStore.getState().notes[0]!.title).toBe('新建研究备忘录');
+    expect(useMetisStore.getState().notes[0]).toMatchObject({ scope: 'global' });
   });
 
   it('should render existing notes in sidebar', async () => {
@@ -1615,12 +320,12 @@ describe('NotesPage', () => {
     render(<NotesPage />);
     expect(screen.getByText('Alpha Note')).toBeDefined();
     expect(screen.getByText('Beta Note')).toBeDefined();
-    expect(screen.getByText('2 条笔记')).toBeDefined();
-    const searchInput = screen.getByPlaceholderText('搜索笔记...') as HTMLInputElement;
+    expect(screen.getByText('2 条研究备忘录')).toBeDefined();
+    const searchInput = screen.getByPlaceholderText('搜索研究备忘录...') as HTMLInputElement;
     fireEvent.change(searchInput, { target: { value: 'Beta' } });
     expect(screen.queryByText('Alpha Note')).toBeNull();
     expect(screen.getByText('Beta Note')).toBeDefined();
-    expect(screen.getByText('1 条笔记')).toBeDefined();
+    expect(screen.getByText('1 条研究备忘录')).toBeDefined();
   });
 
   it('should show no-matching-notes message when filter returns nothing', async () => {
@@ -1628,9 +333,9 @@ describe('NotesPage', () => {
     useMetisStore.getState().addNote(makeNote({ title: 'Alpha Note' }));
     const { default: NotesPage } = await import('../../src/pages/NotesPage');
     render(<NotesPage />);
-    const searchInput = screen.getByPlaceholderText('搜索笔记...') as HTMLInputElement;
+    const searchInput = screen.getByPlaceholderText('搜索研究备忘录...') as HTMLInputElement;
     fireEvent.change(searchInput, { target: { value: 'ZZZ' } });
-    expect(screen.getByText('没有匹配的笔记。')).toBeDefined();
+    expect(screen.getByText('没有匹配的研究备忘录。')).toBeDefined();
   });
 
   it('should clear the notes search filter from the empty state', async () => {
@@ -1638,9 +343,9 @@ describe('NotesPage', () => {
     useMetisStore.getState().addNote(makeNote({ title: 'Alpha Note' }));
     const { default: NotesPage } = await import('../../src/pages/NotesPage');
     render(<NotesPage />);
-    const searchInput = screen.getByPlaceholderText('搜索笔记...') as HTMLInputElement;
+    const searchInput = screen.getByPlaceholderText('搜索研究备忘录...') as HTMLInputElement;
     fireEvent.change(searchInput, { target: { value: 'ZZZ' } });
-    expect(screen.getByText('没有匹配的笔记。')).toBeDefined();
+    expect(screen.getByText('没有匹配的研究备忘录。')).toBeDefined();
     fireEvent.click(screen.getByText('清除'));
     expect(searchInput.value).toBe('');
     expect(screen.getByText('Alpha Note')).toBeDefined();
@@ -1656,7 +361,7 @@ describe('NotesPage', () => {
     fireEvent.change(tagSelect, { target: { value: 'idea' } });
     expect(screen.getByText('Alpha Note')).toBeDefined();
     expect(screen.queryByText('Beta Note')).toBeNull();
-    expect(screen.getByText('1 条笔记')).toBeDefined();
+    expect(screen.getByText('1 条研究备忘录')).toBeDefined();
   });
 
   it('should clear the notes tag filter from the empty state', async () => {
@@ -1665,10 +370,10 @@ describe('NotesPage', () => {
     const { default: NotesPage } = await import('../../src/pages/NotesPage');
     render(<NotesPage />);
     const tagSelect = screen.getByLabelText('按标签过滤') as HTMLSelectElement;
-    const searchInput = screen.getByPlaceholderText('搜索笔记...') as HTMLInputElement;
+    const searchInput = screen.getByPlaceholderText('搜索研究备忘录...') as HTMLInputElement;
     fireEvent.change(tagSelect, { target: { value: 'idea' } });
     fireEvent.change(searchInput, { target: { value: 'ZZZ' } });
-    expect(screen.getByText('没有匹配的笔记。')).toBeDefined();
+    expect(screen.getByText('没有匹配的研究备忘录。')).toBeDefined();
     fireEvent.click(screen.getByText('清除'));
     expect(tagSelect.value).toBe('');
     expect(searchInput.value).toBe('');
@@ -1692,7 +397,7 @@ describe('NotesPage', () => {
     const { default: NotesPage } = await import('../../src/pages/NotesPage');
     render(<NotesPage />);
     fireEvent.keyDown(window, { key: '/' });
-    const searchInput = screen.getByPlaceholderText('搜索笔记...') as HTMLInputElement;
+    const searchInput = screen.getByPlaceholderText('搜索研究备忘录...') as HTMLInputElement;
     expect(document.activeElement).toBe(searchInput);
   });
 
@@ -1702,14 +407,14 @@ describe('NotesPage', () => {
     render(<NotesPage />);
     fireEvent.keyDown(window, { key: 'n', ctrlKey: true });
     expect(useMetisStore.getState().notes.length).toBe(1);
-    expect(useMetisStore.getState().notes[0]!.title).toBe('新建笔记');
+    expect(useMetisStore.getState().notes[0]!.title).toBe('新建研究备忘录');
   });
 
   it('should not create a note with Ctrl+N while typing in an input', async () => {
     resetStore();
     const { default: NotesPage } = await import('../../src/pages/NotesPage');
     render(<NotesPage />);
-    const searchInput = screen.getByPlaceholderText('搜索笔记...') as HTMLInputElement;
+    const searchInput = screen.getByPlaceholderText('搜索研究备忘录...') as HTMLInputElement;
     searchInput.focus();
     fireEvent.keyDown(searchInput, { key: 'n', ctrlKey: true });
     expect(useMetisStore.getState().notes.length).toBe(0);
@@ -1795,6 +500,32 @@ describe('NotesPage', () => {
       expect(useMetisStore.getState().notes.find((n) => n.id === 'n1')?.tags).toContain('bulk-tag');
       expect(useMetisStore.getState().notes.find((n) => n.id === 'n2')?.tags).toContain('bulk-tag');
     });
+  });
+
+  it('should isolate research memos by project and bind new memos to the active project', async () => {
+    resetStore();
+    researchWorkspaceStore.setState({ activeProjectId: 'project-a' });
+    useMetisStore.setState({
+      notes: [
+        makeNote({ id: 'global', title: 'Global Note', scope: 'global' }),
+        makeNote({ id: 'project-a-note', title: 'Project A Memo', scope: 'research', projectId: 'project-a' }),
+        makeNote({ id: 'project-b-note', title: 'Project B Memo', scope: 'research', projectId: 'project-b' }),
+      ],
+    });
+
+    const { default: NotesPage } = await import('../../src/pages/NotesPage');
+    render(<NotesPage />);
+
+    expect(screen.getByText('Project A Memo')).toBeDefined();
+    expect(screen.queryByText('Project B Memo')).toBeNull();
+    expect(screen.queryByText('Global Note')).toBeNull();
+
+    fireEvent.click(screen.getByText('+ 新建研究备忘录'));
+    expect(useMetisStore.getState().notes).toContainEqual(expect.objectContaining({
+      title: '新建研究备忘录',
+      scope: 'research',
+      projectId: 'project-a',
+    }));
   });
 });
 
@@ -2099,7 +830,7 @@ describe('DashboardPage', () => {
     render(<DashboardPage onNavigate={onNavigate} />);
     expect(screen.getByText('高优先级')).toBeDefined();
     fireEvent.click(screen.getByText('高优先级'));
-    expect(onNavigate).toHaveBeenCalledWith('papers');
+    expect(onNavigate).toHaveBeenCalledWith('pdf');
     expect(useMetisStore.getState().paperFilter.priority).toBe('high');
   });
 
@@ -2117,7 +848,7 @@ describe('DashboardPage', () => {
     render(<DashboardPage onNavigate={onNavigate} />);
     expect(screen.getByText('已逾期')).toBeDefined();
     fireEvent.click(screen.getByText('已逾期'));
-    expect(onNavigate).toHaveBeenCalledWith('papers');
+    expect(onNavigate).toHaveBeenCalledWith('pdf');
     expect(useMetisStore.getState().paperFilter.deadlineStatus).toBe('overdue');
   });
 
@@ -2135,7 +866,7 @@ describe('DashboardPage', () => {
     render(<DashboardPage onNavigate={onNavigate} />);
     expect(screen.getByText('待办截止')).toBeDefined();
     fireEvent.click(screen.getByText('待办截止'));
-    expect(onNavigate).toHaveBeenCalledWith('papers');
+    expect(onNavigate).toHaveBeenCalledWith('pdf');
     expect(useMetisStore.getState().paperFilter.deadlineStatus).toBe('upcoming');
   });
 
@@ -2153,7 +884,7 @@ describe('DashboardPage', () => {
     render(<DashboardPage onNavigate={onNavigate} />);
     expect(screen.getByText('今日到期')).toBeDefined();
     fireEvent.click(screen.getByText('今日到期'));
-    expect(onNavigate).toHaveBeenCalledWith('papers');
+    expect(onNavigate).toHaveBeenCalledWith('pdf');
     expect(useMetisStore.getState().paperFilter.deadlineStatus).toBe('today');
   });
 
@@ -2182,7 +913,7 @@ describe('DashboardPage', () => {
     expect(alertsSection.textContent).toContain('Upcoming Alert');
     expect(alertsSection.textContent).not.toContain('Far Future');
     fireEvent.click(within(alertsSection).getByText('Overdue Alert'));
-    expect(onNavigate).toHaveBeenCalledWith('papers');
+    expect(onNavigate).toHaveBeenCalledWith('pdf');
     expect(useMetisStore.getState().selectedPaperId).toBe('p1');
   });
 
@@ -2247,7 +978,7 @@ describe('DashboardPage', () => {
     expect(screen.getByText('随机推荐')).toBeDefined();
     expect(screen.getByText('随机选择一篇未读论文')).toBeDefined();
     fireEvent.click(screen.getByText('随机选择一篇未读论文'));
-    expect(onNavigate).toHaveBeenCalledWith('papers');
+    expect(onNavigate).toHaveBeenCalledWith('pdf');
     expect(useMetisStore.getState().selectedPaperId).toBe('p2');
     randomSpy.mockRestore();
   });
@@ -2277,7 +1008,7 @@ describe('DashboardPage', () => {
     render(<DashboardPage onNavigate={onNavigate} />);
     expect(screen.getByText('标签云')).toBeDefined();
     fireEvent.click(screen.getByText('nlp'));
-    expect(onNavigate).toHaveBeenCalledWith('papers');
+    expect(onNavigate).toHaveBeenCalledWith('pdf');
     expect(useMetisStore.getState().paperFilter.tag).toBe('nlp');
     expect(useMetisStore.getState().paperFilter.query).toBe('');
   });
@@ -2289,7 +1020,7 @@ describe('DashboardPage', () => {
     const { default: DashboardPage } = await import('../../src/pages/DashboardPage');
     render(<DashboardPage onNavigate={onNavigate} />);
     fireEvent.click(screen.getByText('论文总数'));
-    expect(onNavigate).toHaveBeenCalledWith('papers');
+    expect(onNavigate).toHaveBeenCalledWith('pdf');
   });
 
   it('should set unread filter and navigate when unread papers stat card is clicked', async () => {
@@ -2299,7 +1030,7 @@ describe('DashboardPage', () => {
     const { default: DashboardPage } = await import('../../src/pages/DashboardPage');
     render(<DashboardPage onNavigate={onNavigate} />);
     fireEvent.click(screen.getByText('待读'));
-    expect(onNavigate).toHaveBeenCalledWith('papers');
+    expect(onNavigate).toHaveBeenCalledWith('pdf');
     expect(useMetisStore.getState().paperFilter.readStatus).toBe('unread');
   });
 
@@ -2314,7 +1045,7 @@ describe('DashboardPage', () => {
     render(<DashboardPage onNavigate={onNavigate} />);
     expect(screen.getByText('本周已读')).toBeDefined();
     fireEvent.click(screen.getByText('本周已读'));
-    expect(onNavigate).toHaveBeenCalledWith('papers');
+    expect(onNavigate).toHaveBeenCalledWith('pdf');
     expect(useMetisStore.getState().paperFilter.readStatus).toBe('read');
     expect(useMetisStore.getState().paperFilter.readWithinDays).toBe(7);
   });
@@ -2326,7 +1057,7 @@ describe('DashboardPage', () => {
     const { default: DashboardPage } = await import('../../src/pages/DashboardPage');
     render(<DashboardPage onNavigate={onNavigate} />);
     fireEvent.click(screen.getByText('收藏'));
-    expect(onNavigate).toHaveBeenCalledWith('papers');
+    expect(onNavigate).toHaveBeenCalledWith('pdf');
     expect(useMetisStore.getState().paperFilter.starred).toBe(true);
   });
 
@@ -2362,46 +1093,28 @@ describe('DashboardPage', () => {
     expect(screen.getByText('阅读日历（近 30 天）')).toBeDefined();
   });
 
-  it('should display reading goal progress on dashboard', async () => {
+  it('should display papers read this week on dashboard', async () => {
     resetStore();
     const now = Date.now();
     useMetisStore.setState({
-      weeklyReadingGoal: 4,
       papers: [
         makePaper({ id: 'p1', readStatus: 'read', readAt: now - 1 * 24 * 60 * 60 * 1000 }),
       ],
     });
     const { default: DashboardPage } = await import('../../src/pages/DashboardPage');
-    const { rerender } = render(<DashboardPage />);
-    expect(screen.getByText('1 / 4')).toBeDefined();
-    const progressFill = document.querySelector('.stat-card-progress-fill') as HTMLElement;
-    expect(progressFill.style.width).toBe('25%');
+    const { container } = render(<DashboardPage />);
+    expect(container.textContent).toContain('1');
+    expect(container.textContent).toContain('本周已读');
     await act(async () => {
       useMetisStore.setState({
         papers: [
           makePaper({ id: 'p1', readStatus: 'read', readAt: now - 1 * 24 * 60 * 60 * 1000 }),
           makePaper({ id: 'p2', readStatus: 'read', readAt: now - 2 * 24 * 60 * 60 * 1000 }),
-          makePaper({ id: 'p3', readStatus: 'read', readAt: now - 3 * 24 * 60 * 60 * 1000 }),
         ],
       });
-      rerender(<DashboardPage />);
     });
-    expect(screen.getByText('3 / 4')).toBeDefined();
-    expect(progressFill.style.width).toBe('75%');
-    await act(async () => {
-      useMetisStore.setState({
-        papers: [
-          makePaper({ id: 'p1', readStatus: 'read', readAt: now - 1 * 24 * 60 * 60 * 1000 }),
-          makePaper({ id: 'p2', readStatus: 'read', readAt: now - 2 * 24 * 60 * 60 * 1000 }),
-          makePaper({ id: 'p3', readStatus: 'read', readAt: now - 3 * 24 * 60 * 60 * 1000 }),
-          makePaper({ id: 'p4', readStatus: 'read', readAt: now - 4 * 24 * 60 * 60 * 1000 }),
-        ],
-      });
-      rerender(<DashboardPage />);
-    });
-    expect(screen.getByText('目标已达成')).toBeDefined();
-    expect(progressFill.style.width).toBe('100%');
   });
+
 
   it('should display starred items in favorites section', async () => {
     resetStore();
@@ -2432,7 +1145,7 @@ describe('DashboardPage', () => {
 
     const paperItem = screen.getByRole('button', { name: /paper: Starred Paper/i });
     fireEvent.click(paperItem);
-    expect(onNavigate).toHaveBeenCalledWith('papers');
+    expect(onNavigate).toHaveBeenCalledWith('pdf');
     expect(useMetisStore.getState().selectedPaperId).toBe('p1');
 
     const noteItem = screen.getByRole('button', { name: /note: Starred Note/i });
@@ -2456,31 +1169,8 @@ describe('DashboardPage', () => {
     render(<DashboardPage onNavigate={onNavigate} />);
     const card = screen.getByText('论文总数').closest('[role="button"]') as HTMLElement;
     fireEvent.keyDown(card, { key: 'Enter' });
-    expect(onNavigate).toHaveBeenCalledWith('papers');
+    expect(onNavigate).toHaveBeenCalledWith('pdf');
   });
-});
-
-// ─── KnowledgeGraphPage Tests ───────────────────────────────────
-
-describe('KnowledgeGraphPage', () => {
-  it('should render empty state', async () => {
-    resetStore();
-    const { default: KnowledgeGraphPage } = await import('../../src/pages/KnowledgeGraphPage');
-    render(<KnowledgeGraphPage />);
-    expect(screen.getByText('知识图谱')).toBeDefined();
-    expect(screen.getByText('论文库为空')).toBeDefined();
-  });
-
-  it('should show graph controls when papers exist', async () => {
-    resetStore();
-    useMetisStore.getState().addPaper(makePaper());
-    const { default: KnowledgeGraphPage } = await import('../../src/pages/KnowledgeGraphPage');
-    render(<KnowledgeGraphPage />);
-    expect(screen.getByText('环形布局')).toBeDefined();
-    expect(screen.getByText('按标签')).toBeDefined();
-  });
-
-
 });
 
 // ─── LatexPreviewPage Tests ────────────────────────────────────
@@ -4508,150 +3198,5 @@ describe('PdfReaderPage', () => {
     } finally {
       window.metis = originalMetis;
     }
-  });
-});
-
-
-// ─── TagsPage Tests ───────────────────────────────────────────
-
-describe('TagsPage', () => {
-  it('should render empty state when no tags', async () => {
-    resetStore();
-    const { default: TagsPage } = await import('../../src/pages/TagsPage');
-    const onNavigate = vi.fn();
-    render(<TagsPage onNavigate={onNavigate} />);
-    expect(screen.getByText('标签管理')).toBeDefined();
-    expect(screen.getByText('暂无标签。为论文、笔记或实验添加标签后将在此显示。')).toBeDefined();
-  });
-
-  it('should render tags with counts', async () => {
-    resetStore();
-    const store = useMetisStore.getState();
-    await store.addPaper(makePaper({ id: 'p1', tags: ['deep-learning'] }));
-    await store.addNote(makeNote({ id: 'n1', tags: ['deep-learning', 'test'] }));
-    await store.addExperiment(makeExperiment({ id: 'e1', tags: ['test'] }));
-    const { default: TagsPage } = await import('../../src/pages/TagsPage');
-    render(<TagsPage onNavigate={() => {}} />);
-    expect(screen.getByText('deep-learning')).toBeDefined();
-    expect(screen.getByText('test')).toBeDefined();
-    expect(screen.getAllByText((content) => content.includes('2 项')).length).toBe(2);
-  });
-
-  it('should navigate to papers filtered by tag when tag clicked', async () => {
-    resetStore();
-    const store = useMetisStore.getState();
-    await store.addPaper(makePaper({ id: 'p1', tags: ['nlp'] }));
-    const { default: TagsPage } = await import('../../src/pages/TagsPage');
-    const onNavigate = vi.fn();
-    render(<TagsPage onNavigate={onNavigate} />);
-    fireEvent.click(screen.getByText('nlp'));
-    expect(onNavigate).toHaveBeenCalledWith('papers');
-    expect(useMetisStore.getState().paperFilter.tag).toBe('nlp');
-  });
-
-  it('should rename a tag across items', async () => {
-    resetStore();
-    const store = useMetisStore.getState();
-    await store.addPaper(makePaper({ id: 'p1', tags: ['ai'] }));
-    await store.addNote(makeNote({ id: 'n1', tags: ['ai'] }));
-    const { default: TagsPage } = await import('../../src/pages/TagsPage');
-    render(<TagsPage onNavigate={() => {}} />);
-    fireEvent.click(screen.getByText('重命名'));
-    const input = screen.getByDisplayValue('ai');
-    fireEvent.change(input, { target: { value: 'machine-learning' } });
-    fireEvent.click(screen.getByText('保存'));
-    await waitFor(() => {
-      expect(screen.queryByText('ai')).toBeNull();
-      expect(screen.getByText('machine-learning')).toBeDefined();
-    });
-    expect(useMetisStore.getState().papers[0]?.tags).toContain('machine-learning');
-    expect(useMetisStore.getState().notes[0]?.tags).toContain('machine-learning');
-  });
-
-  it('should merge a tag into another tag', async () => {
-    resetStore();
-    const store = useMetisStore.getState();
-    await store.addPaper(makePaper({ id: 'p1', tags: ['ai', 'ml'] }));
-    const { default: TagsPage } = await import('../../src/pages/TagsPage');
-    render(<TagsPage onNavigate={() => {}} />);
-    const mergeButtons = screen.getAllByText('合并');
-    fireEvent.click(mergeButtons[0]);
-    const input = screen.getByPlaceholderText('目标标签');
-    fireEvent.change(input, { target: { value: 'ml' } });
-    fireEvent.keyDown(input, { key: 'Enter' });
-    await waitFor(() => {
-      expect(screen.queryByText('ai')).toBeNull();
-      expect(screen.getByText('ml')).toBeDefined();
-    });
-    expect(useMetisStore.getState().papers[0]?.tags).toEqual(['ml']);
-  });
-
-  it('should delete a tag from all items', async () => {
-    resetStore();
-    const store = useMetisStore.getState();
-    await store.addPaper(makePaper({ id: 'p1', tags: ['ai'] }));
-    await store.addExperiment(makeExperiment({ id: 'e1', tags: ['ai'] }));
-    const { default: TagsPage } = await import('../../src/pages/TagsPage');
-    render(<TagsPage onNavigate={() => {}} />);
-    fireEvent.click(screen.getByText('删除'));
-    fireEvent.click(screen.getByTestId('confirm-delete'));
-    await waitFor(() => {
-      expect(screen.queryByText('ai')).toBeNull();
-    });
-    expect(useMetisStore.getState().papers[0]?.tags).not.toContain('ai');
-    expect(useMetisStore.getState().experiments[0]?.tags).not.toContain('ai');
-  });
-});
-
-
-// ─── Saved Filters Tests ──────────────────────────────────────
-
-describe('SavedFilters', () => {
-  it('should save current paper filter', async () => {
-    resetStore();
-    const store = useMetisStore.getState();
-    await store.addPaper(makePaper({ id: 'p1', title: 'Alpha', doi: '10.1234/alpha' }));
-    await store.addPaper(makePaper({ id: 'p2', title: 'Beta', doi: '10.1234/beta' }));
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    const searchInput = screen.getByPlaceholderText('搜索论文...');
-    fireEvent.change(searchInput, { target: { value: 'Alpha' } });
-    fireEvent.click(screen.getByText('保存筛选'));
-    const nameInput = screen.getByTestId('save-filter-name-input');
-    fireEvent.change(nameInput, { target: { value: 'Alpha only' } });
-    fireEvent.click(screen.getByTestId('save-filter-confirm'));
-    await waitFor(() => {
-      expect(screen.getByTestId('saved-filter-item').textContent).toBe('Alpha only');
-    });
-  });
-
-  it('should apply a saved filter', async () => {
-    resetStore();
-    const store = useMetisStore.getState();
-    await store.addPaper(makePaper({ id: 'p1', title: 'Alpha', doi: '10.1234/alpha' }));
-    await store.addPaper(makePaper({ id: 'p2', title: 'Beta', doi: '10.1234/beta' }));
-    store.addSavedFilter('Alpha only', { query: 'Alpha' });
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    expect(screen.getByText('Alpha')).toBeDefined();
-    expect(screen.getByText('Beta')).toBeDefined();
-    fireEvent.click(screen.getByTestId('saved-filter-item'));
-    await waitFor(() => {
-      expect(screen.queryByText('Beta')).toBeNull();
-      expect(screen.getByText('Alpha')).toBeDefined();
-    });
-  });
-
-  it('should delete a saved filter', async () => {
-    resetStore();
-    const store = useMetisStore.getState();
-    store.addSavedFilter('To delete', { query: '' });
-    const { default: PapersPage } = await import('../../src/pages/PapersPage');
-    render(<PapersPage />);
-    expect(screen.getByTestId('saved-filter-item')).toBeDefined();
-    fireEvent.click(screen.getByTestId('saved-filter-delete'));
-    await waitFor(() => {
-      expect(screen.queryByTestId('saved-filter-item')).toBeNull();
-    });
   });
 });

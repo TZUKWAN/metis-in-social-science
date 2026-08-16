@@ -1,9 +1,9 @@
 /**
  * SettingsWeChatBotSection — 微信 Bot（METIS-WX-1）。
  *
- * 体验与 ZCode 微信 Bot 一致：扫码绑定微信 → 微信里直接与 Metis 对话
+ * 扫码绑定微信 → 微信里直接与 Metis 对话
  * （/项目 /模型 /状态 /新建 /继续 /停止 /帮助）→ 完成摘要回发。
- * 协议：腾讯官方 iLink Bot API（与 ZCode 同源）。
+ * 协议：腾讯官方 iLink Bot API。
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -39,7 +39,8 @@ interface ProjectSummary {
 }
 
 export default function SettingsWeChatBotSection() {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
+  const zh = locale === 'zh';
   const [status, setStatus] = useState<WeChatStatusView | null>(null);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [busy, setBusy] = useState(false);
@@ -178,6 +179,7 @@ export default function SettingsWeChatBotSection() {
             <div>
               <button
                 type="button"
+                className="btn-primary"
                 onClick={() => void handleBeginLogin()}
                 disabled={busy}
                 data-testid="wechat-begin-login"
@@ -185,18 +187,19 @@ export default function SettingsWeChatBotSection() {
                 {t('settings.wechatBind')}
               </button>
               {phase === 'error' && status?.lastError && (
-                <div role="alert" style={{ marginTop: 8, color: 'var(--danger, #c0392b)', fontSize: 13 }}>
+                <div role="alert" style={{ marginTop: 8, color: 'var(--status-failed)', fontSize: 13 }}>
                   {status.lastError}
                 </div>
               )}
             </div>
           ) : (
             <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-              <div style={{ background: '#fff', padding: 8, borderRadius: 8 }}>
+              {/* White canvas stays literal so the QR code always scans. */}
+              <div style={{ background: '#fff', padding: 8, borderRadius: 'var(--radius, 4px)' }}>
                 {status?.qrContent ? (
                   <QRCodeSVG value={status.qrContent} size={180} data-testid="wechat-qr" />
                 ) : (
-                  <div style={{ width: 180, height: 180, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#999', fontSize: 13 }}>
+                  <div style={{ width: 180, height: 180, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
                     {t('common.loading')}
                   </div>
                 )}
@@ -210,13 +213,14 @@ export default function SettingsWeChatBotSection() {
                 {phase === 'need_verifycode' && (
                   <div style={{ marginTop: 8, display: 'flex', gap: 6 }}>
                     <input
+                      className="settings-input"
                       value={verifyCode}
                       onChange={(e) => setVerifyCode(e.target.value)}
                       placeholder={t('settings.wechatVerifyCodePlaceholder')}
                       style={{ width: 120 }}
                       data-testid="wechat-verify-code"
                     />
-                    <button type="button" onClick={() => void handleSubmitVerifyCode()} data-testid="wechat-verify-submit">
+                    <button type="button" className="btn-secondary" onClick={() => void handleSubmitVerifyCode()} data-testid="wechat-verify-submit">
                       {t('common.confirm')}
                     </button>
                   </div>
@@ -233,9 +237,9 @@ export default function SettingsWeChatBotSection() {
             <span
               data-testid="wechat-bound-badge"
               style={{
-                padding: '3px 10px', borderRadius: 999, fontSize: 12,
-                background: status?.busy ? 'var(--bg-secondary)' : 'rgba(39,174,96,0.12)',
-                color: status?.busy ? 'var(--text-secondary)' : '#1e8449',
+                padding: '3px 10px', borderRadius: 'var(--radius, 4px)', fontSize: 12,
+                background: status?.busy ? 'var(--bg-secondary)' : 'var(--status-completed-bg)',
+                color: status?.busy ? 'var(--text-secondary)' : 'var(--status-completed)',
               }}
             >
               {status?.busy ? t('settings.wechatWorking') : t('settings.wechatConnected')}
@@ -243,7 +247,7 @@ export default function SettingsWeChatBotSection() {
             <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
               {t('settings.wechatBoundUser')}: {status?.userId || status?.botId || '-'}
             </span>
-            <button type="button" onClick={() => void handleLogout()} data-testid="wechat-logout">
+            <button type="button" className="btn-secondary" onClick={() => void handleLogout()} data-testid="wechat-logout">
               {t('settings.wechatUnbind')}
             </button>
           </div>
@@ -251,6 +255,7 @@ export default function SettingsWeChatBotSection() {
           <div style={{ marginTop: 12, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
             <label style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{t('settings.projectSelect')}</label>
             <select
+              className="settings-input"
               value={status?.activeProjectId ?? ''}
               onChange={(e) => void handleSetProject(e.target.value)}
               style={{ maxWidth: 260 }}
@@ -265,6 +270,7 @@ export default function SettingsWeChatBotSection() {
 
           <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <input
+              className="settings-input"
               value={testText}
               onChange={(e) => setTestText(e.target.value)}
               placeholder={t('settings.wechatTestPlaceholder')}
@@ -273,6 +279,7 @@ export default function SettingsWeChatBotSection() {
             />
             <button
               type="button"
+              className="btn-secondary"
               onClick={() => void handleSendTest()}
               disabled={busy || !testText.trim()}
               data-testid="wechat-test-send"
@@ -288,13 +295,16 @@ export default function SettingsWeChatBotSection() {
                 data-testid="wechat-log"
                 style={{
                   fontSize: 12, color: 'var(--text-secondary)', background: 'var(--bg-secondary)',
-                  borderRadius: 6, padding: '8px 10px', maxHeight: 140, overflowY: 'auto',
+                  borderRadius: 'var(--radius, 4px)', padding: '8px 10px', maxHeight: 140, overflowY: 'auto',
                   lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-all',
                 }}
               >
                 {status.recentLog.map((entry, index) => (
                   <div key={index}>
-                    {entry.direction === 'in' ? '📥' : '📤'} {entry.text}
+                    <span style={{ color: entry.direction === 'in' ? 'var(--status-completed)' : 'var(--text-muted)', fontWeight: 600 }}>
+                      {entry.direction === 'in' ? (zh ? '收' : 'IN') : (zh ? '发' : 'OUT')}
+                    </span>{' '}
+                    {entry.text}
                   </div>
                 ))}
               </div>
@@ -308,8 +318,8 @@ export default function SettingsWeChatBotSection() {
           role={notice.type === 'error' ? 'alert' : 'status'}
           data-testid="wechat-notice"
           style={{
-            marginTop: 10, fontSize: 13, padding: '8px 10px', borderRadius: 6,
-            color: notice.type === 'error' ? 'var(--danger, #c0392b)' : 'var(--success, #27ae60)',
+            marginTop: 10, fontSize: 13, padding: '8px 10px', borderRadius: 'var(--radius, 4px)',
+            color: notice.type === 'error' ? 'var(--status-failed)' : 'var(--status-completed)',
             background: 'var(--bg-secondary)',
           }}
         >

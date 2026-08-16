@@ -70,6 +70,8 @@ describe('full-viewport setup layout', () => {
 
     expect(setupStyles).toMatch(/\.first-run\s*\{[\s\S]*?width:\s*100%;/u);
     expect(setupStyles).toMatch(/\.first-run\s*\{[\s\S]*?flex:\s*1\s+1\s+auto;/u);
-    expect(setupStyles).toMatch(/\.first-run-card\s*\{[\s\S]*?width:\s*min\(100%,\s*760px\);/u);
+    // Compact card width from the minimal redesign; the root still fills the
+    // flex viewport so the first-run surface never leaves an empty half-screen.
+    expect(setupStyles).toMatch(/\.first-run-card\s*\{[\s\S]*?width:\s*min\(100%,\s*560px\);/u);
   });
 });

@@ -30,6 +30,10 @@ import type {
 } from '../../engine/runtime/PersonalizationSecretContract.js';
 import type { FundingTemplateIpcRequest } from '../../engine/runtime/FundingTemplateRuntimeContract.js';
 import type { McpActivationIpcRequest } from '../../engine/runtime/McpActivationContract.js';
+import type {
+  ProviderProfileListRequest,
+  ProviderProfileSaveRequest,
+} from '../../engine/runtime/ProviderProfileContract.js';
 
 const electronMocks = vi.hoisted(() => ({
   exposeInMainWorld: vi.fn(),
@@ -117,6 +121,24 @@ async function loadExposedAPI() {
     setPersonalizationSecret(raw: PersonalizationSecretSetRequest): Promise<unknown>;
     removePersonalizationSecret(raw: PersonalizationSecretRemoveRequest): Promise<unknown>;
     fundingTemplate(raw: FundingTemplateIpcRequest): Promise<unknown>;
+    providerProfilesList(raw: ProviderProfileListRequest): Promise<unknown>;
+    providerProfilesSave(raw: ProviderProfileSaveRequest): Promise<unknown>;
+    storageGetLocation(): Promise<unknown>;
+    storageChooseLocation(): Promise<unknown>;
+    storageSetLocation(target: string): Promise<unknown>;
+    storageOpenFolder(): Promise<unknown>;
+    browserShow(bounds: { x: number; y: number; width: number; height: number }): Promise<unknown>;
+    browserHide(): Promise<unknown>;
+    browserNavigate(url: string): Promise<unknown>;
+    browserState(): Promise<unknown>;
+    browserClick(x: number, y: number): Promise<unknown>;
+    browserType(text: string): Promise<unknown>;
+    browserScreenshot(): Promise<unknown>;
+    browserCollect(): Promise<unknown>;
+    browserAcceptDownload(id: string, projectId: string | null): Promise<unknown>;
+    browserCancelDownload(id: string): Promise<unknown>;
+    onBrowserState(callback: (state: unknown) => void): () => void;
+    onBrowserDownloadRequest(callback: (download: unknown) => void): () => void;
   };
 }
 
@@ -341,6 +363,56 @@ describe('preload personalization boundary', () => {
     await expect(api.importPersonalizationBundle(importRequest)).resolves.toMatchObject({ ok: true, action: 'imported' });
     expect(electronMocks.invoke).toHaveBeenNthCalledWith(1, 'personalization:bundle:export', exportRequest);
     expect(electronMocks.invoke).toHaveBeenNthCalledWith(2, 'personalization:bundle:import', importRequest);
+  });
+
+  it('keeps provider profile metadata-only and rejects a main-process response that leaks a key', async () => {
+    const request: ProviderProfileListRequest = {
+      contractVersion: 1,
+      operationId: '11111111-1111-4111-8111-111111111111',
+    };
+    electronMocks.invoke.mockResolvedValueOnce({
+      ok: true,
+      contractVersion: 1,
+      operationId: request.operationId,
+      revision: 1,
+      profiles: [{
+        id: '22222222-2222-4222-8222-222222222222',
+        name: 'Research Qwen',
+        baseUrl: 'https://example.test/v1',
+        model: 'qwen3.5-122b-a10b',
+        vision: false,
+        maxContextTokens: 131072,
+        apiKeyStored: true,
+        isActive: true,
+        createdAt: 1,
+        updatedAt: 1,
+        apiKey: 'malicious-main-response-key',
+      }],
+    });
+    const api = await loadExposedAPI();
+    const result = await api.providerProfilesList(request);
+    expect(electronMocks.invoke).toHaveBeenCalledWith('providerProfiles:list', request);
+    expect(result).toMatchObject({ ok: false, code: 'invalid_request' });
+    expect(JSON.stringify(result)).not.toContain('malicious-main-response-key');
+  });
+
+  it('rejects malformed provider profile saves before IPC', async () => {
+    const api = await loadExposedAPI();
+    const result = await api.providerProfilesSave({
+      contractVersion: 1,
+      operationId: '33333333-3333-4333-8333-333333333333',
+      expectedRevision: 0,
+      name: 'Invalid',
+      baseUrl: 'https://example.test/v1',
+      model: 'qwen3.5-122b-a10b',
+      vision: false,
+      maxContextTokens: 0,
+      keyMode: 'saved',
+      newApiKey: 'must-not-cross-ipc-12345',
+    } as ProviderProfileSaveRequest);
+    expect(result).toMatchObject({ ok: false, code: 'invalid_request' });
+    expect(JSON.stringify(result)).not.toContain('must-not-cross-ipc-12345');
+    expect(electronMocks.invoke).not.toHaveBeenCalled();
   });
 
   it('keeps secret values write-only and returns metadata-only responses', async () => {
@@ -1281,6 +1353,34 @@ describe('preload runtime-schema boundary', () => {
     expect(JSON.stringify(callback.mock.calls)).not.toContain('event-secret-marker');
   });
 
+  it('subscribes to goal:changed broadcasts with strict decoding and cleanup', async () => {
+    const api = await loadExposedAPI();
+    const callback = vi.fn();
+    const unsubscribe = api.onGoalChanged(callback);
+    const registration = electronMocks.on.mock.calls.find(([channel]) => channel === 'goal:changed');
+    const handler = registration?.[1] as ((event: unknown, payload: unknown) => void) | undefined;
+    expect(handler).toBeDefined();
+
+    handler?.({}, {
+      goalId: 'goal-1',
+      label: 'Research goal',
+      status: 'running',
+      priority: 'high',
+      createdAt: 42,
+    });
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect(callback.mock.calls[0]![0]).toMatchObject({ goalId: 'goal-1', status: 'running', priority: 'high' });
+
+    // Malformed payloads are dropped before reaching the renderer callback.
+    handler?.({}, { goalId: 'goal-1', label: '', status: 'running', createdAt: 42 });
+    handler?.({}, { goalId: 'goal-1', label: 'Research goal', status: 'running', createdAt: 42, secret: 'changed-secret-marker' });
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(callback.mock.calls)).not.toContain('changed-secret-marker');
+
+    unsubscribe();
+    expect(electronMocks.removeListener).toHaveBeenCalledWith('goal:changed', handler);
+  });
+
   it('revalidates Goal execution results with a fixed recovery', async () => {
     electronMocks.invoke.mockResolvedValueOnce({
       success: false,
@@ -1730,5 +1830,127 @@ describe('preload current-affairs — strict contract boundary', () => {
     const result = await api.currentAffairsListSources({ version: 1, operationId: 'ls3', projectId: VALID_PROJECT_ID });
     expect(JSON.stringify(result)).not.toContain('private');
     expect(JSON.stringify(result)).not.toContain('secret.txt');
+  });
+});
+
+describe('createSession with project binding', () => {
+  it('forwards the projectId and drops forged ids before invoking IPC', async () => {
+    electronMocks.invoke.mockResolvedValueOnce({ success: true, code: 'created' });
+    const api = await loadExposedAPI();
+
+    const ok = await api.createSession('session-proj', 'project-1');
+    expect(ok).toEqual({ success: true, code: 'created' });
+    expect(electronMocks.invoke).toHaveBeenCalledWith('session:create', { sessionId: 'session-proj', projectId: 'project-1' });
+
+    // A forged project id fails decode and never reaches IPC.
+    electronMocks.invoke.mockClear();
+    const forged = await api.createSession('session-proj', '../escape');
+    expect(forged).toEqual({ success: false, code: 'session_mutation_unavailable' });
+    expect(electronMocks.invoke.mock.calls.some(([channel]) => channel === 'session:create')).toBe(false);
+  });
+});
+
+describe('storage location bridge', () => {
+  it('forwards get/choose/set/reset/open to their IPC channels', async () => {
+    const api = await loadExposedAPI();
+
+    electronMocks.invoke.mockResolvedValueOnce({
+      ok: true,
+      dataDir: 'D:\\Data',
+      defaultDir: 'C:\\u\\metis-data',
+      usingDefault: false,
+    });
+    expect(await api.storageGetLocation()).toEqual({
+      ok: true,
+      dataDir: 'D:\\Data',
+      defaultDir: 'C:\\u\\metis-data',
+      usingDefault: false,
+    });
+    expect(electronMocks.invoke).toHaveBeenCalledWith('storage:getLocation');
+
+    electronMocks.invoke.mockResolvedValueOnce({ canceled: false, path: 'D:\\New' });
+    expect(await api.storageChooseLocation()).toEqual({ canceled: false, path: 'D:\\New' });
+    expect(electronMocks.invoke).toHaveBeenCalledWith('storage:chooseLocation');
+
+    electronMocks.invoke.mockResolvedValueOnce({ ok: true, restarting: true, dataDir: 'D:\\New' });
+    expect(await api.storageSetLocation('D:\\New')).toEqual({ ok: true, restarting: true, dataDir: 'D:\\New' });
+    expect(electronMocks.invoke).toHaveBeenCalledWith('storage:setLocation', 'D:\\New');
+
+    electronMocks.invoke.mockResolvedValueOnce({ ok: true });
+    expect(await api.storageOpenFolder()).toEqual({ ok: true });
+    expect(electronMocks.invoke).toHaveBeenCalledWith('storage:openFolder');
+  });
+
+  it('surfaces failure responses without inventing success', async () => {
+    const api = await loadExposedAPI();
+    electronMocks.invoke.mockResolvedValueOnce({ ok: false, error: 'location_not_empty' });
+    expect(await api.storageSetLocation('D:\\Occupied')).toEqual({ ok: false, error: 'location_not_empty' });
+  });
+});
+
+
+describe('research browser bridge', () => {
+  it('forwards navigation/control/collect/download calls to their IPC channels', async () => {
+    const api = await loadExposedAPI();
+
+    electronMocks.invoke.mockResolvedValueOnce({ ok: true });
+    expect(await api.browserShow({ x: 10, y: 20, width: 800, height: 600 })).toEqual({ ok: true });
+    expect(electronMocks.invoke).toHaveBeenCalledWith('browser:show', { x: 10, y: 20, width: 800, height: 600 });
+
+    electronMocks.invoke.mockResolvedValueOnce({ ok: true, url: 'https://scholar.google.com' });
+    expect(await api.browserNavigate('https://scholar.google.com')).toEqual({ ok: true, url: 'https://scholar.google.com' });
+    expect(electronMocks.invoke).toHaveBeenCalledWith('browser:navigate', 'https://scholar.google.com');
+
+    electronMocks.invoke.mockResolvedValueOnce({ ok: true, state: { url: '', title: '', loading: false, canGoBack: false, canGoForward: false } });
+    expect(await api.browserState()).toMatchObject({ ok: true });
+    expect(electronMocks.invoke).toHaveBeenCalledWith('browser:state');
+
+    electronMocks.invoke.mockResolvedValueOnce({ ok: true });
+    expect(await api.browserClick(120, 340)).toEqual({ ok: true });
+    expect(electronMocks.invoke).toHaveBeenCalledWith('browser:click', { x: 120, y: 340 });
+
+    electronMocks.invoke.mockResolvedValueOnce({ ok: true });
+    expect(await api.browserType('quantum entanglement')).toEqual({ ok: true });
+    expect(electronMocks.invoke).toHaveBeenCalledWith('browser:type', 'quantum entanglement');
+
+    electronMocks.invoke.mockResolvedValueOnce({ ok: true, imageBase64: 'AAAA' });
+    expect(await api.browserScreenshot()).toMatchObject({ ok: true, imageBase64: 'AAAA' });
+    expect(electronMocks.invoke).toHaveBeenCalledWith('browser:screenshot');
+
+    electronMocks.invoke.mockResolvedValueOnce({ ok: true, paper: { paperId: 'paper-1', merged: false, title: 'X' } });
+    expect(await api.browserCollect()).toMatchObject({ ok: true, paper: { paperId: 'paper-1' } });
+    expect(electronMocks.invoke).toHaveBeenCalledWith('browser:collect');
+
+    electronMocks.invoke.mockResolvedValueOnce({ ok: true, savedPath: 'C:\\p.pdf' });
+    expect(await api.browserAcceptDownload('dl-1', 'proj-1')).toMatchObject({ ok: true });
+    expect(electronMocks.invoke).toHaveBeenCalledWith('browser:acceptDownload', { id: 'dl-1', projectId: 'proj-1' });
+
+    electronMocks.invoke.mockResolvedValueOnce({ ok: true });
+    expect(await api.browserCancelDownload('dl-1')).toEqual({ ok: true });
+    expect(electronMocks.invoke).toHaveBeenCalledWith('browser:cancelDownload', 'dl-1');
+  });
+
+  it('subscribes to browser state and download events with unsubscribe', async () => {
+    const api = await loadExposedAPI();
+    const stateCb = vi.fn();
+    const downloadCb = vi.fn();
+    const offState = api.onBrowserState(stateCb);
+    const offDownload = api.onBrowserDownloadRequest(downloadCb);
+    expect(electronMocks.on).toHaveBeenCalledWith('browser:state', expect.any(Function));
+    expect(electronMocks.on).toHaveBeenCalledWith('browser:download-request', expect.any(Function));
+
+    // invoke the registered handlers through the mock
+    const stateHandler = electronMocks.on.mock.calls.find(([ch]) => ch === 'browser:state')![1];
+    stateHandler({}, { url: 'https://x', title: 'X', loading: false, canGoBack: true, canGoForward: false });
+    expect(stateCb).toHaveBeenCalledWith({ url: 'https://x', title: 'X', loading: false, canGoBack: true, canGoForward: false });
+
+    const downloadHandler = electronMocks.on.mock.calls.find(([ch]) => ch === 'browser:download-request')![1];
+    downloadHandler({}, { id: 'dl-2', url: 'https://x/a.pdf', filename: 'a.pdf', mimeType: 'application/pdf', pageUrl: '', pageTitle: '' });
+    expect(downloadCb).toHaveBeenCalledWith(expect.objectContaining({ id: 'dl-2', filename: 'a.pdf' }));
+
+    offState();
+    offDownload();
+    expect(electronMocks.removeListener).toHaveBeenCalledWith('browser:state', stateHandler);
+    expect(electronMocks.removeListener).toHaveBeenCalledWith('browser:download-request', downloadHandler);
   });
 });

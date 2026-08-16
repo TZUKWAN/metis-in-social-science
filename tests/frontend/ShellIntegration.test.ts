@@ -44,17 +44,13 @@ describe('METIS-505 ChatPlanIntegration — unified message + execution stream',
 // ── METIS-506 nav visibility ──
 
 describe('METIS-506 navConfig — technical entries hidden in normal mode', () => {
-  it('normal mode shows only the three top-level + four mode entries', () => {
+  it('normal mode shows only the three top-level + one mode entry', () => {
     setDiagnosticMode('normal');
     const ids = getVisibleNav().map((n) => n.id);
     expect(ids).toEqual([
       'projects',
-      'library',
       'settings',
       'converse',
-      'read',
-      'analyze',
-      'write',
     ]);
     // technical entries absent
     expect(ids).not.toContain('evals');
@@ -66,7 +62,6 @@ describe('METIS-506 navConfig — technical entries hidden in normal mode', () =
   it('there are exactly three top-level entries in fixed order', () => {
     expect(getTopLevelNav().map((entry) => entry.id)).toEqual([
       'projects',
-      'library',
       'settings',
     ]);
   });
@@ -117,10 +112,9 @@ describe('METIS-507 designTokens — academic visual system', () => {
 // ── METIS-508 keyboard + locale ──
 
 describe('METIS-508 keyboardShortcuts + locale', () => {
-  it('Ctrl+1/2/3/4 switch modes (windows)', () => {
+  it('Ctrl+1/2 switch modes (windows)', () => {
     expect(matchShortcut({ key: '1', metaKey: false, ctrlKey: true, shiftKey: false, altKey: false }, 'Win32')?.action).toBe('switch_converse');
-    expect(matchShortcut({ key: '2', metaKey: false, ctrlKey: true, shiftKey: false, altKey: false }, 'Win32')?.action).toBe('switch_read');
-    expect(matchShortcut({ key: '4', metaKey: false, ctrlKey: true, shiftKey: false, altKey: false }, 'Win32')?.action).toBe('switch_write');
+    expect(matchShortcut({ key: '2', metaKey: false, ctrlKey: true, shiftKey: false, altKey: false }, 'Win32')?.action).toBe('switch_write');
   });
 
   it('Cmd+K opens global search (mac uses metaKey)', () => {
@@ -135,7 +129,7 @@ describe('METIS-508 keyboardShortcuts + locale', () => {
   });
 
   it('modeForAction maps switch actions to modes', () => {
-    expect(modeForAction('switch_analyze')).toBe('analyze');
+    expect(modeForAction('switch_write')).toBe('write');
     expect(modeForAction('global_search')).toBeNull();
   });
 

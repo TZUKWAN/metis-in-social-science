@@ -19,7 +19,6 @@ function resetStore() {
     collections: [],
     selectedCollection: null,
     workflowRuns: [],
-    weeklyReadingGoal: 5,
   });
 }
 
@@ -133,15 +132,7 @@ describe('useMetisStore — Papers', () => {
     expect(filtered[0]?.id).toBe('paper_1');
   });
 
-  it('should enforce a minimum weekly reading goal of 1', () => {
-    const store = useMetisStore.getState();
-    store.setWeeklyReadingGoal(3);
-    expect(useMetisStore.getState().weeklyReadingGoal).toBe(3);
-    store.setWeeklyReadingGoal(0);
-    expect(useMetisStore.getState().weeklyReadingGoal).toBe(1);
-    store.setWeeklyReadingGoal(-5);
-    expect(useMetisStore.getState().weeklyReadingGoal).toBe(1);
-  });
+
 
   it('should filter papers by minimum rating', () => {
     const store = useMetisStore.getState();

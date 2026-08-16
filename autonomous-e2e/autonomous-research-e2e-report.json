@@ -1,0 +1,93 @@
+{
+  "startedAt": "2026-08-13T06:35:53.368Z",
+  "providerKind": "deterministic-local-openai-compatible-test-server",
+  "checks": [
+    {
+      "name": "真实 setup probe 通过本机 OpenAI 兼容端点",
+      "ok": true,
+      "detail": "{\"version\":1,\"operationId\":\"auto-e2e-probe\",\"success\":true,\"probeId\":\"c8710662-f5ee-4c9b-bc04-926d613a6738\",\"configVersion\":0,\"capabilities\":{\"streaming\":true,\"nativeToolCalling\":true,\"structuredOutput\":true,\"maxContextTokens\":128000,\"multimodal\":false},\"strategy\":{\"tier\":\"standard\",\"maxTurnsPerStep\":4,\"maxToolsPerTurn\":8,\"maxRetries\":2,\"reviewEveryNTurns\":3,\"forceStructuredOutput\":true,\"contextBudgetTokens\":96000,\"maxOutputTokens\":4096,\"nativeToolCalling\":true},\"warnings\":[]}"
+    },
+    {
+      "name": "真实 setup save 重建 provider 与自主引擎",
+      "ok": true,
+      "detail": "{\"version\":1,\"operationId\":\"auto-e2e-save\",\"success\":true,\"configVersion\":1,\"config\":{\"baseUrl\":\"http://127.0.0.1:62261/v1\",\"model\":\"gpt-4o-mini\",\"apiKeyStored\":true},\"capabilities\":{\"streaming\":true,\"nativeToolCalling\":true,\"structuredOutput\":true,\"maxContextTokens\":128000,\"multimodal\":false},\"strategy\":{\"tier\":\"standard\",\"maxTurnsPerStep\":4,\"maxToolsPerTurn\":8,\"maxRetries\":2,\"reviewEveryNTurns\":3,\"forceStructuredOutput\":true,\"contextBudgetTokens\":96000,\"maxOutputTokens\":4096,\"nativeToolCalling\":true},\"warnings\":[]}"
+    },
+    {
+      "name": "从真实应用导航进入自主科研页面",
+      "ok": true
+    },
+    {
+      "name": "从真实页面启动自主科研",
+      "ok": true
+    },
+    {
+      "name": "自主科研到达完成而非失败状态",
+      "ok": true,
+      "detail": "{\"completed\":{\"version\":1,\"sessionId\":\"auto_msr59s12\",\"sequence\":51,\"type\":\"engine-completed\",\"summary\":\"研究目标：利用地方档案研究民国时期城市救济制度的演变\\n\\n研究成果：\\n# 自主科研阶段记录\\n\\n本阶段由受控端到端验证提供程序执行，用于核验真实主进程、AgentLoop、项目工具、检查点与产物持久化链路。\\n阶段提示摘要：研究目标：利用地方档案研究民国时期城市救济制度的演变\\n\\n论文结构（研究者定义，不可增删）：\\n1. 引言\\n2. 研究问题与背景\\n3. 方法与资料\\n4. 发现与分析\\n5. 结论\\n\\n前序阶段证据与论证：\\n## 阶段「question_formulation」的产出\\n# 自主科研阶段记录\\n\\n本阶段由受控端到端验证提供程序执行，用于核验真实主进程、AgentLoop、\\n\\n## 当前判断\\n已形成结构化阶段输出，并明确区分已执行的软件链路与尚未由真实外部资料支持的学术判断。\\n\\n## 证据与限制\\n本阶段不声称检索到真实外部资料；任何内容均保持草稿状态，等待真实模型和来源进一步研究。\\n\\n## 下一步\\n沿选定历史研究方法继续推进，并将每一阶段输出保存为可追溯、可版本化的项目研究产物。\\n\\n最终反思：方法计划已经执行完毕，阶段产物和限制说明均已保留。\",\"artifactIds\":[\"auto-artifact-b4fbc5fbe18d9fecce7c27caa64500ba\",\"auto-artifact-863136651d10f8150c1f765d601d599d\",\"auto-artifact-74be4f833d071b2d409b064c4fc1da74\",\"auto-artifact-a9fc2d4de437835b59e5050c7301eda2\",\"auto-artifact-2ed4adfc31d72f3f80916bdd6f6c3882\",\"auto-artifact-c053a06eadf5a3959a135ed1b4d6a021\",\"auto-artifact-47782947d98a808db6cfcac335bba878\",\"auto-artifact-427edb23b9af6bceb9a071fd64c8aa3e\",\"auto-artifact-0a81d3a09bb5734c5e181da055c768a8\",\"auto-artifact-02083fa647eff840fe1db37850e05933\"]},\"failed\":null}"
+    },
+    {
+      "name": "完成事件返回真实持久化产物 ID",
+      "ok": true,
+      "detail": "artifactIds=10"
+    },
+    {
+      "name": "AgentLoop 真实调用当前项目 list_sources 工具",
+      "ok": true,
+      "detail": 5
+    },
+    {
+      "name": "未预选项目时自动创建持久探索项目",
+      "ok": true,
+      "detail": "project-auto-5b1ed2ed-28eb-4fce-8b25-32b6f9aed806"
+    },
+    {
+      "name": "项目快照包含十个阶段研究成果",
+      "ok": true,
+      "detail": "artifacts=10"
+    },
+    {
+      "name": "阶段成果保持诚实草稿状态",
+      "ok": true
+    },
+    {
+      "name": "写作阶段保存为 manuscript",
+      "ok": true
+    },
+    {
+      "name": "持久研究运行最终状态为 completed",
+      "ok": true
+    },
+    {
+      "name": "成功运行不残留可恢复检查点",
+      "ok": true,
+      "detail": "{\"sessions\":[]}"
+    },
+    {
+      "name": "完成页面显示已保存研究成果与打开入口",
+      "ok": true,
+      "detail": "{\"visible\":true,\"text\":\"已保存研究成果: 10打开项目研究成果\",\"open\":true}"
+    },
+    {
+      "name": "一键进入项目研究成果区",
+      "ok": true
+    },
+    {
+      "name": "完成态截图已生成",
+      "ok": true
+    },
+    {
+      "name": "渲染器无错误级控制台消息",
+      "ok": true,
+      "detail": "[]"
+    }
+  ],
+  "requests": {
+    "total": 30,
+    "streaming": 16,
+    "listSourcesToolCalls": 5
+  },
+  "consoleErrors": [],
+  "finishedAt": "2026-08-13T06:35:58.281Z",
+  "failed": 0,
+  "passed": 17
+}

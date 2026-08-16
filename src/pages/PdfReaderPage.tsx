@@ -15,6 +15,7 @@ import { SafeMarkdown } from '../presentation/SafeMarkdown';
 import { anchorFromPdfSelection, anchorFromPdfRegion } from '../../engine/viewers/DocumentViewers';
 import type { AnchorSpec } from '../../engine/sources/EvidenceAnchor';
 import type { UIMode } from '../../engine/capabilities/DiagnosticMode';
+import { findReferenceSection, findReferencePage } from '../../engine/research/ReferenceLocator.js';
 import './PdfReaderPage.css';
 
 // ─── Types ────────────────────────────────────────────────────
@@ -54,9 +55,12 @@ interface PendingSelection {
 
 interface PdfReaderPageProps {
   uiMode?: UIMode;
+  /** Open a specific library paper by id (my-papers list / message citations).
+   *  Project-linked papers keep full annotation; unlinked ones open read-only. */
+  openPaperId?: string | null;
 }
 
-export default function PdfReaderPage({ uiMode = 'normal' }: PdfReaderPageProps) {
+export default function PdfReaderPage({ uiMode = 'normal', openPaperId = null }: PdfReaderPageProps) {
   const { papers } = useMetisStore();
   const activeProjectId = useResearchWorkspaceStore((state) => state.activeProjectId);
   const snapshot = useResearchWorkspaceStore((state) => state.snapshot);
@@ -201,7 +205,14 @@ export default function PdfReaderPage({ uiMode = 'normal' }: PdfReaderPageProps)
 
       setPdfDoc(doc);
       setTotalPages(doc.numPages);
-      setCurrentPage(1);
+      // O8: honor a citation backlink's target page when opening.
+      const pendingPage = useMetisStore.getState().pendingPaperPage;
+      if (pendingPage !== null && pendingPage >= 1 && pendingPage <= doc.numPages) {
+        setCurrentPage(pendingPage);
+        useMetisStore.setState({ pendingPaperPage: null });
+      } else {
+        setCurrentPage(1);
+      }
 
       // Reset annotation state whenever a different PDF is opened.
       setPendingSelection(null);
@@ -286,6 +297,51 @@ export default function PdfReaderPage({ uiMode = 'normal' }: PdfReaderPageProps)
     if (pageNum < 1 || pageNum > totalPages || !pdfDoc) return;
     setCurrentPage(pageNum);
   }, [pdfDoc, totalPages]);
+
+  // O9: locate the References/Bibliography section so users can jump to it and
+  // from a citation number to the matching reference entry (Smart Jump subset).
+  const referenceSection = useMemo(() => {
+    if (pageTextMap.size === 0) return null;
+    return findReferenceSection(pageTextMap);
+  }, [pageTextMap]);
+
+  // O9: back-jump stack. Citation/reference jumps record the page they came
+  // from so the user can return to the reading position (Sioyek-style).
+  const [jumpStack, setJumpStack] = useState<number[]>([]);
+
+  const pushJump = useCallback((fromPage: number) => {
+    setJumpStack((prev) => [...prev.slice(-19), fromPage]);
+  }, []);
+
+  const jumpBack = useCallback(() => {
+    setJumpStack((prev) => {
+      if (prev.length === 0) return prev;
+      const target = prev[prev.length - 1];
+      const rest = prev.slice(0, -1);
+      if (target !== undefined) {
+        goToPage(target);
+      }
+      return rest;
+    });
+  }, [goToPage]);
+
+  const jumpToReferences = useCallback(() => {
+    if (referenceSection) {
+      pushJump(currentPage);
+      goToPage(referenceSection.startPage);
+    }
+  }, [referenceSection, currentPage, pushJump, goToPage]);
+
+  // O9: jump from a citation number "[n]" / "(n)" to the reference entry page.
+  // Exposed for the text-layer selection affordance wired below.
+  const jumpToReference = useCallback((refNumber: number) => {
+    if (!referenceSection) return;
+    const page = findReferencePage(pageTextMap, referenceSection, refNumber);
+    if (page) {
+      pushJump(currentPage);
+      goToPage(page);
+    }
+  }, [referenceSection, pageTextMap, currentPage, pushJump, goToPage]);
 
   // ─── Zoom controls ──────────────────────────────────────
 
@@ -874,6 +930,33 @@ export default function PdfReaderPage({ uiMode = 'normal' }: PdfReaderPageProps)
     }
   }, [loadPdfFromData, t, uiMode]);
 
+  // Open-by-id: requested by the browser "my papers" list or a message
+  // citation. The library paper carries a main-process PDF capability.
+  useEffect(() => {
+    if (!openPaperId) return;
+    const paper = papers.find((candidate) => candidate.id === openPaperId);
+    if (!paper) return;
+    let cancelled = false;
+    void (async () => {
+      const metis = window.metis;
+      const capability = paper.pdfCapability;
+      if (!metis?.useFileCapability || !capability) {
+        setError(t('pdf.errorFileAccessUnavailable'));
+        return;
+      }
+      const result = await metis.useFileCapability({
+        capabilityId: capability.capabilityId,
+        operation: 'read',
+        maxBytes: 16 * 1024 * 1024,
+      });
+      if (cancelled || !result.success || result.operation !== 'read') return;
+      setCurrentPaperId(paper.id);
+      await loadPdfFromData(new Uint8Array(result.data), paper.title);
+    })();
+    return () => { cancelled = true; };
+  }, [openPaperId, papers, loadPdfFromData, t]);
+
+
   // ─── Render ─────────────────────────────────────────────
 
   // No PDF loaded — show drop zone
@@ -1006,6 +1089,32 @@ export default function PdfReaderPage({ uiMode = 'normal' }: PdfReaderPageProps)
         <button onClick={() => goToPage(totalPages)} disabled={currentPage >= totalPages} className="toolbar-btn" title="Last page">
           <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M13 17l5-5-5-5" /><path d="M6 17l5-5-5-5" /></svg>
         </button>
+
+        {/* O9: jump to References / jump from citation number to reference entry */}
+        {referenceSection && (
+          <button
+            onClick={jumpToReferences}
+            className="toolbar-btn"
+            title={t('pdf.jumpToReferences')}
+            data-testid="pdf-jump-to-references"
+          >
+            <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></svg>
+            <span style={{ marginLeft: 4 }}>{t('pdf.references')}</span>
+          </button>
+        )}
+
+        {/* O9: back to the reading position after a reference jump. */}
+        {jumpStack.length > 0 && (
+          <button
+            onClick={jumpBack}
+            className="toolbar-btn"
+            title={t('pdf.jumpBack')}
+            data-testid="pdf-jump-back"
+          >
+            <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 14l-4-4 4-4" /><path d="M5 10h11a4 4 0 0 1 0 8h-3" /></svg>
+            <span style={{ marginLeft: 4 }}>{t('pdf.jumpBack')}</span>
+          </button>
+        )}
 
         <div className="toolbar-separator" />
 
@@ -1245,6 +1354,21 @@ export default function PdfReaderPage({ uiMode = 'normal' }: PdfReaderPageProps)
                         >
                           {aiLoading ? t('pdf.aiExplainLoading') : t('pdf.aiExplain')}
                         </button>
+                        {/* O9: when the selection is a citation marker like [12] or (12), offer a jump to the reference entry. */}
+                        {referenceSection && (() => {
+                          const refMatch = pendingSelection.snippet.match(/\[(\d+)\]|\((\d+)\)/);
+                          const refNum = refMatch ? Number(refMatch[1] ?? refMatch[2]) : null;
+                          return refNum !== null ? (
+                            <button
+                              className="toolbar-btn"
+                              data-testid="pdf-jump-to-ref"
+                              title={t('pdf.jumpToReference')}
+                              onClick={() => jumpToReference(refNum)}
+                            >
+                              {t('pdf.jumpToReference')}
+                            </button>
+                          ) : null;
+                        })()}
                         <button className="toolbar-btn" onClick={cancelPending}>
                           {t('common.cancel')}
                         </button>

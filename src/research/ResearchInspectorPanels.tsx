@@ -34,6 +34,7 @@ import {
   useResearchWorkspaceStore,
   type ResearchWorkspaceSelection,
 } from './researchWorkspaceStore';
+import ProjectTasksPanel from './ProjectTasksPanel';
 import './ResearchWorkspace.css';
 
 const INSPECTOR_COPY = {
@@ -77,6 +78,11 @@ const INSPECTOR_COPY = {
     tags: '标签',
     anchor: '定位锚点',
     sourceLabel: '所属资料',
+    openInLibrary: '在资料库中打开',
+    reconcileMetadata: '补全元数据',
+    reconcilePrompt: '输入 DOI 或论文标题，从 CrossRef 重新匹配题录：',
+    reconcileNoMatch: '未找到匹配的题录，请检查输入或换一个关键词。',
+    reconcileError: '补全元数据失败，请稍后重试。',
     confidence: '置信度',
     relatedClaims: '关联论断',
     relatedEvidence: '关联证据',
@@ -160,6 +166,11 @@ const INSPECTOR_COPY = {
     tags: 'Tags',
     anchor: 'Anchor',
     sourceLabel: 'Source',
+    openInLibrary: 'Open in library',
+    reconcileMetadata: 'Fill in metadata',
+    reconcilePrompt: 'Enter a DOI or paper title to re-match from CrossRef:',
+    reconcileNoMatch: 'No matching record found. Check the input or try another keyword.',
+    reconcileError: 'Metadata lookup failed. Please try again later.',
     confidence: 'Confidence',
     relatedClaims: 'Related claims',
     relatedEvidence: 'Related evidence',
@@ -548,6 +559,48 @@ function SourcePanel({
         </DefinitionRow>
         <DefinitionRow label={copy.updatedAt}>{formatDate(source.updatedAt, locale)}</DefinitionRow>
       </dl>
+      {source.kind === 'paper' && (
+        <>
+          <button
+            className="btn-sm btn-secondary"
+            style={{ marginTop: 8, marginRight: 8 }}
+            data-testid="source-open-in-library"
+            onClick={() => {
+              window.dispatchEvent(new CustomEvent('metis:open-paper', {
+                detail: { paperId: source.libraryPaperId ?? source.id },
+              }));
+            }}
+          >
+            {copy.openInLibrary}
+          </button>
+          <button
+            className="btn-sm btn-secondary"
+            style={{ marginTop: 8 }}
+            data-testid="source-reconcile"
+            onClick={async () => {
+              const input = window.prompt(copy.reconcilePrompt, source.identifier || source.title);
+              if (!input?.trim()) return;
+              const isDoi = /^10\./.test(input.trim());
+              try {
+                const result = await window.metis?.reconcilePaper({
+                  paperId: source.libraryPaperId ?? source.id,
+                  doi: isDoi ? input.trim() : undefined,
+                  title: isDoi ? undefined : input.trim(),
+                });
+                if (result?.ok) {
+                  window.location.reload();
+                } else {
+                  window.alert(result?.error === 'no_match' ? copy.reconcileNoMatch : copy.reconcileError);
+                }
+              } catch {
+                window.alert(copy.reconcileError);
+              }
+            }}
+          >
+            {copy.reconcileMetadata}
+          </button>
+        </>
+      )}
       <EntityMutationControls
         key={source.id}
         kind="source"
@@ -1187,7 +1240,9 @@ export default function ResearchInspectorPanels({ className = '' }: ResearchInsp
   }, [effectiveOption, section, selectItem, selection]);
 
   let content: ReactNode = <EmptyInspector copy={copy} />;
-  if (snapshot && section === 'recycle_bin') {
+  if (snapshot && section === 'goals') {
+    content = <ProjectTasksPanel projectId={snapshot.project.id} />;
+  } else if (snapshot && section === 'recycle_bin') {
     content = (
       <>
         <RecycleRestore

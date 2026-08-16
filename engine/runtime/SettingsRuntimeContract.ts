@@ -19,15 +19,19 @@ export const SettingsViewSchema = z.strictObject({
   hasApiKey: z.boolean(),
   needsReauth: z.boolean(),
   theme: ThemeModeSchema,
-  weeklyReadingGoal: z.number().int().min(1).max(100).default(5),
   providerVision: z.boolean().default(false),
   providerMaxContextTokens: z.number().int().min(0).default(0),
+  /**
+   * The user explicitly chose 「稍后配置」 in the first-run wizard. Persisted
+   * so the wizard does not reappear on every launch; research execution stays
+   * provider-gated regardless — this only skips the setup PROMPT.
+   */
+  setupSkipped: z.boolean().default(false),
 });
 export type SettingsView = z.infer<typeof SettingsViewSchema>;
 
 export const SettingsUpdateRequestSchema = z.strictObject({
   theme: ThemeModeSchema,
-  weeklyReadingGoal: z.number().int().min(1).max(100).optional(),
   /** METIS-WX-2: whether the configured model accepts inline images. */
   providerVision: z.boolean().optional(),
   /** User-declared max context tokens (0 = auto-detect from model name). */
@@ -50,9 +54,9 @@ export function createSettingsViewRecovery(): SettingsView {
     hasApiKey: false,
     needsReauth: false,
     theme: 'light',
-    weeklyReadingGoal: 5,
     providerVision: false,
     providerMaxContextTokens: 0,
+    setupSkipped: false,
   };
 }
 

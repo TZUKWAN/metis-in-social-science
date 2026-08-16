@@ -11,6 +11,8 @@ export interface SafeMarkdownProps {
   uiMode?: SafeMarkdownMode;
   locale: PresentationLocale;
   codeComponent?: Components['code'];
+  /** Optional handler for doi.org links — opens the paper inside Metis. */
+  onOpenPaper?: (doi: string) => void;
 }
 
 interface MarkdownNode {
@@ -150,6 +152,7 @@ export function SafeMarkdown({
   uiMode = 'normal',
   locale,
   codeComponent,
+  onOpenPaper,
 }: SafeMarkdownProps) {
   const resolvedMode: SafeMarkdownMode = uiMode === 'diagnostic' ? 'diagnostic' : 'normal';
   const safeComponents: Components = {
@@ -169,6 +172,7 @@ export function SafeMarkdown({
 
       const rawLabel = textOf(children).trim();
       const label = /^https?:\/\//i.test(rawLabel) ? safeUrl : children;
+      const doiMatch = /^https:\/\/doi\.org\/(10\..+)$/i.exec(safeUrl);
       return (
         <a
           href={safeUrl}
@@ -183,6 +187,10 @@ export function SafeMarkdown({
               || event.metaKey
               || event.shiftKey
             ) return;
+            if (doiMatch && onOpenPaper) {
+              onOpenPaper(doiMatch[1]!);
+              return;
+            }
             const request = window.metis?.openExternal?.(safeUrl);
             if (request) void request.catch(() => undefined);
           }}

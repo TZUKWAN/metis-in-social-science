@@ -7,6 +7,7 @@
 import type { BaseProvider } from '../providers/BaseProvider.js';
 import type { FullAccessPolicy } from '../runtime/PersonalizationRuntimeContract.js';
 import type { LiveSteeringSource } from '../runtime/LiveSteeringContract.js';
+import type { ProviderProfileBinding } from '../runtime/ProviderProfileContract.js';
 
 // ─── Tool System ──────────────────────────────────────────────
 
@@ -87,6 +88,11 @@ export interface AgentRunRequest {
   liveSteering?: LiveSteeringSource;
   /** Active project scope (METIS-F12): forwarded into ToolContext for tools. */
   projectId?: string;
+  /**
+   * O13: 本次运行生效的 provider profile 绑定（全局默认或项目覆盖解析结果）。
+   * 由 WorkflowEngine/GoalEngine 在构建请求时注入，随 run 记录持久化以便审计。
+   */
+  providerProfileBinding?: ProviderProfileBinding;
 }
 
 export interface AgentRunResult {
@@ -291,10 +297,11 @@ export const RESEARCH_LIFECYCLE_TRANSITIONS: Readonly<Record<ResearchLifecycle, 
   running: ['reviewing', 'planned', 'approved', 'archived'], // pause -> back to planned/approved; fail -> retry loops here
   reviewing: ['completed', 'running', 'approved', 'archived'], // request changes -> running; reject -> approved
   completed: ['archived', 'reviewing', 'running'], // re-open for revision
-  archived: [], // terminal
+  // 归档可恢复：归档 ≠ 永久冻结。恢复目标由调用方决定（通常 draft/completed）。
+  archived: ['completed', 'draft', 'reviewing'],
 };
 
-/** All non-terminal states (a plan in these may still be actively worked). */
+/** 归档状态：可恢复，但默认不参与活跃工作流。 */
 export const TERMINAL_LIFECYCLE_STATES: readonly ResearchLifecycle[] = ['archived'];
 
 export function isTerminalResearchLifecycle(state: ResearchLifecycle): boolean {

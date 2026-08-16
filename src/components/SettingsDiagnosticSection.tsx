@@ -28,13 +28,6 @@ export default function SettingsDiagnosticSection() {
   const { t } = useTranslation();
 
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
-  const [showMcpForm, setShowMcpForm] = useState(false);
-  const [mcpName, setMcpName] = useState('');
-  const [mcpCommand, setMcpCommand] = useState('');
-  const [mcpArgs, setMcpArgs] = useState('');
-  const [mcpTestResult, setMcpTestResult] = useState<{ success: boolean; message: string } | null>(null);
-  const [mcpTestLoading, setMcpTestLoading] = useState(false);
-
   const [hitlRules, setHitlRules] = useState<HitlRule[]>([]);
 
   async function loadMCPServers() {
@@ -63,28 +56,6 @@ export default function SettingsDiagnosticSection() {
     void loadHitlRules();
   }, []);
 
-  const handleAddMcpServer = async () => {
-    if (!mcpName.trim() || !mcpCommand.trim()) return;
-    const metis = window.metis;
-    if (!metis?.addMCPServer) return;
-    try {
-      await metis.addMCPServer({
-        id: `mcp_${Date.now()}`,
-        name: mcpName.trim(),
-        command: mcpCommand.trim(),
-        args: mcpArgs.trim().split(/\s+/).filter(Boolean),
-        env: {},
-        enabled: true,
-      });
-      setMcpName('');
-      setMcpCommand('');
-      setMcpArgs('');
-      setShowMcpForm(false);
-      setMcpTestResult(null);
-      await loadMCPServers();
-    } catch (err) { console.warn('Failed to add MCP server:', err); }
-  };
-
   const handleRemoveMcpServer = async (id: string) => {
     const metis = window.metis;
     if (!metis?.removeMCPServer) return;
@@ -94,13 +65,13 @@ export default function SettingsDiagnosticSection() {
     } catch (err) { console.warn('Failed to remove MCP server:', err); }
   };
 
-  const handleToggleMcpServer = async (id: string, enabled: boolean) => {
+  const handleDisableMcpServer = async (id: string) => {
     const metis = window.metis;
     if (!metis?.toggleMCPServer) return;
     try {
-      await metis.toggleMCPServer(id, !enabled);
+      await metis.toggleMCPServer(id, false);
       await loadMCPServers();
-    } catch (err) { console.warn('Failed to toggle MCP server:', err); }
+    } catch (err) { console.warn('Failed to disable MCP server:', err); }
   };
 
   const handleToggleHitlRule = async (id: string, enabled: boolean) => {
@@ -110,41 +81,6 @@ export default function SettingsDiagnosticSection() {
       await metis.toggleHITLRule(id, !enabled);
       await loadHitlRules();
     } catch (err) { console.warn('Failed to toggle HITL rule:', err); }
-  };
-
-  const handleTestMcpServer = async () => {
-    if (!mcpCommand.trim()) return;
-    setMcpTestLoading(true);
-    setMcpTestResult(null);
-    const metis = window.metis;
-    if (!metis?.testMCPServer) {
-      setMcpTestLoading(false);
-      return;
-    }
-    try {
-      const result = await metis.testMCPServer({
-        command: mcpCommand.trim(),
-        args: mcpArgs.trim().split(/\s+/).filter(Boolean),
-        env: {},
-      });
-      if (result.success) {
-        setMcpTestResult({
-          success: true,
-          message: t('settings.mcpServerTestSuccess').replace('{count}', '0'),
-        });
-      } else {
-        setMcpTestResult({
-          success: false,
-          message: t('settings.mcpServerTestFailed').replace('{error}', result.code ?? 'Unknown error'),
-        });
-      }
-    } catch (err) {
-      setMcpTestResult({
-        success: false,
-        message: t('settings.mcpServerTestFailed').replace('{error}', err instanceof Error ? err.message : String(err)),
-      });
-    }
-    setMcpTestLoading(false);
   };
 
   return (
@@ -177,13 +113,15 @@ export default function SettingsDiagnosticSection() {
                       ? t('settings.mcpServerStatusError')
                       : t('settings.mcpServerStatusDisconnected')}
                 </span>
-                <button
-                  className="btn-secondary"
-                  style={{ fontSize: 12, padding: '4px 8px' }}
-                  onClick={() => handleToggleMcpServer(srv.id, srv.connected || false)}
-                >
-                  {srv.connected || false ? t('common.disable') : t('common.enable')}
-                </button>
+                {srv.connected && (
+                  <button
+                    className="btn-secondary"
+                    style={{ fontSize: 12, padding: '4px 8px' }}
+                    onClick={() => handleDisableMcpServer(srv.id)}
+                  >
+                    {t('common.disable')}
+                  </button>
+                )}
                 <button
                   className="btn-secondary"
                   style={{ fontSize: 12, padding: '4px 8px', color: 'var(--status-failed)' }}
@@ -196,74 +134,28 @@ export default function SettingsDiagnosticSection() {
           </div>
         )}
 
-        {!showMcpForm && (
-          <button className="btn-secondary" onClick={() => setShowMcpForm(true)}>
-            {t('settings.addMcpServer')}
+        {/* Read-only managed-installer notice: direct add/test forms were removed
+            because the backend refuses them (managed_mcp_required). Server
+            installation lives in the managed installer (Scenarios → MCP). */}
+        <div
+          className="mcp-managed-notice"
+          style={{
+            border: '1px solid var(--border)', borderRadius: 8, padding: 12,
+            background: 'var(--bg-secondary)', marginTop: 12, fontSize: 13,
+            color: 'var(--text-secondary)', lineHeight: 1.6,
+          }}
+        >
+          <p style={{ margin: '0 0 8px' }}>{t('settings.mcpManagedNotice')}</p>
+          <button
+            className="btn-secondary"
+            data-testid="mcp-open-managed-installer"
+            onClick={() => {
+              window.dispatchEvent(new CustomEvent('metis:open-mcp-installer'));
+            }}
+          >
+            {t('settings.mcpOpenManagedInstaller')}
           </button>
-        )}
-
-        {showMcpForm && (
-          <div style={{
-            border: '1px solid var(--border)', borderRadius: 8, padding: 16,
-            background: 'var(--bg-secondary)', marginTop: 12,
-          }}>
-            <h4 style={{ margin: '0 0 12px' }}>{t('settings.mcpServerAddTitle')}</h4>
-            <label style={{ display: 'block', marginBottom: 8 }}>
-              {t('settings.mcpServerName')}
-              <input
-                type="text" value={mcpName} onChange={(e) => setMcpName(e.target.value)}
-                className="settings-input" placeholder={t('settings.mcpServerNamePlaceholder')}
-                style={{ marginLeft: 8 }}
-              />
-            </label>
-            <label style={{ display: 'block', marginBottom: 8 }}>
-              {t('settings.mcpServerCommand')}
-              <input
-                type="text" value={mcpCommand} onChange={(e) => setMcpCommand(e.target.value)}
-                className="settings-input" placeholder={t('settings.mcpServerCommandPlaceholder')}
-                style={{ marginLeft: 8 }}
-              />
-            </label>
-            <label style={{ display: 'block', marginBottom: 8 }}>
-              {t('settings.mcpServerArgs')}
-              <input
-                type="text" value={mcpArgs} onChange={(e) => setMcpArgs(e.target.value)}
-                className="settings-input" placeholder={t('settings.mcpServerArgsPlaceholder')}
-                style={{ marginLeft: 8 }}
-              />
-            </label>
-            {mcpTestResult && (
-              <p style={{
-                fontSize: 12, marginTop: 8,
-                color: mcpTestResult.success ? 'var(--status-completed)' : 'var(--status-failed)',
-              }}>
-                {mcpTestResult.message}
-              </p>
-            )}
-            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-              <button
-                className="btn-primary"
-                onClick={handleAddMcpServer}
-                disabled={!mcpName.trim() || !mcpCommand.trim()}
-              >
-                {t('common.add')}
-              </button>
-              <button
-                className="btn-secondary"
-                onClick={handleTestMcpServer}
-                disabled={!mcpCommand.trim() || mcpTestLoading}
-              >
-                {mcpTestLoading ? t('common.testing') : t('settings.mcpServerTest')}
-              </button>
-              <button
-                className="btn-secondary"
-                onClick={() => { setShowMcpForm(false); setMcpTestResult(null); }}
-              >
-                {t('common.cancel')}
-              </button>
-            </div>
-          </div>
-        )}
+        </div>
       </div>
       <div className="settings-group" data-testid="diagnostic-hitl-settings">
         <h3>{t('settings.hitlRules')}</h3>

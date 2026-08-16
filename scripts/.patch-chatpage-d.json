@@ -1,0 +1,17 @@
+{
+  "replacements": [
+    {
+      "old": "    } finally {\n      setActiveGoalId(null);\n      activeGoalIdRef.current = null;\n      goalEventSequenceRef.current.clear();\n      setIsLoading(false);\n    }",
+      "new": "    } finally {\n      setActiveGoalId(null);\n      activeGoalIdRef.current = null;\n      goalEventSequenceRef.current.clear();\n      setIsLoading(false);\n      // UX-CHAT-004: 用户消息与 Goal 卡均已持久化，刷新会话摘要。\n      refreshSessionSummaries();\n    }",
+      "replaceAll": true
+    },
+    {
+      "old": "      void refreshArtifactsForSession(request.sessionId, request.generation);\n    } catch (err) {\n      if (isCurrentChatRequest(request)) {",
+      "new": "      void refreshArtifactsForSession(request.sessionId, request.generation);\n      // UX-CHAT-004: 对比回合的用户消息与各模型回答均已持久化。\n      refreshSessionSummaries();\n    } catch (err) {\n      if (isCurrentChatRequest(request)) {"
+    },
+    {
+      "old": "    if (metis.appendMessage) {\n      void metis.appendMessage(currentSessionId, 'goal', `__GOAL_CARD__${JSON.stringify(card)}`);\n    }\n    requestAnimationFrame(() => {",
+      "new": "    if (metis.appendMessage) {\n      void metis.appendMessage(currentSessionId, 'goal', `__GOAL_CARD__${JSON.stringify(card)}`);\n    }\n    // UX-CHAT-004: Goal 卡已持久化，侧栏计数同步刷新。\n    refreshSessionSummaries();\n    requestAnimationFrame(() => {"
+    }
+  ]
+}

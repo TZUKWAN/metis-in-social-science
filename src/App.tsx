@@ -1,39 +1,45 @@
-﻿import { useState, useEffect, useRef, Suspense, lazy } from 'react'
+import { useState, useEffect, useRef, Suspense, lazy } from 'react'
 import './App.css'
+import './AcademicPolish.css'
 import ChatPage from './pages/ChatPage'
 import { useTranslation } from './i18n'
 import type { Page, TopLevelEntry, ThemeMode } from './store'
 import { useMetisStore } from './store'
 import GlobalSearch from './components/GlobalSearch'
+import JobsIndicator from './components/JobsIndicator'
+import AutonomousWorkspacePage from './components/autonomous/AutonomousWorkspacePage'
+import ToastHost from './components/ToastHost'
 import ShortcutsHelp from './components/ShortcutsHelp'
 import ErrorBoundary from './components/ErrorBoundary'
 import { shouldShowOnboarding } from './lib/onboarding'
 import type { WorkspaceMode } from './shell/ProjectShell'
-import { getTopLevelNav } from './shell/navConfig'
+import { getPreferenceNav, getPrimaryResearchNav, getPrimaryWorkspaceNav, getTopLevelNav } from './shell/navConfig'
+import CommandBar, { type CommandItem, type CommandGroup } from './shell/CommandBar'
 import { getDiagnosticMode, setDiagnosticMode, type UIMode } from '../engine/capabilities/DiagnosticMode'
 import type { FirstRunSetupClient } from './components/FirstRunWizard'
-import { useResearchWorkspaceStore, researchWorkspaceStore } from './research/researchWorkspaceStore'
+import {
+  useResearchWorkspaceStore,
+  researchWorkspaceStore,
+  type ResearchWorkspaceSection,
+} from './research/researchWorkspaceStore'
 import { setPendingChatIntent } from './lib/chatIntent'
+import type { ProjectViewMode } from './pages/ProjectsPage'
 
 // ─── Lazyloaded pages to reduce initial bundle size ───
 
-const PapersPage = lazy(() => import('./pages/PapersPage'));
 const DashboardPage = lazy(() => import('./pages/DashboardPage'));
 const ProjectShell = lazy(() => import('./shell/ProjectShell'));
 const NotesPage = lazy(() => import('./pages/NotesPage'));
+const ProjectsPage = lazy(() => import('./pages/ProjectsPage'));
+const CollabPage = lazy(() => import('./pages/CollabPage'));
 const ExperimentsPage = lazy(() => import('./pages/ExperimentsPage'));
-const KnowledgeGraphPage = lazy(() => import('./pages/KnowledgeGraphPage'));
-const ArtifactsPage = lazy(() => import('./pages/ArtifactsPage'));
 const ResearchTimelinePage = lazy(() => import('./pages/ResearchTimelinePage'));
 const LatexPreviewPage = lazy(() => import('./pages/LatexPreviewPage'));
-const PdfReaderPage = lazy(() => import('./pages/PdfReaderPage'));
 const OfficeDocumentPage = lazy(() => import('./pages/OfficeDocumentPage'));
 const TaskBoardPage = lazy(() => import('./pages/TaskBoardPage'));
 const AutonomousResearchPage = lazy(() => import('./pages/AutonomousResearchPage'));
 const OnboardingTour = lazy(() => import('./components/OnboardingTour'));
 const GoalPage = lazy(() => import('./pages/GoalPage'));
-const CollectionsPage = lazy(() => import('./pages/CollectionsPage'));
-const TagsPage = lazy(() => import('./pages/TagsPage'));
 const FirstRunWizard = lazy(() => import('./components/FirstRunWizard'));
 const ProjectWorkspaceSidebar = lazy(() => import('./research/ProjectWorkspaceSidebar'));
 const ResearchInspectorPanels = lazy(() => import('./research/ResearchInspectorPanels'));
@@ -85,42 +91,36 @@ function ThemeToggle() {
 
 // ─── Navigation ───
 
-interface NavItem { id: TopLevelEntry; labelKey: string; icon: React.ReactNode }
+interface NavItem { id: TopLevelEntry; labelKey: string; descriptionKey?: string; icon: React.ReactNode }
 
 const dashboardIcon = <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /></svg>
-const papersIcon = <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /></svg>
 const settingsIcon = <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
 
 const TOP_LEVEL_ICONS: Record<TopLevelEntry, React.ReactNode> = {
   projects: dashboardIcon,
-  library: papersIcon,
   settings: settingsIcon,
 };
 
 const NAV_ITEMS: NavItem[] = getTopLevelNav().map((entry) => ({
   id: entry.id as TopLevelEntry,
   labelKey: entry.labelKey,
+  descriptionKey: entry.descriptionKey,
   icon: TOP_LEVEL_ICONS[entry.id as TopLevelEntry],
 }));
 
+const WORKSPACE_NAV_ITEMS = getPrimaryWorkspaceNav();
+const RESEARCH_NAV_ITEMS = getPrimaryResearchNav();
+const PREFERENCE_NAV_ITEMS = getPreferenceNav();
+
 function legacyPageToEntry(page: Page): { entry: TopLevelEntry; mode: WorkspaceMode } {
   switch (page) {
-    case 'papers':
-    case 'collections':
-    case 'tags':
-    case 'library':
-      return { entry: 'library', mode: 'read' };
     case 'settings':
       return { entry: 'settings', mode: 'converse' };
-    case 'pdf':
-      return { entry: 'projects', mode: 'read' };
-    case 'graph':
-    case 'artifacts':
     case 'kanban':
     case 'autonomous':
     case 'timeline':
     case 'experiments':
-      return { entry: 'projects', mode: 'analyze' };
+      return { entry: 'projects', mode: 'converse' };
     case 'latex':
     case 'office':
     case 'notes':
@@ -132,14 +132,12 @@ function legacyPageToEntry(page: Page): { entry: TopLevelEntry; mode: WorkspaceM
 
 // ─── Evals Page ───
 
-type StandalonePage = 'dashboard' | 'goal' | 'collections' | 'tags' | 'timeline' | 'latex' | 'experiments' | 'evals' | 'office' | 'kanban' | 'autonomous';
+type StandalonePage = 'dashboard' | 'goal' | 'timeline' | 'latex' | 'experiments' | 'evals' | 'office' | 'kanban' | 'autonomous' | 'autonomous-console';
 
 function resolveStandalonePage(page: Page, diagnosticMode: boolean): StandalonePage | null {
   switch (page) {
     case 'dashboard':
     case 'goal':
-    case 'collections':
-    case 'tags':
     case 'timeline':
     case 'latex':
     case 'experiments':
@@ -345,8 +343,8 @@ async function waitForStartup(metis: { startupStatus?: () => Promise<{ ready: bo
 // wins when the project still exists (loadProjects re-validates it).
 
 const SESSION_STORAGE_KEY = 'metis-session';
-const VALID_SESSION_ENTRIES: ReadonlySet<string> = new Set(['projects', 'library', 'settings']);
-const VALID_SESSION_MODES: ReadonlySet<string> = new Set(['converse', 'read', 'analyze', 'write']);
+const VALID_SESSION_ENTRIES: ReadonlySet<string> = new Set(['projects', 'settings']);
+const VALID_SESSION_MODES: ReadonlySet<string> = new Set(['converse', 'write', 'projects']);
 
 interface SavedSession {
   entry: TopLevelEntry;
@@ -361,10 +359,13 @@ function readSavedSession(): SavedSession | null {
     const parsed = JSON.parse(raw) as unknown;
     if (typeof parsed !== 'object' || parsed === null) return null;
     const { entry, mode, projectId } = parsed as { entry?: unknown; mode?: unknown; projectId?: unknown };
-    if (typeof entry !== 'string' || !VALID_SESSION_ENTRIES.has(entry)) return null;
+    // 旧版本存在过 'browser'（浏览器页）与 'library'（独立文献库）入口；
+    // 两者都已并入科研项目工作台，统一迁移到 'projects'。
+    const normalizedEntry = entry === 'browser' || entry === 'library' ? 'projects' : entry;
+    if (typeof normalizedEntry !== 'string' || !VALID_SESSION_ENTRIES.has(normalizedEntry)) return null;
     if (typeof mode !== 'string' || !VALID_SESSION_MODES.has(mode)) return null;
     return {
-      entry: entry as TopLevelEntry,
+      entry: normalizedEntry as TopLevelEntry,
       mode: mode as WorkspaceMode,
       projectId: typeof projectId === 'string' ? projectId : null,
     };
@@ -386,23 +387,24 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
   const initialLocation = legacyPageToEntry(initialPage);
   const [currentEntry, setCurrentEntry] = useState<TopLevelEntry>(initialLocation.entry)
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(initialLocation.mode)
-  const [analyzeView, setAnalyzeView] = useState<'graph' | 'artifacts'>('graph')
   const [uiMode, setUIMode] = useState<UIMode>(() => getDiagnosticMode())
   const [standalonePage, setStandalonePage] = useState<StandalonePage | null>(() =>
     resolveStandalonePage(initialPage, getDiagnosticMode() === 'diagnostic'))
   const [projectLeftCollapsed, setProjectLeftCollapsed] = useState(false)
   const [projectRightCollapsed, setProjectRightCollapsed] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
+  const [commandBarOpen, setCommandBarOpen] = useState(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [personalizationOpen, setPersonalizationOpen] = useState(false)
   const [chatIntentRevision, setChatIntentRevision] = useState(0)
+  // 科研项目工作台内的模式页签（聊天/任务看板/研究成果）。
+  const [projectViewMode, setProjectViewMode] = useState<ProjectViewMode>('chat')
   const [setupState, setSetupState] = useState<'checking' | 'required' | 'ready'>('checking')
   const [setupInitialConfig, setSetupInitialConfig] = useState<{ baseUrl?: string; model?: string }>({})
   // First-run onboarding tour (shown once after hydration).
   const [showOnboarding, setShowOnboarding] = useState(() => shouldShowOnboarding());
   const isHydrated = useMetisStore((s) => s.isHydrated)
   const hydrateFromPersistence = useMetisStore((s) => s.hydrateFromPersistence)
-  const unreadPapers = useMetisStore((s) => s.papers.filter((p) => p.readStatus === 'unread').length)
   const activeResearchProjectId = useResearchWorkspaceStore((state) => state.activeProjectId)
   const activeResearchSection = useResearchWorkspaceStore((state) => state.activeSection)
 
@@ -455,7 +457,10 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
           model: settings.model || undefined,
         })
       }
-        setSetupState(settings?.configured && settings.hasApiKey ? 'ready' : 'required')
+        // The wizard is skipped when the provider is configured OR when the
+        // user previously chose 「稍后配置」 (persisted as setupSkipped) —
+        // the prompt must not reappear on every launch.
+        setSetupState(settings?.configured && settings.hasApiKey ? 'ready' : (settings?.setupSkipped ? 'ready' : 'required'))
       }).catch(() => {
         setSetupState('required')
       })
@@ -482,9 +487,6 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
             if (settings?.theme) {
               useMetisStore.getState().setTheme(settings.theme as ThemeMode)
             }
-            if (typeof settings?.weeklyReadingGoal === 'number') {
-              useMetisStore.getState().setWeeklyReadingGoal(settings.weeklyReadingGoal)
-            }
           }).catch(() => {})
         }
       }).catch((err: unknown) => {
@@ -508,17 +510,134 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
     }
   }, [hydrateFromPersistence])
 
-  // Global search keyboard shortcut (Cmd/Ctrl+K)
+  // Global search keyboard shortcut (Cmd/Ctrl+K) and slash-command bus.
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if (e.key === 'k' && (e.metaKey || e.ctrlKey)) {
+        // O1: Ctrl/Cmd+Shift+P opens the command palette; plain Ctrl/Cmd+K stays as search.
+        if (e.shiftKey) {
+          if (document.querySelector('[aria-modal="true"]')) return
+          e.preventDefault()
+          setCommandBarOpen((open) => !open)
+          return
+        }
         if (document.querySelector('[aria-modal="true"]')) return
         e.preventDefault()
         setSearchOpen((open) => !open)
       }
+      if (e.key.toLowerCase() === 'p' && e.shiftKey && (e.metaKey || e.ctrlKey)) {
+        if (document.querySelector('[aria-modal="true"]')) return
+        e.preventDefault()
+        setCommandBarOpen((open) => !open)
+      }
+    }
+    function handleOpenSearch() {
+      setSearchOpen(true);
     }
     window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
+    window.addEventListener('metis:open-search', handleOpenSearch)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+      window.removeEventListener('metis:open-search', handleOpenSearch)
+    }
+  }, [])
+
+  // Board ↔ chat goal handoff. The navigation functions are recreated every
+  // render, so latest versions are tracked through refs updated in an effect;
+  // the listeners below are bound once and always call the current version.
+  const navigateLegacyRef = useRef(navigateLegacy);
+  const navigateWorkspaceModeRef = useRef(navigateWorkspaceMode);
+  useEffect(() => {
+    navigateLegacyRef.current = navigateLegacy;
+    navigateWorkspaceModeRef.current = navigateWorkspaceMode;
+  });
+  useEffect(() => {
+    function handleOpenGoal(event: Event) {
+      const goalId = (event as CustomEvent<{ goalId?: string }>).detail?.goalId;
+      if (!goalId) return;
+      try { window.sessionStorage.setItem('metis-pending-goal', goalId); } catch { /* session storage unavailable */ }
+      navigateWorkspaceModeRef.current('converse');
+      // ChatPage may already be mounted (converse is the default workspace);
+      // if not, its mount effect consumes the sessionStorage fallback.
+      window.dispatchEvent(new CustomEvent('metis:goal-focus', { detail: { goalId } }));
+    }
+    function handleOpenKanban(event: Event) {
+      const goalId = (event as CustomEvent<{ goalId?: string }>).detail?.goalId;
+      if (goalId) {
+        try { window.sessionStorage.setItem('metis-pending-goal-focus', goalId); } catch { /* session storage unavailable */ }
+      }
+      navigateLegacyRef.current('kanban');
+    }
+    function handleOpenProject(event: Event) {
+      const detail = (event as CustomEvent<{ projectId?: string; section?: string }>).detail;
+      const projectId = detail?.projectId;
+      if (!projectId) return;
+      const workspace = researchWorkspaceStore.getState();
+      void workspace.setActiveProject(projectId).then(() => {
+        const validSections = new Set<ResearchWorkspaceSection>([
+          'project', 'sources', 'evidence', 'note_codes', 'claims',
+          'artifacts', 'runs', 'goals', 'recycle_bin',
+        ]);
+        const section = detail?.section as ResearchWorkspaceSection | undefined;
+        if (section && validSections.has(section)) {
+          researchWorkspaceStore.getState().setActiveSection(section);
+        }
+      });
+      // Project entities are rendered by the research/write workspace. Sending
+      // this event to the conversation workspace only updated hidden store state,
+      // so links such as "open project research outputs" appeared to do nothing.
+      navigateWorkspaceModeRef.current('projects');
+      if (detail?.section === 'artifacts') {
+        setProjectViewMode('artifacts');
+      }
+    }
+    function handleOpenPaper(event: Event) {
+      const detail = (event as CustomEvent<{ paperId?: string; page?: number }>).detail;
+      if (detail?.paperId) {
+        useMetisStore.setState({ selectedPaperId: detail.paperId });
+      }
+      // O8: carry the citation's page number through to the PDF reader.
+      if (typeof detail?.page === 'number') {
+        useMetisStore.setState({ pendingPaperPage: detail.page });
+      }
+      navigateLegacyRef.current('pdf');
+    }
+    function handleOpenMcpInstaller() {
+      setPersonalizationOpen(true);
+      setStandalonePage(null);
+    }
+    function handleNavigateProjects() {
+      navigateWorkspaceMode('projects');
+    }
+    window.addEventListener('metis:open-goal', handleOpenGoal);
+    window.addEventListener('metis:open-kanban', handleOpenKanban);
+    window.addEventListener('metis:open-project', handleOpenProject);
+    window.addEventListener('metis:open-paper', handleOpenPaper);
+    window.addEventListener('metis:navigate-projects', handleNavigateProjects);
+    function handleOpenBrowserUrl(event: Event) {
+      // 浏览器页已移除：外链统一走系统浏览器。
+      const url = (event as CustomEvent<{ url?: string }>).detail?.url;
+      if (!url) return;
+      void window.metis?.openExternal?.(url);
+    }
+    function handleOpenExternalUrl(event: Event) {
+      const url = (event as CustomEvent<{ url?: string }>).detail?.url;
+      if (!url) return;
+      void window.metis?.openExternal?.(url);
+    }
+    window.addEventListener('metis:open-browser-url', handleOpenBrowserUrl);
+    window.addEventListener('metis:open-external-url', handleOpenExternalUrl);
+    window.addEventListener('metis:open-mcp-installer', handleOpenMcpInstaller);
+    return () => {
+      window.removeEventListener('metis:open-goal', handleOpenGoal);
+      window.removeEventListener('metis:open-kanban', handleOpenKanban);
+      window.removeEventListener('metis:open-project', handleOpenProject);
+      window.removeEventListener('metis:open-paper', handleOpenPaper);
+      window.removeEventListener('metis:navigate-projects', handleNavigateProjects);
+      window.removeEventListener('metis:open-browser-url', handleOpenBrowserUrl);
+      window.removeEventListener('metis:open-external-url', handleOpenExternalUrl);
+      window.removeEventListener('metis:open-mcp-installer', handleOpenMcpInstaller);
+    };
   }, [])
 
   // Shortcuts help (Shift+/)
@@ -547,19 +666,34 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
   }
 
   function navigateLegacy(page: Page) {
+    // 任务看板不再是顶层入口：统一落到科研项目工作台的看板模式页签。
+    if (page === 'kanban') {
+      setPersonalizationOpen(false);
+      setCurrentEntry('projects');
+      setStandalonePage(null);
+      setWorkspaceMode('projects');
+      setProjectViewMode('kanban');
+      return;
+    }
+    // 文献阅读（旧 pdf/library 入口）落在科研项目工作台的「资料」模式页签。
+    if (page === 'pdf') {
+      setPersonalizationOpen(false);
+      setCurrentEntry('projects');
+      setStandalonePage(null);
+      setWorkspaceMode('projects');
+      setProjectViewMode('materials');
+      return;
+    }
     const location = legacyPageToEntry(page);
     setPersonalizationOpen(false);
     setCurrentEntry(location.entry);
     setWorkspaceMode(location.mode);
-    if (location.mode === 'analyze') {
-      setAnalyzeView(page === 'artifacts' ? 'artifacts' : 'graph');
-    }
-    if (page === 'kanban') setStandalonePage('kanban');
     setStandalonePage(resolveStandalonePage(page, uiMode === 'diagnostic'));
   }
 
   function navigateWorkspaceMode(mode: WorkspaceMode) {
     setPersonalizationOpen(false);
+    setCurrentEntry('projects');
     setStandalonePage(null);
     setWorkspaceMode(mode);
   }
@@ -586,10 +720,6 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
 
   function renderNonChatWorkspace() {
     switch (workspaceMode) {
-      case 'read': return <PdfReaderPage uiMode={uiMode} />;
-      case 'analyze': return analyzeView === 'artifacts'
-        ? <ArtifactsPage />
-        : <KnowledgeGraphPage onNavigateArtifacts={() => setAnalyzeView('artifacts')} />;
       case 'write': return <NotesPage uiMode={uiMode} onNavigate={(page) => navigateLegacy(page as Page)} />;
       case 'converse': return null;
     }
@@ -599,14 +729,13 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
     switch (standalonePage) {
       case 'dashboard': return <DashboardPage onNavigate={navigateLegacy} />;
       case 'goal': return <GoalPage onNavigate={(page) => navigateLegacy(page as Page)} />;
-      case 'collections': return <CollectionsPage onNavigate={navigateLegacy} />;
-      case 'tags': return <TagsPage onNavigate={navigateLegacy} />;
       case 'timeline': return <ResearchTimelinePage />;
       case 'latex': return <LatexPreviewPage />;
       case 'experiments': return <ExperimentsPage />;
       case 'office': return <OfficeDocumentPage />;
       case 'kanban': return <TaskBoardPage />;
-      case 'autonomous': return <AutonomousResearchPage />;
+      case 'autonomous': return <AutonomousWorkspacePage onOpenConsole={() => setStandalonePage('autonomous-console')} />;
+      case 'autonomous-console': return <AutonomousResearchPage />;
       case 'evals': return uiMode === 'diagnostic' ? <EvalsPage /> : null;
       default: return null;
     }
@@ -621,21 +750,41 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
     if (currentEntry === 'settings') {
       return <SettingsPanel uiMode={uiMode} onUIModeChange={updateUIMode} />;
     }
-    if (currentEntry === 'library') {
-      return <PapersPage uiMode={uiMode} onNavigate={(page) => navigateLegacy(page as Page)} />;
-    }
 
     return (
       <ChatPage
         uiMode={uiMode}
         intentRevision={chatIntentRevision}
         renderLayout={({ leftPanel, workspace, rightPanel }) => {
+          // 科研项目工作台：左侧项目列表 + 聊天/任务看板/研究成果三模式。
+          // ChatPage 保持常驻挂载，因此切换模式或导航不会丢失对话草稿。
+          if (workspaceMode === 'projects') {
+            return (
+              <ProjectsPage
+                mode={projectViewMode}
+                onModeChange={setProjectViewMode}
+                chatContent={projectViewMode === 'chat' ? workspace : null}
+                chatRightPanel={projectViewMode === 'chat' ? rightPanel : null}
+              />
+            );
+          }
           const isConversation = workspaceMode === 'converse';
+          // 协同对话：左侧第三方 AI 网页版 + 右侧 METIS 对话分屏。
+          if (isConversation) {
+            return (
+              <CollabPage
+                chatContent={workspace}
+                sessionPanel={leftPanel}
+                rightPanel={rightPanel}
+              />
+            );
+          }
           return (
             <ProjectShell
               {...projectShellStateProps()}
               mode={workspaceMode}
               onModeChange={navigateWorkspaceMode}
+              showModeSwitcher={false}
               leftPanel={isConversation ? leftPanel : (
                 <div className="research-shell-navigation">
                   <ProjectWorkspaceSidebar />
@@ -669,8 +818,24 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
     );
   }
 
-  // First-run setup is a hard gate: research execution is unavailable until a
-  // real provider probe succeeds and the key is stored by OS secure storage.
+  // 原生嵌入视图（协同对话的第三方 AI、研究浏览器）渲染在 DOM 之上：任何全局
+  // 弹层打开时必须先隐藏它们，否则弹窗与遮罩会被裁切；关闭后通知各页恢复。
+  const embeddedOverlayOpen = searchOpen || commandBarOpen || shortcutsOpen;
+  useEffect(() => {
+    const metis = window.metis;
+    if (embeddedOverlayOpen) {
+      void metis?.collabHide?.();
+      void metis?.browserHide?.();
+    } else {
+      window.dispatchEvent(new CustomEvent('metis:restore-embedded-views'));
+    }
+  }, [embeddedOverlayOpen]);
+
+  // First-run setup gates research EXECUTION (AI features stay unavailable
+  // until a real provider probe succeeds and the key is stored by OS secure
+  // storage). Browsing the workspace is also allowed without a provider when
+  // the user explicitly picks 「稍后配置」 — that choice is persisted via
+  // settings:markSetupSkipped so the prompt does not nag on every launch.
   if (setupState === 'required') {
     return (
       <div className="app-layout" data-ui-mode={uiMode}>
@@ -678,8 +843,13 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
           <FirstRunWizard
             client={firstRunSetupClient}
             initialConfig={setupInitialConfig}
-            onComplete={() => setSetupState('ready')}
-            onSkip={() => setSetupState('ready')}
+            onComplete={() => {
+              setSetupState('ready')
+            }}
+            onSkip={() => {
+              void window.metis?.markSetupSkipped?.().catch(() => undefined)
+              setSetupState('ready')
+            }}
           />
         </Suspense>
       </div>
@@ -698,78 +868,134 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
     )
   }
 
+  // O1: command palette registry — navigation + research runs + library + search.
+  const commandItems: CommandItem[] = [
+    { id: 'goto-converse', label: t('nav.converse'), description: t('cmdbar.gotoWorkspace'), group: 'nav', onExecute: () => navigateWorkspaceMode('converse'), keywords: ['chat', '对话'] },
+    { id: 'goto-projects', label: t('nav.projects'), description: t('cmdbar.gotoWorkspace'), group: 'nav', onExecute: () => navigateWorkspaceMode('projects'), keywords: ['project', '项目', '科研', '看板'] },
+    { id: 'goto-autonomous', label: t('autonomous.title'), description: t('cmdbar.gotoResearch'), group: 'nav', onExecute: () => navigateLegacy('autonomous'), keywords: ['goal', '自主科研', '目标'] },
+    { id: 'goto-kanban', label: t('nav.kanban'), description: t('cmdbar.gotoResearch'), group: 'nav', onExecute: () => navigateLegacy('kanban'), keywords: ['board', '看板', '任务'] },
+    { id: 'goto-materials', label: t('projects.modeMaterials'), description: t('nav.projectsDesc'), group: 'nav', onExecute: () => { setPersonalizationOpen(false); setStandalonePage(null); setCurrentEntry('projects'); setWorkspaceMode('projects'); setProjectViewMode('materials'); }, keywords: ['papers', '文献', '资料', 'library'] },
+    { id: 'goto-settings', label: t('nav.settings'), description: t('cmdbar.gotoLibrary'), group: 'nav', onExecute: () => { setPersonalizationOpen(false); setStandalonePage(null); setCurrentEntry('settings'); }, keywords: ['config', '设置', '配置'] },
+    { id: 'cmd-search', label: t('cmdbar.openSearch'), description: t('cmdbar.openSearchDesc'), group: 'actions', onExecute: () => setSearchOpen(true), keywords: ['find', '搜索', '全局'] },
+    { id: 'cmd-shortcuts', label: t('cmdbar.openShortcuts'), description: t('cmdbar.openShortcutsDesc'), group: 'actions', onExecute: () => setShortcutsOpen(true), keywords: ['help', '快捷键', '帮助'] },
+  ];
+  const commandGroups: CommandGroup[] = [
+    { id: 'nav', label: t('cmdbar.groupNav') },
+    { id: 'actions', label: t('cmdbar.groupActions') },
+  ];
 
   return (
     <div className="app-layout" data-ui-mode={uiMode}>
       {showOnboarding && <OnboardingTour onDone={() => setShowOnboarding(false)} />}
-      <nav className="sidebar" aria-label={t('app.title')}>
-          <div className="sidebar-header">
-            <h1 className="app-title">{t('app.title')}</h1>
-            <span className="app-subtitle">{t('app.subtitle')}</span>
-            <button
-              className="global-search-trigger"
-              onClick={() => setSearchOpen(true)}
-              title={t('globalSearch.placeholder')}
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="11" cy="11" r="8" />
-                <line x1="21" y1="21" x2="16.65" y2="16.65" />
-              </svg>
-              <span>{t('common.search')}</span>
-              <kbd>{/Mac|iPod|iPhone|iPad/.test(navigator.platform) ? '鈱楰' : 'Ctrl K'}</kbd>
-            </button>
-          </div>
-          <ul className="nav-list">
-            {NAV_ITEMS.map((item) => (
-              <li key={item.id}>
+      <header className="topbar">
+        <div className="topbar-brand" aria-label={t('app.title')}>
+          <span className="topbar-brand__name">{t('app.title')}</span>
+        </div>
+        <nav className="topbar-nav" aria-label={t('app.title')}>
+          <div className="topbar-nav__group" aria-label={locale === 'zh' ? '研究工作区' : 'Research workspace'}>
+            {WORKSPACE_NAV_ITEMS.map((item) => {
+              const active = !personalizationOpen && currentEntry === 'projects' && standalonePage === null && workspaceMode === item.id;
+              const tooltip = item.descriptionKey ? (t(item.descriptionKey) || t(item.labelKey)) : t(item.labelKey);
+              return (
                 <button
-                  className={`nav-item ${!personalizationOpen && currentEntry === item.id ? 'active' : ''}`}
-                  onClick={() => { setPersonalizationOpen(false); setCurrentEntry(item.id); }}
-                  aria-current={!personalizationOpen && currentEntry === item.id ? 'page' : undefined}
+                  key={item.id}
+                  className={`topbar-nav__item ${active ? 'active' : ''}`}
+                  onClick={() => navigateWorkspaceMode(item.id as WorkspaceMode)}
+                  aria-current={active ? 'page' : undefined}
                   aria-label={t(item.labelKey)}
-                  title={t(item.labelKey)}
+                  title={tooltip}
                   data-nav-id={item.id}
                 >
-                  <span className="nav-icon" aria-hidden="true">{item.icon}</span>
-                  <span className="nav-label">{t(item.labelKey)}</span>
-                  {item.id === 'library' && unreadPapers > 0 && (
-                    <span className="nav-badge" aria-label={t('dashboard.statPapersNeedAttention')}>{unreadPapers}</span>
-                  )}
+                  {t(item.labelKey)}
                 </button>
-              </li>
-            ))}
-          </ul>
-          <div style={{ marginTop: 'auto', paddingBottom: 8 }}>
-            <div className="sidebar-personalization-row">
-              <ThemeToggle />
-              <button
-                className={`personalization-trigger ${personalizationOpen ? 'active' : ''}`}
-                onClick={() => { setPersonalizationOpen(true); setStandalonePage(null); }}
-                aria-current={personalizationOpen ? 'page' : undefined}
-                aria-label={t('personalization.title')}
-                title={t('personalization.title')}
-                data-testid="personalization-trigger"
-              >
-                <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                  <line x1="4" y1="6" x2="20" y2="6" /><circle cx="9" cy="6" r="2" />
-                  <line x1="4" y1="12" x2="20" y2="12" /><circle cx="15" cy="12" r="2" />
-                  <line x1="4" y1="18" x2="20" y2="18" /><circle cx="11" cy="18" r="2" />
-                </svg>
-                <span>{locale === 'zh' ? '个性化' : 'Personalization'}</span>
-              </button>
-            </div>
-            <button
-              className="nav-item"
-              onClick={() => setShortcutsOpen(true)}
-              title={t('shortcuts.title')}
-              style={{ width: '100%', justifyContent: 'center', marginTop: 8, fontSize: 12 }}
-            >
-              <span className="nav-icon" aria-hidden="true" style={{ opacity: 0.8 }}>?</span>
-              <span className="nav-label" style={{ opacity: 0.8 }}>{t('shortcuts.title')}</span>
-            </button>
+              );
+            })}
+          </div>
+          <span className="topbar-nav__divider" aria-hidden="true" />
+          <div className="topbar-nav__group" aria-label={locale === 'zh' ? '研究运行' : 'Research runs'}>
+            {RESEARCH_NAV_ITEMS.map((item) => {
+              const page = item.id as 'autonomous';
+              const active = !personalizationOpen && standalonePage === page;
+              const tooltip = item.descriptionKey ? (t(item.descriptionKey) || t(item.labelKey)) : t(item.labelKey);
+              return (
+                <button
+                  key={item.id}
+                  className={`topbar-nav__item ${active ? 'active' : ''}`}
+                  onClick={() => navigateLegacy(page)}
+                  aria-current={active ? 'page' : undefined}
+                  aria-label={t(item.labelKey)}
+                  title={tooltip}
+                  data-nav-id={item.id}
+                >{t(item.labelKey)}</button>
+              );
+            })}
+          </div>
+          <span className="topbar-nav__divider" aria-hidden="true" />
+          <div className="topbar-nav__group" aria-label={locale === 'zh' ? '资料与偏好' : 'Library and preferences'}>
+            {NAV_ITEMS.filter((item) => item.id !== 'projects').map((item) => {
+              const active = !personalizationOpen && currentEntry === item.id;
+              const tooltip = item.descriptionKey ? (t(item.descriptionKey) || t(item.labelKey)) : t(item.labelKey);
+              return (
+                <button
+                  key={item.id}
+                  className={`topbar-nav__item ${active ? 'active' : ''}`}
+                  onClick={() => { setPersonalizationOpen(false); setStandalonePage(null); setCurrentEntry(item.id); }}
+                  aria-current={active ? 'page' : undefined}
+                  aria-label={t(item.labelKey)}
+                  title={tooltip}
+                  data-nav-id={item.id}
+                >
+                  {t(item.labelKey)}
+                </button>
+              );
+            })}
+            {PREFERENCE_NAV_ITEMS.map((item) => {
+              const tooltip = item.descriptionKey ? (t(item.descriptionKey) || t(item.labelKey)) : t(item.labelKey);
+              return (
+                <button
+                  key={item.id}
+                  className={`topbar-nav__item ${personalizationOpen ? 'active' : ''}`}
+                  onClick={() => { setPersonalizationOpen(true); setStandalonePage(null); }}
+                  aria-current={personalizationOpen ? 'page' : undefined}
+                  aria-label={t(item.labelKey)}
+                  title={tooltip}
+                  data-nav-id={item.id}
+                  data-testid="personalization-trigger"
+                >{t(item.labelKey)}</button>
+              );
+            })}
           </div>
         </nav>
-      <main className="main-content">
+        <div className="topbar-actions">
+          <JobsIndicator />
+          <ToastHost />
+          <button
+            className="topbar-icon-button"
+            onClick={() => setSearchOpen(true)}
+            aria-label={t('globalSearch.placeholder')}
+            title={t('globalSearch.placeholder')}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+            </svg>
+            <kbd>{/Mac|iPod|iPhone|iPad/.test(navigator.platform) ? '⌘K' : 'Ctrl K'}</kbd>
+          </button>
+          <ThemeToggle />
+          <button
+            className="topbar-icon-button"
+            onClick={() => setCommandBarOpen(true)}
+            aria-label={t('cmdbar.placeholder')}
+            title={`${t('cmdbar.placeholder')} (${/Mac|iPod|iPhone|iPad/.test(navigator.platform) ? '⌘⇧P' : 'Ctrl+Shift+P'})`}
+            data-testid="topbar-command-palette"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M4 6h16M4 12h16M4 18h10" /><path d="m9 16 3 3-3 3" />
+            </svg>
+          </button>
+          <button className="topbar-icon-button" onClick={() => setShortcutsOpen(true)} aria-label={t('shortcuts.title')} title={t('shortcuts.title')}>?</button>
+        </div>
+      </header>
+      <main className={`main-content ${currentEntry === 'projects' && standalonePage === null ? 'main-content--workspace' : ''}`}>
         <ErrorBoundary
           showDetails={uiMode === 'diagnostic'}
           onReset={() => { setPersonalizationOpen(false); setCurrentEntry('projects'); setWorkspaceMode('converse'); setStandalonePage(null); }}
@@ -785,6 +1011,14 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
           onClose={() => setSearchOpen(false)}
         />
       )}
+      <CommandBar
+        isOpen={commandBarOpen}
+        onClose={() => setCommandBarOpen(false)}
+        commands={commandItems}
+        groups={commandGroups}
+        placeholder={t('cmdbar.placeholder')}
+        enableGlobalShortcut={false}
+      />
       {shortcutsOpen && (
         <ShortcutsHelp onClose={() => setShortcutsOpen(false)} />
       )}

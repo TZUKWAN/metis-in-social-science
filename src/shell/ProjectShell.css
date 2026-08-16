@@ -114,7 +114,8 @@
 .shell-workspace {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding: 16px;
 }
 .shell-workspace--chat {
@@ -169,7 +170,7 @@
 .shell-inspector-body {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
+  overflow: hidden;
   padding: 12px;
 }
 

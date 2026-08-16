@@ -36,7 +36,7 @@ import { HookBus, type HookContext } from './HookBus.js';
 import { BaseProvider } from '../providers/BaseProvider.js';
 import { ToolRegistry } from '../tools/ToolRegistry.js';
 import { ToolDispatcher } from '../tools/ToolDispatcher.js';
-import { parseTextToolCall } from '../tools/TextToolProtocol.js';
+import { parseTextToolCall, stripTextToolMarkup } from '../tools/TextToolProtocol.js';
 import {
   type ToolPresenterRegistry,
   createToolPresenterRegistry,
@@ -369,6 +369,13 @@ export class AgentLoop {
     if (blocked) return blocked;
 
     // Build context + compute temperature
+    // ContextEngine needs OpenAI-style function envelopes for token budgeting,
+    // while providers accept METIS' canonical ToolSpec objects and format them
+    // for their own wire protocol. Keep the two representations separate: passing
+    // toolSchemas to a provider would make it wrap the functions a second time.
+    const toolSpecs = this.registry.list().filter((tool) => (
+      ctx.allowedTools === undefined || ctx.allowedTools.includes(tool.name)
+    ));
     const toolSchemas = this.registry.schemas(ctx.allowedTools);
     const contextResult = await this.contextEngine.build(ctx.messages, toolSchemas);
     const temperature = computeTemperature(turnIndex, ctx.state.repairFailureCounts, ctx.state.turnSignatures);
@@ -395,7 +402,7 @@ export class AgentLoop {
     if (interruptedBeforeModel) return interruptedBeforeModel;
 
     const response = await this.callProviderWithRecovery(
-      ctx, contextResult.messages, toolSchemas, temperature, turnIndex,
+      ctx, contextResult.messages, toolSpecs, temperature, turnIndex,
     );
     if (response instanceof LoopReturn) return response;
     if (response instanceof LoopContinue) return response;
@@ -469,14 +476,14 @@ export class AgentLoop {
   private async callProviderWithRecovery(
     ctx: RunContext,
     messages: ChatMessage[],
-    toolSchemas: ReturnType<ToolRegistry['schemas']>,
+    toolSpecs: ToolSpec[],
     temperature: number,
     turnIndex: number,
   ): Promise<NormalizedResponse | LoopContinue | LoopReturn> {
     try {
       return await this.callProvider(
         messages,
-        toolSchemas,
+        toolSpecs,
         temperature,
         ctx.sessionId,
         turnIndex + 1,
@@ -489,7 +496,7 @@ export class AgentLoop {
       const errorMsg = err instanceof Error ? err.message : String(err);
 
       if (isContextError(errorMsg)) {
-        return await this.recoverFromContextOverflow(ctx, messages, toolSchemas, temperature, turnIndex, errorMsg);
+        return await this.recoverFromContextOverflow(ctx, messages, toolSpecs, temperature, turnIndex, errorMsg);
       }
 
       ctx.errors.push(`Turn ${turnIndex + 1} provider error: ${errorMsg}`);
@@ -503,7 +510,7 @@ export class AgentLoop {
   private async recoverFromContextOverflow(
     ctx: RunContext,
     messages: ChatMessage[],
-    toolSchemas: ReturnType<ToolRegistry['schemas']>,
+    toolSpecs: ToolSpec[],
     temperature: number,
     turnIndex: number,
     errorMsg: string,
@@ -518,10 +525,11 @@ export class AgentLoop {
     budget.contextThreshold = savedThreshold * 0.7;
 
     try {
+      const toolSchemas = this.registry.schemas(ctx.allowedTools);
       const tightResult = await this.contextEngine.build(messages, toolSchemas);
       return await this.callProvider(
         tightResult.messages,
-        toolSchemas,
+        toolSpecs,
         temperature,
         ctx.sessionId,
         turnIndex + 1,
@@ -993,7 +1001,7 @@ export class AgentLoop {
 
   private async callProvider(
     messages: ChatMessage[],
-    tools: ReturnType<ToolRegistry['schemas']>,
+    tools: ToolSpec[],
     temperature: number,
     sessionId: string,
     turn: number,
@@ -1020,7 +1028,7 @@ export class AgentLoop {
     try {
       for await (const chunk of this.provider.completeStream(
         messages,
-        tools.length > 0 ? tools as unknown as ToolSpec[] : undefined,
+        tools.length > 0 ? tools : undefined,
         params,
       )) {
         usedRealStream = true;
@@ -1042,6 +1050,7 @@ export class AgentLoop {
           sessionId,
           turn,
           content: chunk.content ?? '',
+          reasoning: chunk.reasoning,
           isFinished: chunk.isFinished,
         } as unknown as HookContext);
       }
@@ -1056,7 +1065,7 @@ export class AgentLoop {
       const response = await waitForAbortable(
         this.provider.complete(
           messages,
-          tools.length > 0 ? tools as unknown as ToolSpec[] : undefined,
+          tools.length > 0 ? tools : undefined,
           params,
         ),
         signal,
@@ -1071,12 +1080,14 @@ export class AgentLoop {
         sessionId,
         turn,
         content: response.content,
+        reasoning: response.reasoning,
         isFinished: false,
       } as unknown as HookContext);
       await this.hooks.emitAsync('model.stream_chunk', {
         sessionId,
         turn,
         content: '',
+        reasoning: '',
         isFinished: true,
       } as unknown as HookContext);
     }
@@ -1117,7 +1128,8 @@ export class AgentLoop {
   ): AgentRunResult {
     return {
       status,
-      finalText,
+      // Never surface raw <tool_calls> markup to users (DeepSeek/Qwen text protocol leaks).
+      finalText: stripTextToolMarkup(finalText),
       finalVerified: status === 'completed' && ctx.errors.length === 0,
       messages: ctx.messages,
       turnsUsed,
@@ -1136,7 +1148,7 @@ export class AgentLoop {
   ): AgentRunResult {
     return {
       status,
-      finalText: response.content,
+      finalText: stripTextToolMarkup(response.content),
       finalVerified: status === 'completed' && ctx.errors.length === 0,
       messages: ctx.messages,
       turnsUsed,

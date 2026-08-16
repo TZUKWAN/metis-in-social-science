@@ -38,5 +38,9 @@ export interface PaperItem {
   archived?: boolean;
   priority?: 'high' | 'medium' | 'low';
   deadline?: string;
+  /** Legacy primary project pointer; use projectIds for complete membership. */
+  projectId?: string;
+  /** Every research project that currently reuses this library paper. */
+  projectIds?: string[];
   addedAt: number;
 }

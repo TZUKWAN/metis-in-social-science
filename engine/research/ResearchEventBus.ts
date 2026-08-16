@@ -21,6 +21,13 @@ export interface EngineStartedEvent {
   sessionId: string;
   goal: string;
   plan: Array<{ phase: ResearchPhaseKind; name: string }>;
+  method?: {
+    family: 'theoretical' | 'qualitative' | 'historical' | 'quantitative' | 'mixed' | 'general';
+    name: string;
+    rationale: string;
+    confidence: number;
+    selectedBy: 'automatic_heuristic' | 'automatic_provider' | 'researcher';
+  };
 }
 
 export interface PhaseStartedEvent {
@@ -67,10 +74,30 @@ export interface EngineCompletedEvent {
   artifactIds: string[];
 }
 
+export interface EngineFailedEvent {
+  type: 'engine-failed';
+  sessionId: string;
+  reason: string;
+  completedPhases: number;
+  recoverable: boolean;
+}
+
 export interface EngineInterruptedEvent {
   type: 'engine-interrupted';
   sessionId: string;
   reason: string;
+}
+
+export interface EnginePausedEvent {
+  type: 'engine-paused';
+  sessionId: string;
+  reason: string;
+}
+
+export interface EngineResumedEvent {
+  type: 'engine-resumed';
+  sessionId: string;
+  completedPhases: number;
 }
 
 export type ResearchEvent =
@@ -80,7 +107,10 @@ export type ResearchEvent =
   | ReflectionEvent
   | ProgressEvent
   | EngineCompletedEvent
-  | EngineInterruptedEvent;
+  | EngineFailedEvent
+  | EngineInterruptedEvent
+  | EnginePausedEvent
+  | EngineResumedEvent;
 
 export type ResearchEventListener = (event: ResearchEvent) => void;
 

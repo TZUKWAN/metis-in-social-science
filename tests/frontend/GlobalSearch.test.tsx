@@ -190,7 +190,7 @@ describe('GlobalSearch', () => {
 
     // Enter should safely select the only remaining result.
     fireEvent.keyDown(window, { key: 'Enter' });
-    expect(onNavigate).toHaveBeenCalledWith('papers');
+    expect(onNavigate).toHaveBeenCalledWith('pdf');
     expect(useMetisStore.getState().selectedPaperId).toBe('paper-a');
   });
 
@@ -321,8 +321,8 @@ describe('GlobalSearch', () => {
     const input = screen.getByPlaceholderText(/search papers/i) as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'alpha' } });
 
-    // All matching results are shown (paper, note, experiment, collection and page results).
-    expect(screen.getAllByTestId('search-result').length).toBeGreaterThan(3);
+    // All matching results are shown (paper, note, experiment and page results).
+    expect(screen.getAllByTestId('search-result').length).toBeGreaterThan(2);
 
     fireEvent.click(screen.getByTestId('type-filter-paper'));
     expect(screen.getAllByTestId('search-result').length).toBe(1);
@@ -335,10 +335,6 @@ describe('GlobalSearch', () => {
     fireEvent.click(screen.getByTestId('type-filter-experiment'));
     expect(screen.getAllByTestId('search-result').length).toBe(1);
     expect(screen.getAllByTestId('search-result')[0].textContent).toContain('Alpha experiment');
-
-    fireEvent.click(screen.getByTestId('type-filter-collection'));
-    expect(screen.getAllByTestId('search-result').length).toBe(1);
-    expect(screen.getAllByTestId('search-result')[0].textContent).toContain('Alpha collection');
 
     fireEvent.click(screen.getByTestId('type-filter-page'));
     const pageResults = screen.queryAllByTestId('search-result');
@@ -371,27 +367,6 @@ describe('GlobalSearch', () => {
     const results = screen.getAllByTestId('search-result');
     expect(results.length).toBe(1);
     expect(results[0].textContent).toContain('Starred paper');
-  });
-
-  it('navigates to papers page without selecting a paper when a collection is chosen', () => {
-    const onNavigate = vi.fn();
-    const onClose = vi.fn();
-
-    useMetisStore.setState({
-      papers: [makePaper({ id: 'paper-a', title: 'Alpha paper' })],
-      collections: [{ id: 'col-a', name: 'Alpha collection', description: '', paperIds: ['paper-a'], createdAt: Date.now() }],
-    });
-
-    render(<GlobalSearch onNavigate={onNavigate} onClose={onClose} />);
-
-    const input = screen.getByPlaceholderText(/search papers/i) as HTMLInputElement;
-    fireEvent.change(input, { target: { value: 'alpha collection' } });
-
-    fireEvent.click(screen.getAllByTestId('search-result')[0]);
-
-    expect(onNavigate).toHaveBeenCalledWith('papers');
-    expect(onClose).toHaveBeenCalled();
-    expect(useMetisStore.getState().selectedPaperId).toBeNull();
   });
 
   it('filters results by tag using tag: prefix or hash syntax', () => {

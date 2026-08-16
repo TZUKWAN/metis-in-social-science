@@ -2,7 +2,7 @@
  * SettingsProjectArchiveSection — complete project archive export/import (METIS-F10).
  *
  * Exports a project (research entities + attached source files) into a single
- * .metisproj file; imports restore a project into the local data directory.
+ * .mts file; imports restore a project into the local data directory.
  */
 
 import { useCallback, useEffect, useState } from 'react';
@@ -121,8 +121,10 @@ export default function SettingsProjectArchiveSection({ uiMode }: { uiMode: UIMo
       </p>
 
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-        <label style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{t('settings.projectSelect')}</label>
+        <label htmlFor="project-archive-select" style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{t('settings.projectSelect')}</label>
         <select
+          className="settings-input"
+          id="project-archive-select"
           value={selectedProjectId}
           onChange={(e) => setSelectedProjectId(e.target.value)}
           disabled={busy || projects.length === 0}
@@ -138,6 +140,7 @@ export default function SettingsProjectArchiveSection({ uiMode }: { uiMode: UIMo
         </select>
         <button
           type="button"
+          className="btn-primary"
           onClick={() => void handleExport()}
           disabled={busy || !selectedProjectId}
           data-testid="project-export-button"
@@ -146,6 +149,7 @@ export default function SettingsProjectArchiveSection({ uiMode }: { uiMode: UIMo
         </button>
         <button
           type="button"
+          className="btn-secondary"
           onClick={() => void handleImport()}
           disabled={busy}
           data-testid="project-import-button"
@@ -179,8 +183,8 @@ export default function SettingsProjectArchiveSection({ uiMode }: { uiMode: UIMo
           role={status.type === 'error' ? 'alert' : 'status'}
           data-testid="project-archive-status"
           style={{
-            marginTop: 10, fontSize: 13, padding: '8px 10px', borderRadius: 6,
-            color: status.type === 'error' ? 'var(--danger, #c0392b)' : 'var(--success, #27ae60)',
+            marginTop: 10, fontSize: 13, padding: '8px 10px', borderRadius: 'var(--radius, 4px)',
+            color: status.type === 'error' ? 'var(--status-failed)' : 'var(--status-completed)',
             background: 'var(--bg-secondary)',
           }}
         >

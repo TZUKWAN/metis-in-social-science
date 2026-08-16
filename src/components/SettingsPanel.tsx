@@ -7,38 +7,34 @@
  *  - 测试连接走真实 setupProbe（使用已存 key receipt 或新 key，非空 key）
  *  - 保存走 setupSave → SecureStorage → provider/agent reinit
  *  - theme 选择包裹 transactional setTheme（IPC 失败回滚）
- *  - project Metis.md 编辑区（CAS 版本检测，非 CLAUDE_MEMORY.md）
+ *  - theme 选择包裹 transactional setTheme（IPC 失败回滚）
  *  - a11y：label/live-region/键盘/focus
  *  - 保留备份/导入/MCP/HITL/诊断模式全部既有功能
  *
  * 本文件只处理新增 Settings UI 逻辑；备份/MCP/HITL 等非 P0 功能
- * 仍由 App.tsx 内联实现，SettingsPanel 只做 provider/theme/agents P0 替换。
+ * 仍由 App.tsx 内联实现，SettingsPanel 只做 provider/theme P0 替换。
  */
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useTranslation } from '../i18n';
 import type { LocaleKey, ThemeMode } from '../store';
 import { useMetisStore } from '../store';
-import { researchWorkspaceStore, useResearchWorkspaceStore } from '../research/researchWorkspaceStore';
 import { WarningIcon } from './Icons';
 import type { UIMode } from '../../engine/capabilities/DiagnosticMode';
-import {
-  WORKSPACE_AGENTS_LIMITS,
-  WorkspaceAgentsContentSchema,
-  type WorkspaceAgentsMutationResult,
-} from '../../engine/runtime/WorkspaceAgentsContract';
 import type {
   SetupProbeResponse,
   SetupProbeSuccess,
   SetupSaveResponse,
 } from '../../engine/runtime/SetupRuntimeContract';
-import SettingsProjectMemorySection from './SettingsProjectMemorySection';
 import SettingsBackupSection from './SettingsBackupSection';
+import CloudSyncSection from './CloudSyncSection';
 import SettingsProjectArchiveSection from './SettingsProjectArchiveSection';
+import SettingsStorageSection from './SettingsStorageSection';
 import SettingsWeChatBotSection from './SettingsWeChatBotSection';
 import SettingsDiagnosticSection from './SettingsDiagnosticSection';
 import { ZoteroSettingsSection } from './ZoteroSettingsSection';
-import { ToolCatalogPanel } from './ToolCatalogPanel';
+import ProviderProfilesSection from './ProviderProfilesSection';
+import SettingsProjectProviderSection from './SettingsProjectProviderSection';
 
 export interface SettingsPanelProps {
   uiMode: UIMode;
@@ -50,8 +46,6 @@ type ProviderSaveStatus = 'idle' | 'saving' | 'saved' | 'error';
 
 export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelProps) {
   const { t, locale, setLocale } = useTranslation();
-  const weeklyReadingGoal = useMetisStore((s) => s.weeklyReadingGoal);
-  const setWeeklyReadingGoal = useMetisStore((s) => s.setWeeklyReadingGoal);
   const theme = useMetisStore((s) => s.theme);
   const setTheme = useMetisStore((s) => s.setTheme);
   const diagnosticMode = uiMode === 'diagnostic';
@@ -73,60 +67,56 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
   const [maxContextSaveStatus, setMaxContextSaveStatus] = useState<'idle' | 'saved'>('idle');
 
   const [providerTestStatus, setProviderTestStatus] = useState<ProviderTestStatus>('idle');
+  const [evalStatus, setEvalStatus] = useState<'idle' | 'running' | 'error'>('idle');
+  const [evalNotice, setEvalNotice] = useState('');
+  const [issnNotice, setIssnNotice] = useState('');
+
+  const handleIssnImport = useCallback(async () => {
+    const result = await window.metis?.importIssnList?.();
+    if (!result) { setIssnNotice(t('settings.issnImportUnavailable')); return; }
+    setIssnNotice(result.ok
+      ? t('settings.issnImportDone', { added: result.added, total: result.totalCandidates ?? 0 })
+      : t('settings.issnImportFailed', { error: result.error ?? '' }));
+  }, [t]);
+
+  const handleRunEval = useCallback(async () => {
+    const metis = window.metis;
+    if (!metis?.runEvalSuite) return;
+    setEvalStatus('running');
+    setEvalNotice(t('settings.evalRunning'));
+    const result = await metis.runEvalSuite(undefined);
+    setEvalStatus('idle');
+    if (!result || result.status === 'cancelled') {
+      setEvalNotice(t('settings.evalFailed', { error: 'cancelled' }));
+      return;
+    }
+    if (result.status === 'error') {
+      setEvalNotice(t('settings.evalFailed', { error: String((result as { error?: string }).error ?? '') }));
+      return;
+    }
+    const summary = result.summary;
+    const lines = [
+      t('settings.evalDone', { passed: summary.passed ?? 0, total: summary.taskCount ?? 0, rate: Math.round((summary.successRate ?? 0) * 100), model: '?' }),
+      t('settings.evalRubricNote'),
+    ];
+    setEvalNotice(lines.join('\n'));
+  }, [t]);
   const [providerTestMessage, setProviderTestMessage] = useState('');
   const [providerSaveStatus, setProviderSaveStatus] = useState<ProviderSaveStatus>('idle');
   const [providerSaveMessage, setProviderSaveMessage] = useState('');
 
-  // ─── Project Metis.md (CAS) ──────────────────────────────────
-  const [agentsContent, setAgentsContent] = useState('');
-  const [agentsVersion, setAgentsVersion] = useState(0);
-  const [serverContent, setServerContent] = useState('');
-  const [serverVersion, setServerVersion] = useState(0);
-  const [agentsDirty, setAgentsDirty] = useState(false);
-  const [agentsSaveStatus, setAgentsSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'conflict' | 'error'>('idle');
-  const [agentsSaveMessage, setAgentsSaveMessage] = useState('');
-  const [agentsProjectId, setAgentsProjectId] = useState<string | null>(null);
-  const [agentsBlocked, setAgentsBlocked] = useState(true);
-  const agentsTextareaRef = useRef<HTMLTextAreaElement>(null);
-  const agentsAlertRef = useRef<HTMLDivElement>(null);
   // Ref for stale-closure-safe status reads in setTimeout
   const providerSaveStatusRef = useRef<ProviderSaveStatus>('idle');
-  const agentsSaveStatusRef = useRef<'idle' | 'saving' | 'saved' | 'conflict' | 'error'>('idle');
   // Monotonic save sequence — prevents stale responses from corrupting UI state
-  const agentsRequestSeq = useRef(0);
-  // Timer refs for cleanup and stale detection
-  const agentsSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Per-project server cache for stale-response fallback updates
-  const agentsServerCache = useRef<Map<string, { content: string; version: number }>>(new Map());
-  // Latest t() ref — avoids adding t to effect deps (locale switch would
-  // re-run the project-load effect and overwrite dirty drafts).
-  const tRef = useRef(t);
-  useEffect(() => { tRef.current = t; });
   const providerErrorRef = useRef<HTMLDivElement>(null);
   const providerTestErrorRef = useRef<HTMLDivElement>(null);
 
-  const activeProjectId = useResearchWorkspaceStore((s) => s.activeProjectId);
-  const agentsBoundToActiveProject = Boolean(activeProjectId && agentsProjectId === activeProjectId);
-  const agentsDisabled = !agentsBoundToActiveProject || agentsBlocked;
-  // Per-project draft cache: preserves unsaved edits when switching projects
-  const draftCache = useRef<Map<string, { content: string; version: number; dirty: boolean }>>(new Map());
-  const previousProjectIdRef = useRef<string | null>(activeProjectId);
-  const latestAgentsStateRef = useRef({ content: agentsContent, version: agentsVersion, dirty: agentsDirty });
 
-  // Cleanup save timer on unmount
-  useEffect(() => {
-    return () => { if (agentsSaveTimer.current) clearTimeout(agentsSaveTimer.current); };
-  }, []);
 
-  // Keep latestAgentsStateRef in sync (in its own effect, before the project-change effect)
-  useEffect(() => {
-    latestAgentsStateRef.current = { content: agentsContent, version: agentsVersion, dirty: agentsDirty };
-  });
 
   // Keep providerSaveStatusRef in sync for stale-closure-safe setTimeout reads
   useEffect(() => {
     providerSaveStatusRef.current = providerSaveStatus;
-    agentsSaveStatusRef.current = agentsSaveStatus;
   });
 
   // Move focus to error messages when they appear (a11y)
@@ -142,11 +132,6 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
     }
   }, [providerTestStatus]);
 
-  useEffect(() => {
-    if ((agentsSaveStatus === 'error' || agentsSaveStatus === 'conflict') && agentsAlertRef.current) {
-      agentsAlertRef.current.focus();
-    }
-  }, [agentsSaveStatus]);
 
   // ─── Load settings on mount ──────────────────────────────────
   useEffect(() => {
@@ -168,115 +153,6 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
     }).catch(() => { /* ignore */ });
   }, []);
 
-  // ─── Load project Metis.md on project change ──────────────────
-  useEffect(() => {
-    const previousId = previousProjectIdRef.current;
-    const nextId = activeProjectId ?? null;
-    previousProjectIdRef.current = nextId;
-
-    // Save draft to PREVIOUS project id (not the new one)
-    if (previousId && previousId !== nextId) {
-      agentsRequestSeq.current += 1;
-      const snap = latestAgentsStateRef.current;
-      if (snap.dirty) {
-        draftCache.current.set(previousId, { content: snap.content, version: snap.version, dirty: true });
-      }
-      // Reset save status — pending saves from previous project must not
-      // leave the new project's button in saving/disabled state.
-      setAgentsSaveStatus('idle');
-      setAgentsSaveMessage('');
-    }
-
-    let cancelled = false;
-
-    queueMicrotask(() => {
-      if (cancelled || researchWorkspaceStore.getState().activeProjectId !== nextId) return;
-      setAgentsProjectId(nextId);
-      setAgentsBlocked(true);
-      setAgentsContent('');
-      setAgentsVersion(0);
-      setServerContent('');
-      setServerVersion(0);
-      setAgentsDirty(false);
-    });
-
-    if (!nextId) {
-      queueMicrotask(() => {
-        if (!cancelled) {
-          setAgentsProjectId(null);
-          setAgentsBlocked(true);
-          setAgentsContent(''); setAgentsVersion(0); setServerContent(''); setServerVersion(0); setAgentsDirty(false);
-        }
-      });
-      return () => { cancelled = true; };
-    }
-
-    const metis = window.metis;
-    if (!metis?.getWorkspaceAgents) {
-      queueMicrotask(() => {
-        if (cancelled || researchWorkspaceStore.getState().activeProjectId !== nextId) return;
-        setAgentsSaveStatus('error');
-        setAgentsSaveMessage(tRef.current('settings.agentsSaveUnavailable'));
-      });
-      return () => { cancelled = true; };
-    }
-
-    metis.getWorkspaceAgents(nextId).then((view) => {
-      if (cancelled || researchWorkspaceStore.getState().activeProjectId !== nextId) return;
-      if (view.projectId !== nextId || !WorkspaceAgentsContentSchema.safeParse(view.content).success) {
-        setAgentsProjectId(nextId);
-        setAgentsBlocked(true);
-        setAgentsContent('');
-        setAgentsVersion(0);
-        setServerContent('');
-        setServerVersion(0);
-        setAgentsDirty(false);
-        setAgentsSaveStatus('error');
-        setAgentsSaveMessage(tRef.current('settings.agentsResponseMismatch'));
-        return;
-      }
-      if (view.externalConflict) {
-        setAgentsProjectId(nextId);
-        setAgentsBlocked(true);
-        // External conflict detected — show immediately, block save
-        setAgentsContent('');
-        setAgentsVersion(0);
-        setAgentsDirty(false);
-        setServerContent('');
-        setServerVersion(0);
-        setAgentsSaveStatus('error');
-        setAgentsSaveMessage(tRef.current('settings.agentsIntegrityConflict'));
-        return;
-      }
-      setAgentsProjectId(nextId);
-      setAgentsBlocked(false);
-      setServerContent(view.content);
-      setServerVersion(view.version);
-      const cached = draftCache.current.get(nextId);
-      if (cached && cached.dirty) {
-        setAgentsContent(cached.content);
-        setAgentsVersion(cached.version);
-        setAgentsDirty(true);
-      } else {
-        setAgentsContent(view.content);
-        setAgentsVersion(view.version);
-        setAgentsDirty(false);
-      }
-    }).catch(() => {
-      if (cancelled || researchWorkspaceStore.getState().activeProjectId !== nextId) return;
-      setAgentsProjectId(nextId);
-      setAgentsBlocked(true);
-      setAgentsContent('');
-      setAgentsVersion(0);
-      setServerContent('');
-      setServerVersion(0);
-      setAgentsDirty(false);
-      setAgentsSaveStatus('error');
-      setAgentsSaveMessage(tRef.current('settings.agentsSaveUnavailable'));
-    });
-
-    return () => { cancelled = true; };
-  }, [activeProjectId]);
 
   // ─── Provider dirty check ────────────────────────────────────
   const providerDirty =
@@ -425,185 +301,6 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
     setProviderSaveMessage('');
   };
 
-  // ─── Save project Metis.md (CAS) ─────────────────────────────
-  const handleResolveConflictKeepLocal = () => {
-    const projectId = researchWorkspaceStore.getState().activeProjectId;
-    if (!projectId || agentsProjectId !== projectId || agentsBlocked) return;
-    const dirty = agentsContent !== serverContent;
-    setAgentsVersion(serverVersion);
-    setAgentsDirty(dirty);
-    setAgentsSaveStatus('idle');
-    setAgentsSaveMessage('');
-    latestAgentsStateRef.current = { content: agentsContent, version: serverVersion, dirty };
-    if (projectId) {
-      draftCache.current.set(projectId, { content: agentsContent, version: serverVersion, dirty });
-    }
-    agentsTextareaRef.current?.focus();
-  };
-
-  const handleResolveConflictUseServer = () => {
-    const projectId = researchWorkspaceStore.getState().activeProjectId;
-    if (!projectId || agentsProjectId !== projectId || agentsBlocked) return;
-    setAgentsContent(serverContent);
-    setAgentsVersion(serverVersion);
-    setAgentsDirty(false);
-    setAgentsSaveStatus('idle');
-    setAgentsSaveMessage('');
-    latestAgentsStateRef.current = { content: serverContent, version: serverVersion, dirty: false };
-    if (projectId) draftCache.current.delete(projectId);
-    agentsTextareaRef.current?.focus();
-  };
-
-  const handleSaveAgents = async () => {
-    const snapshotProjectId = researchWorkspaceStore.getState().activeProjectId;
-    if (!snapshotProjectId || agentsProjectId !== snapshotProjectId || agentsBlocked
-      || !WorkspaceAgentsContentSchema.safeParse(latestAgentsStateRef.current.content).success) {
-      setAgentsSaveStatus('error');
-      setAgentsSaveMessage(t('settings.agentsNoProject'));
-      return;
-    }
-
-    setAgentsSaveStatus('saving');
-    setAgentsSaveMessage('');
-
-    // Capture snapshot for race detection: what was the state at the moment
-    // the user clicked "save"?  The response must not overwrite newer edits or
-    // a different project's content.
-    const seq = ++agentsRequestSeq.current;
-    const snapshotContent = latestAgentsStateRef.current.content;
-    const snapshotVersion = latestAgentsStateRef.current.version;
-
-    try {
-      const metis = window.metis;
-      if (!metis?.setWorkspaceAgents) {
-        setAgentsSaveStatus('error');
-        setAgentsSaveMessage(t('settings.agentsSaveUnavailable'));
-        return;
-      }
-
-      const result: WorkspaceAgentsMutationResult = await metis.setWorkspaceAgents(
-        snapshotProjectId,
-        snapshotContent,
-        snapshotVersion,
-      );
-
-      // Helper: only clear draft cache if it still matches the saved snapshot.
-      // A newer save request may have updated the cache — never blindly delete.
-      const clearDraftIfSnapshotMatch = () => {
-        const cached = draftCache.current.get(snapshotProjectId);
-        if (cached && cached.content === snapshotContent && cached.version === snapshotVersion) {
-          draftCache.current.delete(snapshotProjectId);
-        }
-      };
-
-      // ── Stale request guard ──────────────────────────────
-      if (seq !== agentsRequestSeq.current) {
-        // Newer save was dispatched — this response is obsolete.
-        // Still update caches so the data isn't lost.
-        if (result.success) {
-          agentsServerCache.current.set(snapshotProjectId, { content: snapshotContent, version: result.version });
-          clearDraftIfSnapshotMatch();
-        }
-        return;
-      }
-
-      const currentProjectId = researchWorkspaceStore.getState().activeProjectId;
-      const currentContent = latestAgentsStateRef.current.content;
-
-      if (result.success) {
-        // ── Project switched? ──────────────────────────────
-        if (currentProjectId !== snapshotProjectId) {
-          agentsServerCache.current.set(snapshotProjectId, { content: snapshotContent, version: result.version });
-          clearDraftIfSnapshotMatch();
-          return;
-        }
-
-        // ── User kept editing? ─────────────────────────────
-        if (currentContent !== snapshotContent) {
-          // Snapshot version was saved, but the user has since changed the
-          // textarea.  Update the baseline version so the next save won't CAS
-          // with a stale expectedVersion.  Keep dirty=true and do NOT show
-          // 'saved' — the current content is still unsaved.
-          setAgentsVersion(result.version);
-          setServerVersion(result.version);
-          setServerContent(snapshotContent);
-          clearDraftIfSnapshotMatch();
-          // Status stays idle/dirty — user is still editing.
-          return;
-        }
-
-        // ── Perfect match → clean save ────────────────────
-        setAgentsVersion(result.version);
-        setServerVersion(result.version);
-        setServerContent(snapshotContent);
-        setAgentsDirty(false);
-        clearDraftIfSnapshotMatch();
-        setAgentsSaveStatus('saved');
-        setAgentsSaveMessage(t('settings.agentsSaved'));
-        scheduleAgentsIdleTimer(seq, snapshotProjectId);
-      } else if (result.code === 'cas_conflict') {
-        // CAS conflict — only update UI if still on the same project
-        if (seq === agentsRequestSeq.current && researchWorkspaceStore.getState().activeProjectId === snapshotProjectId) {
-          setAgentsSaveStatus('conflict');
-          setAgentsSaveMessage(t('settings.agentsConflict'));
-          const serverView = await metis.getWorkspaceAgents(snapshotProjectId);
-          // Re-check staleness after the reload
-          if (seq === agentsRequestSeq.current && researchWorkspaceStore.getState().activeProjectId === snapshotProjectId) {
-            if (serverView.projectId !== snapshotProjectId
-              || !WorkspaceAgentsContentSchema.safeParse(serverView.content).success) {
-              setAgentsBlocked(true);
-              setAgentsSaveStatus('error');
-              setAgentsSaveMessage(t('settings.agentsResponseMismatch'));
-              return;
-            }
-            if (serverView.externalConflict) {
-              setAgentsBlocked(true);
-              setAgentsSaveStatus('error');
-              setAgentsSaveMessage(t('settings.agentsIntegrityConflict'));
-              return;
-            }
-            setServerContent(serverView.content);
-            setServerVersion(serverView.version);
-          }
-        }
-      } else {
-        if (seq === agentsRequestSeq.current && researchWorkspaceStore.getState().activeProjectId === snapshotProjectId) {
-          if (result.code === 'project_not_found' || result.code === 'external_conflict') setAgentsBlocked(true);
-          setAgentsSaveStatus('error');
-          setAgentsSaveMessage(result.code === 'project_not_found'
-            ? t('settings.agentsNoProject')
-            : result.code === 'external_conflict'
-              ? t('settings.agentsIntegrityConflict')
-              : t('settings.agentsSaveFailed'));
-        }
-      }
-    } catch {
-      if (seq === agentsRequestSeq.current && researchWorkspaceStore.getState().activeProjectId === snapshotProjectId) {
-        setAgentsSaveStatus('error');
-        setAgentsSaveMessage(t('settings.agentsSaveFailed'));
-      }
-    }
-  };
-
-  // Schedule auto-idle timer with seq + project snapshot for stale-resistance
-  const scheduleAgentsIdleTimer = (seq: number, projectId: string) => {
-    if (agentsSaveTimer.current) clearTimeout(agentsSaveTimer.current);
-    agentsSaveTimer.current = setTimeout(() => {
-      if (
-        seq === agentsRequestSeq.current &&
-        researchWorkspaceStore.getState().activeProjectId === projectId &&
-        agentsSaveStatusRef.current !== 'error' &&
-        agentsSaveStatusRef.current !== 'conflict'
-      ) {
-        setAgentsSaveStatus('idle');
-        setAgentsSaveMessage('');
-      }
-    }, 2000);
-  };
-
-  const displayedAgentsContent = agentsBoundToActiveProject ? agentsContent : '';
-  const agentsCharCount = displayedAgentsContent.length;
-  const agentsOverLimit = agentsCharCount > WORKSPACE_AGENTS_LIMITS.maxChars;
 
   // ─── Theme change (transactional via store) ──────────────────
   const handleThemeChange = (newTheme: ThemeMode) => {
@@ -612,7 +309,7 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
 
   // ─── Render ──────────────────────────────────────────────────
   return (
-    <div className="placeholder-page" role="region" aria-label={t('settings.pageTitle')}>
+    <div className="placeholder-page settings-page" role="region" aria-label={t('settings.pageTitle')}>
       <h2>{t('settings.pageTitle')}</h2>
 
       {/* Provider status summary */}
@@ -663,40 +360,16 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
         </select>
       </div>
 
-      {/* Reading goal */}
-      <div className="settings-group">
-        <h3>{t('settings.readingGoal')}</h3>
-        <p>{t('settings.readingGoalDescription')}</p>
-        <label htmlFor="reading-goal-input">
-          {t('settings.weeklyReadingGoal')}
-          <input
-            id="reading-goal-input"
-            type="number"
-            min={1}
-            max={100}
-            value={weeklyReadingGoal}
-            onChange={(e) => setWeeklyReadingGoal(Number(e.target.value))}
-            className="settings-input"
-            style={{ width: 120, marginLeft: 12 }}
-            data-testid="reading-goal-input"
-          />
-        </label>
-        <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 8 }}>
-          {t('settings.readingGoalRange', { min: 1, max: 100 })}
-        </p>
-        <button
-          type="button"
-          className="btn-sm btn-secondary"
-          style={{ marginTop: 8 }}
-          onClick={() => setWeeklyReadingGoal(5)}
-          data-testid="reading-goal-reset"
-        >
-          {t('settings.readingGoalReset')}
-        </button>
-      </div>
+      <ProviderProfilesSection />
 
-      {/* Provider config — real editable fields */}
-      <div className="settings-group">
+      {/* O13: 项目级 provider/model 覆盖 */}
+      <SettingsProjectProviderSection />
+
+      {/* Legacy single-connection recovery editor. Existing users retain a safe recovery path while profile migration completes. */}
+      <details className="settings-group settings-legacy-connection" open>
+        <summary>{locale === 'zh' ? '单连接恢复与兼容选项' : 'Single-connection recovery and compatibility'}</summary>
+        <p className="settings-hint">{locale === 'zh' ? '新的模型连接请使用上方连接列表。此处仅用于迁移或恢复旧配置。' : 'Use the connection list above for new model connections. This section only supports legacy migration and recovery.'}</p>
+      <div>
         <h3>{t('settings.providerConfig')}</h3>
         {needsReauth && (
           <div
@@ -754,7 +427,6 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
                 setProviderVision(next);
                 void window.metis?.setSettings?.({
                   theme,
-                  weeklyReadingGoal,
                   providerVision: next,
                 }).then((result) => {
                   if (result?.success) setVisionSaveStatus('saved');
@@ -787,7 +459,6 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
                 const next = providerMaxContextTokens;
                 void window.metis?.setSettings?.({
                   theme,
-                  weeklyReadingGoal,
                   providerMaxContextTokens: next,
                 }).then((result) => {
                   if (result?.success) setMaxContextSaveStatus('saved');
@@ -868,7 +539,22 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
           >
             {providerTestStatus === 'testing' ? t('common.testing') : t('settings.testConnection')}
           </button>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => void handleRunEval()}
+            disabled={evalStatus === 'running'}
+            data-testid="run-research-eval"
+          >
+            {evalStatus === 'running' ? t('common.testing') : t('settings.runResearchEval')}
+          </button>
         </div>
+
+        {evalNotice && (
+          <div role="status" data-testid="eval-notice" style={{ marginTop: 8, fontSize: 12, whiteSpace: 'pre-wrap', color: evalStatus === 'error' ? 'var(--status-failed)' : 'var(--status-completed)' }}>
+            {evalNotice}
+          </div>
+        )}
 
         {/* Live status region — errors use role="alert" for immediate announcement */}
         <div role="alert" data-testid="provider-error-region" style={{ marginTop: 8 }}>
@@ -880,64 +566,10 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
           {providerTestStatus === 'success' && <div style={{ fontSize: 12, color: 'var(--status-completed)' }}>{providerTestMessage}</div>}
         </div>
       </div>
+      </details>
 
       <ZoteroSettingsSection />
 
-      {/* Project Metis.md — CAS protected */}
-      <div className="settings-group">
-        <h3>{t('settings.workspaceAgents')}</h3>
-        <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>
-          {t('settings.workspaceAgentsDescription')}
-        </p>
-        <label htmlFor="agents-textarea" className="sr-only">{t('settings.workspaceAgents')}</label>
-        <div ref={agentsAlertRef} role="alert" aria-live="assertive" tabIndex={-1} data-testid="agents-alert" style={{ marginBottom: 8 }}>
-          {agentsSaveStatus === 'conflict' && <div style={{ fontSize: 12, color: 'var(--status-failed)', fontWeight: 500 }}>{agentsSaveMessage}</div>}
-          {agentsSaveStatus === 'error' && <div style={{ fontSize: 12, color: 'var(--status-failed)', fontWeight: 500 }}>{agentsSaveMessage}</div>}
-        </div>
-        {!activeProjectId && <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>{t('settings.agentsNoProject')}</div>}
-
-        <textarea
-          ref={agentsTextareaRef}
-          id="agents-textarea"
-          value={displayedAgentsContent}
-          onChange={(e) => { setAgentsContent(e.target.value); setAgentsDirty(true); setAgentsSaveStatus('idle'); }}
-          rows={10}
-          className="settings-input"
-          style={{ fontFamily: 'monospace', fontSize: 13 }}
-          placeholder={t('settings.workspaceAgentsPlaceholder')}
-          maxLength={WORKSPACE_AGENTS_LIMITS.maxChars}
-          disabled={agentsDisabled}
-        />
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
-          <span
-            style={{ fontSize: 11, color: agentsOverLimit ? 'var(--status-failed)' : agentsDirty ? 'var(--accent-warm)' : 'var(--text-muted)' }}
-            role="status"
-            aria-live="polite"
-          >
-            {agentsDirty ? '● ' : ''}{agentsCharCount.toLocaleString()} / {WORKSPACE_AGENTS_LIMITS.maxChars.toLocaleString()}
-            {agentsVersion > 0 && !agentsDirty && <span style={{ marginLeft: 8 }}>v{agentsVersion}</span>}
-          </span>
-          <button
-            type="button"
-            className="btn-primary"
-            onClick={handleSaveAgents}
-            disabled={agentsDisabled || !agentsDirty || agentsOverLimit || agentsSaveStatus === 'saving'}
-            data-testid="agents-save"
-            data-status={agentsSaveStatus}
-          >
-            {agentsSaveStatus === 'saving' ? t('common.saving') : agentsSaveStatus === 'saved' ? t('common.saved') : t('settings.saveAgents')}
-          </button>
-        </div>
-        {agentsSaveStatus === 'conflict' && (
-          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-            <button type="button" className="btn-sm btn-secondary" onClick={handleResolveConflictKeepLocal} data-testid="agents-keep-local">{t('settings.agentsKeepLocal')}</button>
-            <button type="button" className="btn-sm btn-primary" onClick={handleResolveConflictUseServer} data-testid="agents-use-server">{t('settings.agentsUseServer')}</button>
-          </div>
-        )}
-        <div role="status" aria-live="polite" style={{ marginTop: 4 }}>
-          {agentsSaveStatus === 'saved' && <div style={{ fontSize: 12, color: 'var(--status-completed)' }}>{agentsSaveMessage}</div>}
-        </div>
-      </div>
 
       {/* Diagnostic mode toggle */}
       <div className="settings-group">
@@ -957,20 +589,31 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
         </label>
       </div>
 
-      {/* Project Memory (CLAUDE_MEMORY.md — legacy semantics) */}
-      <SettingsProjectMemorySection />
-
       {/* Data backup / import */}
       <SettingsBackupSection uiMode={uiMode} />
+      <CloudSyncSection />
+      <div className="settings-group" data-testid="issn-import-section" data-settings-section="issn-import">
+        <h3>{t('settings.issnImportTitle')}</h3>
+        <p className="cloud-sync__hint">{t('settings.issnImportHint')}</p>
+        <button
+          type="button"
+          className="btn-secondary btn-sm"
+          onClick={() => void handleIssnImport()}
+          data-testid="issn-import-button"
+        >
+          {t('settings.issnImportButton')}
+        </button>
+        {issnNotice && <div role="status" data-testid="issn-import-notice" className="cloud-sync__notice">{issnNotice}</div>}
+      </div>
 
       {/* Complete project archive (METIS-F10) */}
       <SettingsProjectArchiveSection uiMode={uiMode} />
 
+      {/* User-configurable data directory (storage location) */}
+      <SettingsStorageSection />
+
       {/* WeChat Bot (METIS-WX-1) */}
       <SettingsWeChatBotSection />
-
-      {/* Tool catalog — browse builtin agent tools by category */}
-      <ToolCatalogPanel />
 
       {/* Diagnostic-only: MCP + HITL */}
       {diagnosticMode && <SettingsDiagnosticSection />}

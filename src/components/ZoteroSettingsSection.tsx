@@ -1,278 +1,240 @@
-/**
- * ZoteroSettingsSection — configure Zotero library sync credentials.
- *
- * The API key is stored in the personalization secret vault (encrypted at
- * rest via safeStorage); the user/group id is non-secret and lives in the
- * normal settings store. Mirrors the masked-key + dirty + save pattern used
- * by the provider configuration section.
- */
-
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from '../i18n';
+import { useMetisStore } from '../store';
+import { researchWorkspaceStore } from '../research/researchWorkspaceStore';
 
 const SECRET_NAME = 'ZOTERO_API_KEY';
-const USERID_KEY = 'metis:zoteroUserId';
-const GROUPID_KEY = 'metis:zoteroGroupId';
+const LIBRARY_TYPE_KEY = 'metis:zoteroLibraryType';
+const LIBRARY_ID_KEY = 'metis:zoteroLibraryId';
 
+type LibraryType = 'personal' | 'group';
+type Notice = { kind: 'success' | 'error' | 'info'; message: string } | null;
+
+/**
+ * Zotero connection with an explicit library identity. Credentials are written
+ * once to the encrypted vault; all imports are executed in the main process.
+ */
 export function ZoteroSettingsSection() {
-  const { t } = useTranslation();
-  const [userId, setUserId] = useState('');
-  const [groupId, setGroupId] = useState('');
+  const { t, locale } = useTranslation();
+  const zh = locale === 'zh';
+  const [libraryType, setLibraryType] = useState<LibraryType>('personal');
+  const [libraryId, setLibraryId] = useState('');
+  const [savedLibraryType, setSavedLibraryType] = useState<LibraryType>('personal');
+  const [savedLibraryId, setSavedLibraryId] = useState('');
   const [hasApiKey, setHasApiKey] = useState(false);
   const [keyMode, setKeyMode] = useState<'saved' | 'replace'>('saved');
   const [apiKey, setApiKey] = useState('');
   const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [loaded, setLoaded] = useState(false);
+  const [probing, setProbing] = useState(false);
   const [importing, setImporting] = useState(false);
-  const [importSummary, setImportSummary] = useState<{ imported: number; merged: number; skipped: number } | null>(null);
-
-  // Latest vault revision, needed for the optimistic-lock field on set/remove.
+  const [notice, setNotice] = useState<Notice>(null);
+  const [summary, setSummary] = useState<{ imported: number; merged: number; skipped: number } | null>(null);
   const revisionRef = useRef(0);
 
-  // Load the persisted view (settings + whether a vault key exists).
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
-        const metis = window.metis;
-        const secrets = await metis?.listPersonalizationSecrets({ contractVersion: 1, operationId: 'zotero-load' });
+        const secrets = await window.metis?.listPersonalizationSecrets({ contractVersion: 1, operationId: 'zotero-load' });
         if (cancelled) return;
-        // User/group ids are non-secret renderer preferences; keep them in
-        // localStorage so no engine contract change is needed.
-        setUserId(localStorage.getItem(USERID_KEY) ?? '');
-        setGroupId(localStorage.getItem(GROUPID_KEY) ?? '');
-        const list = secrets as { ok?: boolean; revision?: number; secrets?: Array<{ name: string }> } | undefined;
-        if (list?.revision !== undefined) revisionRef.current = list.revision;
-        const hasKey = Boolean(list?.secrets?.some((s) => s.name === SECRET_NAME));
-        setHasApiKey(hasKey);
-        // If no key is stored yet, start in replace mode so the input is shown.
-        if (!hasKey) setKeyMode('replace');
+        const storedType = localStorage.getItem(LIBRARY_TYPE_KEY);
+        const type: LibraryType = storedType === 'group' ? 'group' : 'personal';
+        const id = localStorage.getItem(LIBRARY_ID_KEY) ?? '';
+        setLibraryType(type);
+        setSavedLibraryType(type);
+        setLibraryId(id);
+        setSavedLibraryId(id);
+        if (secrets?.ok) {
+          revisionRef.current = secrets.revision;
+          const keySaved = secrets.secrets.some((secret) => secret.name === SECRET_NAME);
+          setHasApiKey(keySaved);
+          setKeyMode(keySaved ? 'saved' : 'replace');
+        }
       } catch {
-        // Settings/vault unavailable in this environment; keep empty defaults.
-      } finally {
-        if (!cancelled) setLoaded(true);
+        setNotice({ kind: 'error', message: zh ? '无法读取 Zotero 连接状态。' : 'Could not load Zotero connection status.' });
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [zh]);
 
-  const dirty = loaded && (
-    keyMode === 'replace'
-    || (hasApiKey === false && apiKey.trim() !== '')
-  );
+  const identityDirty = libraryType !== savedLibraryType || libraryId.trim() !== savedLibraryId;
+  const keyDirty = keyMode === 'replace' && apiKey.trim().length > 0;
+  const canSave = !busy && (identityDirty || keyDirty) && Boolean(libraryId.trim());
+  const identityValid = /^\d{1,128}$/u.test(libraryId.trim());
 
-  const handleTest = useCallback(async () => {
-    setNotice(null);
-    setBusy(true);
-    try {
-      const metis = window.metis;
-      if (!metis?.listPersonalizationSecrets) {
-        setNotice(t('settings.zoteroUnavailable'));
-        return;
-      }
-      // Resolve the key: use the typed value in replace mode, otherwise read vault.
-      // The vault does not return values on list, so for the saved path we can
-      // only confirm presence; a real probe requires the key to be re-entered.
-      const key = apiKey.trim();
-      if (!key && hasApiKey) {
-        setNotice(t('settings.zoteroSavedKeyNoProbe'));
-        return;
-      }
-      if (!key || !userId.trim()) {
-        setNotice(t('settings.zoteroMissingFields'));
-        return;
-      }
-      const { searchZoteroLibrary } = await import('@engine/research/ZoteroClient.js');
-      const result = await searchZoteroLibrary({
-        apiKey: key,
-        userId: userId.trim(),
-        groupId: groupId.trim() || undefined,
-        query: '',
-        start: 0,
-        maxResults: 1,
-      });
-      setNotice(t('settings.zoteroTestOk', { total: result.totalResults ?? 0 }));
-    } catch (err) {
-      setNotice(t('settings.zoteroTestFailed', { error: String((err as Error).message ?? err) }));
-    } finally {
-      setBusy(false);
+  const save = useCallback(async () => {
+    if (!identityValid) {
+      setNotice({ kind: 'error', message: zh ? '请输入有效的 Zotero 库 ID（仅数字）。' : 'Enter a valid numeric Zotero library ID.' });
+      return;
     }
-  }, [apiKey, hasApiKey, userId, groupId, t]);
-
-  const handleSave = useCallback(async () => {
-    setNotice(null);
+    if (keyMode === 'replace' && !apiKey.trim() && !hasApiKey) {
+      setNotice({ kind: 'error', message: zh ? '请输入 Zotero API 密钥。' : 'Enter a Zotero API key.' });
+      return;
+    }
     setBusy(true);
+    setNotice(null);
     try {
-      const metis = window.metis;
-      if (!metis?.setPersonalizationSecret) {
-        setNotice(t('settings.zoteroUnavailable'));
-        return;
-      }
-      // Persist the API key into the vault when a new value was typed. The
-      // vault uses optimistic locking: pass the current revision and refresh
-      // it from the response so subsequent mutations stay consistent.
       if (keyMode === 'replace' && apiKey.trim()) {
-        const opId = `zotero-set-${Date.now().toString(36)}`;
-        const res = await metis.setPersonalizationSecret({
+        const response = await window.metis?.setPersonalizationSecret({
           contractVersion: 1,
-          operationId: opId,
+          operationId: `zotero-save-${Date.now().toString(36)}`,
           expectedRevision: revisionRef.current,
           name: SECRET_NAME,
           value: apiKey.trim(),
-        }) as { ok?: boolean; revision?: number; code?: string };
-        if (!res?.ok) {
-          setNotice(t('settings.zoteroSaveFailed', { error: res?.code ?? 'storage_unavailable' }));
+        });
+        if (!response?.ok) {
+          setNotice({ kind: 'error', message: zh ? `密钥保存失败（${response?.code ?? 'storage_unavailable'}）。` : `Key save failed (${response?.code ?? 'storage_unavailable'}).` });
           return;
         }
-        if (res.revision !== undefined) revisionRef.current = res.revision;
+        revisionRef.current = response.revision;
         setHasApiKey(true);
         setKeyMode('saved');
         setApiKey('');
       }
-      // Persist non-secret ids locally; the engine settings contract does not
-      // carry Zotero fields, so renderer-local storage keeps this self-contained.
-      localStorage.setItem(USERID_KEY, userId.trim());
-      localStorage.setItem(GROUPID_KEY, groupId.trim());
-      setNotice(t('settings.zoteroSaved'));
-    } catch (err) {
-      setNotice(t('settings.zoteroSaveFailed', { error: String((err as Error).message ?? err) }));
+      localStorage.setItem(LIBRARY_TYPE_KEY, libraryType);
+      localStorage.setItem(LIBRARY_ID_KEY, libraryId.trim());
+      setSavedLibraryType(libraryType);
+      setSavedLibraryId(libraryId.trim());
+      setNotice({ kind: 'success', message: zh ? 'Zotero 连接已保存。现在可安全探测和导入。' : 'Zotero connection saved. It can now be probed and imported securely.' });
+    } catch {
+      setNotice({ kind: 'error', message: zh ? '保存 Zotero 连接时发生错误。' : 'An error occurred while saving the Zotero connection.' });
     } finally {
       setBusy(false);
     }
-  }, [apiKey, keyMode, userId, groupId, t]);
+  }, [apiKey, hasApiKey, identityValid, keyMode, libraryId, libraryType, zh]);
 
-  const handleRemoveKey = useCallback(async () => {
-    setNotice(null);
+  const removeKey = useCallback(async () => {
     setBusy(true);
+    setNotice(null);
     try {
-      const metis = window.metis;
-      if (!metis?.removePersonalizationSecret) {
-        setNotice(t('settings.zoteroUnavailable'));
-        return;
-      }
-      const opId = `zotero-remove-${Date.now().toString(36)}`;
-      const res = await metis.removePersonalizationSecret({
+      const response = await window.metis?.removePersonalizationSecret({
         contractVersion: 1,
-        operationId: opId,
+        operationId: `zotero-remove-${Date.now().toString(36)}`,
         expectedRevision: revisionRef.current,
         name: SECRET_NAME,
-      }) as { ok?: boolean; revision?: number; code?: string };
-      if (!res?.ok) {
-        setNotice(t('settings.zoteroSaveFailed', { error: res?.code ?? 'storage_unavailable' }));
+      });
+      if (!response?.ok) {
+        setNotice({ kind: 'error', message: zh ? `移除密钥失败（${response?.code ?? 'storage_unavailable'}）。` : `Key removal failed (${response?.code ?? 'storage_unavailable'}).` });
         return;
       }
-      if (res.revision !== undefined) revisionRef.current = res.revision;
+      revisionRef.current = response.revision;
       setHasApiKey(false);
       setKeyMode('replace');
       setApiKey('');
-      setNotice(t('settings.zoteroKeyRemoved'));
+      setNotice({ kind: 'success', message: zh ? 'Zotero API 密钥已移除。' : 'Zotero API key removed.' });
+    } catch {
+      setNotice({ kind: 'error', message: zh ? '移除 Zotero API 密钥时发生错误。' : 'An error occurred while removing the Zotero API key.' });
     } finally {
       setBusy(false);
     }
-  }, [t]);
+  }, [zh]);
 
-  /** Import items from the Zotero library into the local paper library.
-   * The main process resolves the vault key (renderer cannot read plaintext). */
-  const handleImport = useCallback(async () => {
+  const probeConnection = useCallback(async () => {
+    if (!hasApiKey || !identityValid || probing) return;
+    setProbing(true);
     setNotice(null);
-    setImporting(true);
-    setImportSummary(null);
+    setSummary(null);
     try {
-      const metis = window.metis;
-      if (!metis?.importZotero) {
-        setNotice(t('settings.zoteroUnavailable'));
+      const result = await window.metis?.probeZotero({ libraryType, libraryId: libraryId.trim() });
+      if (!result?.ok) {
+        setNotice({ kind: 'error', message: zh ? `连接检测失败（${result?.error ?? 'unknown'}）。` : `Connection probe failed (${result?.error ?? 'unknown'}).` });
         return;
       }
-      const result = await metis.importZotero({
-        userId: userId.trim(),
-        groupId: groupId.trim() || undefined,
+      setNotice({ kind: 'success', message: zh ? `连接成功，库中共 ${result.totalResults ?? 0} 篇条目。` : `Connected — ${result.totalResults ?? 0} items in the library.` });
+    } catch {
+      setNotice({ kind: 'error', message: zh ? '连接检测时发生错误。' : 'An error occurred while probing the connection.' });
+    } finally {
+      setProbing(false);
+    }
+  }, [hasApiKey, identityValid, libraryId, libraryType, probing, zh]);
+
+  const importLibrary = useCallback(async () => {
+    if (!hasApiKey || !identityValid || importing) return;
+    setImporting(true);
+    setNotice(null);
+    setSummary(null);
+    try {
+      const projectId = researchWorkspaceStore.getState().activeProjectId ?? undefined;
+      const result = await window.metis?.importZotero({
+        libraryType,
+        libraryId: libraryId.trim(),
         query: '',
-        maxItems: 20,
-      }) as { ok?: boolean; imported?: number; merged?: number; skipped?: number; error?: string };
-      if (!result.ok) {
-        setNotice(result.error === 'zotero_not_configured' ? t('settings.zoteroMissingFields') : t('settings.zoteroImportFailed', { error: result.error ?? 'unknown' }));
+        maxItems: 50,
+        projectId,
+      }) as { ok?: boolean; imported?: number; merged?: number; skipped?: number; error?: string } | undefined;
+      if (!result?.ok) {
+        setNotice({ kind: 'error', message: zh ? `导入失败（${result?.error ?? 'unknown'}）。` : `Import failed (${result?.error ?? 'unknown'}).` });
         return;
       }
-      setImportSummary({ imported: result.imported ?? 0, merged: result.merged ?? 0, skipped: result.skipped ?? 0 });
-    } catch (err) {
-      setNotice(t('settings.zoteroImportFailed', { error: String((err as Error).message ?? err) }));
+      // Refresh the library store so newly imported papers appear immediately.
+      const data = await window.metis?.loadAllData?.();
+      if (data) {
+        useMetisStore.getState().hydrateFromPersistence({
+          papers: data.papers ?? [],
+          notes: data.notes ?? [],
+          experiments: data.experiments ?? [],
+          collections: data.collections ?? [],
+        });
+      }
+      setSummary({ imported: result.imported ?? 0, merged: result.merged ?? 0, skipped: result.skipped ?? 0 });
+      setNotice({
+        kind: 'success',
+        message: projectId
+          ? zh ? `已导入 ${result.imported ?? 0} 篇并关联当前项目。` : `Imported ${result.imported ?? 0} items and linked them to the active project.`
+          : zh ? 'Zotero 文献已同步到全局资料库。' : 'Zotero items have been synchronized into the global library.',
+      });
+    } catch {
+      setNotice({ kind: 'error', message: zh ? '导入 Zotero 文献时发生错误。' : 'An error occurred while importing Zotero items.' });
     } finally {
       setImporting(false);
     }
-  }, [userId, groupId, t]);
-
-  if (!loaded) return null;
+  }, [hasApiKey, identityValid, importing, libraryId, libraryType, zh]);
 
   return (
-    <div className="settings-group">
-      <h3>{t('settings.zoteroTitle')}</h3>
-      <p className="settings-hint">{t('settings.zoteroHint')}</p>
+    <section className="settings-group zotero-connection" aria-labelledby="zotero-connection-title">
+      <div className="settings-section-heading">
+        <div>
+          <p className="settings-section-kicker">{zh ? '连接' : 'Connections'}</p>
+          <h3 id="zotero-connection-title">{t('settings.zoteroTitle')}</h3>
+        </div>
+        <span className={`zotero-connection__status ${hasApiKey ? 'is-connected' : ''}`}>{hasApiKey ? (zh ? '已连接' : 'Ready') : (zh ? '未连接' : 'Not connected')}</span>
+      </div>
+      <p className="settings-hint">{zh ? '选择个人库或群组库。密钥只保存于本机加密存储，导入在主进程中执行，不会回传密钥。' : 'Choose a personal or group library. The key stays in local encrypted storage and imports run in the main process without returning the key.'}</p>
+
+      <div className="zotero-connection__identity">
+        <label className="settings-label">
+          {zh ? '文献库类型' : 'Library type'}
+          <select className="settings-input" value={libraryType} onChange={(event) => setLibraryType(event.target.value as LibraryType)} disabled={busy || importing}>
+            <option value="personal">{zh ? '个人库' : 'Personal library'}</option>
+            <option value="group">{zh ? '群组库' : 'Group library'}</option>
+          </select>
+        </label>
+        <label className="settings-label">
+          {libraryType === 'group' ? (zh ? '群组 ID' : 'Group ID') : (zh ? '用户 ID' : 'User ID')}
+          <input className="settings-input" value={libraryId} onChange={(event) => setLibraryId(event.target.value)} inputMode="numeric" autoComplete="off" disabled={busy || importing} />
+        </label>
+      </div>
 
       <label className="settings-label">
-        {t('settings.zoteroUserId')}
-        <input
-          className="settings-input"
-          value={userId}
-          onChange={(e) => setUserId(e.target.value)}
-          placeholder="e.g. 12345"
-          autoComplete="off"
-        />
-      </label>
-
-      <label className="settings-label">
-        {t('settings.zoteroGroupId')}
-        <input
-          className="settings-input"
-          value={groupId}
-          onChange={(e) => setGroupId(e.target.value)}
-          placeholder={t('settings.zoteroGroupIdOptional')}
-          autoComplete="off"
-        />
-      </label>
-
-      <div className="settings-label">
         {t('settings.zoteroApiKey')}
         {hasApiKey && keyMode === 'saved' ? (
           <div className="settings-key-row">
-            <span className="settings-key-mask">••••••••</span>
-            <button type="button" className="btn-toggle" onClick={() => setKeyMode('replace')} disabled={busy}>
-              {t('settings.zoteroChangeKey')}
-            </button>
-            <button type="button" className="btn-toggle" onClick={handleRemoveKey} disabled={busy}>
-              {t('settings.zoteroRemoveKey')}
-            </button>
+            <span className="settings-key-mask" aria-label={zh ? '已保存的 Zotero API 密钥' : 'Saved Zotero API key'}>••••••••</span>
+            <button type="button" className="btn-sm btn-secondary" onClick={() => setKeyMode('replace')} disabled={busy || importing}>{zh ? '更换密钥' : 'Replace key'}</button>
+            <button type="button" className="btn-sm btn-secondary" onClick={() => void removeKey()} disabled={busy || importing}>{zh ? '移除' : 'Remove'}</button>
           </div>
         ) : (
-          <input
-            type="password"
-            className="settings-input"
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder={t('settings.zoteroApiKeyPlaceholder')}
-            autoComplete="off"
-          />
+          <input type="password" className="settings-input" value={apiKey} onChange={(event) => setApiKey(event.target.value)} autoComplete="off" disabled={busy || importing} />
         )}
-      </div>
+      </label>
 
       <div className="settings-actions">
-        <button type="button" className="btn-toggle" onClick={handleTest} disabled={busy || !userId.trim()}>
-          {busy ? t('settings.zoteroWorking') : t('settings.zoteroTest')}
-        </button>
-        <button type="button" className="btn-toggle" onClick={handleImport} disabled={importing || !userId.trim() || !hasApiKey}>
-          {importing ? t('settings.zoteroWorking') : t('settings.zoteroImport')}
-        </button>
-        <button type="button" className="btn-toggle" onClick={handleSave} disabled={busy || !dirty}>
-          {t('settings.zoteroSave')}
-        </button>
+        <button type="button" className="btn-primary" onClick={() => void save()} disabled={!canSave}>{busy ? (zh ? '保存中…' : 'Saving…') : (zh ? '保存连接' : 'Save connection')}</button>
+        <button type="button" className="btn-secondary" onClick={() => void probeConnection()} disabled={!hasApiKey || !identityValid || busy || importing || probing}>{probing ? (zh ? '检测中…' : 'Probing…') : (zh ? '检测连接' : 'Probe connection')}</button>
+        <button type="button" className="btn-secondary" onClick={() => void importLibrary()} disabled={!hasApiKey || !identityValid || busy || importing || probing}>{importing ? (zh ? '同步中…' : 'Syncing…') : (zh ? '同步到资料库' : 'Sync to library')}</button>
       </div>
-
-      {importSummary && (
-        <div className="settings-notice" role="status">
-          {t('settings.zoteroImportSummary', { imported: importSummary.imported, merged: importSummary.merged, skipped: importSummary.skipped })}
-        </div>
-      )}
-      {notice && <div className="settings-notice">{notice}</div>}
-    </div>
+      {summary && <p className="zotero-connection__summary" role="status">{zh ? `新增 ${summary.imported} · 合并 ${summary.merged} · 跳过 ${summary.skipped}` : `Imported ${summary.imported} · Merged ${summary.merged} · Skipped ${summary.skipped}`}</p>}
+      {notice && <div className={`provider-profiles__notice provider-profiles__notice--${notice.kind}`} role={notice.kind === 'error' ? 'alert' : 'status'}>{notice.message}</div>}
+    </section>
   );
 }

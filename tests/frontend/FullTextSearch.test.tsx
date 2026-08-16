@@ -151,7 +151,7 @@ describe('GlobalSearch full-text mode', () => {
     fireEvent.keyDown(document.body, { key: 'Enter' });
 
     await waitFor(() => {
-      expect(onNavigate).toHaveBeenCalledWith('papers');
+      expect(onNavigate).toHaveBeenCalledWith('pdf');
       expect(onClose).toHaveBeenCalled();
     });
     // The paper selected is the real id, not the prefixed display key.

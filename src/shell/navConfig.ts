@@ -14,21 +14,27 @@ export interface NavEntry {
   labelKey: string;
   /** The three top-level entries (METIS-103). */
   isTopLevel: boolean;
+  /**
+   * Optional one-line "what is this workspace for" tooltip key (O11). When
+   * present the top bar renders it as the hover title so new users can tell
+   * the workspaces apart without trial-and-error. Falls back to labelKey.
+   */
+  descriptionKey?: string;
 }
 
 /**
  * The canonical normal-mode nav. Three top-level entries + research sub-entries that live
  * inside a project. Every entry here is user-facing-research terminology; nothing technical.
  */
+/**
+ * The canonical normal-mode nav. Two top-level entries + research sub-entries that live
+ * inside a project. Every entry here is user-facing-research terminology; nothing technical.
+ */
 const NORMAL_NAV: NavEntry[] = [
-  { id: 'projects', labelKey: 'nav.projects', isTopLevel: true },
-  { id: 'library', labelKey: 'nav.library', isTopLevel: true },
-  { id: 'settings', labelKey: 'nav.settings', isTopLevel: true },
+  { id: 'projects', labelKey: 'nav.projects', descriptionKey: 'nav.projectsDesc', isTopLevel: true },
+  { id: 'settings', labelKey: 'nav.settings', descriptionKey: 'nav.settingsDesc', isTopLevel: true },
   // project-internal modes (METIS-104)
-  { id: 'converse', labelKey: 'nav.converse', isTopLevel: false },
-  { id: 'read', labelKey: 'nav.read', isTopLevel: false },
-  { id: 'analyze', labelKey: 'nav.analyze', isTopLevel: false },
-  { id: 'write', labelKey: 'nav.write', isTopLevel: false },
+  { id: 'converse', labelKey: 'nav.converse', descriptionKey: 'nav.converseDesc', isTopLevel: false },
 ];
 
 /**
@@ -49,9 +55,39 @@ export function getVisibleNav(): NavEntry[] {
   return [...NORMAL_NAV, ...DIAGNOSTIC_NAV].filter((e) => isNavVisible(e.id));
 }
 
-/** Only the three top-level entries (for the primary app rail). */
+/** Only the three legacy top-level entries (kept for session compatibility). */
 export function getTopLevelNav(): NavEntry[] {
   return NORMAL_NAV.filter((e) => e.isTopLevel);
+}
+
+/**
+ * Primary top-bar modes. These are deliberately separate from TopLevelEntry:
+ * the persisted app entry remains projects/library/settings while researchers
+ * navigate directly between the four workspaces.
+ */
+export function getPrimaryWorkspaceNav(): NavEntry[] {
+  // 固定顺序：对话在前、科研项目在后（与 NORMAL_NAV 的声明顺序无关）。
+  const byId = new Map(NORMAL_NAV.map((entry) => [entry.id, entry]));
+  return ['converse', 'projects']
+    .map((id) => byId.get(id))
+    .filter((entry): entry is NavEntry => entry !== undefined);
+}
+
+/** Standalone research destinations promoted into the visible top bar. */
+export function getPrimaryResearchNav(): NavEntry[] {
+  return [
+    { id: 'autonomous', labelKey: 'autonomous.title', descriptionKey: 'nav.autonomousDesc', isTopLevel: true },
+  ];
+}
+
+/**
+ * Preference destinations shown beside the top-level entries. Scenarios is a
+ * toggle entry (opens the scenario center) rather than a persisted app entry,
+ * so App owns its click behavior while the label/ID live here with the rest
+ * of the navigation configuration.
+ */
+export function getPreferenceNav(): NavEntry[] {
+  return [{ id: 'personalization', labelKey: 'personalization.title', descriptionKey: 'nav.personalizationDesc', isTopLevel: true }];
 }
 
 /** Whether a given nav id is a technical (hidden-by-default) entry. */

@@ -202,7 +202,27 @@ describe('ZoteroClient', () => {
   it('throws when both userId and groupId are missing', async () => {
     await expect(
       searchZoteroLibrary({ apiKey: 'secret', query: 'x' }),
-    ).rejects.toThrow('Either userId or groupId is required.');
+    ).rejects.toThrow('A single Zotero library type and ID are required.');
+  });
+
+  it('rejects ambiguous user+group input instead of silently preferring the personal library', async () => {
+    await expect(
+      searchZoteroLibrary({ apiKey: 'secret', userId: '1', groupId: '2', query: 'x' }),
+    ).rejects.toThrow('A single Zotero library type and ID are required.');
+  });
+
+  it('prefers the explicit library type and ID over legacy fields', async () => {
+    mockFetch([], {});
+    await searchZoteroLibrary({
+      libraryType: 'group',
+      libraryId: '999',
+      userId: '1',
+      groupId: '2',
+      apiKey: 'secret',
+      query: 'x',
+    });
+    const url = vi.mocked(globalThis.fetch).mock.calls[0]?.[0] as string;
+    expect(url).toContain('/groups/999/items');
   });
 
   it('throws when apiKey is empty', async () => {

@@ -234,7 +234,14 @@ export class PersonalizationRuntimeService {
     const resolver = authoritativeProjectRule
       ? new PersonalizationResolver(new ProjectRuleOverlayReader(this.#repository, authoritativeProjectRule))
       : this.#resolver;
-    const result = resolver.resolve(request.data);
+    // A rejected active manifest must be replaced by a distinct durable row.
+    // Date.now() alone can equal the old createdAt within the same millisecond;
+    // that would reproduce the old digest and hit the repository's digest
+    // conflict path, which intentionally does not overwrite manifest_json.
+    const resolutionRequest = active
+      ? { ...request.data, createdAt: Math.max(Date.now(), active.createdAt + 1) }
+      : request.data;
+    const result = resolver.resolve(resolutionRequest);
     if (!result.ok) return undefined;
     this.#saveRunManifest(result.manifest);
     return result;

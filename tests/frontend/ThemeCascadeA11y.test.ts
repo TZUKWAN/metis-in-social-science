@@ -72,34 +72,6 @@ describe('FIX-METIS-476 final CSS cascade and selector contracts', () => {
     expect(chatCss).not.toContain('.message-bubble');
     expect(chatCss).not.toMatch(/\.chat-input(?:[^\w-]|$)/u);
 
-    const papersCss = read('src/pages/PapersPage.css');
-    const papersTsx = read('src/pages/PapersPage.tsx');
-    expect(papersCss).toContain('.badge');
-    expect(papersTsx).toContain('className="badge');
-    expect(papersCss).not.toContain('.paper-badge');
   });
 
-  it('keeps the library toolbar grid above the legacy App.css flex rule', () => {
-    const papersCss = read('src/pages/PapersPage.css');
-    const scopedToolbar = papersCss.match(/\.papers-page\s+\.papers-toolbar\s*\{([^}]*)\}/)?.[1] ?? '';
-    expect(scopedToolbar).toMatch(/display:\s*grid/);
-    expect(scopedToolbar).toMatch(/grid-template-columns:\s*repeat\(2,/);
-    expect(papersCss).toContain('.papers-page .papers-toolbar > .search-input');
-    expect(papersCss).toContain('.papers-page .papers-toolbar > button');
-  });
-
-  it('papers list uses semantic ul/li with explicit Open button, no listbox/option roles', () => {
-    const papers = read('src/pages/PapersPage.tsx');
-    // No listbox/option composite roles
-    expect(papers).not.toContain('role="listbox"');
-    expect(papers).not.toContain('role="option"');
-    // No tabIndex on rows (focusable controls are Open button, checkbox, etc.)
-    expect(papers).not.toContain('tabIndex={0}');
-    // Explicit Open button provides keyboard-accessible selection
-    expect(papers).toContain("data-testid=\"paper-open-button\"");
-    // Inner controls use stopPropagation to prevent row selection
-    expect(papers).toContain('e.stopPropagation()');
-    // Row click selects only when not clicking interactive children
-    expect(papers).toContain("target.closest('button, input, select, a')");
-  });
 });

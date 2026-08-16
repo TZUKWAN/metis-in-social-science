@@ -9,8 +9,11 @@
   --export-danger: var(--danger-color, #b42318);
   --export-success: var(--success-color, #087443);
   color: var(--export-text);
+  container-type: inline-size;
   display: grid;
   gap: 1rem;
+  min-width: 0;
+  width: 100%;
   padding: clamp(1rem, 2vw, 1.5rem);
   background: var(--export-surface);
   border: 1px solid var(--export-border);
@@ -67,6 +70,12 @@
   min-width: 0;
   cursor: pointer;
   line-height: 1.4;
+}
+
+.research-export-center__check span,
+.research-export-center__radio span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .research-export-center__check input,
@@ -238,6 +247,31 @@
   .research-export-center__actions,
   .research-export-center__button {
     width: 100%;
+  }
+}
+
+/* The export center is also embedded in the narrow right inspector while the
+ * application viewport remains desktop-sized. Container queries keep that
+ * real embedding readable; viewport-only media queries cannot detect it. */
+@container (max-width: 600px) {
+  .research-export-center__grid,
+  .research-export-center__options--formats,
+  .research-export-center__summary dl {
+    grid-template-columns: 1fr;
+  }
+
+  .research-export-center__destination {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .research-export-center__actions,
+  .research-export-center__button {
+    width: 100%;
+  }
+
+  .research-export-center__checksum {
+    grid-column: auto;
   }
 }
 

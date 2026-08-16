@@ -1,0 +1,130 @@
+{
+  "startedAt": "2026-08-11T11:13:45.063Z",
+  "steps": [
+    {
+      "name": "首启硬门禁：未配置 provider 时进入首启向导",
+      "ok": true
+    },
+    {
+      "name": "首启向导按钮可见",
+      "ok": true,
+      "detail": "[\"显示密钥\",\"稍后配置\",\"连接并开始使用\"]"
+    },
+    {
+      "name": "空配置提交被拦截并给出结构化提示",
+      "ok": true,
+      "detail": "clicked=连接并开始使用"
+    },
+    {
+      "name": "假密钥真实探测被拒绝并给出失败提示",
+      "ok": true
+    },
+    {
+      "name": "点击「稍后配置」跳过向导",
+      "ok": true
+    },
+    {
+      "name": "新手引导（OnboardingTour）在首次进入时出现",
+      "ok": true
+    },
+    {
+      "name": "关闭新手引导",
+      "ok": true
+    },
+    {
+      "name": "顶栏导航条目",
+      "ok": true,
+      "detail": "[\"对话\",\"写作\",\"自主科研\",\"任务看板\",\"浏览器1\",\"设置\",\"场景\"]"
+    },
+    {
+      "name": "普通模式隐藏技术条目（评估/终端/日志等）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "导航到「对话」页面渲染",
+      "ok": true
+    },
+    {
+      "name": "导航到「写作」页面渲染",
+      "ok": true
+    },
+    {
+      "name": "导航到「自主科研」页面渲染",
+      "ok": true
+    },
+    {
+      "name": "导航到「任务看板」页面渲染",
+      "ok": true
+    },
+    {
+      "name": "导航到「场景」页面渲染",
+      "ok": true
+    },
+    {
+      "name": "导航到「浏览器」页面渲染",
+      "ok": true
+    },
+    {
+      "name": "导航到「设置」页面渲染",
+      "ok": true
+    },
+    {
+      "name": "侧栏「新建项目」按钮可点击",
+      "ok": true
+    },
+    {
+      "name": "项目创建表单打开并可填写",
+      "ok": true,
+      "detail": "true"
+    },
+    {
+      "name": "UI 创建项目并出现在工作区中",
+      "ok": true,
+      "detail": "confirm=创建项目 appears=true"
+    },
+    {
+      "name": "新项目经 SQLite 持久化（project:list 可查）",
+      "ok": true
+    },
+    {
+      "name": "对话输入框可输入",
+      "ok": true
+    },
+    {
+      "name": "未配置 provider 发送消息→结构化降级提示（非崩溃）",
+      "ok": true
+    },
+    {
+      "name": "Ctrl+K 打开全局搜索",
+      "ok": true
+    },
+    {
+      "name": "设置页包含模型/API 配置区",
+      "ok": true
+    },
+    {
+      "name": "「稍后配置」选择已持久化（setupSkipped=true）",
+      "ok": true
+    },
+    {
+      "name": "重载后不再弹首启向导（跳过已记住）",
+      "ok": true
+    },
+    {
+      "name": "重载后会话恢复到之前的页面（设置）",
+      "ok": true,
+      "detail": "before=设置连接状态○ 未配置主题浅色深色跟随系统语言选择您偏好的界面语言。语言English中文连接模型连接新增连接每个连接独"
+    },
+    {
+      "name": "重载后项目依然存在（跨会话持久）",
+      "ok": true
+    }
+  ],
+  "issues": [],
+  "consoleErrors": [],
+  "failed": 0,
+  "passed": 28,
+  "uniqueConsoleErrors": [],
+  "finishedAt": "2026-08-11T11:14:35.230Z"
+}

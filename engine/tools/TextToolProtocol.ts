@@ -15,6 +15,26 @@
 import type { ToolCall } from '../core/types.js';
 
 /**
+ * Strip raw tool-call markup that leaks into user-visible text when a model
+ * (or its gateway) emits XML-ish function-call blocks the runtime does not
+ * execute — e.g. DeepSeek/Qwen emitting literal `<tool_calls>…</tool_calls>`
+ * or `<tool_call>…</tool_call>` (paired or truncated/unclosed at the end).
+ * The runtime only acts on native tool_calls or the {"tool":…} JSON protocol;
+ * anything else must never be shown to users as raw markup.
+ */
+export function stripTextToolMarkup(text: string): string {
+  if (!text || text.indexOf('<tool_call') === -1) return text;
+  return text
+    // paired blocks
+    .replace(/<tool_calls?>[\s\S]*?<\/\s*tool_calls?>/giu, '')
+    // unclosed/truncated block running to end of output
+    .replace(/<tool_calls?>[\s\S]*$/giu, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/**
  * Parse a text-protocol tool call from model output.
  * Tolerates surrounding prose / fenced code blocks.
  * Returns a ToolCall if the content is (or contains) such JSON, else null.

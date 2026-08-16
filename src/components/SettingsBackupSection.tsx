@@ -40,7 +40,6 @@ export default function SettingsBackupSection({ uiMode }: { uiMode: UIMode }) {
       settings: {
         locale: state.locale,
         theme: state.theme,
-        weeklyReadingGoal: state.weeklyReadingGoal,
       },
     };
     const metis = window.metis;
@@ -113,7 +112,6 @@ export default function SettingsBackupSection({ uiMode }: { uiMode: UIMode }) {
         const settings = data.settings as Record<string, unknown>;
         if (settings.locale) useMetisStore.getState().setLocale(settings.locale as 'en' | 'zh');
         if (settings.theme) useMetisStore.getState().setTheme(settings.theme as 'light' | 'dark' | 'system');
-        if (typeof settings.weeklyReadingGoal === 'number') useMetisStore.getState().setWeeklyReadingGoal(settings.weeklyReadingGoal as number);
       }
       if (data.projectMemory && typeof data.projectMemory === 'string') {
         const metis = window.metis;

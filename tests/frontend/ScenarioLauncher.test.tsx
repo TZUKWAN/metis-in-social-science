@@ -17,12 +17,12 @@ describe('ScenarioLauncher blank product state', () => {
     const onOpenPersonalization = vi.fn();
     render(<ScenarioLauncher onOpenPersonalization={onOpenPersonalization} />);
 
-    fireEvent.click(screen.getByRole('button', { name: '打开个性化' }));
+    fireEvent.click(screen.getByRole('button', { name: '打开场景' }));
     expect(onOpenPersonalization).toHaveBeenCalledTimes(1);
   });
 
   it('does not offer a dead action when no navigation handler is connected', () => {
     render(<ScenarioLauncher />);
-    expect(screen.getByRole('button', { name: '打开个性化' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: '打开场景' }).hasAttribute('disabled')).toBe(true);
   });
 });

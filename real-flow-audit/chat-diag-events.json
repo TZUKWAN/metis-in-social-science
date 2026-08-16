@@ -1,0 +1,33 @@
+{
+  "diag": {
+    "steps": [
+      "{\"version\":1,\"goalId\":\"goal_1786349489455_c2eh03\",\"sequence\":0,\"type\":\"step-start\",\"stepId\":\"step_1\",\"stepName\":\"Research step\"}",
+      "{\"version\":1,\"goalId\":\"goal_1786349489455_c2eh03\",\"sequence\":4,\"type\":\"step-start\",\"stepId\":\"step_2\",\"stepName\":\"Research step\"}",
+      "{\"version\":1,\"goalId\":\"goal_1786349489455_c2eh03\",\"sequence\":8,\"type\":\"step-start\",\"stepId\":\"step_3\",\"stepName\":\"Research step\"}",
+      "{\"version\":1,\"goalId\":\"goal_1786349489455_c2eh03\",\"sequence\":12,\"type\":\"step-start\",\"stepId\":\"step_4\",\"stepName\":\"Research step\"}",
+      "{\"version\":1,\"goalId\":\"goal_1786349489455_c2eh03\",\"sequence\":16,\"type\":\"step-start\",\"stepId\":\"step_5\",\"stepName\":\"Research step\"}"
+    ],
+    "failed": [],
+    "progress": []
+  },
+  "goals": {
+    "success": true,
+    "goals": [
+      {
+        "goalId": "goal_1786349489455_c2eh03",
+        "label": "Research goal",
+        "status": "completed",
+        "createdAt": 1786349489455,
+        "projectId": "project-7d9a3f11-b88d-4fcd-bd14-e75fbac90485"
+      },
+      {
+        "goalId": "goal_1786348938387_j7d7do",
+        "label": "Research goal",
+        "status": "failed",
+        "createdAt": 1786348938387,
+        "projectId": "project-7d9a3f11-b88d-4fcd-bd14-e75fbac90485"
+      }
+    ]
+  },
+  "events": []
+}

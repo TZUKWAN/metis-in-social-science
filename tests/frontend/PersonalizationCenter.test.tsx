@@ -82,6 +82,7 @@ let fundingTemplate: ReturnType<typeof vi.fn>;
 let activatePersonalizationMcp: ReturnType<typeof vi.fn>;
 let getWorkspaceAgents: ReturnType<typeof vi.fn>;
 let setWorkspaceAgents: ReturnType<typeof vi.fn>;
+let aiGenerateScenario: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   window.localStorage.clear();
@@ -177,6 +178,10 @@ beforeEach(() => {
     contentHash: 'project-rules-digest',
     projectId,
   }));
+  aiGenerateScenario = vi.fn().mockResolvedValue({
+    ok: false,
+    code: 'not_configured',
+  });
   setWorkspaceAgents = vi.fn().mockResolvedValue({
     success: true,
     code: 'saved',
@@ -202,6 +207,7 @@ beforeEach(() => {
       activatePersonalizationMcp,
       getWorkspaceAgents,
       setWorkspaceAgents,
+      aiGenerateScenario,
     },
   });
 });
@@ -596,22 +602,19 @@ describe('PersonalizationCenter', () => {
     definitions.push(scenario, rules, skill);
 
     render(<PersonalizationCenter />);
-    expect(await screen.findByText('研究个性化工作台')).toBeDefined();
+    expect(await screen.findByText('研究场景工作台')).toBeDefined();
     fireEvent.click(document.querySelector(`[data-definition-id="${scenario.id}"]`) as HTMLButtonElement);
     expect(await screen.findByText('全权限运行')).toBeDefined();
     expect(screen.queryByText('Full Access')).toBeNull();
 
-    const capability = screen.getByRole('combobox', { name: '场景能力' });
-    expect(within(capability).getByRole('option', { name: '研究' })).toBeDefined();
-    expect(within(capability).getByRole('option', { name: '基金申报' })).toBeDefined();
-    expect(within(capability).getByRole('option', { name: '自定义' })).toBeDefined();
+    // UX: 场景编辑器不再展示「场景能力」「产物格式」两个字段。
+    expect(screen.queryByRole('combobox', { name: '场景能力' })).toBeNull();
+    expect(screen.queryByRole('combobox', { name: '产物格式' })).toBeNull();
 
     const memory = screen.getByRole('combobox', { name: '记忆范围' });
     expect(within(memory).getByRole('option', { name: '当前项目' })).toBeDefined();
-    const output = screen.getByRole('combobox', { name: '产物格式' });
-    expect(within(output).getByRole('option', { name: '产物包' })).toBeDefined();
 
-    fireEvent.click(screen.getByRole('button', { name: /Metis\.md/u }));
+    fireEvent.click(screen.getAllByRole('button', { name: /Metis\.md/u })[0]!);
     fireEvent.click(document.querySelector(`[data-definition-id="${rules.id}"]`) as HTMLButtonElement);
     const scope = await screen.findByRole('combobox', { name: '规则层级' });
     expect(within(scope).getByRole('option', { name: '全局' })).toBeDefined();
@@ -1199,23 +1202,22 @@ describe('PersonalizationCenter', () => {
   });
 
   it('allows output-plan fields in any order and validates the primary deliverable only on save', async () => {
-    const source = definitions.find((item) => item.id === 'builtin:scenarios/general-research')!;
+    const source = definitions.find((item) => item.kind === 'agent')!;
     definitions.push({
       ...structuredClone(source),
-      id: 'user:scenarios/output-plan',
-      name: 'Output plan scenario',
+      id: 'user:agents/output-plan',
+      name: 'Output plan agent',
       revision: 1,
-      agentIds: [],
       skillIds: [],
+      toolIds: [],
       mcpIds: [],
-      rulesIds: [],
-      workflow: [],
       output: { ...source.output, plan: null },
       provenance: { ...source.provenance, origin: 'user', parentId: null, locallyModified: true },
     } as PersonalizationDefinition);
 
     render(<PersonalizationCenter />);
-    fireEvent.click((await screen.findByText('Output plan scenario')).closest('[data-definition-id]') as HTMLButtonElement);
+    fireEvent.click(await screen.findByRole('button', { name: /Agents/u }));
+    fireEvent.click((await screen.findByText('Output plan agent')).closest('[data-definition-id]') as HTMLButtonElement);
     const supporting = screen.getByRole('textbox', { name: 'Supporting artifacts (one per line)' });
     const quality = screen.getByRole('textbox', { name: 'Quality criteria (one per line)' });
     expect(supporting).toHaveProperty('disabled', false);
@@ -1238,8 +1240,8 @@ describe('PersonalizationCenter', () => {
 
     await waitFor(() => expect(savePersonalization).toHaveBeenCalledTimes(1));
     const saved = (savePersonalization.mock.calls[0]![0] as { definition: PersonalizationDefinition }).definition;
-    expect(saved.kind).toBe('scenario');
-    if (saved.kind === 'scenario') {
+    expect(saved.kind).toBe('agent');
+    if (saved.kind === 'agent') {
       expect(saved.output.plan).toEqual({
         primaryDeliverable: 'Complete journal article',
         supportingArtifacts: ['Annotated bibliography, with source notes', 'Evidence table'],
@@ -1249,17 +1251,15 @@ describe('PersonalizationCenter', () => {
   });
 
   it('normalizes an output plan to null when all three fields become empty', async () => {
-    const source = definitions.find((item) => item.id === 'builtin:scenarios/general-research')!;
+    const source = definitions.find((item) => item.kind === 'agent')!;
     definitions.push({
       ...structuredClone(source),
-      id: 'user:scenarios/empty-output-plan',
-      name: 'Empty output plan scenario',
+      id: 'user:agents/empty-output-plan',
+      name: 'Empty output plan agent',
       revision: 1,
-      agentIds: [],
       skillIds: [],
+      toolIds: [],
       mcpIds: [],
-      rulesIds: [],
-      workflow: [],
       output: {
         ...source.output,
         plan: {
@@ -1272,7 +1272,8 @@ describe('PersonalizationCenter', () => {
     } as PersonalizationDefinition);
 
     render(<PersonalizationCenter />);
-    fireEvent.click((await screen.findByText('Empty output plan scenario')).closest('[data-definition-id]') as HTMLButtonElement);
+    fireEvent.click(await screen.findByRole('button', { name: /Agents/u }));
+    fireEvent.click((await screen.findByText('Empty output plan agent')).closest('[data-definition-id]') as HTMLButtonElement);
     fireEvent.change(screen.getByRole('textbox', { name: 'Primary deliverable' }), {
       target: { value: '' },
     });
@@ -1286,8 +1287,8 @@ describe('PersonalizationCenter', () => {
 
     await waitFor(() => expect(savePersonalization).toHaveBeenCalledTimes(1));
     const saved = (savePersonalization.mock.calls[0]![0] as { definition: PersonalizationDefinition }).definition;
-    expect(saved.kind).toBe('scenario');
-    if (saved.kind === 'scenario') expect(saved.output.plan).toBeNull();
+    expect(saved.kind).toBe('agent');
+    if (saved.kind === 'agent') expect(saved.output.plan).toBeNull();
   });
 
   it('builds strict Skill input and output structures through visual fields without raw JSON', async () => {
@@ -1637,5 +1638,214 @@ describe('PersonalizationCenter', () => {
     fireEvent.click(routedUse);
     await waitFor(() => expect(activate).toHaveBeenCalledWith(routed.id));
     expect(activate).not.toHaveBeenCalledWith(ambiguous.id);
+  });
+
+  it('AI-assisted creation generates agents and a scenario, then selects it in the editor', async () => {
+    aiGenerateScenario.mockResolvedValue({
+      ok: true,
+      scenario: {
+        name: 'AI Archive Scenario',
+        description: 'Analyze local archives and build a claim network.',
+        triggerPhrases: ['archive'],
+        deliverable: 'A review report on the archive evidence chain',
+      },
+      agents: [{
+        name: 'Archivist',
+        role: 'Evidence extraction',
+        systemPrompt: 'Extract evidence from archives and mark source boundaries.',
+        skillIds: [],
+        toolIds: ['list_sources', 'extract_evidence'],
+        mcpIds: [],
+        maxTurns: 12,
+      }],
+      workflow: [
+        { name: 'List catalogs', description: 'List archive catalogs.', agent: 'Archivist', skillIds: [], toolIds: ['list_sources'], mcpIds: [], maxTurns: 8 },
+        { name: 'Extract evidence', description: 'Extract evidence excerpts.', agent: 'Archivist', skillIds: [], toolIds: ['extract_evidence'], mcpIds: [], maxTurns: 8 },
+      ],
+    });
+    render(<PersonalizationCenter />);
+    fireEvent.click(await screen.findByRole('button', { name: 'AI-assisted creation' }));
+    const input = await screen.findByTestId('ai-create-input');
+    fireEvent.change(input, { target: { value: 'Analyze local historical archives and build a claim network.' } });
+    fireEvent.click(screen.getByTestId('ai-create-submit'));
+    await waitFor(() => expect(savePersonalization.mock.calls.length).toBeGreaterThanOrEqual(2));
+
+    const calls = savePersonalization.mock.calls.map(
+      (call) => (call[0] as { definition: PersonalizationDefinition }).definition,
+    );
+    const savedAgents = calls.filter((definition) => definition.kind === 'agent');
+    const savedScenarios = calls.filter((definition) => definition.kind === 'scenario');
+    expect(savedAgents).toHaveLength(1);
+    expect(savedScenarios).toHaveLength(1);
+    const scenario = savedScenarios[0]!;
+    expect(scenario.name).toBe('AI Archive Scenario');
+    expect(scenario.agentIds).toContain(savedAgents[0]!.id);
+    expect(scenario.workflow).toHaveLength(2);
+    expect(scenario.workflow[0]!.agentId).toBe(savedAgents[0]!.id);
+    expect(scenario.workflow[1]!.dependsOn).toContain(scenario.workflow[0]!.id);
+    expect(scenario.output.plan?.primaryDeliverable).toBe('A review report on the archive evidence chain');
+
+    // 生成后选中新场景，编辑器展示完整配置供用户修改。
+    expect(await screen.findByRole('heading', { name: 'AI Archive Scenario' })).toBeDefined();
+    expect(screen.getAllByText('Archivist').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(/List catalogs/u).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(/Extract evidence/u).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('scenario editor no longer shows capability or artifact format fields', async () => {
+    const source = builtin.find((item) => item.kind === 'scenario')!;
+    const custom = editableUserDefinition(source, 'user:scenarios/cleanup', 'Cleanup scenario');
+    definitions.push(custom);
+    render(<PersonalizationCenter />);
+    fireEvent.click((await screen.findByText('Cleanup scenario')).closest('[data-definition-id]') as HTMLButtonElement);
+    expect(await screen.findByRole('heading', { name: 'Cleanup scenario' })).toBeDefined();
+    expect(screen.queryByText('Scenario capability')).toBeNull();
+    expect(screen.queryByText('Artifact format')).toBeNull();
+  });
+
+  it('workflow add-step stays disabled until an agent is bound', async () => {
+    const source = builtin.find((item) => item.kind === 'scenario')!;
+    const custom = {
+      ...editableUserDefinition(source, 'user:scenarios/gating', 'Gating scenario'),
+      agentIds: [],
+      workflow: [],
+    } as PersonalizationDefinition;
+    definitions.push(custom);
+    const agentSource = builtin.find((item) => item.kind === 'agent')!;
+    const agent = editableUserDefinition(agentSource, 'user:agents/gating-agent', 'Gating agent');
+    definitions.push(agent);
+
+    render(<PersonalizationCenter />);
+    fireEvent.click((await screen.findByText('Gating scenario')).closest('[data-definition-id]') as HTMLButtonElement);
+    const addStep = await screen.findByRole('button', { name: 'Add step' });
+    expect(addStep).toHaveProperty('disabled', true);
+
+    // 勾选智能体后步骤添加可用。
+    fireEvent.click(document.querySelector(`[data-definition-id="${agent.id}"]`) as HTMLElement);
+    await waitFor(() => expect(addStep).toHaveProperty('disabled', false));
+    fireEvent.click(addStep);
+    expect(screen.getByText('1. Step 1')).toBeDefined();
+  });
+
+  it('scenario editor offers one simplified deliverable field', async () => {
+    const source = builtin.find((item) => item.kind === 'scenario')!;
+    const custom = editableUserDefinition(source, 'user:scenarios/deliverable', 'Deliverable scenario');
+    definitions.push(custom);
+    render(<PersonalizationCenter />);
+    fireEvent.click((await screen.findByText('Deliverable scenario')).closest('[data-definition-id]') as HTMLButtonElement);
+    fireEvent.click(await screen.findByText('Final deliverable (optional)'));
+    const textarea = await screen.findByRole('textbox', { name: 'Deliverable description' });
+    fireEvent.change(textarea, { target: { value: 'A review report' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save new revision' }));
+    await waitFor(() => {
+      const lastCall = savePersonalization.mock.calls.at(-1)![0] as { definition: PersonalizationDefinition };
+      expect(lastCall.definition.output.plan?.primaryDeliverable).toBe('A review report');
+    });
+  });
+
+  it('AI-assisted creation surfaces a friendly error when generation fails', async () => {
+    aiGenerateScenario.mockResolvedValue({ ok: false, code: 'parse_failed' });
+    render(<PersonalizationCenter />);
+    fireEvent.click(await screen.findByRole('button', { name: 'AI-assisted creation' }));
+    const input = await screen.findByTestId('ai-create-input');
+    fireEvent.change(input, { target: { value: 'Analyze archives' } });
+    fireEvent.click(screen.getByTestId('ai-create-submit'));
+    const status = await screen.findByTestId('ai-create-status');
+    await waitFor(() => expect(status.textContent).toMatch(/parse_failed/u));
+  });
+
+  it('AI-assisted creation also saves the scenario memory doc and paper structure', async () => {
+    const structureSave = vi.fn().mockResolvedValue({ ok: true });
+    Object.assign(window.metis, { structureSave });
+    aiGenerateScenario.mockResolvedValue({
+      ok: true,
+      scenario: {
+        name: 'Archive Memory Scenario',
+        description: 'Analyze archives.',
+        triggerPhrases: ['archive'],
+        deliverable: 'A review report',
+      },
+      agents: [{
+        name: 'Archivist', role: 'Extraction', systemPrompt: 'Extract evidence.', skillIds: [], toolIds: [], mcpIds: [], maxTurns: 12,
+      }],
+      workflow: [{ name: 'List', description: 'List catalogs.', agent: 'Archivist', skillIds: [], toolIds: [], mcpIds: [], maxTurns: 8 }],
+      rules: '## 研究边界\n只使用地方档案作为证据来源。',
+      paperStructure: [
+        { title: '引言', instruction: '交代研究问题与档案背景。' },
+        { title: '制度演变', instruction: '按时间梳理制度变化并引用档案。' },
+        { title: '结论', instruction: '总结研究发现与边界。' },
+      ],
+    });
+    render(<PersonalizationCenter />);
+    fireEvent.click(await screen.findByRole('button', { name: 'AI-assisted creation' }));
+    const input = await screen.findByTestId('ai-create-input');
+    fireEvent.change(input, { target: { value: 'Archive memory analysis scenario' } });
+    fireEvent.click(screen.getByTestId('ai-create-submit'));
+
+    const savedDefinitions = () => savePersonalization.mock.calls.map(
+      (call) => (call[0] as { definition: PersonalizationDefinition }).definition,
+    );
+    await waitFor(() => {
+      expect(savedDefinitions().filter((d) => d.kind === 'rules')).toHaveLength(1);
+    });
+    // 场景保存两次：首次创建 + 绑定规则后的版本递增更新。
+    const savedScenarios = savedDefinitions().filter((d) => d.kind === 'scenario');
+    expect(savedScenarios.length).toBe(2);
+    const scenario = savedScenarios.at(-1)!;
+    const rules = savedDefinitions().find((d) => d.kind === 'rules') as unknown as {
+      id: string;
+      scope: string;
+      scopeId: string | null;
+      markdown: string;
+    };
+    // 场景记忆文档绑定到场景。
+    expect(rules.scope).toBe('scenario');
+    expect(rules.scopeId).toBe(savedScenarios[0]!.id);
+    expect(rules.markdown).toContain('研究边界');
+    expect(scenario.rulesIds).toContain(rules.id);
+    // 论文结构自动设计：引言 + 主体 + 结论。
+    await waitFor(() => expect(structureSave).toHaveBeenCalledTimes(1));
+    const structure = structureSave.mock.calls[0]![0] as { name: string; sections: Array<{ title: string }> };
+    expect(structure.name).toBe('Archive Memory Scenario · 论文结构');
+    expect(structure.sections.map((section) => section.title)).toEqual(['引言', '制度演变', '结论']);
+  });
+
+  it('template recognition parses a pasted template into editable sections and saves it', async () => {
+    const aiParsePaperTemplate = vi.fn().mockResolvedValue({
+      ok: true,
+      sections: [
+        { title: '引言', instruction: '交代背景与问题。' },
+        { title: '文献综述', instruction: '梳理已有研究。' },
+        { title: '结论', instruction: '总结。' },
+      ],
+    });
+    const structureSave = vi.fn().mockResolvedValue({ ok: true });
+    Object.assign(window.metis, { aiParsePaperTemplate, structureSave });
+    render(<PersonalizationCenter />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Template recognition (paper structure)' }));
+    await screen.findByTestId('template-parse-panel');
+
+    fireEvent.change(screen.getByTestId('template-parse-input'), {
+      target: { value: '一、引言…… 二、文献综述…… 三、结论……' },
+    });
+    fireEvent.click(screen.getByTestId('template-parse-submit'));
+
+    await waitFor(() => {
+      expect(aiParsePaperTemplate).toHaveBeenCalledWith({ text: expect.stringContaining('引言') });
+    });
+    await waitFor(() => expect(screen.getAllByTestId('template-section').length).toBe(3));
+    expect(screen.getByTestId('template-parse-status').textContent).toContain('3 sections');
+
+    // 逐节修改写作指引后保存为论文结构。
+    const instructionInputs = screen.getAllByRole('textbox', { name: /Section .* writing guide/u });
+    fireEvent.change(instructionInputs[1]!, { target: { value: '按时间顺序梳理已有研究。' } });
+    fireEvent.change(screen.getByTestId('template-name-input'), { target: { value: '国社科模板' } });
+    fireEvent.click(screen.getByTestId('template-save'));
+
+    await waitFor(() => expect(structureSave).toHaveBeenCalledTimes(1));
+    const saved = structureSave.mock.calls[0]![0] as { name: string; sections: Array<{ title: string; instruction: string }> };
+    expect(saved.name).toBe('国社科模板');
+    expect(saved.sections).toHaveLength(3);
+    expect(saved.sections[1]!.instruction).toBe('按时间顺序梳理已有研究。');
   });
 });

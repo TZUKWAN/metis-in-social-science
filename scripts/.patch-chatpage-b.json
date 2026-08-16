@@ -1,0 +1,12 @@
+{
+  "replacements": [
+    {
+      "old": "  const [sessions, setSessions] = useState<Session[]>([]);",
+      "new": "  const [sessions, setSessions] = useState<Session[]>([]);\n  // UX-CHAT-003: 低置信度任务表达被直接回答时，提供非阻塞「转为研究任务」建议。\n  const [goalSuggestion, setGoalSuggestion] = useState<string | null>(null);"
+    },
+    {
+      "old": "    activeChatRequestRef.current?.token === request.token\n    && isCurrentSessionGeneration(request.sessionId, request.generation)\n    && (researchWorkspaceStore.getState().activeProjectId ?? 'global') === request.projectId\n  ), [isCurrentSessionGeneration]);",
+      "new": "    activeChatRequestRef.current?.token === request.token\n    && isCurrentSessionGeneration(request.sessionId, request.generation)\n    && (researchWorkspaceStore.getState().activeProjectId ?? 'global') === request.projectId\n  ), [isCurrentSessionGeneration]);\n\n  // UX-CHAT-002: 失败/中断/取消时结算当前流式占位消息。空内容 → 删除空气泡；\n  // 已有部分内容 → 停止流式并标记为「未完成草稿」，避免空气泡与错误气泡并存。\n  const settleStreamingPlaceholder = useCallback((request: { startedAt: number }) => {\n    const streamedIndex = streamingIndexRef.current;\n    if (streamedIndex < 0) return;\n    const durationMs = Date.now() - request.startedAt;\n    streamingIndexRef.current = -1;\n    setMessages((prev) => {\n      const target = prev[streamedIndex];\n      if (!target) return prev;\n      if (!target.content.trim() && !target.reasoning) {\n        return prev.filter((_, index) => index !== streamedIndex);\n      }\n      return prev.map((message, index) => (index === streamedIndex\n        ? { ...message, streaming: false, durationMs, incomplete: true }\n        : message));\n    });\n  }, []);\n\n  // UX-CHAT-004: 回合结算后从持久层刷新会话摘要（消息数与最后活动时间），\n  // 让侧栏计数与权威值一致，而不是停留在挂载时的旧快照。\n  const refreshSessionSummaries = useCallback(() => {\n    const metis = window.metis;\n    if (!metis?.listSessions) return;\n    void metis.listSessions().then((payload) => {\n      const decoded = decodeSessionListPayload(payload);\n      if (decoded.success) setSessions(decoded.sessions);\n    }).catch(() => { /* 摘要刷新是尽力而为，不影响回合结果 */ });\n  }, []);"
+    }
+  ]
+}

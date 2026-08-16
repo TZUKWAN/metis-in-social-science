@@ -82,11 +82,11 @@ describe('Personalization visual and accessibility contracts', () => {
   it('does not nest a second main landmark inside the application main landmark', () => {
     const app = read('src/App.tsx');
     const center = read('src/personalization/PersonalizationCenter.tsx');
-    expect(app).toContain('<main className="main-content">');
+    expect(app).toMatch(/<main\s+className=\{?`?main-content/);
     expect(center).not.toMatch(/<main(?:\s|>)/u);
     expect(center).toContain('<section');
     expect(center).toContain('className="personalization-detail"');
-    expect(center).toContain("aria-label={zh ? '个性化详情' : 'Personalization details'}");
+    expect(center).toContain("aria-label={zh ? '场景详情' : 'Scenario details'}");
   });
 
   it('prevents 200-character definition and workflow names from creating 400px/200%-zoom min-content overflow', () => {
@@ -134,9 +134,8 @@ describe('Personalization visual and accessibility contracts', () => {
     expect(cssBlock(center, '.personalization-page')).toContain('overflow-x: clip');
 
     expect(center).not.toContain('.personalization-trigger');
-    expect(shell).toContain('.sidebar-personalization-row');
-    expect(shell).toContain('.personalization-trigger:focus-visible');
-    expect(cssBlock(shell, '.personalization-trigger.active')).not.toContain('var(--primary)');
+    expect(cssBlock(shell, '.topbar-nav__item.active')).toContain('var(--accent)');
+    expect(cssBlock(shell, '.topbar-nav__item:focus-visible')).toContain('var(--focus-ring-color)');
   });
 
   it('keeps short bundle actions intrinsic on 400px and 650px layouts', () => {
@@ -154,20 +153,22 @@ describe('Personalization visual and accessibility contracts', () => {
     expect(narrow).toMatch(/\.personalization-package-picker\s+span\s*\{[^}]*flex:\s*1\s+0\s+100%/isu);
   });
 
-  it('keeps responsive sidebar controls named and decorative icons hidden from assistive technology', () => {
+  it('keeps top-bar controls named and decorative icons hidden from assistive technology', () => {
     const app = read('src/App.tsx');
     expect(app).toContain('aria-label={t(item.labelKey)}');
-    expect(app).toContain('title={t(item.labelKey)}');
-    expect(app).toContain('<span className="nav-icon" aria-hidden="true">{item.icon}</span>');
-    expect(app).toContain('aria-label={t(\'personalization.title\')}');
-    expect(app).toContain('title={t(\'personalization.title\')}');
-    expect(app).toContain('<svg aria-hidden="true"');
+    // O11: tooltips now use a descriptionKey-aware fallback, not a bare label repeat.
+    expect(app).toContain('title={tooltip}');
+    expect(app).toContain('data-testid="personalization-trigger"');
+    expect(app).toContain('getPreferenceNav()');
+    expect(app).toContain('<svg width="15" height="15"');
+    expect(app).toContain('aria-hidden="true"');
+    expect(app).toMatch(/className="topbar-icon-button"/);
   });
 
   it('exposes localized academic labels, draft feedback, and a visible focus target', () => {
     const source = read('src/personalization/PersonalizationCenter.tsx');
     const css = read('src/personalization/PersonalizationCenter.css');
-    expect(source).toContain("zh ? '研究个性化工作台' : 'RESEARCH PERSONALIZATION WORKBENCH'");
+    expect(source).toContain("zh ? '研究场景工作台' : 'RESEARCH SCENARIO WORKBENCH'");
     expect(source).toContain("zh ? '全权限运行' : 'Full Access'");
     expect(source).toContain("zh ? '草稿已自动保留' : 'Draft preserved automatically'");
     expect(source).toContain('ref={headingRef} tabIndex={-1}');

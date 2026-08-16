@@ -1,7 +1,7 @@
 /**
  * METIS-501 — ProjectShell three-column desktop tests.
  *
- * Verifies structure (three regions), the four-mode switcher, inspector tabs, collapse
+ * Verifies structure (three regions), the three-mode switcher, inspector tabs, collapse
  * behavior, and a11y roles. Pixel-level multi-resolution visual regression is METIS-1003.
  *
  * @vitest-environment jsdom
@@ -137,25 +137,27 @@ describe('METIS-501 ProjectShell — raw workspace slots', () => {
   });
 });
 
-describe('METIS-501 ProjectShell — four-mode switcher', () => {
-  it('renders all four mode tabs in order', () => {
+describe('METIS-501 ProjectShell — three-mode switcher', () => {
+  it('renders all shell mode tabs in order', () => {
     renderShell();
+    // 'projects' 是顶层科研项目工作台模式，不进入 ProjectShell 的内部切换器。
     for (const label of Object.values(MODE_LABELS)) {
+      if (label === '科研项目') continue;
       expect(screen.getByText(label)).toBeDefined();
     }
   });
 
   it('marks the active mode with aria-selected', () => {
-    renderShell({ mode: 'analyze' });
+    renderShell({ mode: 'write' });
     const tabs = screen.getAllByRole('tab');
-    const analyzeTab = tabs.find((t) => t.textContent === '分析');
-    expect(analyzeTab?.getAttribute('aria-selected')).toBe('true');
+    const writeTab = tabs.find((t) => t.textContent === '研究写作');
+    expect(writeTab?.getAttribute('aria-selected')).toBe('true');
   });
 
   it('fires onModeChange when a mode tab is clicked', () => {
     let changedTo: string | null = null;
     renderShell({ onModeChange: (m) => { changedTo = m; } });
-    fireEvent.click(screen.getByText('写作'));
+    fireEvent.click(screen.getByText('研究写作'));
     expect(changedTo).toBe('write');
   });
 
@@ -163,13 +165,13 @@ describe('METIS-501 ProjectShell — four-mode switcher', () => {
     const onModeChange = vi.fn();
     renderShell({ mode: 'converse', onModeChange });
     const converse = screen.getByRole('tab', { name: '对话' });
-    const read = screen.getByRole('tab', { name: '阅读' });
+    const write = screen.getByRole('tab', { name: '研究写作' });
 
     converse.focus();
     fireEvent.keyDown(converse, { key: 'ArrowRight' });
 
-    expect(onModeChange).toHaveBeenCalledWith('read');
-    expect(document.activeElement).toBe(read);
+    expect(onModeChange).toHaveBeenCalledWith('write');
+    expect(document.activeElement).toBe(write);
     const workspace = document.getElementById(converse.getAttribute('aria-controls') ?? '');
     expect(workspace).not.toBeNull();
     expect(workspace?.getAttribute('aria-label')).toBe('对话工作区');

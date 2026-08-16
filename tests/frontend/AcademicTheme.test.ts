@@ -20,17 +20,17 @@ describe('AcademicTheme computed design tokens', () => {
     document.documentElement.removeAttribute('data-theme');
   });
 
-  it('uses the accessible terracotta accent in light mode', () => {
+  it('uses the rational ink-navy accent in light mode', () => {
     const tokens = readComputedDesignTokens();
-    expect(tokens.accentPrimary).toBe('#b05832');
-    expect(tokens.accentHover).toBe('#914522');
+    expect(tokens.accentPrimary).toBe('#263a59');
+    expect(tokens.accentHover).toBe('#1c2c45');
   });
 
-  it('uses low-saturation copper in dark mode', () => {
+  it('uses low-saturation steel blue in dark mode', () => {
     document.documentElement.dataset.theme = 'dark';
     const tokens = readComputedDesignTokens();
-    expect(tokens.accentPrimary).toBe('#e49a72');
-    expect(tokens.accentHover).toBe('#f0b693');
+    expect(tokens.accentPrimary).toBe('#a3b6d3');
+    expect(tokens.accentHover).toBe('#b9c9de');
   });
 
   it('exposes eight distinct semantic chart colors and retains chart blue', () => {
@@ -55,8 +55,8 @@ describe('AcademicTheme computed design tokens', () => {
     expect(tokens.fontSans).toContain('Source Han Sans SC');
     expect(tokens.fontSerif).toContain('Source Han Serif SC');
     expect(tokens.fontMono).toContain('JetBrains Mono');
-    expect(tokens.radiusSm).toBe('3px');
-    expect(tokens.radiusMd).toBe('6px');
+    expect(tokens.radiusSm).toBe('2px');
+    expect(tokens.radiusMd).toBe('4px');
   });
 
   it('AA contrast: accent-on-card meets WCAG 4.5:1 minimum', () => {
@@ -88,7 +88,7 @@ describe('AcademicTheme computed design tokens', () => {
     expect(tokens.textOnAccent).toBe(style.getPropertyValue('--text-on-accent').trim());
   });
 
-  it('no blue fallback: focus-ring uses terracotta, not blue', () => {
+  it('no blue fallback: focus-ring uses the ink accent, not generic blue', () => {
     const style = getComputedStyle(document.documentElement);
     const ring = style.getPropertyValue('--focus-ring').trim();
     expect(ring).not.toContain('3b82f6');

@@ -21,7 +21,19 @@ import { MULTI_AGENT_TOOL, createMultiAgentHandler } from './builtin/MultiAgentT
 import { getEvidenceToolSpecs, getEvidenceToolHandlers } from './builtin/evidence-tools.js';
 import { getMemoryToolSpecs, getMemoryToolHandlers } from './builtin/MemoryTools.js';
 import {
+  LIST_PROJECT_SOURCES_TOOL,
+  createProjectResearchToolHandlers,
+} from './builtin/ProjectResearchTools.js';
+import { TRUST_TOOL_SPECS, getTrustToolHandlers } from './builtin/trust-tools.js';
+import { RESEARCH_CODING_TOOL_SPECS, createResearchCodingToolHandlers } from './builtin/research-coding-tools.js';
+import { WRITING_TOOL_SPECS, getWritingToolHandlers } from './builtin/writing-tools.js';
+import { STATISTICS_TOOL_SPECS, getStatisticsToolHandlers } from './builtin/statistics-tools.js';
+import { RESEARCH_NETWORK_TOOL_SPECS, getResearchNetworkToolHandlers } from './builtin/research-network-tools.js';
+import { NOTES_TOOL_SPECS, getNotesToolHandlers } from './builtin/notes-tools.js';
+import {
   ACADEMIC_TOOL_SPECS,
+  SEARCH_PAPER_TEXT_TOOL,
+  searchPaperTextHandler,
   arxivSearchHandler,
   importByArxivHandler,
   searchPapersHandler,
@@ -99,6 +111,18 @@ import {
   journalIntegrityLookupHandler,
   journalIntegrityStatsHandler,
 } from './builtin/academic-tools.js';
+import {
+  browserNavigateHandler,
+  browserBackHandler,
+  browserForwardHandler,
+  browserReloadHandler,
+  browserClickHandler,
+  browserTypeHandler,
+  browserScrollHandler,
+  browserScreenshotHandler,
+  browserExtractHandler,
+  browserCollectHandler,
+} from './browser-tools.js';
 
 // ── Current Affairs tools ────────────────────────────────────────
 
@@ -120,18 +144,30 @@ const CURRENT_AFFAIRS_SPECS: ToolSpec[] = [];
 export function registerBuiltinTools(
   registry: ToolRegistry,
   dispatcher: ToolDispatcher,
-  options?: { agentLoop?: import('../core/AgentLoop.js').AgentLoop; store?: import('../persistence/PersistenceStore.js').PersistenceStore },
+  options?: {
+    agentLoop?: import('../core/AgentLoop.js').AgentLoop;
+    store?: import('../persistence/PersistenceStore.js').PersistenceStore;
+    researchRepository?: import('../persistence/ResearchRepository.js').ResearchRepository;
+  },
 ): void {
   const allSpecs: ToolSpec[] = [
     ...getFileToolSpecs(),
     ...getSearchToolSpecs(),
     ...getShellToolSpecs(),
     ...ACADEMIC_TOOL_SPECS,
+    SEARCH_PAPER_TEXT_TOOL,
+    ...TRUST_TOOL_SPECS,
+    ...WRITING_TOOL_SPECS,
+    ...STATISTICS_TOOL_SPECS,
+    ...RESEARCH_NETWORK_TOOL_SPECS,
+    ...NOTES_TOOL_SPECS,
     ...getResearchToolSpecs(),
     ...getWebToolSpecs(),
     ...PLUGIN_TOOLS,
     ...getEvidenceToolSpecs(),
     ...getMemoryToolSpecs(),
+    ...(options?.researchRepository ? [LIST_PROJECT_SOURCES_TOOL] : []),
+    ...(options?.researchRepository ? RESEARCH_CODING_TOOL_SPECS : []),
     ...(options?.agentLoop ? [MULTI_AGENT_TOOL] : []),
     ...CURRENT_AFFAIRS_SPECS,
   ];
@@ -145,9 +181,17 @@ export function registerBuiltinTools(
     ...getPluginToolHandlers(),
     ...getEvidenceToolHandlers(),
     ...getMemoryToolHandlers(options?.store),
+    ...createProjectResearchToolHandlers(options?.researchRepository),
+    ...createResearchCodingToolHandlers(options?.researchRepository),
+    ...getTrustToolHandlers(),
+    ...getWritingToolHandlers(),
+    ...getStatisticsToolHandlers(),
+    ...getResearchNetworkToolHandlers(),
+    ...getNotesToolHandlers(),
     ['arxiv_search', arxivSearchHandler],
     ['import_by_arxiv', importByArxivHandler],
     ['search_papers', searchPapersHandler],
+    ['search_paper_text', searchPaperTextHandler],
     ['import_by_doi', importByDoiHandler],
     ['recommend_papers', recommendPapersHandler],
     ['literature_review', literatureReviewHandler],
@@ -174,6 +218,16 @@ export function registerBuiltinTools(
     ['section_guide', sectionGuideHandler],
     ['format_citation', formatCitationHandler],
     ['read_pdf', readPdfHandler],
+    ['browser_navigate', browserNavigateHandler],
+    ['browser_back', browserBackHandler],
+    ['browser_forward', browserForwardHandler],
+    ['browser_reload', browserReloadHandler],
+    ['browser_click', browserClickHandler],
+    ['browser_type', browserTypeHandler],
+    ['browser_scroll', browserScrollHandler],
+    ['browser_screenshot', browserScreenshotHandler],
+    ['browser_extract', browserExtractHandler],
+    ['browser_collect', browserCollectHandler],
     ['crossref_lookup', crossrefLookupHandler],
     ['openalex_lookup', openAlexLookupHandler],
     ['writing_stage_check', writingStageCheckHandler],

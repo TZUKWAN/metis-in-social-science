@@ -16,13 +16,21 @@ import type { PersistenceStore } from '../engine/persistence/PersistenceStore.js
 export interface ZoteroImportOptions {
   apiKeyResolver: () => string | undefined;
   store: PersistenceStore;
+  /**
+   * Optional project linker invoked for every imported/merged paper when the
+   * import request carries a projectId. The host uses it to set papers.project_id
+   * and upsert the project source row.
+   */
+  linkToProject?: (paper: { id: string; title: string; authors: string[]; year: number; venue: string; doi?: string; arxivId?: string }) => void;
 }
 
 export interface ZoteroImportRequest {
-  userId: string;
-  groupId?: string;
+  libraryType: 'personal' | 'group';
+  libraryId: string;
   query?: string;
   maxItems?: number;
+  /** When set, every imported/merged paper is linked to this project. */
+  projectId?: string;
 }
 
 export interface ZoteroImportResult {
@@ -58,15 +66,15 @@ export class ZoteroImportService {
   /** Import items from the user's Zotero library. */
   async import(request: ZoteroImportRequest): Promise<ZoteroImportResult> {
     const apiKey = this.#options.apiKeyResolver();
-    if (!apiKey || !request.userId.trim()) {
+    if (!apiKey || !request.libraryId.trim()) {
       return { ok: false, imported: 0, merged: 0, skipped: 0, error: 'zotero_not_configured', items: [] };
     }
     try {
       const { searchZoteroLibrary, zoteroItemToPlain } = await import('../engine/research/ZoteroClient.js');
       const result = await searchZoteroLibrary({
         apiKey,
-        userId: request.userId.trim(),
-        groupId: request.groupId?.trim() || undefined,
+        libraryType: request.libraryType,
+        libraryId: request.libraryId.trim(),
         query: request.query?.trim() ?? '',
         start: 0,
         maxResults: Math.min(50, request.maxItems ?? 20),
@@ -102,14 +110,18 @@ export class ZoteroImportService {
 
         if (match) {
           // Merge missing fields into the existing record.
-          const updated = { ...match, doi: match.doi ?? doi, arxivId: match.arxivId ?? arxivId, venue: match.venue || String(plain.venue ?? ''), abstract: match.abstract || String(plain.abstract ?? ''), tags: [...new Set([...match.tags, ...(Array.isArray(plain.tags) ? (plain.tags as string[]) : [])])] };
+          const updated = { ...match, doi: match.doi ?? doi, arxivId: match.arxivId ?? arxivId, venue: match.venue || String(plain.venue ?? ''), abstract: match.abstract || String(plain.abstract ?? ''), tags: [...new Set([...match.tags, ...(Array.isArray(plain.tags) ? (plain.tags as string[]) : [])])], projectId: match.projectId ?? request.projectId };
           this.#options.store.savePaper(updated as never);
           merged++;
           items.push({ title, merged: true });
+          if (request.projectId && this.#options.linkToProject) {
+            this.#options.linkToProject({ id: match.id, title: match.title, authors: match.authors, year: match.year, venue: match.venue, doi: match.doi, arxivId: match.arxivId });
+          }
           continue;
         }
+        const id = `paper_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
         this.#options.store.savePaper({
-          id: `paper_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+          id,
           title,
           authors,
           year,
@@ -123,9 +135,13 @@ export class ZoteroImportService {
           readStatus: 'unread',
           rating: 0,
           addedAt: Date.now(),
+          projectId: request.projectId,
         } as never);
         imported++;
         items.push({ title, merged: false });
+        if (request.projectId && this.#options.linkToProject) {
+          this.#options.linkToProject({ id, title, authors, year, venue: String(plain.venue ?? ''), doi: doi || undefined, arxivId: arxivId || undefined });
+        }
       }
 
       return { ok: true, imported, merged, skipped, items };

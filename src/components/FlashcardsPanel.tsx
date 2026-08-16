@@ -31,7 +31,6 @@ export default function FlashcardsPanel({ onClose }: FlashcardsPanelProps) {
   useEffect(() => {
     let cancelled = false;
     void loadFlashcards().then((loaded) => {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- async load completes outside render
       if (!cancelled) setCards(loaded);
     });
     return () => { cancelled = true; };

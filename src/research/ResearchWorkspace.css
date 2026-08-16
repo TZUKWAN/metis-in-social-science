@@ -373,11 +373,10 @@
 }
 
 .research-workspace-projects {
-  min-height: 92px;
-  max-height: 36%;
-  overflow: hidden auto;
+  min-height: 0;
+  max-height: none;
+  overflow: visible;
   border-bottom: 1px solid var(--research-border);
-  scrollbar-width: thin;
 }
 
 .research-workspace-section-label {
@@ -481,11 +480,10 @@
 .research-lifecycle-dot.is-planned { background: #4d79a9; }
 
 .research-workspace-navigation {
-  flex: 1;
+  flex: 0 0 auto;
   min-height: 0;
-  overflow: hidden auto;
+  overflow: visible;
   padding: 8px 7px 12px;
-  scrollbar-width: thin;
 }
 
 .research-navigation-item {
@@ -541,6 +539,13 @@
 
 .research-navigation-item--recycle {
   margin-top: 3px;
+}
+
+.research-workspace-sidebar {
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
 }
 
 .research-workspace-sidebar__footer {

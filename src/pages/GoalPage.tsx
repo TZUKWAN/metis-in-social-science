@@ -5,15 +5,20 @@
  * inline in the Chat page. This page shows past goals and their results.
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from '../i18n';
 import { setPendingChatIntent } from '../lib/chatIntent.js';
 import GoalCardInline, { type GoalCardData } from '../components/GoalCardInline';
+import WorkflowGraph from '../components/WorkflowGraph';
 import type { GoalSummary } from '../../engine/runtime/GoalRuntimeContract.js';
+import type { GoalWorkflowResponse } from '../../engine/runtime/GoalRuntimeContract.js';
 
 // ─── Types ────────────────────────────────────────────────────
 
 type Goal = GoalSummary;
+
+/** O17: 契约解码成功的工作流视图（steps + dependencies + 最新 run 状态）。 */
+type GoalWorkflowView = Extract<GoalWorkflowResponse, { success: true }>;
 
 interface GoalProgress {
   goalId: string;
@@ -24,18 +29,6 @@ interface GoalProgress {
   currentStepId: string | null;
   startedAt: number;
   completedAt: number | null;
-}
-
-interface WorkflowStep {
-  id: string;
-  name: string;
-  description: string;
-}
-
-interface WorkflowDef {
-  name?: string;
-  description?: string;
-  steps: WorkflowStep[];
 }
 
 // ─── Component ────────────────────────────────────────────────
@@ -53,12 +46,33 @@ export default function GoalPage({ onNavigate }: GoalPageProps) {
     onNavigate?.('chat');
   }
 
+  // O14: 从上次断点继续——不指定步骤，由主进程从持久化 checkpoint 推导恢复点。
+  async function handleResumeFromCheckpoint() {
+    const metis = window.metis;
+    if (!metis?.resumeGoal || !selectedGoal) return;
+    setLoading(true);
+    try {
+      await metis.resumeGoal(selectedGoal.goalId);
+      const refreshed = await metis.getGoal(selectedGoal.goalId);
+      if (refreshed.success) {
+        setSelectedGoal(refreshed.goal);
+        setGoals((previous) => previous.map((g) => (g.goalId === refreshed.goal.goalId ? refreshed.goal : g)));
+      }
+    } catch {
+      console.warn('Failed to resume goal from checkpoint');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   const [goals, setGoals] = useState<Goal[]>([]);
   const [selectedGoal, setSelectedGoal] = useState<Goal | null>(null);
   const [goalProgress, setGoalProgress] = useState<GoalProgress | null>(null);
-  const [goalWorkflow, setGoalWorkflow] = useState<WorkflowDef | null>(null);
+  const [goalWorkflow, setGoalWorkflow] = useState<GoalWorkflowView | null>(null);
   const [archives] = useState<Array<{ goal: Goal; summary: string; archivedAt: number }>>([]);
   const [loading, setLoading] = useState(false);
+  /** O17: 防止异步加载的工作流视图落到已切换的 goal 上。 */
+  const selectedGoalIdRef = useRef<string | null>(null);
 
   // Load goals and archives on mount
   useEffect(() => {
@@ -76,11 +90,38 @@ export default function GoalPage({ onNavigate }: GoalPageProps) {
     loadGoals();
   }, []);
 
+  // O7: reload goal list + selected workflow after a step decision.
+  async function refreshGoals() {
+    const metis = window.metis;
+    if (!metis?.listGoals) return;
+    try {
+      const response = await metis.listGoals();
+      setGoals(response.success ? response.goals : []);
+      if (selectedGoalIdRef.current && metis.getGoalWorkflow) {
+        const wf = await metis.getGoalWorkflow(selectedGoalIdRef.current);
+        if (wf && wf.success && 'workflow' in wf) setGoalWorkflow(wf);
+      }
+    } catch {
+      console.warn('Failed to refresh goals safely');
+    }
+  }
+
   function selectGoal(goal: Goal) {
     setSelectedGoal(goal);
+    selectedGoalIdRef.current = goal.goalId;
     setGoalProgress(null);
     setGoalWorkflow(null);
     setLoading(false);
+    // O17: 选中 goal 后拉取其工作流定义，用于下方 DAG 可视化。
+    const metis = window.metis;
+    if (metis?.getGoalWorkflow) {
+      void metis.getGoalWorkflow(goal.goalId).then((response) => {
+        if (selectedGoalIdRef.current !== goal.goalId) return;
+        if (response.success) setGoalWorkflow(response);
+      }).catch(() => {
+        // 可视化加载失败不影响 goal 详情展示。
+      });
+    }
   }
 
   function goalStatusLabel(status: Goal['status']): string {
@@ -97,7 +138,7 @@ export default function GoalPage({ onNavigate }: GoalPageProps) {
   function buildGoalCard(): GoalCardData | null {
     if (!selectedGoal) return null;
 
-    const steps = goalWorkflow?.steps ?? [];
+    const steps = goalWorkflow?.workflow.steps ?? [];
     const stepStatuses: Record<string, { stepId: string; stepName: string; status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped'; output: string }> = {};
 
     for (const step of steps) {
@@ -117,8 +158,8 @@ export default function GoalPage({ onNavigate }: GoalPageProps) {
       goalId: selectedGoal.goalId,
       description: t('goal.genericLabel'),
       phase,
-      planName: goalWorkflow?.name,
-      planDescription: goalWorkflow?.description,
+      planName: goalWorkflow?.workflow.name,
+      planDescription: goalWorkflow?.workflow.description,
       steps,
       stepStatuses,
       progress: {
@@ -197,6 +238,20 @@ export default function GoalPage({ onNavigate }: GoalPageProps) {
                 </span>
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
+                {/* O14: run 处于 failed/paused 且留有可恢复 checkpoint 时显示断点续跑 */}
+                {(selectedGoal.status === 'failed' || selectedGoal.status === 'paused') && selectedGoal.checkpoint?.resumable && (
+                  <button
+                    className="btn-secondary"
+                    data-testid="goal-resume-checkpoint"
+                    disabled={loading}
+                    onClick={() => { void handleResumeFromCheckpoint(); }}
+                  >
+                    {t('goal.resumeFromCheckpoint')}
+                    {selectedGoal.checkpoint.totalSteps > 0
+                      ? ` (${selectedGoal.checkpoint.completedSteps}/${selectedGoal.checkpoint.totalSteps})`
+                      : ''}
+                  </button>
+                )}
                 <button
                   className="btn-secondary"
                   data-testid="goal-socratic-plan"
@@ -219,6 +274,39 @@ export default function GoalPage({ onNavigate }: GoalPageProps) {
 
             {!loading && goalCard && (
               <GoalCardInline data={goalCard} />
+            )}
+
+            {/* O17: 工作流 DAG 可视化（只读），选中带 plan 的 goal 时展示 */}
+            {!loading && goalWorkflow && (
+              <div style={{ marginTop: 16 }} data-testid="goal-workflow-section">
+                <h4 style={{ margin: '0 0 8px' }}>{t('goal.workflowGraphTitle')}</h4>
+                <WorkflowGraph
+                  workflow={goalWorkflow.workflow}
+                  stepResults={goalWorkflow.stepResults}
+                  goalId={selectedGoal.goalId}
+                  onResolveDecision={(goalId, action) => {
+                    void window.metis?.resolveStepDecision?.(goalId, action).then((result) => {
+                      if (result?.success) refreshGoals();
+                    });
+                  }}
+                  onReorder={(fromStepId, toStepId) => {
+                    // O17: swap the two steps' positions in the workflow plan,
+                    // then persist via the existing updatePlan IPC.
+                    const steps = [...goalWorkflow.workflow.steps];
+                    const fromIdx = steps.findIndex((s) => s.id === fromStepId);
+                    const toIdx = steps.findIndex((s) => s.id === toStepId);
+                    const fromStep = steps[fromIdx];
+                    const toStep = steps[toIdx];
+                    if (fromIdx < 0 || toIdx < 0 || !fromStep || !toStep) return;
+                    steps[fromIdx] = toStep;
+                    steps[toIdx] = fromStep;
+                    void window.metis?.updatePlan?.(selectedGoal.goalId, {
+                      ...goalWorkflow.workflow,
+                      steps,
+                    }).then(() => refreshGoals());
+                  }}
+                />
+              </div>
             )}
 
             {!loading && !goalCard && (

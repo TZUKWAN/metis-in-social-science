@@ -1,0 +1,125 @@
+{
+  "startedAt": "2026-08-10T09:23:53.694Z",
+  "steps": [
+    {
+      "name": "应用启动（startup ready）",
+      "ok": true
+    },
+    {
+      "name": "首次设置检查（getSettings 结构化）",
+      "ok": true
+    },
+    {
+      "name": "数据持久化（写笔记→重载确认）",
+      "ok": true
+    },
+    {
+      "name": "文献库加载（初始空库结构化）",
+      "ok": true
+    },
+    {
+      "name": "全文搜索（空库返回结构化结果）",
+      "ok": true
+    },
+    {
+      "name": "论文详情按需加载（不存在返回 miss）",
+      "ok": true
+    },
+    {
+      "name": "个人化列表（personalization:list 可用）",
+      "ok": true
+    },
+    {
+      "name": "OfficeCli 检测",
+      "ok": true,
+      "detail": "1.0.143"
+    },
+    {
+      "name": "OfficeCli 新建 Word",
+      "ok": true
+    },
+    {
+      "name": "OfficeCli 添加段落",
+      "ok": true
+    },
+    {
+      "name": "OfficeCli 排版（Heading1+加粗）",
+      "ok": true
+    },
+    {
+      "name": "OfficeCli 渲染 HTML 含内容",
+      "ok": true
+    },
+    {
+      "name": "OfficeCli 关闭文档",
+      "ok": true
+    },
+    {
+      "name": "OfficeCli 新建 PPT",
+      "ok": true
+    },
+    {
+      "name": "OfficeCli PPT 主题色设置",
+      "ok": true
+    },
+    {
+      "name": "OfficeCli PPT 加幻灯片",
+      "ok": true
+    },
+    {
+      "name": "OfficeCli PPT 加文本框（不重合）",
+      "ok": true
+    },
+    {
+      "name": "OfficeCli PPT 渲染 HTML",
+      "ok": true
+    },
+    {
+      "name": "OfficeCli 新建 Excel",
+      "ok": true
+    },
+    {
+      "name": "OfficeCli Excel 写入单元格",
+      "ok": true
+    },
+    {
+      "name": "AI 论文解读（无 provider 结构化失败）",
+      "ok": true
+    },
+    {
+      "name": "AI 文献综述（参数校验：<2 篇拒绝）",
+      "ok": true
+    },
+    {
+      "name": "AI LaTeX 润色（无 provider 结构化失败）",
+      "ok": true
+    },
+    {
+      "name": "AI Office 编辑（无 provider 结构化失败）",
+      "ok": true
+    },
+    {
+      "name": "成果管理（按项目列出）",
+      "ok": true
+    },
+    {
+      "name": "微信 Bot 状态（未绑定时结构化）",
+      "ok": true
+    },
+    {
+      "name": "闪卡列表（结构化）",
+      "ok": true
+    },
+    {
+      "name": "会话设置读取（二次调用一致）",
+      "ok": true
+    },
+    {
+      "name": "UI 挂载（root 有内容）",
+      "ok": true
+    }
+  ],
+  "failed": 0,
+  "passed": 29,
+  "skipped": 0
+}

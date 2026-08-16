@@ -25,7 +25,6 @@ describe('settings max context tokens', () => {
       hasApiKey: true,
       needsReauth: false,
       theme: 'dark',
-      weeklyReadingGoal: 5,
       providerVision: false,
       providerMaxContextTokens: 128000,
     });
@@ -40,7 +39,6 @@ describe('settings max context tokens', () => {
       hasApiKey: true,
       needsReauth: false,
       theme: 'light',
-      weeklyReadingGoal: 5,
       providerVision: false,
     });
     expect(view.providerMaxContextTokens).toBe(0);
@@ -49,7 +47,6 @@ describe('settings max context tokens', () => {
   it('decodeSettingsUpdateRequest accepts providerMaxContextTokens', () => {
     const req = decodeSettingsUpdateRequest({
       theme: 'light',
-      weeklyReadingGoal: 5,
       providerVision: false,
       providerMaxContextTokens: 64000,
     });
@@ -74,5 +71,31 @@ describe('settings max context tokens', () => {
       providerMaxContextTokens: -1,
     });
     expect(negative).toBeUndefined();
+  });
+});
+
+describe('settings setupSkipped (F6)', () => {
+  it('recovery view defaults setupSkipped to false', async () => {
+    const { createSettingsViewRecovery } = await import('../../engine/runtime/SettingsRuntimeContract.js');
+    expect(createSettingsViewRecovery().setupSkipped).toBe(false);
+  });
+
+  it('decodeSettingsView defaults setupSkipped when omitted (backward compat)', async () => {
+    const { decodeSettingsView } = await import('../../engine/runtime/SettingsRuntimeContract.js');
+    const view = decodeSettingsView({
+      configured: false, hasApiKey: false, needsReauth: false, theme: 'light',
+      providerVision: false, providerMaxContextTokens: 0,
+    });
+    expect(view.setupSkipped).toBe(false);
+  });
+
+  it('decodeSettingsView accepts a persisted skip flag', async () => {
+    const { decodeSettingsView } = await import('../../engine/runtime/SettingsRuntimeContract.js');
+    const view = decodeSettingsView({
+      configured: false, hasApiKey: false, needsReauth: false, theme: 'dark',
+      providerVision: false, providerMaxContextTokens: 0, setupSkipped: true,
+    });
+    expect(view.setupSkipped).toBe(true);
+    expect(view.theme).toBe('dark');
   });
 });

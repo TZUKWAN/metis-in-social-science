@@ -8,6 +8,7 @@ import { describe, it, expect, afterEach, beforeEach, beforeAll, vi } from 'vite
 import { render, cleanup, fireEvent, waitFor, screen, within, act } from '@testing-library/react';
 import App from '../../src/App';
 import { useMetisStore } from '../../src/store';
+import { researchWorkspaceStore } from '../../src/research/researchWorkspaceStore';
 import { setDiagnosticMode } from '../../engine/capabilities/DiagnosticMode';
 import type { PersonalizationDefinition } from '../../engine/runtime/PersonalizationRuntimeContract';
 import { buildBuiltinPersonalizationDefinitions } from '../fixtures/personalization/legacyBuiltinDefinitions';
@@ -44,7 +45,6 @@ function resetStore() {
     collections: [],
     selectedCollection: null,
     workflowRuns: [],
-    weeklyReadingGoal: 5,
     locale: 'zh',
     theme: 'light',
     isHydrated: true,
@@ -88,7 +88,15 @@ describe('App', () => {
     setDiagnosticMode('normal');
   });
 
-  it('renders exactly the three top-level research entries', async () => {
+  it('opens global search from the slash-command bus event', async () => {
+    resetStore();
+    render(<App />);
+    await screen.findByRole('region', { name: 'Metis 研究工作台' });
+    window.dispatchEvent(new CustomEvent('metis:open-search'));
+    expect(await screen.findByPlaceholderText(/搜索|Search/)).toBeTruthy();
+  });
+
+  it('renders the fine top navigation with workspaces, research runs, and destinations', async () => {
     resetStore();
     render(<App />);
     await screen.findByRole('region', { name: 'Metis 研究工作台' });
@@ -96,58 +104,63 @@ describe('App', () => {
     const primaryItems = within(nav).getAllByRole('button').filter((button) => button.hasAttribute('data-nav-id'));
 
     expect(primaryItems.map((button) => button.getAttribute('data-nav-id'))).toEqual([
+      'converse',
       'projects',
-      'library',
+      'autonomous',
       'settings',
+      'personalization',
     ]);
     expect(primaryItems.map((button) => button.textContent?.trim())).toEqual([
-      '研究项目',
-      '资料库',
+      '协同对话',
+      '科研项目',
+      '自主科研',
       '设置',
+      '场景',
     ]);
     expect(primaryItems.map((button) => button.getAttribute('aria-label'))).toEqual([
-      '研究项目',
-      '资料库',
+      '协同对话',
+      '科研项目',
+      '自主科研',
       '设置',
+      '场景',
     ]);
+    // O11: top-bar tooltips now carry a one-line workspace orientation
+    // (descriptionKey) instead of repeating the label. aria-label still holds
+    // the plain label for accessibility; title holds the description.
     expect(primaryItems.map((button) => button.getAttribute('title'))).toEqual([
-      '研究项目',
-      '资料库',
-      '设置',
+      '与其他 AI（豆包/Kimi/GLM/ChatGPT/Claude/DeepSeek）分屏协同：左边交流思路，右边让 Metis 干活。',
+      '科研项目工作台：左侧项目列表，内含聊天、任务看板、资料与研究成果。',
+      '把研究目标交给 AI 拆解并逐步执行，全程可干预。',
+      '配置模型连接、外观、备份与偏好。',
+      '场景中心、个性化偏好与外观定制。',
     ]);
-    primaryItems.forEach((button) => {
-      expect(button.querySelector('.nav-icon')?.getAttribute('aria-hidden')).toBe('true');
-    });
+    expect(primaryItems[0]!.getAttribute('aria-current')).toBe('page');
     expect(within(nav).queryByText('评估')).toBeNull();
-    expect(screen.getByRole('tab', { name: '对话' }).getAttribute('aria-selected')).toBe('true');
 
     await act(async () => {
       useMetisStore.setState({ locale: 'en' });
       await Promise.resolve();
     });
     expect(primaryItems.map((button) => button.getAttribute('aria-label'))).toEqual([
+      'AI Collab',
       'Research Projects',
-      'Library',
+      'Autonomous Research',
       'Settings',
-    ]);
-    expect(primaryItems.map((button) => button.getAttribute('title'))).toEqual([
-      'Research Projects',
-      'Library',
-      'Settings',
+      'Scenarios',
     ]);
   });
 
-  it('opens Personalization from the bottom-left control beside the theme toggle', async () => {
+  it('opens the scenario center from the top-bar entry beside settings', async () => {
     resetStore();
     setMockMetis({
       listPersonalization: vi.fn().mockResolvedValue({ ok: true, definitions: [] }),
     });
     render(<App />);
     const trigger = await screen.findByTestId('personalization-trigger');
-    const theme = screen.getByTitle('浅色');
-    expect(trigger.parentElement).toBe(theme.parentElement);
+    expect(trigger.getAttribute('data-nav-id')).toBe('personalization');
+    expect(trigger.className).toContain('topbar-nav__item');
     fireEvent.click(trigger);
-    expect(await screen.findByRole('heading', { name: '个性化' })).toBeDefined();
+    expect(await screen.findByRole('heading', { name: '场景', level: 1 })).toBeDefined();
     expect(screen.getByText('自动真实性层始终强制执行')).toBeDefined();
   });
 
@@ -167,7 +180,7 @@ describe('App', () => {
     expect(await screen.findByText('草稿已自动保留')).toBeDefined();
 
     fireEvent.click(document.querySelector('[data-nav-id="settings"]') as HTMLButtonElement);
-    await waitFor(() => expect(screen.queryByRole('heading', { name: '个性化' })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('heading', { name: '场景' })).toBeNull());
     const callsBeforeReturn = listPersonalization.mock.calls.length;
 
     fireEvent.click(screen.getByTestId('personalization-trigger'));
@@ -181,60 +194,261 @@ describe('App', () => {
     expect(listPersonalization.mock.calls.length).toBeGreaterThan(callsBeforeReturn);
   });
 
-  it('composes converse mode as exactly one project shell with one chat region per column', async () => {
+  it('composes converse mode as the AI-collab split view with the Metis chat embedded', async () => {
     resetStore();
     const { container } = render(<App />);
     await screen.findByRole('region', { name: 'Metis 研究工作台' });
 
-    expect(container.querySelectorAll('.project-shell')).toHaveLength(1);
-    expect(container.querySelectorAll('.chat-sidebar')).toHaveLength(1);
+    // 协同对话：左侧第三方 AI 嵌入区 + 右侧 Metis 对话。
+    expect(await screen.findByTestId('collab-page')).toBeTruthy();
+    expect(container.querySelectorAll('.project-shell')).toHaveLength(0);
+    expect(screen.getByTestId('collab-host')).toBeTruthy();
     expect(container.querySelectorAll('.chat-main')).toHaveLength(1);
-    expect(container.querySelectorAll('.right-panel')).toHaveLength(1);
-    expect(container.querySelectorAll('.chat-page-container')).toHaveLength(0);
-    expect(container.querySelector('.shell-left-content > .chat-sidebar')).not.toBeNull();
-    expect(container.querySelector('.shell-workspace--chat > .chat-main')).not.toBeNull();
-    expect(container.querySelector('.shell-right-content > .right-panel--embedded')).not.toBeNull();
-    expect(container.querySelector('.shell-right aside')).toBeNull();
-    expect(screen.queryByRole('tablist', { name: '检查器视图' })).toBeNull();
-    expect(screen.queryByText('项目资料')).toBeNull();
-    expect(screen.queryByText('研究助手')).toBeNull();
+    expect(container.querySelector('.collab-metis__chat > .chat-main')).not.toBeNull();
+    // 第三方 AI 站点页签齐全。
+    for (const id of ['doubao', 'kimi', 'glm', 'chatgpt', 'claude', 'deepseek']) {
+      expect(screen.getByTestId(`collab-ai-${id}`)).toBeTruthy();
+    }
+    // 会话列表与任务面板以抽屉形式存在，默认收起。
+    expect(screen.queryByTestId('collab-sessions-drawer')).toBeNull();
+    expect(screen.queryByTestId('collab-panel-drawer')).toBeNull();
+    fireEvent.click(screen.getByTestId('collab-toggle-sessions'));
+    expect(await screen.findByTestId('collab-sessions-drawer')).toBeTruthy();
+    expect(container.querySelectorAll('.chat-sidebar')).toHaveLength(1);
   });
 
-  it('preserves project panel collapse state across workspace modes', async () => {
+  it('navigates from a board goal card to the conversation with a focused goal card', async () => {
+    resetStore();
+    const appendMessage = vi.fn().mockResolvedValue(undefined);
+    setMockMetis({
+      listPersonalization: vi.fn().mockResolvedValue({ ok: true, definitions: [] }),
+      listSessions: vi.fn().mockResolvedValue([]),
+      getGoal: vi.fn().mockResolvedValue({
+        success: true,
+        goal: { goalId: 'g1', label: '从看板来的任务', status: 'completed', createdAt: 1 },
+      }),
+      appendMessage,
+    });
+    render(<App />);
+    await screen.findByRole('region', { name: 'Metis 研究工作台' });
+
+    window.dispatchEvent(new CustomEvent('metis:open-goal', { detail: { goalId: 'g1' } }));
+
+    // The conversation is the active workspace and an inline goal card is
+    // inserted for the handed-off task.
+    await waitFor(() => {
+      const nav = screen.getByRole('navigation', { name: 'Metis' });
+      const active = within(nav).getAllByRole('button').find((b) => b.getAttribute('aria-current') === 'page');
+      expect(active?.getAttribute('data-nav-id')).toBe('converse');
+    });
+    expect(await screen.findByText('从看板来的任务')).toBeDefined();
+    expect(screen.getByText('研究任务已完成')).toBeDefined();
+    // The sessionStorage fallback is consumed, not left dangling.
+    expect(window.sessionStorage.getItem('metis-pending-goal')).toBeNull();
+    // The card is persisted into the session history like a /goal card.
+    expect(appendMessage).toHaveBeenCalledWith(expect.anything(), 'goal', expect.stringContaining('__GOAL_CARD__'));
+  });
+
+  it('refreshes a chat goal card when the engine broadcasts goal:changed', async () => {
+    resetStore();
+    let changedHandler: ((data: unknown) => void) | undefined;
+    setMockMetis({
+      listPersonalization: vi.fn().mockResolvedValue({ ok: true, definitions: [] }),
+      listSessions: vi.fn().mockResolvedValue([]),
+      getGoal: vi.fn().mockResolvedValue({
+        success: true,
+        goal: { goalId: 'g1', label: '状态会变的任务', status: 'ready', createdAt: 1 },
+      }),
+      appendMessage: vi.fn().mockResolvedValue(undefined),
+      onGoalChanged: vi.fn((callback: (data: unknown) => void) => {
+        changedHandler = callback;
+        return () => {};
+      }),
+    });
+    render(<App />);
+    await screen.findByRole('region', { name: 'Metis 研究工作台' });
+    window.dispatchEvent(new CustomEvent('metis:open-goal', { detail: { goalId: 'g1' } }));
+    expect(await screen.findByText('状态会变的任务')).toBeDefined();
+
+    // A board move to completed broadcasts goal:changed; the card follows.
+    await act(async () => {
+      changedHandler?.({ goalId: 'g1', label: '状态会变的任务', status: 'completed', createdAt: 1 });
+    });
+    await waitFor(() => expect(screen.getByText('研究任务已完成')).toBeDefined());
+  });
+
+  it('navigates from a chat goal card to the task board and focuses the handed-off card', async () => {
+    resetStore();
+    setMockMetis({
+      listGoals: vi.fn().mockResolvedValue({
+        success: true,
+        goals: [{ goalId: 'g1', label: '去看板的任务', status: 'ready', createdAt: 1 }],
+      }),
+      onGoalChanged: vi.fn().mockReturnValue(() => {}),
+    });
+    render(<App />);
+    await screen.findByRole('region', { name: 'Metis 研究工作台' });
+
+    window.dispatchEvent(new CustomEvent('metis:open-kanban', { detail: { goalId: 'g1' } }));
+
+    expect(await screen.findByTestId('kanban-board')).toBeTruthy();
+    // The handed-off card is selected (detail dialog open) and scrolled to.
+    await waitFor(() => {
+      expect(screen.getByTestId('kanban-detail')?.getAttribute('aria-label')).toBe('去看板的任务');
+    });
+    expect(window.sessionStorage.getItem('metis-pending-goal-focus')).toBeNull();
+  });
+
+  it('opens the project center from a library paper link (metis:open-project)', async () => {
+    resetStore();
+    setMockMetis({
+      researchListProjects: vi.fn().mockResolvedValue({
+        success: true,
+        items: [{
+          entityKind: 'project',
+          value: {
+            id: 'proj-1',
+            title: '测试项目',
+            originalIntent: '',
+            researchQuestion: '',
+            lifecycle: 'draft',
+            methodology: '',
+            discipline: '',
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            archivedAt: null,
+            version: 1,
+            deletedAt: null,
+          },
+        }],
+      }),
+    });
+    render(<App />);
+    await screen.findByRole('region', { name: 'Metis 研究工作台' });
+
+    window.dispatchEvent(new CustomEvent('metis:open-project', {
+      detail: { projectId: 'proj-1', section: 'sources' },
+    }));
+
+    await waitFor(() => {
+      const nav = screen.getByRole('navigation', { name: 'Metis' });
+      const active = within(nav).getAllByRole('button').find((b) => b.getAttribute('aria-current') === 'page');
+      expect(active?.getAttribute('data-nav-id')).toBe('projects');
+    });
+    expect(researchWorkspaceStore.getState().activeProjectId).toBe('proj-1');
+    await waitFor(() => {
+      expect(researchWorkspaceStore.getState().activeSection).toBe('sources');
+    });
+
+    window.dispatchEvent(new CustomEvent('metis:open-project', {
+      detail: { projectId: 'proj-1', section: 'artifacts' },
+    }));
+    await waitFor(() => {
+      expect(researchWorkspaceStore.getState().activeSection).toBe('artifacts');
+    });
+    // 「研究成果」作为科研项目工作台内的模式页签被激活。
+    const artifactsTab = await screen.findByTestId('projects-mode-artifacts');
+    expect(artifactsTab.getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('opens a library paper detail from a project source (metis:open-paper)', async () => {
+    resetStore();
+    useMetisStore.setState({
+      papers: [{
+        id: 'paper-9',
+        title: '项目来源跳转论文',
+        authors: [],
+        year: 2024,
+        venue: '',
+        abstract: '',
+        tags: [],
+        notes: '',
+        readStatus: 'unread',
+        rating: 0,
+        referenceIds: [],
+        addedAt: Date.now(),
+        projectId: 'proj-1',
+      }],
+    });
+    setMockMetis({});
+    render(<App />);
+    await screen.findByRole('region', { name: 'Metis 研究工作台' });
+
+    window.dispatchEvent(new CustomEvent('metis:open-paper', { detail: { paperId: 'paper-9' } }));
+
+    await waitFor(() => {
+      expect(document.querySelector('.library-page')).toBeTruthy();
+    });
+    // open-paper 落在科研项目工作台的「资料」模式页签。
+    const materialsTab = document.querySelector('[data-testid="projects-mode-materials"]');
+    expect(materialsTab?.getAttribute('aria-selected')).toBe('true');
+    expect(useMetisStore.getState().selectedPaperId).toBe('paper-9');
+  });
+
+  it('opens the scenario center from the managed MCP installer entry', async () => {
+    resetStore();
+    setMockMetis({
+      listPersonalization: vi.fn().mockResolvedValue({ ok: true, definitions: [] }),
+    });
+    render(<App />);
+    await screen.findByRole('region', { name: 'Metis 研究工作台' });
+
+    window.dispatchEvent(new CustomEvent('metis:open-mcp-installer'));
+
+    expect(await screen.findByRole('heading', { name: '场景', level: 1 })).toBeDefined();
+  });
+
+  it('keeps the Metis chat draft while toggling collab drawers and external pane', async () => {
     resetStore();
     render(<App />);
     await screen.findByRole('region', { name: 'Metis 研究工作台' });
 
-    fireEvent.click(screen.getByLabelText('收起资料栏'));
-    expect(screen.getByRole('region', { name: 'Metis 研究工作台' }).classList.contains('left-collapsed')).toBe(true);
+    const input = screen.getByPlaceholderText('提出一个研究问题...') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: '协同分屏下保留的草稿' } });
 
-    fireEvent.click(screen.getByRole('tab', { name: '阅读' }));
-    await waitFor(() => expect(document.querySelector('[role="tabpanel"][aria-label="阅读工作区"]')).toBeTruthy());
-    expect(screen.getByRole('region', { name: 'Metis 研究工作台' }).classList.contains('left-collapsed')).toBe(true);
+    // 展开/收起会话抽屉与面板，草稿不丢。
+    fireEvent.click(screen.getByTestId('collab-toggle-sessions'));
+    expect(await screen.findByTestId('collab-sessions-drawer')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('collab-toggle-panel'));
+    expect(await screen.findByTestId('collab-panel-drawer')).toBeTruthy();
+    expect(
+      (screen.getByPlaceholderText('提出一个研究问题...') as HTMLTextAreaElement).value,
+    ).toBe('协同分屏下保留的草稿');
 
-    fireEvent.click(screen.getByRole('tab', { name: '对话' }));
-    await waitFor(() => expect(document.querySelector('[role="tabpanel"][aria-label="对话工作区"]')).toBeTruthy());
-    expect(screen.getByRole('region', { name: 'Metis 研究工作台' }).classList.contains('left-collapsed')).toBe(true);
+    // 收起第三方 AI 分屏再展开，草稿仍在。
+    fireEvent.click(screen.getByTestId('collab-hide-external'));
+    expect(screen.queryByTestId('collab-host')).toBeNull();
+    fireEvent.click(await screen.findByTestId('collab-show-external'));
+    expect(await screen.findByTestId('collab-host')).toBeTruthy();
+    expect(
+      (screen.getByPlaceholderText('提出一个研究问题...') as HTMLTextAreaElement).value,
+    ).toBe('协同分屏下保留的草稿');
   });
 
-  it('switches all four project modes in the same research shell', async () => {
+  it('switches between conversation and the project center from the fine top navigation', async () => {
     resetStore();
     const { container } = render(<App />);
     await screen.findByRole('region', { name: 'Metis 研究工作台' });
 
-    const labels = ['对话', '阅读', '分析', '写作'];
-    expect(screen.getAllByRole('tab').filter((tab) => labels.includes(tab.textContent ?? '')).map((tab) => tab.textContent)).toEqual(labels);
+    const labels = ['协同对话', '科研项目'];
+    const modeButtons = screen.getAllByRole('button').filter((button) => ['converse', 'projects'].includes(button.getAttribute('data-nav-id') ?? ''));
+    expect(modeButtons.map((button) => button.textContent)).toEqual(labels);
 
-    for (const label of ['阅读', '分析', '写作']) {
-      fireEvent.click(screen.getByRole('tab', { name: label }));
-      await waitFor(() => expect(
-        document.querySelector(`[role="tabpanel"][aria-label="${label}工作区"]`),
-      ).toBeTruthy());
-      expect(container.querySelectorAll('.project-shell')).toHaveLength(1);
-    }
+    fireEvent.click(screen.getByRole('button', { name: '科研项目' }));
+    await waitFor(() => expect(screen.getByTestId('projects-page')).toBeTruthy());
+    expect(container.querySelectorAll('.project-shell')).toHaveLength(0);
+
+    // 科研项目工作台内的模式页签可切换（任务看板）。
+    fireEvent.click(screen.getByTestId('projects-mode-kanban'));
+    await waitFor(() => expect(screen.getByTestId('kanban-board')).toBeTruthy());
+    expect(container.querySelectorAll('.project-shell')).toHaveLength(0);
+
+    // 回到协同对话。
+    fireEvent.click(screen.getByRole('button', { name: '协同对话' }));
+    await waitFor(() => expect(screen.getByTestId('collab-page')).toBeTruthy());
   });
 
-  it('preserves the ChatPage owner and draft across all project modes', async () => {
+  it('preserves the ChatPage draft across project-center modes and the conversation workspace', async () => {
     resetStore();
     const { container } = render(<App />);
     await screen.findByRole('region', { name: 'Metis 研究工作台' });
@@ -242,14 +456,26 @@ describe('App', () => {
     const input = screen.getByPlaceholderText('提出一个研究问题...') as HTMLTextAreaElement;
     fireEvent.change(input, { target: { value: '跨模式保留的研究草稿' } });
 
-    for (const label of ['阅读', '分析', '写作', '对话']) {
-      fireEvent.click(screen.getByRole('tab', { name: label }));
-      await waitFor(() => expect(
-        document.querySelector(`[role="tabpanel"][aria-label="${label}工作区"]`),
-      ).toBeTruthy());
-      expect(container.querySelectorAll('.project-shell')).toHaveLength(1);
-    }
+    // 进入科研项目工作台（默认聊天模式）——同一 ChatPage 实例保持挂载。
+    fireEvent.click(screen.getByRole('button', { name: '科研项目' }));
+    await waitFor(() => expect(screen.getByTestId('projects-page')).toBeTruthy());
+    expect(container.querySelectorAll('.project-shell')).toHaveLength(0);
+    expect(
+      (screen.getByPlaceholderText('提出一个研究问题...') as HTMLTextAreaElement).value,
+    ).toBe('跨模式保留的研究草稿');
 
+    // 切到任务看板再切回聊天，草稿仍在。
+    fireEvent.click(screen.getByTestId('projects-mode-kanban'));
+    await waitFor(() => expect(screen.getByTestId('kanban-board')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('projects-mode-chat'));
+    await waitFor(() => expect(screen.getByTestId('projects-page')).toBeTruthy());
+    expect(
+      (screen.getByPlaceholderText('提出一个研究问题...') as HTMLTextAreaElement).value,
+    ).toBe('跨模式保留的研究草稿');
+
+    // 返回协同对话，草稿依旧保留。
+    fireEvent.click(screen.getByRole('button', { name: '协同对话' }));
+    await waitFor(() => expect(screen.getByTestId('collab-page')).toBeTruthy());
     expect(
       (screen.getByPlaceholderText('提出一个研究问题...') as HTMLTextAreaElement).value,
     ).toBe('跨模式保留的研究草稿');
@@ -258,8 +484,6 @@ describe('App', () => {
   it.each([
     ['dashboard', '.stat-grid'],
     ['goal', '.goal-page'],
-    ['collections', '.collections-page'],
-    ['tags', '.tags-page'],
     ['timeline', '.timeline-filters'],
     ['experiments', '.experiments-page'],
   ] as const)('renders the implemented %s destination instead of collapsing it to a workspace mode', async (initialPage, selector) => {
@@ -274,7 +498,7 @@ describe('App', () => {
     expect(await screen.findByText('LaTeX 编辑器')).toBeTruthy();
   });
 
-  it('shows unread papers badge on library nav item', () => {
+  it('top bar never shows an unread-papers badge (feature removed)', () => {
     resetStore();
     useMetisStore.setState({
       papers: [
@@ -283,9 +507,7 @@ describe('App', () => {
       ],
     });
     const { container } = render(<App initialPage="dashboard" />);
-    const badge = container.querySelector('.nav-badge');
-    expect(badge).toBeTruthy();
-    expect(badge?.textContent).toBe('1');
+    expect(container.querySelector('.topbar-nav__badge')).toBeNull();
   });
 
   it('does not show unread badge when there are no unread papers', () => {
@@ -296,7 +518,7 @@ describe('App', () => {
       ],
     });
     const { container } = render(<App initialPage="dashboard" />);
-    expect(container.querySelector('.nav-badge')).toBeNull();
+    expect(container.querySelector('.topbar-nav__badge')).toBeNull();
   });
 
   it('settings page renders data backup section without technical controls in normal mode', () => {
@@ -349,7 +571,7 @@ describe('App', () => {
 
     await act(async () => { render(<App initialPage="settings" />); });
     await act(async () => { fireEvent.click(screen.getByTestId('diagnostic-mode-toggle')); });
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '研究项目' })); });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '协同对话' })); });
 
     await waitFor(() => expect(listSkills).toHaveBeenCalled());
     expect(await screen.findByText('技能：')).toBeTruthy();
@@ -359,7 +581,7 @@ describe('App', () => {
 
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '设置' })); });
     await act(async () => { fireEvent.click(screen.getByTestId('diagnostic-mode-toggle')); });
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '研究项目' })); });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '协同对话' })); });
 
     expect(screen.queryByText('技能：')).toBeNull();
     expect(screen.queryByTestId('diagnostic-skill-controls')).toBeNull();
@@ -377,7 +599,7 @@ describe('App', () => {
     setMockMetis({ getPendingApprovals });
 
     render(<App />);
-    await waitFor(() => expect(screen.getByRole('button', { name: '研究项目' })).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole('button', { name: '协同对话' })).toBeTruthy());
     expect(screen.queryByRole('button', { name: '审批队列' })).toBeNull();
     expect(screen.queryByText('approval-normal')).toBeNull();
     expect(getPendingApprovals).not.toHaveBeenCalled();
@@ -413,7 +635,7 @@ describe('App', () => {
       notes: [{ id: 'n2', title: 'Imported Note', content: 'note content', tags: ['tag'], createdAt: Date.now(), updatedAt: Date.now() }],
       experiments: [{ id: 'e1', name: 'Imported Experiment', description: 'desc', status: 'running', createdAt: Date.now(), updatedAt: Date.now() }],
       collections: [{ id: 'c1', name: 'Imported Collection', paperIds: [], createdAt: Date.now(), updatedAt: Date.now() }],
-      settings: { locale: 'en', theme: 'dark', weeklyReadingGoal: 7 },
+      settings: { locale: 'en', theme: 'dark' },
     };
     const file = new File([JSON.stringify(backup)], 'metis-backup.json', { type: 'application/json' });
 
@@ -434,7 +656,6 @@ describe('App', () => {
     expect(state.collections.length).toBe(1);
     expect(state.locale).toBe('en');
     expect(state.theme).toBe('dark');
-    expect(state.weeklyReadingGoal).toBe(7);
   });
 
   it('shows error when importing an invalid backup file', async () => {
@@ -581,21 +802,5 @@ describe('App', () => {
     });
 
     expect(useMetisStore.getState().papers.length).toBe(0);
-  });
-
-  it('clamps reading goal input between 1 and 100 and supports reset', async () => {
-    resetStore();
-    const { container } = await act(async () => render(<App initialPage="settings" />));
-    const input = container.querySelector('[data-testid="reading-goal-input"]') as HTMLInputElement;
-    expect(input.value).toBe('5');
-
-    await act(async () => { fireEvent.change(input, { target: { value: '0' } }); });
-    expect(useMetisStore.getState().weeklyReadingGoal).toBe(1);
-
-    await act(async () => { fireEvent.change(input, { target: { value: '200' } }); });
-    expect(useMetisStore.getState().weeklyReadingGoal).toBe(100);
-
-    await act(async () => { fireEvent.click(container.querySelector('[data-testid="reading-goal-reset"]')!); });
-    expect(useMetisStore.getState().weeklyReadingGoal).toBe(5);
   });
 });

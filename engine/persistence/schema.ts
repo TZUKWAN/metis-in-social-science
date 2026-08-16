@@ -4,7 +4,7 @@
  *         papers, notes, experiments.
  */
 
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 12;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS sessions (
@@ -116,6 +116,8 @@ CREATE TABLE IF NOT EXISTS collections (
 
 CREATE TABLE IF NOT EXISTS notes (
   id TEXT PRIMARY KEY,
+  project_id TEXT,
+  scope TEXT NOT NULL DEFAULT 'global',              -- global|research
   title TEXT NOT NULL,
   content TEXT NOT NULL DEFAULT '',
   tags TEXT NOT NULL DEFAULT '[]',
@@ -199,9 +201,22 @@ CREATE TABLE IF NOT EXISTS projects (
   deleted_at INTEGER
 );
 
+-- A library paper is a reusable source asset. Project membership belongs in a
+-- relation table rather than papers.project_id (kept only as a legacy primary
+-- project pointer for older clients).
+CREATE TABLE IF NOT EXISTS paper_project_links (
+  paper_id TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  linked_at INTEGER NOT NULL,
+  PRIMARY KEY (paper_id, project_id),
+  FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS sources (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,
+  library_paper_id TEXT,                           -- canonical library asset mirrored by this project-local source
   kind TEXT NOT NULL,                              -- paper|book|pdf|web|archive|image|audio|data|other
   title TEXT NOT NULL DEFAULT '',
   authors TEXT NOT NULL DEFAULT '[]',              -- JSON array
@@ -412,6 +427,7 @@ CREATE TABLE IF NOT EXISTS side_effect_ledger (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sources_project ON sources(project_id);
+CREATE INDEX IF NOT EXISTS idx_paper_project_links_project ON paper_project_links(project_id, linked_at DESC);
 CREATE INDEX IF NOT EXISTS idx_evidence_project ON evidence(project_id);
 CREATE INDEX IF NOT EXISTS idx_evidence_source ON evidence(source_id);
 CREATE INDEX IF NOT EXISTS idx_note_codes_project ON note_codes(project_id);

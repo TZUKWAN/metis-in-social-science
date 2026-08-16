@@ -28,9 +28,9 @@
   flex-direction: column;
   gap: 8px;
   padding: 12px;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: var(--surface);
+  background: var(--bg-card);
 }
 
 .autonomous-goal-input {
@@ -39,11 +39,34 @@
   padding: 8px;
   font-family: inherit;
   font-size: 13px;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border);
   border-radius: 4px;
-  background: var(--surface);
+  background: var(--bg-card);
   color: var(--text-primary);
   resize: vertical;
+}
+
+.autonomous-method {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 12px;
+  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--primary) 32%, var(--border));
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--primary) 6%, var(--bg-card));
+  font-size: 12px;
+}
+
+.autonomous-method span {
+  color: var(--primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.autonomous-method p {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.5;
 }
 
 .autonomous-actions {
@@ -63,6 +86,11 @@
   color: var(--status-failed);
 }
 
+.autonomous-paused {
+  font-size: 12px;
+  color: var(--accent-warm);
+}
+
 .autonomous-error {
   font-size: 12px;
   color: var(--status-failed);
@@ -75,10 +103,10 @@
 }
 
 .autonomous-phase {
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 10px;
-  background: var(--surface);
+  background: var(--bg-card);
   transition: border-color 0.2s;
 }
 
@@ -134,7 +162,7 @@
 .autonomous-step {
   font-size: 12px;
   padding: 4px 6px;
-  border-left: 2px solid var(--border-subtle);
+  border-left: 2px solid var(--border);
   color: var(--text-secondary);
 }
 
@@ -169,8 +197,8 @@
   font-size: 11px;
   max-height: 200px;
   overflow: auto;
-  background: var(--surface-raised);
-  border: 1px solid var(--border-subtle);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
   border-radius: 3px;
   white-space: pre-wrap;
   word-break: break-word;
@@ -190,10 +218,10 @@
 .autonomous-reflection-log {
   max-height: 300px;
   overflow-y: auto;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 8px;
-  background: var(--surface);
+  background: var(--bg-card);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -207,8 +235,8 @@
 
 .autonomous-reflection {
   padding: 8px;
-  border-left: 3px solid var(--border-subtle);
-  background: var(--surface-raised);
+  border-left: 3px solid var(--border);
+  background: var(--bg-secondary);
   border-radius: 0 4px 4px 0;
 }
 
@@ -228,7 +256,7 @@
   font-size: 11px;
   padding: 1px 6px;
   border-radius: 3px;
-  background: var(--surface);
+  background: var(--bg-card);
 }
 
 .autonomous-quality {
@@ -254,7 +282,7 @@
   border: 1px solid var(--status-completed);
   border-radius: 6px;
   padding: 12px;
-  background: var(--surface);
+  background: var(--bg-card);
 }
 
 .autonomous-summary h2 {
@@ -270,4 +298,594 @@
   word-break: break-word;
   max-height: 400px;
   overflow: auto;
+}
+
+.autonomous-recovery {
+  border: 1px solid var(--accent-warm);
+  border-radius: 6px;
+  padding: 12px;
+  background: var(--bg-card);
+}
+
+.autonomous-recovery h2,
+.autonomous-recovery p {
+  margin: 0;
+}
+
+.autonomous-recovery h2 {
+  font-size: 14px;
+}
+
+.autonomous-recovery p {
+  margin-top: 4px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.autonomous-recovery-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.autonomous-recovery-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.autonomous-recovery-item > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.autonomous-recovery-item strong,
+.autonomous-recovery-item small {
+  overflow-wrap: anywhere;
+}
+
+.autonomous-recovery-item span,
+.autonomous-recovery-item small {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.autonomous-deliverables {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+@media (max-width: 640px) {
+  .autonomous-deliverables,
+  .autonomous-recovery-item {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
+/* ─── 选题依据（为什么研究这个题目） ─────────────────────────── */
+.autonomous-topic {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-card);
+}
+
+.autonomous-topic h2,
+.autonomous-workflow h2 {
+  margin: 0 0 8px 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.autonomous-topic-grid {
+  margin: 0;
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 6px 12px;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.autonomous-topic-grid dt {
+  color: var(--text-muted);
+}
+
+.autonomous-topic-grid dd {
+  margin: 0;
+  min-width: 0;
+}
+
+.autonomous-topic-confidence {
+  margin-left: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.autonomous-topic-rationale {
+  margin: 4px 0 0 0;
+  color: var(--text-secondary);
+}
+
+.autonomous-topic-analysis {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.autonomous-topic-step {
+  display: inline-block;
+  font-size: 11px;
+  color: var(--primary);
+  border: 1px solid color-mix(in srgb, var(--primary) 40%, transparent);
+  border-radius: 6px;
+  padding: 0 8px;
+  margin-bottom: 2px;
+}
+
+.autonomous-topic-analysis p {
+  margin: 2px 0 0 0;
+  white-space: pre-wrap;
+}
+
+/* ─── 工作流总览（本次运行做什么） ───────────────────────────── */
+.autonomous-workflow {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-card);
+}
+
+.autonomous-workflow-rail {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+}
+
+.autonomous-workflow-node {
+  flex: 1 0 148px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-card);
+  font-size: 12px;
+  min-width: 0;
+}
+
+.autonomous-workflow-node--running {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 7%, var(--bg-card));
+}
+
+.autonomous-workflow-node--done {
+  border-color: color-mix(in srgb, var(--status-completed) 55%, var(--border));
+}
+
+.autonomous-workflow-node--failed {
+  border-color: var(--status-failed);
+}
+
+.autonomous-workflow-index {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+}
+
+.autonomous-workflow-name {
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ─── 启动台（idle 状态）：目标块 + 选项行 + 流程预告 ────────── */
+
+.autonomous-goal-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.autonomous-goal-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: 0.01em;
+}
+
+.autonomous-goal-input {
+  width: 100%;
+  min-height: 96px;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.7;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  resize: vertical;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.autonomous-goal-input:focus {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring-shadow);
+  outline: none;
+}
+
+.autonomous-goal-input:disabled {
+  background: var(--bg-input-disabled);
+}
+
+.autonomous-options {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.autonomous-options label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.autonomous-options select {
+  max-width: 220px;
+  font-size: 12px;
+  padding: 5px 26px 5px 8px;
+}
+
+.autonomous-preview {
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg-card);
+  box-shadow: var(--shadow-card);
+  padding: 16px 18px;
+}
+
+.autonomous-preview h2 {
+  margin: 0 0 10px 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-family: var(--font-serif);
+  letter-spacing: 0;
+}
+
+.autonomous-preview-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px;
+  counter-reset: preview-step;
+}
+
+.autonomous-preview-steps li {
+  position: relative;
+  border: 1px solid var(--border-light);
+  border-radius: 3px;
+  padding: 10px 12px 10px 34px;
+  counter-increment: preview-step;
+}
+
+.autonomous-preview-steps li::before {
+  content: counter(preview-step);
+  position: absolute;
+  left: 12px;
+  top: 10px;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.autonomous-preview-steps strong {
+  display: block;
+  font-size: 12.5px;
+  color: var(--text-primary);
+  margin-bottom: 3px;
+}
+
+.autonomous-preview-steps span {
+  display: block;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  line-height: 1.55;
+}
+
+.autonomous-preview-note {
+  margin: 12px 0 0 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.autonomous-preview-output {
+  margin: 4px 0 0 0;
+  font-size: 12px;
+  color: var(--accent);
+}
+
+/* ─── 流程管线可视化（工作流总览升级版） ────────────────────── */
+
+.autonomous-workflow-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.autonomous-workflow-head h2 { margin: 0; }
+
+.autonomous-live-status {
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.autonomous-live-status::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: autonomous-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes autonomous-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .autonomous-live-status::before { animation: none; }
+  .autonomous-pipeline-node--running .autonomous-pipeline-icon { animation: none; }
+}
+
+.autonomous-pipeline {
+  list-style: none;
+  margin: 0;
+  padding: 4px 2px 6px;
+  display: flex;
+  gap: 22px;
+  overflow-x: auto;
+}
+
+.autonomous-pipeline-node {
+  position: relative;
+  flex: 1 0 148px;
+  max-width: 190px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg-card);
+  min-width: 0;
+}
+
+/* 节点间连接箭头 */
+.autonomous-pipeline-node:not(:last-child)::after {
+  content: '→';
+  position: absolute;
+  right: -17px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-muted);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.autonomous-pipeline-node--done {
+  border-color: color-mix(in srgb, var(--status-completed) 45%, var(--border));
+  background: color-mix(in srgb, var(--status-completed) 5%, var(--bg-card));
+}
+
+.autonomous-pipeline-node--running {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.autonomous-pipeline-node--failed {
+  border-color: var(--status-failed);
+}
+
+.autonomous-pipeline-icon {
+  font-size: 13px;
+  line-height: 1;
+  color: var(--text-muted);
+}
+
+.autonomous-pipeline-icon--done { color: var(--status-completed); }
+.autonomous-pipeline-icon--failed { color: var(--status-failed); }
+.autonomous-pipeline-icon--running { color: var(--accent); animation: autonomous-pulse 1.6s ease-in-out infinite; }
+
+.autonomous-pipeline-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.autonomous-pipeline-progress {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ─── 研究目标队列 + 连续运行 ───────────────────────────────── */
+
+.autonomous-options-hint {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.autonomous-next-goal {
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  border-radius: 3px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  padding: 8px 12px;
+  font-size: 12px;
+}
+
+.autonomous-queue {
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg-card);
+  box-shadow: var(--shadow-card);
+  padding: 12px 16px;
+}
+
+.autonomous-queue-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.autonomous-queue-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: var(--font-serif);
+  letter-spacing: 0;
+}
+
+.autonomous-queue-count {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  border: 1px solid var(--border-light);
+  border-radius: 2px;
+  padding: 0 6px;
+}
+
+.autonomous-queue-continuous {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.autonomous-queue-empty {
+  margin: 8px 0 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.autonomous-queue-list {
+  list-style: none;
+  margin: 10px 0 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.autonomous-queue-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--border-light);
+  border-radius: 3px;
+  padding: 6px 10px;
+  background: var(--bg-secondary);
+}
+
+.autonomous-queue-index {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--accent);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.autonomous-queue-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.autonomous-queue-remove {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0 4px;
+  border-radius: 2px;
+}
+
+.autonomous-queue-remove:hover:not(:disabled) {
+  color: var(--status-failed);
+  background: var(--status-failed-bg);
+}
+
+.autonomous-queue-remove:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ─── 配置中心 + 手动模式折叠（自主改造 C）─── */
+
+.autonomous-manual {
+  border: 1px dashed var(--border-light);
+  border-radius: var(--radius-sm, 2px);
+  margin-bottom: 14px;
+  background: var(--bg-card);
+}
+
+.autonomous-manual > summary {
+  cursor: pointer;
+  padding: 8px 14px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  font-family: var(--font-serif);
+  user-select: none;
+}
+
+.autonomous-manual[open] > summary {
+  border-bottom: 1px dashed var(--border-light);
+}
+
+.autonomous-manual .autonomous-control {
+  border: none;
+  margin-bottom: 0;
 }

@@ -11,11 +11,14 @@ import {
   GoalListResponseSchema,
   GoalPlanResponseSchema,
   GoalSummarySchema,
+  GoalChangedEventSchema,
+  decodeGoalChangedEvent,
   decodeGoalCreateResponse,
   decodeGoalExecutionResult,
   decodeGoalListResponse,
   decodeGoalPlanResponse,
   decodeGoalSummaryResponse,
+  decodeGoalWorkflowResponse,
 } from '../../engine/runtime/GoalRuntimeContract.js';
 
 function makeGoalSummary(overrides: Record<string, unknown> = {}) {
@@ -254,5 +257,127 @@ describe('Goal execution result contract', () => {
       expect(decoded).toEqual({ success: false, code: 'goal_execution_unavailable' });
       expect(JSON.stringify(decoded)).not.toContain('secret-marker');
     }
+  });
+});
+
+describe('GoalChangedEventSchema', () => {
+  it('decodes a canonical changed event with priority', () => {
+    const event = {
+      goalId: 'goal-7',
+      label: '整理实验数据',
+      status: 'running',
+      priority: 'high',
+      createdAt: 42,
+    };
+    expect(GoalChangedEventSchema.parse(event)).toEqual(event);
+    expect(decodeGoalChangedEvent(event)).toEqual(event);
+  });
+
+  it('decodes changed events without priority', () => {
+    const event = {
+      goalId: 'goal-7',
+      label: '整理实验数据',
+      status: 'paused',
+      createdAt: 42,
+    };
+    expect(decodeGoalChangedEvent(event)).not.toBeUndefined();
+    expect(decodeGoalChangedEvent(event)?.priority).toBeUndefined();
+  });
+
+  it('coerces unknown statuses and rejects empty labels and unknown keys', () => {
+    const coerced = decodeGoalChangedEvent({
+      goalId: 'goal-7',
+      label: '整理实验数据',
+      status: 'running-secret-marker',
+      createdAt: 42,
+    });
+    expect(coerced?.status).toBe('unknown');
+    expect(JSON.stringify(coerced)).not.toContain('secret-marker');
+    expect(decodeGoalChangedEvent({
+      goalId: 'goal-7',
+      label: '',
+      status: 'running',
+      createdAt: 42,
+    })).toBeUndefined();
+    expect(decodeGoalChangedEvent({
+      goalId: 'goal-7',
+      label: '整理实验数据',
+      status: 'running',
+      createdAt: 42,
+      secret: 'secret-marker',
+    })).toBeUndefined();
+  });
+});
+
+describe('Goal workflow view contract (O17)', () => {
+  function makeWorkflowView(overrides: Record<string, unknown> = {}) {
+    return {
+      success: true as const,
+      goalId: 'goal-1',
+      workflow: {
+        id: 'wf-1',
+        name: '文献综述工作流',
+        description: '描述',
+        version: '1',
+        steps: [
+          {
+            id: 'step-a',
+            name: '检索文献',
+            description: '检索相关文献',
+            prompt: '检索近五年文献',
+            tools: ['search_papers'],
+            maxTurns: 3,
+          },
+          {
+            id: 'step-b',
+            name: '综合归纳',
+            description: '归纳发现',
+            prompt: '对检索结果做归纳',
+            tools: [],
+            maxTurns: 2,
+            acceptanceCriteria: ['输出不少于 200 字 (minLength: 200)'],
+          },
+        ],
+        dependencies: { 'step-b': ['step-a'] },
+      },
+      stepResults: {
+        'step-a': { status: 'completed', output: '完成', retryCount: 0 },
+      },
+      ...overrides,
+    };
+  }
+
+  it('accepts a well-formed workflow view', () => {
+    const decoded = decodeGoalWorkflowResponse(makeWorkflowView());
+    expect(decoded.success).toBe(true);
+    if (decoded.success) {
+      expect(decoded.workflow.steps).toHaveLength(2);
+      expect(decoded.workflow.dependencies).toEqual({ 'step-b': ['step-a'] });
+      expect(decoded.stepResults['step-a']?.status).toBe('completed');
+    }
+  });
+
+  it('returns the fixed recovery for malformed payloads without leaking content', () => {
+    const invalidInputs = [
+      null,
+      { success: true, goalId: 'unsafe goal id', workflow: {}, stepResults: {} },
+      makeWorkflowView({ secret: 'workflow-secret-marker' }),
+      { success: false, code: 'goal_workflow_unavailable', secret: 'workflow-secret-marker' },
+    ];
+    for (const input of invalidInputs) {
+      const decoded = decodeGoalWorkflowResponse(input);
+      expect(decoded).toEqual({ success: false, code: 'goal_workflow_unavailable' });
+      expect(JSON.stringify(decoded)).not.toContain('secret-marker');
+    }
+  });
+
+  it('rejects unknown step statuses and control characters in step text', () => {
+    const badStatus = makeWorkflowView();
+    (badStatus.stepResults as Record<string, { status: string }>)['step-a']!.status = 'bogus-secret-marker';
+    expect(decodeGoalWorkflowResponse(badStatus).success).toBe(false);
+
+    const badText = makeWorkflowView();
+    (badText.workflow.steps[0] as { prompt: string }).prompt = 'bad secret-marker';
+    expect(decodeGoalWorkflowResponse(badText).success).toBe(false);
   });
 });

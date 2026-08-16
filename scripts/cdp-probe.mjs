@@ -1,0 +1,13 @@
+const targets = await (await fetch('http://127.0.0.1:9223/json')).json();
+const page = targets.find((t) => t.type === 'page' && t.url.includes('metis-app'));
+const ws = new WebSocket(page.webSocketDebuggerUrl);
+await new Promise((r) => { ws.onopen = r; });
+let id = 0; const pending = new Map();
+ws.onmessage = (e) => { const d = JSON.parse(e.data); if (d.id && pending.has(d.id)) { pending.get(d.id)(d); pending.delete(d.id); } };
+const send = (m, p = {}) => new Promise((r) => { const i = ++id; pending.set(i, r); ws.send(JSON.stringify({ id: i, method: m, params: p })); });
+const res = await send('Runtime.evaluate', { expression: 'innerWidth + "x" + innerHeight', returnByValue: true });
+console.log('window:', res.result?.result?.value);
+const shot = await Promise.race([send('Page.captureScreenshot', { format: 'jpeg', quality: 80 }), new Promise((r) => setTimeout(() => r(null), 6000))]);
+console.log('shot:', shot?.result?.data ? 'OK ' + shot.result.data.length : 'HANG');
+ws.close();
+process.exit(0);

@@ -171,7 +171,6 @@ beforeEach(() => {
     collections: [],
     selectedCollection: null,
     workflowRuns: [],
-    weeklyReadingGoal: 5,
     locale: 'en',
     theme: 'light',
     isHydrated: true,
@@ -207,7 +206,7 @@ describe('Personalization persisted UI-to-runtime happy paths', () => {
 
     const mounted = render(<App />);
     fireEvent.click(await screen.findByTestId('personalization-trigger', {}, { timeout: 5000 }));
-    await screen.findByRole('heading', { name: 'Personalization' }, { timeout: 5000 });
+    await screen.findByRole('heading', { name: 'Scenarios', level: 1 }, { timeout: 5000 });
 
     fireEvent.click(screen.getByRole('button', { name: /^Agents/u }));
     fireEvent.click(screen.getByRole('button', { name: 'New' }));
@@ -231,7 +230,7 @@ describe('Personalization persisted UI-to-runtime happy paths', () => {
       revision: 2,
     }));
 
-    fireEvent.click(screen.getByRole('button', { name: /^Scenarios/u }));
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Scenario categories' })).getByRole('button', { name: /^Scenarios/u }));
     fireEvent.click(screen.getByRole('button', { name: 'New' }));
 
     const editor = await screen.findByRole('region', { name: 'Definition editor' });
@@ -337,7 +336,7 @@ describe('Personalization persisted UI-to-runtime happy paths', () => {
 
     const mounted = render(<App />);
     fireEvent.click(await screen.findByTestId('personalization-trigger', {}, { timeout: 5000 }));
-    await screen.findByRole('heading', { name: 'Personalization' }, { timeout: 5000 });
+    await screen.findByRole('heading', { name: 'Scenarios', level: 1 }, { timeout: 5000 });
     fireEvent.click(await screen.findByRole('button', { name: /^Skills/u }));
     await screen.findByRole('button', { name: 'Choose skill ZIP package' });
     fireEvent.click(screen.getByRole('button', { name: 'New' }));
@@ -375,7 +374,7 @@ describe('Personalization persisted UI-to-runtime happy paths', () => {
     installRuntimeBridge(restarted);
     const restartedCenter = render(<App />);
     fireEvent.click(await screen.findByTestId('personalization-trigger', {}, { timeout: 5000 }));
-    await screen.findByRole('heading', { name: 'Personalization' }, { timeout: 5000 });
+    await screen.findByRole('heading', { name: 'Scenarios', level: 1 }, { timeout: 5000 });
     fireEvent.click(await screen.findByRole('button', { name: /^Skills/u }));
     await waitFor(() => expect(definitionCard(CUSTOM_SKILL_ID)).toBeDefined());
     expect(within(definitionCard(CUSTOM_SKILL_ID)).getByText('Durable Markdown Skill')).toBeDefined();

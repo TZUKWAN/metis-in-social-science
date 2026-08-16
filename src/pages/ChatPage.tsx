@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, type ReactNode } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo, type ReactNode } from 'react';
 import { useMetisStore } from '../store';
 import { matchSlashCommand, SLASH_COMMANDS, filterSlashCommands } from '../lib/slashCommands';
 import Prism from 'prismjs';
@@ -16,7 +16,7 @@ import {
   consumePendingChatIntent,
   peekPendingChatIntent,
 } from '../lib/chatIntent.js';
-import { PaperclipIcon, TerminalIcon } from '../components/Icons';
+import { PaperclipIcon, TerminalIcon, BrainIcon, TagIcon, ClockIcon } from '../components/Icons';
 import GoalCardInline, { type GoalCardData } from '../components/GoalCardInline';
 import TerminalPanel from '../components/TerminalPanel';
 import RightPanel, { type RightPanelTab } from '../components/RightPanel';
@@ -31,6 +31,8 @@ import {
   presentSafeMarkdownText,
   type SafeMarkdownMode,
 } from '../presentation/SafeMarkdown';
+import { extractDoiCitations } from '../../engine/core/Citation.js';
+import { toggleForkActive, loadForkMap, saveForkMap, type ForkRecord } from '../../engine/core/MessageFork.js';
 import {
   decodeAgentResponse,
   decodeHistoryPayload,
@@ -54,6 +56,7 @@ import {
 } from '../../engine/runtime/SessionRuntimeContract';
 import type { ScenarioDefinition } from '../../engine/runtime/PersonalizationRuntimeContract';
 
+
 // ─── Types ────────────────────────────────────────────────────
 
 type ChatMessageRole = 'user' | 'assistant' | 'system' | 'tool' | 'goal';
@@ -64,7 +67,50 @@ interface ChatMessage {
   timestamp: number;
   toolCall?: { name: string; arguments: string; result?: string; status: 'running' | 'completed' | 'error' };
   goalCard?: GoalCardData;
+  /** True while model tokens are still streaming into this message. */
+  streaming?: boolean;
+  /** Wall-clock start of the generating turn (for the elapsed timer). */
+  startedAt?: number;
+  /** Total generation time once the turn settles. */
+  durationMs?: number;
+  /** Reasoning/thinking tokens streamed by the model, if any. */
+  reasoning?: string;
+  /**
+   * O8: citations for the answer. Each entry links a piece of the answer to a
+   * concrete source (library paper / DOI / URL) so the user can trace the claim.
+   */
+  citations?: import('../../engine/core/Citation.js').Citation[];
+  /**
+   * O16: message branch/fork. When a user regenerates an answer, the previous
+   * answer is kept as an inactive sibling branch rather than deleted, letting
+   * the user flip between alternative takes. forkId groups siblings; activeFork
+   * marks which sibling is currently displayed.
+   */
+  forkId?: string;
+  /** Zero-based index of this sibling within its fork group. */
+  forkIndex?: number;
+  /** Total siblings in the fork group (including this one). */
+  forkCount?: number;
+  /** True when this sibling is the currently displayed one in its group. */
+  forkActive?: boolean;
+  /**
+   * O15: 多模型对比标记——该回答来自哪个 provider profile（展示用标签，
+   * 如 "Kimi · kimi-k2"）。仅对比模式下由渲染端打上；普通回答不带此字段。
+   */
+  modelLabel?: string;
+  /**
+   * O15: 对比轮次分组 id。同一轮多模型对比的各模型回答共享它，渲染时
+   * 并排展示。仅对比模式打上。
+   */
+  compareGroup?: string;
+  /**
+   * UX-CHAT-002: 回合失败/中断/取消时留下的未完成草稿标记。流式占位消息在
+   * 非成功结算时保留部分内容并打上此标记；空内容则直接删除。
+   */
+  incomplete?: boolean;
 }
+
+
 
 function toGoalCardData(goal: GoalSnapshot): GoalCardData | null {
   if (goal.phase === 'unknown') return null;
@@ -83,6 +129,21 @@ function toGoalCardData(goal: GoalSnapshot): GoalCardData | null {
     phase: goal.phase,
     stepStatuses,
   };
+}
+
+/**
+ * Map a persisted goal status (source of truth on the engine side) to the
+ * inline card phase. Used when a goal card is opened from the board or when
+ * a board move broadcasts goal:changed.
+ */
+function goalStatusToCardPhase(status: string): GoalCardData['phase'] {
+  switch (status) {
+    case 'completed': return 'completed';
+    case 'failed': return 'failed';
+    case 'cancelled': return 'cancelled';
+    case 'running': return 'executing';
+    default: return 'plan_ready';
+  }
 }
 
 type Session = SessionListItem;
@@ -162,19 +223,64 @@ function now(): number {
 
 // ─── Task detection heuristics ────────────────────────────────
 
+/**
+ * UX-CHAT-003: 任务意图判定从「单关键词命中」收紧为「动作 + 交付物/持续执行
+ * 信号」。疑问、讨论、列举研究问题等默认直接回答；显式 /goal、/task 命令和
+ * 自主科研入口在路由层直接执行，不经过这里。
+ */
+const TASK_ACTION_ZH = /(帮我|请|创建|构建|写|撰写|起草|生成|准备|分析|研究|总结|比较|评审|设计|实现|开发|翻译|核对|核查|验证|检索|收集|整理|制定|规划|梳理|调查|执行)/u;
+const TASK_DELIVERABLE_ZH = /(报告|论文|综述|大纲|方案|计划|表格|清单|列表|文档|文章|笔记|摘要|流程|代码|实验|项目|数据库|档案集|目录)/u;
+const TASK_LONG_RUNNING_ZH = /(完成|执行|跑完|整个|从头到尾|分阶段|逐步|持续|整理成|输出为)/u;
+const TASK_ACTION_EN = /\b(create|build|write|draft|generate|prepare|analyze|research|summarize|compare|review|design|implement|develop|conduct|perform|verify|collect|compile|organize)\b/i;
+const TASK_DELIVERABLE_EN = /\b(report|paper|outline|plan|list|document|article|summary|task|workflow|code|experiment|project|analysis|review|database|archive)\b/i;
+const TASK_LONG_RUNNING_EN = /\b(complete|execute|run|finish|entire|step by step|phase|deliverable)\b/i;
+
+/** 宽松旧规则：只要命中「研究/分析/写/总结」等宽泛词就算任务（误判源）。 */
+const OLD_BROAD_TASK_PATTERNS = [
+  /\b(help me|create|build|write|analyze|research|generate|prepare|draft|summarize|compare|review|design|implement|develop|conduct|perform)\b/i,
+  /(帮我|创建|构建|写|分析|研究|生成|准备|起草|总结|比较|评审|设计|实现|开发|翻译)/,
+];
+
+function isQuestionLike(trimmed: string): boolean {
+  // 疑问句：以问号结尾，或以典型疑问词开头。
+  if (/[?？]$/u.test(trimmed)) return true;
+  return /^(什么|谁|何时|哪里|为什么|怎么|如何|是否|能否|哪些|哪个|请(问|教)|what|who|when|where|why|how|is|are|can|could|would|do|does|did)(?:\b)?/iu.test(trimmed);
+}
+
+/** 讨论/列举类表达：默认直接回答，不进入任务链路。 */
+function isDiscussionLike(trimmed: string): boolean {
+  return /(提出|列出|列举|讨论|谈谈|分析一下|请分析|总结一下|介绍一下|梳理一下).{0,30}(问题|观点|看法|思路|方向|建议|想法|议题)/u.test(trimmed);
+}
+
 function isTaskLike(content: string): boolean {
   const trimmed = content.trim();
-  // Short questions are probably questions
-  if (trimmed.length < 15 && (trimmed.includes('?') || trimmed.includes('？'))) return false;
-  // Question starters → treat as chat
-  const questionStarters = /^(what|who|when|where|why|how|is|are|can|could|would|do|does|did|什么|谁|何时|哪里|为什么|怎么|是否|能|可以)/i;
-  if (questionStarters.test(trimmed)) return false;
-  // Task keywords
-  const taskPatterns = [
-    /\b(help me|create|build|write|analyze|research|generate|prepare|draft|summarize|compare|review|design|implement|develop|conduct|perform)\b/i,
-    /(帮我|创建|构建|写|分析|研究|生成|准备|起草|总结|比较|评审|设计|实现|开发|翻译)/,
-  ];
-  return taskPatterns.some(p => p.test(content));
+  if (!trimmed) return false;
+  // 显式命令（防御性；正常路由层已先行处理）。
+  if (/^\/(goal|task|autonomous)\b/u.test(trimmed)) return true;
+  // 疑问与讨论默认是聊天。
+  if (isQuestionLike(trimmed)) return false;
+  if (isDiscussionLike(trimmed)) return false;
+
+  const zhAction = TASK_ACTION_ZH.test(trimmed);
+  const zhSignal = TASK_DELIVERABLE_ZH.test(trimmed) || TASK_LONG_RUNNING_ZH.test(trimmed);
+  if (zhAction && zhSignal) return true;
+
+  const enAction = TASK_ACTION_EN.test(trimmed);
+  const enSignal = TASK_DELIVERABLE_EN.test(trimmed) || TASK_LONG_RUNNING_EN.test(trimmed);
+  if (enAction && enSignal) return true;
+
+  return false;
+}
+
+/**
+ * 低置信度任务表达：旧宽泛规则命中、但新规则判定为直接回答的输入。
+ * 用于在回答旁提供非阻塞的「转为研究任务」操作，不新增确认弹窗。
+ */
+function isTaskAmbiguous(content: string): boolean {
+  const trimmed = content.trim();
+  if (!trimmed) return false;
+  if (isQuestionLike(trimmed)) return false;
+  return OLD_BROAD_TASK_PATTERNS.some((pattern) => pattern.test(trimmed));
 }
 
 function isLikelyGoalFeedback(content: string): boolean {
@@ -218,6 +324,13 @@ const regenerateIcon = (
   <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" fill="none" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
     <path d="M21.5 2v6h-6M2.5 22v-6h6" />
     <path d="M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3" />
+  </svg>
+);
+
+const copyIcon = (
+  <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" fill="none" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="9" y="9" width="13" height="13" rx="2" />
+    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
   </svg>
 );
 
@@ -266,20 +379,35 @@ function stripEmoji(text: string): string {
 
 // ─── Markdown Renderer ────────────────────────────────────────
 
+function linkifyDois(content: string): string {
+  // Turn bare DOIs in the model output into clickable doi.org links so the
+  // message citation can be opened inside Metis.
+  return content.replace(
+    /(^|[^\w])10\.\d{4,9}\/[-._;()/:A-Z0-9]+/gi,
+    (match, prefix: string) => {
+      const doi = match.slice(prefix.length);
+      return `${prefix}[${doi}](https://doi.org/${doi})`;
+    },
+  );
+}
+
 function MarkdownContent({
   content,
   uiMode,
   locale,
+  onOpenPaper,
 }: {
   content: string;
   uiMode: SafeMarkdownMode;
   locale: 'en' | 'zh';
+  onOpenPaper?: (doi: string) => void;
 }) {
   return (
     <SafeMarkdown
-      content={stripEmoji(content)}
+      content={linkifyDois(stripEmoji(content))}
       uiMode={uiMode}
       locale={locale}
+      onOpenPaper={onOpenPaper}
       codeComponent={({ className, children, ...props }) => {
           const match = /language-(\w+)/.exec(className || '');
           const code = String(children).replace(/\n$/, '');
@@ -373,22 +501,69 @@ function ChatMessageItem({
   msg,
   onEdit,
   onRegenerate,
-  onLearnSkill,
+  onSwitchFork,
   isLast,
   diagnosticMode,
+  onOpenPaper,
 }: {
   msg: ChatMessage;
   onEdit?: (content: string) => void;
   onRegenerate?: () => void;
-  /** Learn the conversation up to this message as a reusable skill. */
-  onLearnSkill?: () => void;
+  /** O16: switch which fork sibling is displayed. */
+  onSwitchFork?: (forkId: string, targetIndex: number) => void;
   isLast?: boolean;
+  onOpenPaper?: (doi: string) => void;
   diagnosticMode: boolean;
 }) {
   const { t, locale } = useTranslation();
   const messageUIMode: SafeMarkdownMode = diagnosticMode ? 'diagnostic' : 'normal';
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(stripEmoji(msg.content));
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = useCallback(() => {
+    const content = msg.content || msg.reasoning || '';
+    if (!content) return;
+    const fallback = () => {
+      const textarea = document.createElement('textarea');
+      textarea.value = content;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      try { document.execCommand('copy'); } catch { /* clipboard unavailable */ }
+      document.body.removeChild(textarea);
+      setCopied(true);
+    };
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(content).then(
+        () => setCopied(true),
+        () => fallback(),
+      );
+    } else {
+      fallback();
+    }
+    window.setTimeout(() => setCopied(false), 1500);
+  }, [msg.content, msg.reasoning]);
+
+  // Live elapsed timer while the message is still streaming. Date.now() only
+  // runs inside the interval callback (never during render).
+  const [elapsedMs, setElapsedMs] = useState(msg.durationMs ?? 0);
+  useEffect(() => {
+    if (msg.streaming && msg.startedAt) {
+      const timer = window.setInterval(() => {
+        setElapsedMs(Date.now() - (msg.startedAt ?? Date.now()));
+      }, 500);
+      return () => window.clearInterval(timer);
+    }
+    // Settle the timer once streaming stops; deferred so the effect body
+    // stays free of synchronous setState.
+    let cancelled = false;
+    void Promise.resolve().then(() => {
+      if (!cancelled) setElapsedMs(msg.durationMs ?? 0);
+    });
+    return () => { cancelled = true; };
+  }, [msg.streaming, msg.startedAt, msg.durationMs]);
 
   const handleEditSubmit = () => {
     const cleaned = stripEmoji(editValue).trim();
@@ -418,7 +593,7 @@ function ChatMessageItem({
           ) : (
             <div className="message-content">
               {diagnosticMode
-                ? <MarkdownContent content={presentDiagnosticText(msg.content)} uiMode={messageUIMode} locale={locale} />
+                ? <MarkdownContent content={presentDiagnosticText(msg.content)} uiMode={messageUIMode} locale={locale} onOpenPaper={onOpenPaper} />
                 : t('chat.researchOperationCompleted')}
             </div>
           )
@@ -437,14 +612,70 @@ function ChatMessageItem({
           </div>
         ) : (
           <div className="message-content">
-            <MarkdownContent content={msg.content} uiMode={messageUIMode} locale={locale} />
+            {msg.role === 'assistant' && msg.reasoning && (
+              <details className="chat-reasoning" open={Boolean(msg.streaming)}>
+                <summary>
+                  {msg.streaming ? t('chat.reasoningThinking') : t('chat.reasoningLabel')}
+                </summary>
+                <div className="chat-reasoning__body">{msg.reasoning}</div>
+              </details>
+            )}
+            <MarkdownContent content={msg.content} uiMode={messageUIMode} locale={locale} onOpenPaper={onOpenPaper} />
+            {msg.role === 'assistant' && msg.citations && msg.citations.length > 0 && (
+              <div className="chat-citations" data-testid="chat-citations">
+                {msg.citations.map((c) => (
+                  <button
+                    key={c.id}
+                    type="button"
+                    className="chat-citation"
+                    title={c.quote || c.label}
+                    onClick={() => {
+                      if (c.paperId) {
+                        window.dispatchEvent(new CustomEvent('metis:open-paper', { detail: { paperId: c.paperId, page: c.page } }));
+                      } else if (c.doi) {
+                        window.dispatchEvent(new CustomEvent('metis:open-browser-url', { detail: { url: `https://doi.org/${c.doi}` } }));
+                      } else if (c.url) {
+                        window.dispatchEvent(new CustomEvent('metis:open-browser-url', { detail: { url: c.url } }));
+                      }
+                    }}
+                  >
+                    <span className="chat-citation__id">[{c.id}]</span>
+                    <span className="chat-citation__label">{c.label}</span>
+                    {c.page !== undefined && <span className="chat-citation__page">p.{c.page}</span>}
+                  </button>
+                ))}
+              </div>
+            )}
+            {msg.role === 'assistant' && msg.incomplete && (
+              <div className="chat-incomplete-draft" data-testid="incomplete-draft">
+                {locale === 'zh' ? '（回答未完成——以上为中断前的草稿）' : '(Incomplete draft — captured before the turn ended)'}
+              </div>
+            )}
           </div>
         )}
         {!editing && (
           <div className="message-actions">
+            {msg.modelLabel && (
+              <span
+                className="message-model-label"
+                data-testid="message-model-label"
+                style={{
+                  fontSize: 11, padding: '1px 6px', borderRadius: 3,
+                  border: '1px solid var(--border)', background: 'var(--bg-secondary)',
+                  color: 'var(--text-secondary)',
+                }}
+              >
+                {msg.modelLabel}
+              </span>
+            )}
             <span className="message-time">
               {new Date(msg.timestamp).toLocaleTimeString()}
             </span>
+            {msg.role === 'assistant' && (msg.streaming || msg.durationMs !== undefined) && (
+              <span className="message-elapsed" data-testid="message-elapsed">
+                <ClockIcon size={12} /> {(elapsedMs / 1000).toFixed(1)}s
+              </span>
+            )}
             {msg.role === 'user' && onEdit && (
               <button
                 className="message-action-btn"
@@ -455,15 +686,15 @@ function ChatMessageItem({
                 {editIcon}
               </button>
             )}
-            {(msg.role === 'user' || msg.role === 'assistant') && onLearnSkill && (
+            {(msg.role === 'user' || msg.role === 'assistant') && (
               <button
                 className="message-action-btn"
-                onClick={onLearnSkill}
-                title={t('chat.learnSkill')}
-                aria-label={t('chat.learnSkill')}
-                data-testid="learn-conversation-skill"
+                onClick={handleCopy}
+                title={copied ? t('chat.copied') : t('chat.copy')}
+                aria-label={copied ? t('chat.copied') : t('chat.copy')}
+                data-testid="copy-message"
               >
-                🧠
+                {copied ? '✓' : copyIcon}
               </button>
             )}
             {msg.role === 'assistant' && isLast && onRegenerate && (
@@ -475,6 +706,26 @@ function ChatMessageItem({
               >
                 {regenerateIcon}
               </button>
+            )}
+            {/* O16: fork switcher — appears when this answer has sibling branches. */}
+            {msg.role === 'assistant' && msg.forkId && (msg.forkCount ?? 0) > 1 && onSwitchFork && (
+              <span className="fork-switcher" data-testid="fork-switcher">
+                <button
+                  className="message-action-btn"
+                  onClick={() => onSwitchFork(msg.forkId!, (msg.forkIndex ?? 0) - 1)}
+                  disabled={(msg.forkIndex ?? 0) <= 0}
+                  title={t('chat.forkPrev')}
+                  aria-label={t('chat.forkPrev')}
+                >◀</button>
+                <span className="fork-switcher__label">{(msg.forkIndex ?? 0) + 1}/{msg.forkCount}</span>
+                <button
+                  className="message-action-btn"
+                  onClick={() => onSwitchFork(msg.forkId!, (msg.forkIndex ?? 0) + 1)}
+                  disabled={(msg.forkIndex ?? 0) >= (msg.forkCount ?? 1) - 1}
+                  title={t('chat.forkNext')}
+                  aria-label={t('chat.forkNext')}
+                >▶</button>
+              </span>
             )}
           </div>
         )}
@@ -659,11 +910,29 @@ export interface ChatPageProps {
 export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: ChatPageProps) {
   const { t, locale } = useTranslation();
   const resolvedUIMode = uiMode ?? getDiagnosticMode();
+
+  // Message citation → open the paper inside Metis: local library match first,
+  // otherwise open the DOI page in the research browser.
+  const openPaperByDoi = useCallback((doi: string) => {
+    const normalized = doi.replace(/^https?:\/\/doi\.org\//i, '');
+    const local = useMetisStore.getState().papers.find(
+      (paper) => paper.doi && paper.doi.toLowerCase() === normalized.toLowerCase(),
+    );
+    if (local) {
+      window.dispatchEvent(new CustomEvent('metis:open-paper', { detail: { paperId: local.id } }));
+      return;
+    }
+    window.dispatchEvent(new CustomEvent('metis:open-browser-url', { detail: { url: `https://doi.org/${normalized}` } }));
+  }, []);
   const diagnosticMode = resolvedUIMode === 'diagnostic';
   const [sessions, setSessions] = useState<Session[]>([]);
+  // UX-CHAT-003: 低置信度任务表达被直接回答时，提供非阻塞「转为研究任务」建议。
+  const [goalSuggestion, setGoalSuggestion] = useState<string | null>(null);
   const [currentSessionId, setCurrentSessionId] = useState<string>('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
+  const [slashActiveIndex, setSlashActiveIndex] = useState(0);
+  const [slashMenuDismissed, setSlashMenuDismissed] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   // Live control state: 'idle' until the user requests an interrupt, 'interrupting'
   // while the active run is draining, back to 'idle' when the run settles.
@@ -691,7 +960,10 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
     sessionId: string;
     generation: number;
     projectId: string;
+    startedAt: number;
   } | null>(null);
+  /** Index of the assistant message currently receiving streamed tokens. */
+  const streamingIndexRef = useRef(-1);
 
   // Skills
   const [skills, setSkills] = useState<Array<{ id: string; name: string; description: string; category: string }>>([]);
@@ -719,6 +991,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
   const [activeRightPanelTab, setActiveRightPanelTab] =
     useState<RightPanelTab>('tasks');
   const [selectionMenu, setSelectionMenu] = useState<{ text: string; x: number; y: number } | null>(null);
+
 
   const openPreview = useCallback((
     content: string,
@@ -754,6 +1027,8 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
     sessionGenerationRef.current += 1;
     activeSessionIdRef.current = sessionId;
     activeChatRequestRef.current = null;
+    streamingIndexRef.current = -1;
+    setGoalSuggestion(null);
     setCurrentSessionId(sessionId);
     setMessages([]);
     setHistoryReady(false);
@@ -775,6 +1050,24 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
     activeSessionIdRef.current === sessionId
     && sessionGenerationRef.current === generation
   ), []);
+
+  // 项目联动视图：有当前科研项目时，会话列表只显示该项目的会话与未关联的
+  // 旧会话；其他项目的会话不混入（协同对话与项目聊天即「当前项目的对话」）。
+  const projectScopedSessions = useMemo(() => {
+    if (!activeResearchProjectId) return sessions;
+    return sessions.filter((session) => !session.projectId || session.projectId === activeResearchProjectId);
+  }, [sessions, activeResearchProjectId]);
+
+  // 切换科研项目时：若当前会话属于其他项目，自动切到当前项目的最近会话；
+  // 当前项目还没有会话时回到空白态（首次发送会自动建会话并绑定项目）。
+  // 空会话同样走 activateSession 的受保护过渡（布局所有权不变量）。
+  useEffect(() => {
+    if (!activeResearchProjectId || !currentSessionId) return;
+    const current = sessions.find((session) => session.id === currentSessionId);
+    if (current && (!current.projectId || current.projectId === activeResearchProjectId)) return;
+    const firstInProject = sessions.find((session) => session.projectId === activeResearchProjectId);
+    activateSession(firstInProject?.id ?? '');
+  }, [activeResearchProjectId, sessions, currentSessionId, activateSession]);
 
   const refreshArtifactsForSession = useCallback(async (
     sessionId: string,
@@ -809,11 +1102,42 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
     && (researchWorkspaceStore.getState().activeProjectId ?? 'global') === request.projectId
   ), [isCurrentSessionGeneration]);
 
+  // UX-CHAT-002: 失败/中断/取消时结算当前流式占位消息。空内容 → 删除空气泡；
+  // 已有部分内容 → 停止流式并标记为「未完成草稿」，避免空气泡与错误气泡并存。
+  const settleStreamingPlaceholder = useCallback((request: { startedAt: number }) => {
+    const streamedIndex = streamingIndexRef.current;
+    if (streamedIndex < 0) return;
+    const durationMs = Date.now() - request.startedAt;
+    streamingIndexRef.current = -1;
+    setMessages((prev) => {
+      const target = prev[streamedIndex];
+      if (!target) return prev;
+      if (!target.content.trim() && !target.reasoning) {
+        return prev.filter((_, index) => index !== streamedIndex);
+      }
+      return prev.map((message, index) => (index === streamedIndex
+        ? { ...message, streaming: false, durationMs, incomplete: true }
+        : message));
+    });
+  }, []);
+
+  // UX-CHAT-004: 回合结算后从持久层刷新会话摘要（消息数与最后活动时间），
+  // 让侧栏计数与权威值一致，而不是停留在挂载时的旧快照。
+  const refreshSessionSummaries = useCallback(() => {
+    const metis = window.metis;
+    if (!metis?.listSessions) return;
+    void metis.listSessions().then((payload) => {
+      const decoded = decodeSessionListPayload(payload);
+      if (decoded.success) setSessions(decoded.sessions);
+    }).catch(() => { /* 摘要刷新是尽力而为，不影响回合结果 */ });
+  }, []);
+
   // A project change invalidates the renderer-side owner of any in-flight
   // response. The main-process request keeps its original project snapshot,
   // while this view becomes ready for a new project-scoped request.
   useEffect(() => {
     activeChatRequestRef.current = null;
+    streamingIndexRef.current = -1;
     setIsLoading(false);
   }, [currentProjectId]);
 
@@ -922,16 +1246,22 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
     };
   }, [scenarioLoadRevision]);
 
-  // Helper: create a new session (defined before useEffect that calls it)
-  async function createNewSession() {
+  // Helper: create a new session (defined before useEffect that calls it).
+  // Returns the new session id on success, null on failure — callers that
+  // auto-create a session on first send need the id synchronously because
+  // React state updates are not visible inside the same invocation.
+  async function createNewSession(): Promise<string | null> {
     const ts = now();
     const id = `session_${ts}`;
-    const request = decodeSessionCreateRequest({ sessionId: id });
-    if (!request.ok) return;
+    const request = decodeSessionCreateRequest({
+      sessionId: id,
+      ...(activeResearchProjectId ? { projectId: activeResearchProjectId } : {}),
+    });
+    if (!request.ok) return null;
     const metis = window.metis;
     if (metis?.createSession) {
-      const result = await metis.createSession(id).catch(() => null);
-      if (!result?.success) return;
+      const result = await metis.createSession(id, request.value.projectId).catch(() => null);
+      if (!result?.success) return null;
     }
     activateSession(id);
     setSessions((prev) => [
@@ -942,9 +1272,11 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
         lastActivity: ts,
         messageCount: 0,
         archived: false,
+        projectId: request.value.projectId,
       },
       ...prev,
     ]);
+    return id;
   }
 
   // Helper: delete a session
@@ -968,7 +1300,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
   }
 
   // Helper: rename a session and persist metadata
-  async function handleRenameSession(id: string, title: string) {
+  const handleRenameSession = useCallback(async (id: string, title: string) => {
     const request = decodeSessionUpdateRequest({
       sessionId: id,
       patch: { title },
@@ -982,7 +1314,24 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
     setSessions((prev) => prev.map((s) => (
       s.id === id ? { ...s, title: request.value.patch.title } : s
     )));
-  }
+  }, []);
+
+  // Name the conversation from its content: the first substantive user
+  // message wins; a short or command-like opener falls back to the longest
+  // user message so the title still describes the conversation.
+  const handleAutoNameSession = useCallback(() => {
+    if (!currentSessionId) return;
+    const userMessages = messages
+      .filter((m) => m.role === 'user' && m.content.trim())
+      .map((m) => m.content.trim());
+    if (userMessages.length === 0) return;
+    const first = userMessages[0]!;
+    const candidate = first.length >= 4
+      ? first
+      : [...userMessages].sort((a, b) => b.length - a.length)[0]!;
+    const title = candidate.length > 30 ? `${candidate.slice(0, 30)}…` : candidate;
+    void handleRenameSession(currentSessionId, title);
+  }, [currentSessionId, messages, handleRenameSession]);
 
   // Helper: archive/unarchive a session and persist metadata
   async function handleArchiveSession(id: string) {
@@ -1125,7 +1474,9 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
     if (metis?.getMessages) {
       metis.getMessages(sessionId).then((msgs) => {
         if (!isCurrentSessionGeneration(sessionId, generation)) return;
-        setMessages(decodeHistoryPayload(msgs).map((item): ChatMessage => {
+        // O16: rehydrate fork siblings from the side table. The main-process
+        // history only kept the final answer; older branches come back here.
+        const restored = decodeHistoryPayload(msgs).map((item): ChatMessage => {
           if (item.kind === 'message') {
             return { role: item.role, content: item.content, timestamp: now() };
           }
@@ -1145,7 +1496,47 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
               : t('chat.historyRecoveryFailed'),
             timestamp: now(),
           };
-        }));
+        });
+        setMessages((prev) => {
+          const current = prev.length > 0 ? prev : restored;
+          if (!currentSessionId) return current;
+          const forkMap = loadForkMap(currentSessionId, localStorage);
+          if (forkMap.size === 0) return current;
+          // Group persisted siblings by forkId.
+          const siblingsByFork = new Map<string, ForkRecord[]>();
+          for (const record of forkMap.values()) {
+            const list = siblingsByFork.get(record.forkId) ?? [];
+            list.push(record);
+            siblingsByFork.set(record.forkId, list);
+          }
+          const out: ChatMessage[] = [];
+          for (const msg of current) {
+            out.push(msg);
+            if (msg.role !== 'assistant') continue;
+            // Is this message the final sibling of some fork group?
+            const matching = [...siblingsByFork.values()].find((records) =>
+              records.some((r) => r.content === msg.content),
+            );
+            if (!matching) continue;
+            const forkId = matching[0]!.forkId;
+            // The final sibling is the one whose content matches; older ones
+            // become inactive branches right after it.
+            const finalIdx = matching.findIndex((r) => r.content === msg.content);
+            matching.forEach((record, idx) => {
+              if (idx === finalIdx) return;
+              out.push({
+                role: 'assistant',
+                content: record.content,
+                timestamp: record.timestamp,
+                forkId,
+                forkIndex: record.forkIndex,
+                forkCount: record.forkCount,
+                forkActive: false,
+              });
+            });
+          }
+          return out;
+        });
         setHistoryReady(true);
       }).catch(() => {
         if (isCurrentSessionGeneration(sessionId, generation)) {
@@ -1161,7 +1552,10 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
 
   // Auto-scroll
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const element = messagesEndRef.current;
+    if (element && typeof element.scrollIntoView === 'function') {
+      element.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [messages, isLoading]);
 
   // Goal IPC event listeners. Raw model stream events are intentionally not
@@ -1260,20 +1654,136 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
       }));
     }
 
+    // Goal state changed from another surface (kanban moves, plan updates,
+    // execution completion): refresh the matching card's phase so both views
+    // stay in sync. Execution step events above still own step-level detail.
+    if (metis.onGoalChanged) {
+      unsubs.push(metis.onGoalChanged(({ goalId, status }) => {
+        const idx = goalCardIndexMapRef.current.get(goalId);
+        if (idx === undefined) return;
+        updateGoalCard(idx, (card) => ({ ...card, phase: goalStatusToCardPhase(status) }));
+      }));
+    }
+
     return () => { for (const u of unsubs) u(); };
   }, [acceptGoalEvent, isCurrentChatRequest, updateGoalCard]);
 
+  // Streamed model tokens: append to the in-flight assistant message live.
+  // Reasoning tokens render as the thinking process; the elapsed timer runs
+  // from the turn's start until the stream finishes.
+  useEffect(() => {
+    const metis = window.metis;
+    if (!metis?.onChatStreamChunk) return;
+    const unsubscribe = metis.onChatStreamChunk(({ sessionId, content, reasoning, isFinished }) => {
+      const request = activeChatRequestRef.current;
+      if (!request || sessionId !== request.sessionId || !isCurrentChatRequest(request)) return;
+      if (streamingIndexRef.current < 0) {
+        // UX-CHAT-002: 空内容事件（含空 isFinished）不创建占位气泡，避免
+        // 失败结算时残留空白 Metis 消息。
+        if (!content && !reasoning) return;
+        const message: ChatMessage = {
+          role: 'assistant',
+          content,
+          timestamp: now(),
+          startedAt: request.startedAt,
+          streaming: !isFinished,
+          reasoning,
+          ...(isFinished ? { durationMs: Date.now() - request.startedAt } : {}),
+          // O8: auto-extract DOI citations when the turn settles so answers are
+          // traceable without the agent explicitly tagging sources.
+          ...(isFinished ? { citations: extractDoiCitations(content) } : {}),
+        };
+        const index = messages.length;
+        setMessages((prev) => [...prev, message]);
+        streamingIndexRef.current = index;
+      } else {
+        setMessages((prev) => prev.map((m, i) => {
+          if (i !== streamingIndexRef.current) return m;
+          const nextContent = m.content + content;
+          return {
+            ...m,
+            content: nextContent,
+            reasoning: `${m.reasoning ?? ''}${reasoning ?? ''}`,
+            streaming: !isFinished,
+            ...(isFinished ? { durationMs: Date.now() - request.startedAt } : {}),
+            // O8: refresh DOI citations as the streamed content grows.
+            ...(isFinished ? { citations: extractDoiCitations(nextContent) } : {}),
+          };
+        }));
+      }
+    });
+    return unsubscribe;
+  }, [isCurrentChatRequest, messages.length]);
+
+  // Board → chat handoff: focus a goal as an inline card. App navigates to the
+  // conversation first; a sessionStorage fallback covers the case where this
+  // page was not mounted when the event fired.
+  const focusGoalFromBoard = useCallback(async (goalId: string) => {
+    const metis = window.metis;
+    if (!metis?.getGoal) return;
+    const result = await metis.getGoal(goalId);
+    if (!result.success || !result.goal) return;
+    const card: GoalCardData = {
+      goalId,
+      description: result.goal.label,
+      phase: goalStatusToCardPhase(result.goal.status),
+      steps: [],
+      stepStatuses: {},
+      progress: { completed: 0, total: 0, currentStep: '' },
+      canRefine: false,
+    };
+    const goalMsg: ChatMessage = { role: 'goal', content: '', timestamp: now(), goalCard: card };
+    const goalMsgIndex = messages.length;
+    setMessages((prev) => [...prev, goalMsg]);
+    goalCardIndexMapRef.current.set(goalId, goalMsgIndex);
+    setActiveGoalId(goalId);
+    activeGoalIdRef.current = goalId;
+    goalEventSequenceRef.current.delete(goalId);
+    if (metis.appendMessage) {
+      void metis.appendMessage(currentSessionId, 'goal', `__GOAL_CARD__${JSON.stringify(card)}`);
+    }
+    // UX-CHAT-004: Goal 卡已持久化，侧栏计数同步刷新。
+    refreshSessionSummaries();
+    requestAnimationFrame(() => {
+      const element = messagesEndRef.current;
+      if (element && typeof element.scrollIntoView === 'function') {
+        element.scrollIntoView({ behavior: 'smooth' });
+      }
+    });
+  }, [currentSessionId, messages.length, refreshSessionSummaries]);
+
+  useEffect(() => {
+    const pending = window.sessionStorage.getItem('metis-pending-goal');
+    if (pending) {
+      window.sessionStorage.removeItem('metis-pending-goal');
+      void focusGoalFromBoard(pending);
+    }
+    const handler = (event: Event) => {
+      const goalId = (event as CustomEvent<{ goalId?: string }>).detail?.goalId;
+      if (goalId) {
+        // Consume the handoff marker so the mount-effect fallback never
+        // inserts the card a second time after this listener re-runs.
+        window.sessionStorage.removeItem('metis-pending-goal');
+        void focusGoalFromBoard(goalId);
+      }
+    };
+    window.addEventListener('metis:goal-focus', handler);
+    return () => window.removeEventListener('metis:goal-focus', handler);
+  }, [focusGoalFromBoard]);
+
   // ─── Normal chat flow (extracted from old handleSend) ──────
 
-  async function handleChatFlow(content: string, scenarioId = activeScenarioId) {
+  async function handleChatFlow(content: string, scenarioId = activeScenarioId, sessionIdOverride?: string) {
     const request = {
       token: Symbol('chat-request'),
-      sessionId: currentSessionId,
+      sessionId: sessionIdOverride ?? currentSessionId,
       generation: sessionGenerationRef.current,
       projectId: currentProjectId,
+      startedAt: Date.now(),
     };
     activeChatRequestRef.current = request;
     setIsLoading(true);
+    streamingIndexRef.current = -1;
 
     const metis = window.metis;
     try {
@@ -1293,6 +1803,9 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
       if (!isCurrentChatRequest(request)) return;
 
       if (response.status !== 'completed') {
+        // UX-CHAT-002: 先结算流式占位消息（空内容删除、部分内容标记草稿），
+        // 再追加明确收据；不残留空白气泡与错误气泡并存的序列。
+        settleStreamingPlaceholder(request);
         if (response.status === 'interrupted' || response.status === 'cancelled') {
           // User-initiated stop: an explicit receipt, never an error presentation.
           setMessages((prev) => [...prev, {
@@ -1310,14 +1823,25 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
           setMessages((prev) => [...prev, errorMsg]);
         }
       } else if (response.answer) {
-        const assistantMsg: ChatMessage = {
-          role: 'assistant',
-          content: response.answer,
-          timestamp: now(),
-        };
-        setMessages((prev) => [...prev, assistantMsg]);
-        if (response.answer.length > 200 || /^#|^\*|\|.*\||```/.test(response.answer)) {
-          openPreview(response.answer);
+        const streamedIndex = streamingIndexRef.current;
+        const durationMs = Date.now() - request.startedAt;
+        if (streamedIndex >= 0) {
+          // The stream already rendered the answer live; settle the message
+          // with the authoritative payload and the measured elapsed time.
+          setMessages((prev) => prev.map((m, i) => i === streamedIndex
+            ? { ...m, content: response.answer, streaming: false, durationMs }
+            : m));
+        } else {
+          const assistantMsg: ChatMessage = {
+            role: 'assistant',
+            content: response.answer,
+            timestamp: now(),
+            durationMs,
+          };
+          setMessages((prev) => [...prev, assistantMsg]);
+          if (response.answer.length > 200 || /^#|^\*|\|.*\||```/.test(response.answer)) {
+            openPreview(response.answer);
+          }
         }
       }
       if (response.status === 'completed') {
@@ -1325,6 +1849,8 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
       }
     } catch (err) {
       if (!isCurrentChatRequest(request)) return;
+      // UX-CHAT-002: 异常路径同样结算流式占位消息。
+      settleStreamingPlaceholder(request);
       const errorMsg: ChatMessage = {
         role: 'assistant',
         content: presentExecutionError(err, locale, resolvedUIMode),
@@ -1333,20 +1859,24 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
       setMessages((prev) => [...prev, errorMsg]);
     } finally {
       if (isCurrentChatRequest(request)) {
+        streamingIndexRef.current = -1;
         activeChatRequestRef.current = null;
         setIsLoading(false);
         setControlState('idle');
+        // UX-CHAT-004: 主进程已在回合内持久化消息，刷新权威会话摘要。
+        refreshSessionSummaries();
       }
     }
   }
 
   // ─── Goal flow ─────────────────────────────────────────────
 
-  async function handleGoalFlow(description: string) {
+  async function handleGoalFlow(description: string, sessionIdOverride?: string) {
     setIsLoading(true);
+    const sessionId = sessionIdOverride ?? currentSessionId;
     const metis = window.metis;
     if (metis?.appendMessage) {
-      void metis.appendMessage(currentSessionId, 'user', description);
+      void metis.appendMessage(sessionId, 'user', description);
     }
     if (!metis?.createGoal) {
       setMessages((prev) => [...prev, {
@@ -1373,7 +1903,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
 
     try {
       // 2. Create Goal
-      const goal = await metis.createGoal(description);
+      const goal = await metis.createGoal(description, undefined, activeResearchProjectId ?? undefined);
       if (!goal.success) throw new Error(goal.code);
       const goalId = goal.goalId;
       updateGoalCard(goalMsgIndex, (card) => ({ ...card, goalId, phase: 'planning' }));
@@ -1404,7 +1934,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
 
       // 4. Persist goal card state
       if (metis.appendMessage) {
-        void metis.appendMessage(currentSessionId, 'goal', `__GOAL_CARD__${JSON.stringify(executingCard)}`);
+        void metis.appendMessage(sessionId, 'goal', `__GOAL_CARD__${JSON.stringify(executingCard)}`);
       }
 
       // 5. Auto-execute
@@ -1424,22 +1954,25 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
       activeGoalIdRef.current = null;
       goalEventSequenceRef.current.clear();
       setIsLoading(false);
+      // UX-CHAT-004: 用户消息与 Goal 卡均已持久化，刷新会话摘要。
+      refreshSessionSummaries();
     }
   }
 
   // ─── Interjection flow ─────────────────────────────────────
 
-  async function handleInterjection(content: string) {
+  async function handleInterjection(content: string, sessionIdOverride?: string) {
     const metis = window.metis;
+    const sessionId = sessionIdOverride ?? currentSessionId;
     if (!metis || !activeGoalId) {
-      await handleChatFlow(content);
+      await handleChatFlow(content, undefined, sessionIdOverride);
       return;
     }
 
     if (isLikelyGoalFeedback(content)) {
       setIsLoading(true);
       if (metis.appendMessage) {
-        void metis.appendMessage(currentSessionId, 'user', content);
+        void metis.appendMessage(sessionId, 'user', content);
       }
       const idx = goalCardIndexMapRef.current.get(activeGoalId);
       try {
@@ -1480,10 +2013,12 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
         activeGoalIdRef.current = null;
         goalEventSequenceRef.current.clear();
         setIsLoading(false);
+        // UX-CHAT-004: 反馈消息已持久化，刷新会话摘要。
+        refreshSessionSummaries();
       }
     } else {
       // Unrelated question — answer as normal chat while goal continues in background
-      await handleChatFlow(content);
+      await handleChatFlow(content, undefined, sessionIdOverride);
     }
   }
 
@@ -1582,9 +2117,10 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
       case 'autonomous': {
         if (!arg) { reply('用法：/autonomous <研究目标>'); return; }
         try {
-          const result = await window.metis?.autonomousStart?.({ goal: arg });
+          const projectId = researchWorkspaceStore.getState().activeProjectId ?? undefined;
+          const result = await window.metis?.autonomousStart?.({ goal: arg, projectId });
           if (result?.ok) {
-            reply(`🚀 已启动自主科研（目标：${arg}）。请打开「自主科研」面板查看 idea→实验→分析→论文 的实时进度，或用 /stop 中断。`);
+            reply(`🚀 已启动自主科研（目标：${arg}${projectId ? ` · 项目：${projectId}` : ''}）。请打开顶部「自主科研」面板查看 idea→实验→分析→论文 的实时进度，或用 /stop 中断。`);
           } else {
             reply(`启动失败：${result?.error ?? '未知错误'}。可能已有任务在运行，或引擎未就绪。`);
           }
@@ -1606,20 +2142,27 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
         return;
       }
       case 'search': {
-        // Open the global search overlay (App-level state).
-        reply(`请使用 Ctrl+K 搜索「${arg}」。`);
+        // Open the global search overlay (App-level state) through a bus event.
+        window.dispatchEvent(new CustomEvent('metis:open-search'));
+        reply(locale === 'zh' ? `已打开全局搜索${arg ? `，正在搜索「${arg}」` : ''}。` : `Global search opened${arg ? ` for “${arg}”` : ''}.`);
         return;
       }
       case 'paper': {
         if (!arg) { reply('用法：/paper <标题或 DOI>'); return; }
+        const projectId = researchWorkspaceStore.getState().activeProjectId ?? undefined;
         const paper = {
           id: `paper_slash_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
           title: arg, authors: [] as string[], year: new Date().getFullYear(),
           venue: '', abstract: '', tags: [], notes: '', readStatus: 'unread' as const,
-          rating: 0, referenceIds: [], addedAt: Date.now(),
+          rating: 0, referenceIds: [], addedAt: Date.now(), projectId,
         };
-        await useMetisStore.getState().addPaper(paper);
-        reply(`已添加文献：${arg}`);
+        const result = await useMetisStore.getState().addPaper(paper);
+        if (projectId && result.paper.id) {
+          await window.metis?.linkPaperToProject?.({ paperId: result.paper.id, projectId, link: true });
+        }
+        reply(projectId
+          ? `已添加文献并关联当前项目：${arg}`
+          : `已添加到资料库：${arg}`);
         return;
       }
       case 'note': {
@@ -1661,13 +2204,13 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
           .filter((m) => (m.role === 'user' || m.role === 'assistant') && m.content?.trim())
           .map((m) => ({ role: m.role, content: m.content }));
         if (convo.length < 2) { reply('对话太短，至少需要一轮问答才能学习。'); return; }
-        reply(`🧠 正在从 ${convo.length} 条对话中提取技能…`);
+        reply(`正在从 ${convo.length} 条对话中提取技能…`);
         try {
           const result = await window.metis?.generateSkillFromConversation?.({ messages: convo, userIntent: arg || undefined });
           if (result?.ok && result.skill) {
             const s = result.skill;
             reply([
-              `✅ 技能「${s.name}」已生成并安装！`,
+              `技能「${s.name}」已生成并安装！`,
               `用途：${s.description}`,
               `工具：${s.allowedTools.length > 0 ? s.allowedTools.join(', ') : '（无）'}`,
               `回合预算：${s.maxTurns}`,
@@ -1733,14 +2276,52 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
     const forceChat = raw.startsWith('/chat ') || raw.startsWith('? ');
     const content = forceChat ? raw.replace(/^(\/chat |\? )/, '') : raw;
 
+    // Auto-create a session on first send: previously, messages sent without
+    // clicking 「新会话」 first were never persisted — the sidebar kept showing
+    // 无会话 and the whole conversation vanished on reload. The first message
+    // now implicitly creates (and persists) a session, matching what the UI
+    // already displays.
+    let sessionIdForTurn = currentSessionId;
+    let createdThisTurn = false;
+    if (!sessionIdForTurn) {
+      const created = await createNewSession();
+      if (created) {
+        sessionIdForTurn = created;
+        createdThisTurn = true;
+      }
+    }
+
     // Append user message
     const userMsg: ChatMessage = { role: 'user', content, timestamp: now() };
     setMessages((prev) => [...prev, userMsg]);
     setInput('');
 
+    // Auto-title a fresh session from its first user message so the sidebar
+    // distinguishes conversations instead of showing multiple "新会话".
+    const currentSession = sessions.find((session) => session.id === currentSessionId);
+    const defaultTitle = t('chat.newSessionTitle');
+    const trimmed = content.trim();
+    if (createdThisTurn && trimmed) {
+      // The session was just created, so it is not in `sessions` state yet —
+      // rename it directly from this first message.
+      void handleRenameSession(
+        sessionIdForTurn,
+        trimmed.length > 30 ? `${trimmed.slice(0, 30)}…` : trimmed,
+      );
+    } else if (currentSession && (!currentSession.title || currentSession.title === defaultTitle) && trimmed) {
+      void handleRenameSession(
+        currentSessionId,
+        trimmed.length > 30 ? `${trimmed.slice(0, 30)}…` : trimmed,
+      );
+    }
+
     // Normal chat persistence is owned by the main process so each message is
     // committed once. Goal-only messages still use appendMessage below.
     const hasActiveGoal = activeGoalId !== null;
+
+    // UX-CHAT-003: 低置信度任务表达 → 直接回答，同时保留非阻塞转任务建议；
+    // 其他输入清空旧建议。
+    setGoalSuggestion(!forceChat && isTaskAmbiguous(content) ? content : null);
 
     const selectedScenarioId = scenarioOverride ?? activeScenarioId;
     const matchedScenario = selectedScenarioId ? undefined : matchScenarioTrigger(content, scenarios);
@@ -1750,14 +2331,15 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
       try { window.localStorage.setItem(ACTIVE_SCENARIO_KEY, matchedScenario.id); } catch { /* preference persistence is best-effort */ }
     }
 
+
     if (scenarioForTurn) {
-      await handleChatFlow(content, scenarioForTurn);
+      await handleChatFlow(content, scenarioForTurn, sessionIdForTurn || undefined);
     } else if (!forceChat && !hasActiveGoal && isTaskLike(content)) {
-      await handleGoalFlow(content);
+      await handleGoalFlow(content, sessionIdForTurn || undefined);
     } else if (hasActiveGoal && !forceChat) {
-      await handleInterjection(content);
+      await handleInterjection(content, sessionIdForTurn || undefined);
     } else {
-      await handleChatFlow(content, DEFAULT_SCENARIO_ID);
+      await handleChatFlow(content, DEFAULT_SCENARIO_ID, sessionIdForTurn || undefined);
     }
   }
 
@@ -1819,21 +2401,69 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeScenarioId, currentProjectId, currentSessionId, historyReady, intentRevision, locale, scenarioLoadState, scenarios, skills]);
 
+  // O16: switch which sibling of a regenerated-answer fork is displayed.
+  function handleSwitchFork(forkId: string, targetIndex: number) {
+    setMessages((prev) => toggleForkActive(prev, forkId, targetIndex));
+  }
+
   // Regenerate last assistant response
   async function handleRegenerate() {
     const lastUserIndex = [...messages].reverse().findIndex((m) => m.role === 'user');
     if (lastUserIndex === -1) return;
     const actualIndex = messages.length - 1 - lastUserIndex;
+    const forkId = `fork-${Date.now()}`;
     const history = messages.slice(0, actualIndex + 1);
     const request = {
       token: Symbol('regenerate-request'),
       sessionId: currentSessionId,
       generation: sessionGenerationRef.current,
       projectId: currentProjectId,
+      startedAt: Date.now(),
     };
     activeChatRequestRef.current = request;
-    setMessages(history);
+    // O16: keep the previous answer as an inactive sibling branch. If it is
+    // already part of a fork group, extend that group (3rd, 4th regenerate…);
+    // otherwise start a new fork. Older siblings keep their original indexes.
+    const priorAssistant = messages[actualIndex + 1];
+    const existingForkId = priorAssistant?.forkId;
+    const priorForkCount = priorAssistant?.forkCount ?? 1;
+    const markedHistory = priorAssistant?.role === 'assistant'
+      ? [
+        ...history,
+        {
+          ...priorAssistant,
+          // Only promote the *old* answer to fork state when it isn't already
+          // in a group; if it is, it stays at its index and the new one gets
+          // the next index below.
+          ...(priorAssistant.forkId ? {} : { forkId, forkIndex: 0 }),
+          forkCount: existingForkId ? priorForkCount + 1 : 2,
+          forkActive: false,
+        },
+      ]
+      : history;
+    // O16: persist the fork bookkeeping (including sibling contents) so all
+    // branches survive a reload — the main-process history only keeps the
+    // final answer, so old siblings live in this side table.
+    if (priorAssistant?.role === 'assistant' && currentSessionId) {
+      const map = loadForkMap(currentSessionId, localStorage);
+      const targetForkId = existingForkId ?? forkId;
+      // Re-anchor any previously persisted siblings under the same forkId.
+      const siblings = [...map.values()]
+        .filter((r) => r.forkId === targetForkId)
+        .map((r) => ({ ...r, forkCount: priorForkCount + 1 }));
+      siblings.forEach((r) => map.set(r.forkId, r));
+      map.set(targetForkId, {
+        forkId: targetForkId,
+        forkIndex: existingForkId ? (priorAssistant.forkIndex ?? 0) : 0,
+        forkCount: existingForkId ? priorForkCount + 1 : 2,
+        content: priorAssistant.content,
+        timestamp: priorAssistant.timestamp,
+      });
+      saveForkMap(currentSessionId, map, localStorage);
+    }
+    setMessages(markedHistory);
     setIsLoading(true);
+    streamingIndexRef.current = -1;
 
     try {
       const metis = window.metis;
@@ -1855,12 +2485,26 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
           timestamp: now(),
         }]);
       } else if (response.answer) {
-        const assistantMsg: ChatMessage = {
-          role: 'assistant',
-          content: response.answer,
-          timestamp: now(),
-        };
-        setMessages((prev) => [...prev, assistantMsg]);
+        const streamedIndex = streamingIndexRef.current;
+        const durationMs = Date.now() - request.startedAt;
+        if (streamedIndex >= 0) {
+          setMessages((prev) => prev.map((m, i) => i === streamedIndex
+            ? { ...m, content: response.answer, streaming: false, durationMs }
+            : m));
+        } else {
+          const assistantMsg: ChatMessage = {
+            role: 'assistant',
+            content: response.answer,
+            timestamp: now(),
+            durationMs,
+            // O16: the regenerated answer is the newest active sibling in its
+            // fork group (existing group extends, or a fresh group is born).
+            ...(priorAssistant?.role === 'assistant'
+              ? { forkId: existingForkId ?? forkId, forkIndex: existingForkId ? priorForkCount : 1, forkCount: existingForkId ? priorForkCount + 1 : 2, forkActive: true }
+              : {}),
+          };
+          setMessages((prev) => [...prev, assistantMsg]);
+        }
         // Live preview: if the response is substantial (artifact-length), render it in the
         // right panel's preview area (Claude-Artifacts-style split view).
         if (response.answer.length > 200 || /^#|^\*|\|.*\||```/.test(response.answer)) {
@@ -1879,6 +2523,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
       }]);
     } finally {
       if (isCurrentChatRequest(request)) {
+        streamingIndexRef.current = -1;
         activeChatRequestRef.current = null;
         setIsLoading(false);
         setControlState('idle');
@@ -1898,13 +2543,13 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
       setMessages((prev) => [...prev, skillNotice('对话太短，至少需要一轮问答才能学习为技能。')]);
       return;
     }
-    setMessages((prev) => [...prev, skillNotice(`🧠 正在从选中的 ${selected.length} 条对话中提取技能…`)]);
+    setMessages((prev) => [...prev, skillNotice(`正在从选中的 ${selected.length} 条对话中提取技能…`)]);
     try {
       const result = await window.metis?.generateSkillFromConversation?.({ messages: selected, userIntent });
       if (result?.ok && result.skill) {
         const s = result.skill;
         setMessages((prev) => [...prev, skillNotice([
-          `✅ 技能「${s.name}」已生成并安装！`,
+          `技能「${s.name}」已生成并安装！`,
           `用途：${s.description}`,
           `工具：${s.allowedTools.length > 0 ? s.allowedTools.join(', ') : '（无）'}`,
           `回合预算：${s.maxTurns}`,
@@ -1931,8 +2576,57 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
     }, 0);
   }
 
-  // Handle Enter to send, Shift+Enter for newline
-  function handleKeyDown(e: React.KeyboardEvent) {
+  const slashSuggestions = (() => {
+    if (slashMenuDismissed || !input.startsWith('/') || input.length > 80 || /\s/.test(input.slice(1))) return [];
+    return filterSlashCommands(input.slice(1));
+  })();
+  const slashMenuOpen = slashSuggestions.length > 0;
+  const activeSlashIndex = Math.min(slashActiveIndex, Math.max(0, slashSuggestions.length - 1));
+
+  function completeSlashCommand(index: number) {
+    const command = slashSuggestions[index];
+    if (!command) return;
+    setInput(`/${command.name}${command.hasArg ? ' ' : ''}`);
+    setSlashActiveIndex(0);
+    setSlashMenuDismissed(false);
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }
+
+  // Handle the slash listbox before Enter-to-send. Shift+Enter always preserves a newline.
+  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.nativeEvent.isComposing) return;
+    if (slashMenuOpen) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSlashActiveIndex((current) => (current + 1) % slashSuggestions.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSlashActiveIndex((current) => (current - 1 + slashSuggestions.length) % slashSuggestions.length);
+        return;
+      }
+      if (e.key === 'Home') {
+        e.preventDefault();
+        setSlashActiveIndex(0);
+        return;
+      }
+      if (e.key === 'End') {
+        e.preventDefault();
+        setSlashActiveIndex(slashSuggestions.length - 1);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setSlashMenuDismissed(true);
+        return;
+      }
+      if ((e.key === 'Enter' || e.key === 'Tab') && !e.shiftKey) {
+        e.preventDefault();
+        completeSlashCommand(activeSlashIndex);
+        return;
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       void handleSend();
@@ -2003,7 +2697,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
 
   const leftPanel = (
     <SessionSidebar
-      sessions={sessions}
+      sessions={projectScopedSessions}
       currentSessionId={currentSessionId}
       onSelect={activateSession}
       onNew={createNewSession}
@@ -2156,36 +2850,84 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
             <div className="chat-empty">
               <h2>{t('chat.emptyTitle')}</h2>
               <p>{t('chat.emptyDescription')}</p>
+              <p className="chat-empty__examples">{t('chat.emptyExamples')}</p>
             </div>
           )}
-          {messages.map((msg, i) => {
-            // Goal card messages render as inline GoalCardInline
-            if (msg.role === 'goal' && msg.goalCard) {
-              return (
-                <GoalCardInline
-                  key={i}
-                  data={msg.goalCard}
-                  uiMode={resolvedUIMode}
-                  registerStepElement={(stepId, element) => {
-                    const key = `${msg.goalCard!.goalId}\u0000${stepId}`;
-                    if (element) goalStepElementRefs.current.set(key, element);
-                    else goalStepElementRefs.current.delete(key);
-                  }}
-                />
-              );
-            }
-            return (
-              <ChatMessageItem
-                key={i}
-                msg={msg}
-                isLast={i === messages.length - 1}
-                diagnosticMode={diagnosticMode}
-                onEdit={msg.role === 'user' ? (content) => handleEditMessage(i, content) : undefined}
-                onRegenerate={msg.role === 'assistant' ? handleRegenerate : undefined}
-                onLearnSkill={(msg.role === 'user' || msg.role === 'assistant') ? () => void handleLearnConversationSkill(i) : undefined}
+          {(() => {
+            // O15: side-by-side rendering — consecutive assistant messages of
+            // the same compareGroup are laid out in a flex row instead of a
+            // vertical stack.
+            const rendered: React.ReactNode[] = [];
+            let groupBuffer: Array<{ msg: ChatMessage; index: number }> = [];
+            let groupId: string | null = null;
+            const renderGoal = (msg: ChatMessage, index: number) => (
+              <GoalCardInline
+                key={index}
+                data={msg.goalCard!}
+                uiMode={resolvedUIMode}
+                registerStepElement={(stepId, element) => {
+                  const key = `${msg.goalCard!.goalId}\u0000${stepId}`;
+                  if (element) goalStepElementRefs.current.set(key, element);
+                  else goalStepElementRefs.current.delete(key);
+                }}
+                onOpenBoard={() => {
+                  const goalId = msg.goalCard!.goalId;
+                  if (!goalId) return;
+                  window.dispatchEvent(new CustomEvent('metis:open-kanban', { detail: { goalId } }));
+                }}
               />
             );
-          })}
+            const renderItem = (msg: ChatMessage, index: number) => (
+              <ChatMessageItem
+                key={index}
+                msg={msg}
+                isLast={index === messages.length - 1}
+                diagnosticMode={diagnosticMode}
+                onOpenPaper={openPaperByDoi}
+                onEdit={msg.role === 'user' ? (content) => handleEditMessage(index, content) : undefined}
+                onRegenerate={msg.role === 'assistant' ? handleRegenerate : undefined}
+                onSwitchFork={msg.forkId ? handleSwitchFork : undefined}
+              />
+            );
+            const flushGroup = () => {
+              if (groupBuffer.length === 0) return;
+              if (groupId) {
+                rendered.push(
+                  <div className="chat-compare-row" key={`compare-${groupId}`} data-testid={`compare-row-${groupId}`}>
+                    {groupBuffer.map(({ msg, index }) => renderItem(msg, index))}
+                  </div>,
+                );
+              } else {
+                for (const { msg, index } of groupBuffer) {
+                  if (msg.role === 'goal' && msg.goalCard) {
+                    rendered.push(renderGoal(msg, index));
+                  } else {
+                    rendered.push(renderItem(msg, index));
+                  }
+                }
+              }
+              groupBuffer = [];
+              groupId = null;
+            };
+            messages.forEach((msg, index) => {
+              // O16: hide inactive fork siblings.
+              if (msg.forkId && msg.forkActive === false) return;
+              if (msg.compareGroup) {
+                if (groupId !== null && msg.compareGroup !== groupId) flushGroup();
+                groupId = msg.compareGroup;
+                groupBuffer.push({ msg, index });
+              } else {
+                flushGroup();
+                if (msg.role === 'goal' && msg.goalCard) {
+                  rendered.push(renderGoal(msg, index));
+                } else {
+                  rendered.push(renderItem(msg, index));
+                }
+              }
+            });
+            flushGroup();
+            return rendered;
+          })()}
           {isLoading && (
             <div className="chat-message assistant">
               <div className="message-avatar">A</div>
@@ -2290,6 +3032,24 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
             }
           }}
         >
+          {goalSuggestion && (
+            <div className="chat-goal-suggestion" data-testid="goal-suggestion-bar">
+              <span>{locale === 'zh' ? '这个请求适合作为长期研究任务执行。' : 'This request could run as a long-running research task.'}</span>
+              <button
+                type="button"
+                className="btn-sm btn-primary"
+                data-testid="goal-suggestion-button"
+                disabled={isLoading}
+                onClick={() => {
+                  const text = goalSuggestion;
+                  setGoalSuggestion(null);
+                  if (text) void handleGoalFlow(text);
+                }}
+              >
+                {locale === 'zh' ? '转为研究任务' : 'Turn into research task'}
+              </button>
+            </div>
+          )}
           <button
             className="chat-upload-btn"
             onClick={handleFileUpload}
@@ -2298,49 +3058,82 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
           >
             <PaperclipIcon size={18} />
           </button>
+          <button
+            className="chat-upload-btn"
+            onClick={() => void handleLearnConversationSkill(messages.length - 1)}
+            title={t('chat.learnSkill')}
+            aria-label={t('chat.learnSkill')}
+            data-testid="learn-conversation-skill"
+            disabled={isLoading || messages.length === 0}
+          >
+            <BrainIcon size={18} />
+          </button>
+          <button
+            className="chat-upload-btn"
+            onClick={handleAutoNameSession}
+            title={t('chat.autoName')}
+            aria-label={t('chat.autoName')}
+            data-testid="auto-name-session"
+            disabled={isLoading || messages.length === 0}
+          >
+            <TagIcon size={18} />
+          </button>
+
           <textarea
             ref={inputRef}
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => {
+              setInput(e.target.value);
+              setSlashActiveIndex(0);
+              setSlashMenuDismissed(false);
+            }}
             onKeyDown={handleKeyDown}
+            role="combobox"
+            aria-autocomplete="list"
+            aria-expanded={slashMenuOpen}
+            aria-controls={slashMenuOpen ? 'slash-command-listbox' : undefined}
+            aria-activedescendant={slashMenuOpen ? `slash-command-option-${activeSlashIndex}` : undefined}
             placeholder={isLoading
               ? (locale === 'zh' ? '输入新指令，实时引导当前任务…' : 'Send a new instruction to steer the active run…')
               : t('chat.placeholder')}
             className="chat-textarea"
             rows={1}
           />
-          {input.startsWith('/') && input.length <= 20 && (() => {
-            const prefix = input.slice(1).split(/\s/)[0] ?? '';
-            const cmds = filterSlashCommands(prefix);
-            if (cmds.length === 0) return null;
-            return (
-              <div className="slash-command-menu" data-testid="slash-command-menu" style={{
+          {slashMenuOpen && (
+            <div
+              id="slash-command-listbox"
+              className="slash-command-menu"
+              data-testid="slash-command-menu"
+              role="listbox"
+              aria-label={locale === 'zh' ? '斜杠命令建议' : 'Slash command suggestions'}
+              style={{
                 position: 'absolute', bottom: '100%', left: 0, right: 0,
                 background: 'var(--bg-card)', border: '1px solid var(--border)',
                 borderRadius: '4px', maxHeight: 240, overflowY: 'auto',
                 boxShadow: '0 -4px 12px rgba(0,0,0,0.08)', zIndex: 10,
-              }}>
-                {cmds.slice(0, 8).map((cmd) => (
-                  <button
-                    key={cmd.name}
-                    className="slash-command-item"
-                    data-testid={`slash-cmd-${cmd.name}`}
-                    onClick={() => {
-                      setInput(`/${cmd.name} `);
-                      inputRef.current?.focus();
-                    }}
-                    style={{
-                      display: 'block', width: '100%', textAlign: 'left',
-                      padding: '6px 12px', border: 'none', background: 'transparent',
-                      cursor: 'pointer', fontSize: 12, color: 'var(--text-primary)',
-                    }}
-                  >
-                    <strong>/{cmd.name}</strong> <span style={{ color: 'var(--text-muted)' }}>{cmd.description}</span>
-                  </button>
-                ))}
-              </div>
-            );
-          })()}
+              }}
+            >
+              {slashSuggestions.slice(0, 8).map((command, index) => (
+                <button
+                  key={command.name}
+                  id={`slash-command-option-${index}`}
+                  className={`slash-command-item ${index === activeSlashIndex ? 'slash-command-item--active' : ''}`}
+                  data-testid={`slash-cmd-${command.name}`}
+                  role="option"
+                  aria-selected={index === activeSlashIndex}
+                  onMouseEnter={() => setSlashActiveIndex(index)}
+                  onClick={() => completeSlashCommand(index)}
+                  style={{
+                    display: 'block', width: '100%', textAlign: 'left',
+                    padding: '6px 12px', border: 'none', background: index === activeSlashIndex ? 'var(--bg-hover)' : 'transparent',
+                    cursor: 'pointer', fontSize: 12, color: 'var(--text-primary)',
+                  }}
+                >
+                  <strong>/{command.name}</strong> <span style={{ color: 'var(--text-muted)' }}>{command.description}</span>
+                </button>
+              ))}
+            </div>
+          )}
           {isLoading && <button
             type="button"
             onClick={() => void handleInterrupt()}

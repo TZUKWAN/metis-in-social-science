@@ -15,6 +15,8 @@ export interface SessionRecord {
   lastActivity: number;
   messageCount: number;
   metadata: Record<string, unknown>;
+  /** Owning project id (conversations can be exported with their project). */
+  projectId?: string;
 }
 
 export interface MessageRecord {
@@ -120,6 +122,19 @@ export class PersistenceStore {
    * This is a lightweight keyword-based RAG retrieval for chat context. Future
    * iterations can add vector/embedding search.
    */
+  /** 取第一个命中 token 前后各 ~120 字符的窗口；无命中返回 undefined。 */
+  private snippetAround(haystack: string, tokens: string[]): string | undefined {
+    for (const token of tokens) {
+      const at = haystack.indexOf(token);
+      if (at >= 0) {
+        const start = Math.max(0, at - 120);
+        const end = Math.min(haystack.length, at + token.length + 180);
+        return `${start > 0 ? '…' : ''}${haystack.slice(start, end)}${end < haystack.length ? '…' : ''}`;
+      }
+    }
+    return undefined;
+  }
+
   searchLibrary(query: string, limit = 5): Array<{
     type: 'paper' | 'note';
     id: string;
@@ -130,11 +145,13 @@ export class PersistenceStore {
     sourceId?: string;
     score: number;
   }> {
+    // 保留 Unicode 字母/数字（中文词、英文词均有效）；旧实现只留 a-z0-9，
+    // 中文查询会被清空导致检索永远为空。
     const tokens = query
       .toLowerCase()
       .split(/\s+/)
-      .map((t) => t.replace(/[^a-z0-9]/g, ''))
-      .filter((t) => t.length > 2);
+      .map((t) => t.replace(/[^\p{L}\p{N}]/gu, ''))
+      .filter((t) => t.length > 1);
 
     if (tokens.length === 0) return [];
 
@@ -179,7 +196,8 @@ export class PersistenceStore {
         title: row.title,
         authors: row.authors,
         year: row.year,
-        snippet: (row.abstract || row.notes || row.pdf_text || row.title).slice(0, 300),
+        // 命中词上下文窗口（全文检索时比"摘要前 300 字"更有用）。
+        snippet: this.snippetAround(haystack, tokens) ?? (row.abstract || row.notes || row.pdf_text || row.title).slice(0, 300),
         sourceId: row.doi || row.arxiv_id || row.id,
         score,
       };
@@ -213,6 +231,11 @@ export class PersistenceStore {
     this.migrateMemoryProjectId();
     this.db.exec(SCHEMA_SQL);
     this.migratePapersPdfText();
+    this.migratePapersProjectId();
+    this.migratePapersReferenceIds();
+    this.migratePaperProjectLinks();
+    this.migrateNoteScopes();
+    this.migrateSessionsProjectId();
     this.migrateCollections();
     this.migrateArtifactContent();
     this.migrateFtsIndex();
@@ -289,6 +312,101 @@ export class PersistenceStore {
     }
   }
 
+  private migratePapersReferenceIds(): void {
+    const col = this.db.prepare(
+      "SELECT 1 FROM pragma_table_info('papers') WHERE name = 'reference_ids'",
+    ).get();
+    if (!col) {
+      this.db.exec("ALTER TABLE papers ADD COLUMN reference_ids TEXT NOT NULL DEFAULT '[]';");
+    }
+  }
+
+  private migratePapersProjectId(): void {
+    const col = this.db.prepare(
+      "SELECT 1 FROM pragma_table_info('papers') WHERE name = 'project_id'",
+    ).get();
+    if (!col) {
+      this.db.exec("ALTER TABLE papers ADD COLUMN project_id TEXT;");
+    }
+    const idx = this.db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_papers_project_id'",
+    ).get();
+    if (!idx) {
+      this.db.exec('CREATE INDEX idx_papers_project_id ON papers (project_id);');
+    }
+  }
+
+  /** Split legacy global notes from project-scoped research memos. */
+  private migrateNoteScopes(): void {
+    const columns = (this.db.prepare('PRAGMA table_info(notes)').all() as Array<{ name: string }>)
+      .map((row) => row.name);
+    if (!columns.includes('project_id')) this.db.exec('ALTER TABLE notes ADD COLUMN project_id TEXT');
+    if (!columns.includes('scope')) this.db.exec("ALTER TABLE notes ADD COLUMN scope TEXT NOT NULL DEFAULT 'global'");
+    this.db.exec(`
+      UPDATE notes SET scope = 'global' WHERE project_id IS NULL AND scope <> 'global';
+      UPDATE notes SET scope = 'research' WHERE project_id IS NOT NULL AND scope <> 'research';
+      CREATE INDEX IF NOT EXISTS idx_notes_project_scope ON notes(project_id, scope, updated_at DESC);
+    `);
+  }
+
+  /**
+   * Upgrade the legacy one-paper/one-project pointer to a reusable many-to-many
+   * relation. Existing source rows that used source.id === paper.id are tagged
+   * with their canonical library paper without changing their ids, so evidence
+   * and artifact references remain valid.
+   */
+  private migratePaperProjectLinks(): void {
+    const sourceColumn = this.db.prepare(
+      "SELECT 1 FROM pragma_table_info('sources') WHERE name = 'library_paper_id'",
+    ).get();
+    if (!sourceColumn) {
+      this.db.exec('ALTER TABLE sources ADD COLUMN library_paper_id TEXT;');
+    }
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS paper_project_links (
+        paper_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        linked_at INTEGER NOT NULL,
+        PRIMARY KEY (paper_id, project_id),
+        FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_paper_project_links_project
+        ON paper_project_links(project_id, linked_at DESC);
+      INSERT OR IGNORE INTO paper_project_links (paper_id, project_id, linked_at)
+        SELECT papers.id, papers.project_id, papers.added_at
+        FROM papers
+        INNER JOIN projects ON projects.id = papers.project_id
+        WHERE papers.project_id IS NOT NULL;
+      UPDATE sources
+        SET library_paper_id = id
+        WHERE library_paper_id IS NULL
+          AND EXISTS (
+            SELECT 1 FROM papers
+            WHERE papers.id = sources.id
+              AND papers.project_id = sources.project_id
+          );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_sources_project_library_paper
+        ON sources(project_id, library_paper_id)
+        WHERE library_paper_id IS NOT NULL;
+    `);
+  }
+
+  private migrateSessionsProjectId(): void {
+    const col = this.db.prepare(
+      "SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'project_id'",
+    ).get();
+    if (!col) {
+      this.db.exec("ALTER TABLE sessions ADD COLUMN project_id TEXT;");
+    }
+    const idx = this.db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_sessions_project_id'",
+    ).get();
+    if (!idx) {
+      this.db.exec('CREATE INDEX idx_sessions_project_id ON sessions (project_id);');
+    }
+  }
+
   private migrateCollections(): void {
     const table = this.db.prepare(
       "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'collections'",
@@ -337,11 +455,11 @@ export class PersistenceStore {
 
   // ─── Sessions ───────────────────────────────────────────────
 
-  createSession(sessionId: string, metadata?: Record<string, unknown>): string {
+  createSession(sessionId: string, metadata?: Record<string, unknown>, projectId?: string): string {
     const now = Date.now();
     this.db.prepare(
-      'INSERT OR IGNORE INTO sessions (id, created_at, last_activity, message_count, metadata) VALUES (?, ?, ?, 0, ?)',
-    ).run(sessionId, now, now, JSON.stringify(metadata ?? {}));
+      'INSERT OR IGNORE INTO sessions (id, created_at, last_activity, message_count, metadata, project_id) VALUES (?, ?, ?, 0, ?, ?)',
+    ).run(sessionId, now, now, JSON.stringify(metadata ?? {}), projectId ?? null);
     return sessionId;
   }
 
@@ -354,6 +472,7 @@ export class PersistenceStore {
       lastActivity: row.last_activity as number,
       messageCount: row.message_count as number,
       metadata: JSON.parse((row.metadata as string) || '{}'),
+      projectId: (row.project_id as string | null) ?? undefined,
     };
   }
 
@@ -367,6 +486,7 @@ export class PersistenceStore {
       lastActivity: row.last_activity as number,
       messageCount: row.message_count as number,
       metadata: JSON.parse((row.metadata as string) || '{}'),
+      projectId: (row.project_id as string | null) ?? undefined,
     }));
   }
 
@@ -578,16 +698,44 @@ export class PersistenceStore {
     id: string; title: string; authors: string[]; year: number; venue: string;
     abstract: string; doi?: string; arxivId?: string; pdfPath?: string; pdfUrl?: string; pdfText?: string;
     citationCount?: number; tags: string[]; notes: string; readStatus: string; rating: number; addedAt: number;
+    projectId?: string;
+    referenceIds?: string[];
   }): void {
     this.db.prepare(
-      `INSERT OR REPLACE INTO papers
-       (id, title, authors, year, venue, abstract, doi, arxiv_id, pdf_path, pdf_url, pdf_text, citation_count, tags, notes, read_status, rating, added_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO papers
+       (id, title, authors, year, venue, abstract, doi, arxiv_id, pdf_path, pdf_url, pdf_text, citation_count, tags, notes, read_status, rating, added_at, project_id, reference_ids)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         title = excluded.title,
+         authors = excluded.authors,
+         year = excluded.year,
+         venue = excluded.venue,
+         abstract = excluded.abstract,
+         doi = excluded.doi,
+         arxiv_id = excluded.arxiv_id,
+         pdf_path = excluded.pdf_path,
+         pdf_url = excluded.pdf_url,
+         pdf_text = excluded.pdf_text,
+         citation_count = excluded.citation_count,
+         tags = excluded.tags,
+         notes = excluded.notes,
+         read_status = excluded.read_status,
+         rating = excluded.rating,
+         added_at = excluded.added_at,
+         project_id = COALESCE(papers.project_id, excluded.project_id),
+         reference_ids = excluded.reference_ids`,
     ).run(
       paper.id, paper.title, JSON.stringify(paper.authors), paper.year, paper.venue,
       paper.abstract, paper.doi ?? null, paper.arxivId ?? null, paper.pdfPath ?? null, paper.pdfUrl ?? null,
       paper.pdfText ?? '', paper.citationCount ?? 0, JSON.stringify(paper.tags), paper.notes, paper.readStatus, paper.rating, paper.addedAt,
+      paper.projectId ?? null, JSON.stringify(paper.referenceIds ?? []),
     );
+  }
+
+  /** Link (or unlink) a library paper to a project; also used by Zotero import. */
+  setPaperProjectId(paperId: string, projectId: string | null): boolean {
+    const result = this.db.prepare('UPDATE papers SET project_id = ? WHERE id = ?').run(projectId, paperId);
+    return result.changes > 0;
   }
 
   /**
@@ -630,8 +778,20 @@ export class PersistenceStore {
     id: string; title: string; authors: string[]; year: number; venue: string;
     abstract: string; doi?: string; arxivId?: string; pdfPath?: string; pdfUrl?: string; pdfText?: string;
     citationCount?: number; tags: string[]; notes: string; readStatus: string; rating: number; addedAt: number;
+    projectId?: string;
+    projectIds: string[];
+    referenceIds: string[];
   }> {
     const rows = this.db.prepare('SELECT * FROM papers ORDER BY added_at DESC').all() as Record<string, unknown>[];
+    const linkRows = this.db.prepare(
+      'SELECT paper_id, project_id FROM paper_project_links ORDER BY linked_at ASC, project_id ASC',
+    ).all() as Array<{ paper_id: string; project_id: string }>;
+    const projectIdsByPaper = new Map<string, string[]>();
+    for (const link of linkRows) {
+      const projectIds = projectIdsByPaper.get(link.paper_id) ?? [];
+      projectIds.push(link.project_id);
+      projectIdsByPaper.set(link.paper_id, projectIds);
+    }
     return rows.map((row) => ({
       id: row.id as string,
       title: row.title as string,
@@ -650,6 +810,11 @@ export class PersistenceStore {
       readStatus: row.read_status as string,
       rating: row.rating as number,
       addedAt: row.added_at as number,
+      projectId: projectIdsByPaper.get(row.id as string)?.[0]
+        ?? (row.project_id as string | null)
+        ?? undefined,
+      projectIds: projectIdsByPaper.get(row.id as string) ?? [],
+      referenceIds: JSON.parse((row.reference_ids as string) || '[]'),
     }));
   }
 
@@ -2116,13 +2281,28 @@ export class PersistenceStore {
   saveNote(note: {
     id: string; title: string; content: string; tags: string[];
     linkedPaperIds: string[]; linkedNoteIds: string[]; updatedAt: number;
+    scope?: 'global' | 'research'; projectId?: string;
   }): void {
+    const existing = this.db.prepare('SELECT project_id, scope FROM notes WHERE id = ?').get(note.id) as {
+      project_id: string | null;
+      scope: 'global' | 'research';
+    } | undefined;
+    const requestedScope = note.scope ?? existing?.scope ?? (note.projectId ? 'research' : 'global');
+    const projectId = requestedScope === 'research' ? (note.projectId ?? existing?.project_id ?? undefined) : undefined;
+    if (requestedScope === 'research' && !projectId) {
+      throw new Error('Project-scoped research notes require a project id');
+    }
     this.db.prepare(
-      `INSERT OR REPLACE INTO notes
-       (id, title, content, tags, linked_paper_ids, linked_note_ids, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO notes
+       (id, project_id, scope, title, content, tags, linked_paper_ids, linked_note_ids, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         project_id = excluded.project_id, scope = excluded.scope, title = excluded.title,
+         content = excluded.content, tags = excluded.tags,
+         linked_paper_ids = excluded.linked_paper_ids, linked_note_ids = excluded.linked_note_ids,
+         updated_at = excluded.updated_at`,
     ).run(
-      note.id, note.title, note.content, JSON.stringify(note.tags),
+      note.id, projectId ?? null, requestedScope, note.title, note.content, JSON.stringify(note.tags),
       JSON.stringify(note.linkedPaperIds), JSON.stringify(note.linkedNoteIds), note.updatedAt,
     );
   }
@@ -2130,10 +2310,13 @@ export class PersistenceStore {
   getNotes(): Array<{
     id: string; title: string; content: string; tags: string[];
     linkedPaperIds: string[]; linkedNoteIds: string[]; updatedAt: number;
+    scope: 'global' | 'research'; projectId?: string;
   }> {
     const rows = this.db.prepare('SELECT * FROM notes ORDER BY updated_at DESC').all() as Record<string, unknown>[];
     return rows.map((row) => ({
       id: row.id as string,
+      projectId: row.project_id === null || row.project_id === undefined ? undefined : String(row.project_id),
+      scope: row.scope === 'research' ? 'research' : 'global',
       title: row.title as string,
       content: row.content as string,
       tags: JSON.parse((row.tags as string) || '[]'),

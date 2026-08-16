@@ -1,5 +1,5 @@
 {
-  "startedAt": "2026-08-03T18:02:30.590Z",
+  "startedAt": "2026-08-12T12:34:22.876Z",
   "checks": [
     {
       "name": "startup:status ready",
@@ -9,7 +9,7 @@
     {
       "name": "settings:get returns structured view",
       "ok": true,
-      "detail": "{\"configured\":false,\"hasApiKey\":false,\"needsReauth\":false,\"theme\":\"light\",\"weeklyReadingGoal\":5,\"providerVision\":false}"
+      "detail": "{\"configured\":false,\"hasApiKey\":false,\"needsReauth\":false,\"theme\":\"light\",\"providerVision\":false,\"providerMaxContextToke"
     },
     {
       "name": "data:loadAll returns structured payload",
@@ -56,7 +56,7 @@
     {
       "name": "renderer UI mounted",
       "ok": true,
-      "detail": "{\"children\":1,\"scripts\":[\"inline\",\"inline\",\"metis-app://renderer/assets/index-5kqffS6M.js\"],\"bodyLen\":171}"
+      "detail": "{\"children\":1,\"scripts\":[\"inline\",\"inline\",\"metis-app://renderer/assets/index-C6P_cBfh.js\"],\"bodyLen\":171}"
     },
     {
       "name": "officecli:detected",

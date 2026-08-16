@@ -26,6 +26,25 @@ import type {
   SideEffectLedgerEntry,
   Source,
 } from './researchModel.js';
+import {
+  decodeProjectProviderOverride,
+  ProjectProviderOverrideSchema,
+  type ProjectProviderOverride,
+} from '../runtime/ProviderProfileContract.js';
+
+/** O13: projects.metadata 中存放项目级 provider 覆盖的键名。 */
+export const PROJECT_PROVIDER_OVERRIDE_METADATA_KEY = 'providerOverride' as const;
+
+export interface LibraryPaperProjectLinkInput {
+  paperId: string;
+  projectId: string;
+  title: string;
+  authors: string[];
+  year: number;
+  venue: string;
+  doi?: string;
+  arxivId?: string;
+}
 
 type Row = Record<string, unknown>;
 
@@ -74,6 +93,9 @@ function mapSource(row: Row): Source {
   return {
     id: String(row.id),
     projectId: String(row.project_id),
+    libraryPaperId: row.library_paper_id === null || row.library_paper_id === undefined
+      ? null
+      : String(row.library_paper_id),
     kind: row.kind as Source['kind'],
     title: String(row.title ?? ''),
     authors: parseJson(row.authors, []),
@@ -344,7 +366,7 @@ export class ResearchRepository {
       ...current,
       ...patch,
       metadata: patch.metadata ? { ...current.metadata, ...patch.metadata } : current.metadata,
-      archivedAt: patch.lifecycle === 'archived' ? Date.now() : current.archivedAt,
+      archivedAt: patch.lifecycle === 'archived' ? Date.now() : (patch.lifecycle ? null : current.archivedAt),
       updatedAt: Date.now(),
       version: current.version + 1,
     };
@@ -374,6 +396,40 @@ export class ResearchRepository {
       .run(at, at, id).changes > 0;
   }
 
+  // ─── O13: Per-project provider/model override ──────────────
+  //
+  // 覆盖存于 projects.metadata.providerOverride（settings 存储，无需 schema
+  // 迁移，既有数据不受影响）。读取经 zod 校验——损坏数据一律视为无覆盖。
+
+  /** 读取项目级 provider 覆盖；无覆盖或数据损坏时返回 null。 */
+  getProjectProviderOverride(projectId: string): ProjectProviderOverride | null {
+    const project = this.getProject(projectId);
+    if (!project) return null;
+    return decodeProjectProviderOverride(project.metadata[PROJECT_PROVIDER_OVERRIDE_METADATA_KEY]);
+  }
+
+  /**
+   * 设置/清除项目级 provider 覆盖。传 null 清除（metadata 中的键被移除）。
+   * 返回是否成功（项目不存在或覆盖不合法时为 false）。
+   */
+  setProjectProviderOverride(projectId: string, override: ProjectProviderOverride | null): boolean {
+    const project = this.getProject(projectId);
+    if (!project) return false;
+    if (override !== null && !ProjectProviderOverrideSchema.safeParse(override).success) {
+      return false;
+    }
+    const metadata: Record<string, unknown> = { ...project.metadata };
+    if (override === null) {
+      delete metadata[PROJECT_PROVIDER_OVERRIDE_METADATA_KEY];
+    } else {
+      metadata[PROJECT_PROVIDER_OVERRIDE_METADATA_KEY] = override;
+    }
+    // 直接整体重写 metadata 列（updateProject 的浅合并无法删除键）。
+    this.db.prepare('UPDATE projects SET metadata = ?, updated_at = ?, version = ? WHERE id = ?')
+      .run(stringify(metadata), Date.now(), project.version + 1, projectId);
+    return true;
+  }
+
   restoreProject(id: string): boolean {
     return this.db.prepare('UPDATE projects SET deleted_at = NULL, updated_at = ? WHERE id = ? AND deleted_at IS NOT NULL')
       .run(Date.now(), id).changes > 0;
@@ -386,12 +442,13 @@ export class ResearchRepository {
     const transaction = this.db.transaction(() => {
       this.db.prepare(`
         INSERT INTO sources (
-          id, project_id, kind, title, authors, year, venue, identifier, identifier_type,
+          id, project_id, library_paper_id, kind, title, authors, year, venue, identifier, identifier_type,
           file_path, external_url, tags, metadata, source_version_hash, provenance,
           created_at, updated_at, deleted_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
-          project_id = excluded.project_id, kind = excluded.kind, title = excluded.title,
+          project_id = excluded.project_id, library_paper_id = excluded.library_paper_id,
+          kind = excluded.kind, title = excluded.title,
           authors = excluded.authors, year = excluded.year, venue = excluded.venue,
           identifier = excluded.identifier, identifier_type = excluded.identifier_type,
           file_path = excluded.file_path, external_url = excluded.external_url,
@@ -401,6 +458,7 @@ export class ResearchRepository {
       `).run(
         source.id,
         source.projectId,
+        source.libraryPaperId ?? null,
         source.kind,
         source.title,
         stringify(source.authors),
@@ -434,13 +492,14 @@ export class ResearchRepository {
   insertSourceIfAbsent(source: Source): boolean {
     return this.db.prepare(`
       INSERT OR IGNORE INTO sources (
-        id, project_id, kind, title, authors, year, venue, identifier, identifier_type,
+        id, project_id, library_paper_id, kind, title, authors, year, venue, identifier, identifier_type,
         file_path, external_url, tags, metadata, source_version_hash, provenance,
         created_at, updated_at, deleted_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       source.id,
       source.projectId,
+      source.libraryPaperId ?? null,
       source.kind,
       source.title,
       stringify(source.authors),
@@ -458,6 +517,98 @@ export class ResearchRepository {
       source.updatedAt,
       source.deletedAt,
     ).changes > 0;
+  }
+
+  /**
+   * Link a canonical library paper into a project as a project-local Source.
+   * The paper can be linked to any number of projects; every project gets a
+   * distinct Source id so its evidence/codes/claims stay isolated, while
+   * libraryPaperId preserves the shared canonical identity.
+   */
+  linkLibraryPaperToProject(input: LibraryPaperProjectLinkInput): Source | undefined {
+    const transaction = this.db.transaction(() => {
+      const paperExists = this.db.prepare('SELECT 1 FROM papers WHERE id = ?').get(input.paperId);
+      const projectExists = this.db.prepare(
+        'SELECT 1 FROM projects WHERE id = ? AND deleted_at IS NULL',
+      ).get(input.projectId);
+      if (!paperExists || !projectExists) return undefined;
+
+      const existingRow = this.db.prepare(`
+        SELECT * FROM sources
+        WHERE project_id = ?
+          AND (library_paper_id = ? OR (library_paper_id IS NULL AND id = ?))
+        LIMIT 1
+      `).get(input.projectId, input.paperId, input.paperId) as Row | undefined;
+      const existing = existingRow ? mapSource(existingRow) : undefined;
+      const identifier = input.doi ?? input.arxivId ?? existing?.identifier ?? '';
+      const identifierType: Source['identifierType'] = input.doi
+        ? 'doi'
+        : input.arxivId
+          ? 'arxiv'
+          : existing?.identifierType ?? 'other';
+      const now = Date.now();
+      const source: Source = {
+        id: existing?.id ?? `source_library_${sha256(`${input.projectId}\0${input.paperId}`)}`,
+        projectId: input.projectId,
+        libraryPaperId: input.paperId,
+        kind: 'paper',
+        title: input.title || existing?.title || '',
+        authors: input.authors.length > 0 ? input.authors : existing?.authors ?? [],
+        year: input.year || existing?.year || null,
+        venue: input.venue || existing?.venue || '',
+        identifier,
+        identifierType,
+        filePath: existing?.filePath ?? null,
+        externalUrl: existing?.externalUrl ?? null,
+        tags: existing?.tags ?? [],
+        metadata: { ...(existing?.metadata ?? {}), libraryPaperId: input.paperId },
+        sourceVersionHash: existing?.sourceVersionHash ?? null,
+        provenance: existing?.provenance ?? { origin: 'library', importedAt: now },
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+        deletedAt: null,
+      };
+
+      this.saveSource(source);
+      this.db.prepare(`
+        INSERT OR IGNORE INTO paper_project_links (paper_id, project_id, linked_at)
+        VALUES (?, ?, ?)
+      `).run(input.paperId, input.projectId, now);
+      this.db.prepare(`
+        UPDATE papers SET project_id = COALESCE(project_id, ?) WHERE id = ?
+      `).run(input.projectId, input.paperId);
+      return source;
+    });
+    return transaction();
+  }
+
+  /** Remove only one project membership; preserve the research row for undo/audit. */
+  unlinkLibraryPaperFromProject(paperId: string, projectId: string): boolean {
+    const transaction = this.db.transaction(() => {
+      const removed = this.db.prepare(
+        'DELETE FROM paper_project_links WHERE paper_id = ? AND project_id = ?',
+      ).run(paperId, projectId).changes > 0;
+      if (!removed) return false;
+
+      const sourceRow = this.db.prepare(`
+        SELECT id FROM sources
+        WHERE project_id = ? AND library_paper_id = ? AND deleted_at IS NULL
+        LIMIT 1
+      `).get(projectId, paperId) as { id: string } | undefined;
+      if (sourceRow) this.softDeleteSource(sourceRow.id);
+
+      const next = this.db.prepare(`
+        SELECT project_id FROM paper_project_links
+        WHERE paper_id = ?
+        ORDER BY linked_at ASC, project_id ASC
+        LIMIT 1
+      `).get(paperId) as { project_id: string } | undefined;
+      this.db.prepare(`
+        UPDATE papers SET project_id = ? WHERE id = ? AND project_id = ?
+      `).run(next?.project_id ?? null, paperId, projectId);
+      return true;
+    });
+    return transaction();
   }
 
   getSource(id: string, includeDeleted = false): Source | undefined {

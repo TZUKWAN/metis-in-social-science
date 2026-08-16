@@ -1,0 +1,12 @@
+{
+  "replacements": [
+    {
+      "old": "  const activateSession = useCallback((sessionId: string) => {\n    sessionGenerationRef.current += 1;\n    activeSessionIdRef.current = sessionId;\n    activeChatRequestRef.current = null;\n    streamingIndexRef.current = -1;\n    setCurrentSessionId(sessionId);",
+      "new": "  const activateSession = useCallback((sessionId: string) => {\n    sessionGenerationRef.current += 1;\n    activeSessionIdRef.current = sessionId;\n    activeChatRequestRef.current = null;\n    streamingIndexRef.current = -1;\n    setGoalSuggestion(null);\n    setCurrentSessionId(sessionId);"
+    },
+    {
+      "old": "    // Normal chat persistence is owned by the main process so each message is\n    // committed once. Goal-only messages still use appendMessage below.\n    const hasActiveGoal = activeGoalId !== null;",
+      "new": "    // Normal chat persistence is owned by the main process so each message is\n    // committed once. Goal-only messages still use appendMessage below.\n    const hasActiveGoal = activeGoalId !== null;\n\n    // UX-CHAT-003: 低置信度任务表达 → 直接回答，同时保留非阻塞转任务建议；\n    // 其他输入清空旧建议。\n    setGoalSuggestion(!forceChat && isTaskAmbiguous(content) ? content : null);"
+    }
+  ]
+}

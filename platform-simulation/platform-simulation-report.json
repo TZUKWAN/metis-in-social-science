@@ -1,0 +1,770 @@
+{
+  "startedAt": "2026-08-16T15:26:36.124Z",
+  "mode": "real-electron-hidden-window-isolated-profile",
+  "providerKind": "deterministic-local-openai-compatible-test-server",
+  "isolatedProfile": "C:\\Users\\lauze\\AppData\\Local\\Temp\\metis-platform-sim-P5cnVs",
+  "checks": [
+    {
+      "category": "隔离",
+      "name": "模拟窗口保持隐藏，不抢占前台",
+      "ok": true,
+      "detail": "visible=false"
+    },
+    {
+      "category": "隔离",
+      "name": "使用独立临时用户目录",
+      "ok": true,
+      "detail": "C:\\Users\\lauze\\AppData\\Local\\Temp\\metis-platform-sim-P5cnVs"
+    },
+    {
+      "category": "启动",
+      "name": "真实主进程、预加载与渲染器就绪",
+      "ok": true
+    },
+    {
+      "category": "配置",
+      "name": "模型连接探测通过",
+      "ok": true,
+      "detail": "ok"
+    },
+    {
+      "category": "配置",
+      "name": "保存配置并重建运行引擎",
+      "ok": true,
+      "detail": "ok"
+    },
+    {
+      "category": "配置",
+      "name": "配置后重载不再出现首启门禁",
+      "ok": true
+    },
+    {
+      "category": "信息架构",
+      "name": "正常模式顶部入口完整且无技术管理入口",
+      "ok": true,
+      "detail": "[\"converse\",\"projects\",\"autonomous\",\"settings\",\"personalization\"]"
+    },
+    {
+      "category": "导航",
+      "name": "科研项目可打开",
+      "ok": true,
+      "detail": "latency=318ms"
+    },
+    {
+      "category": "导航",
+      "name": "科研项目入口状态与页面一致",
+      "ok": true,
+      "detail": "[\"projects\"]"
+    },
+    {
+      "category": "项目",
+      "name": "从科研项目工作台打开新建项目表单",
+      "ok": true
+    },
+    {
+      "category": "项目",
+      "name": "通过真实界面创建研究项目",
+      "ok": true
+    },
+    {
+      "category": "项目",
+      "name": "新项目进入持久研究仓库",
+      "ok": true,
+      "detail": "project-727b87b0-59e3-410d-ab3c-48d9df0dc040"
+    },
+    {
+      "category": "资料",
+      "name": "规范文献记录可持久化",
+      "ok": true,
+      "detail": "saved"
+    },
+    {
+      "category": "研究对象",
+      "name": "资料、证据、编码和论断均可写入项目",
+      "ok": true,
+      "detail": "[{\"success\":true,\"code\":\"created\",\"projectId\":\"project-727b87b0-59e3-410d-ab3c-48d9df0dc040\",\"resourceKind\":\"source\",\"resourceId\":\"platform-source-1\"},{\"success\":true,\"code\":\"created\",\"projectId\":\"project-727b87b0-59e3-410d-ab3c-48d9df0dc040\",\"resourceKind\":\"evidence\",\"resourceId\":\"platform-evidence-1\"},{\"success\":true,\"code\":\"created\",\"projectId\":\"project-727b87b0-59e3-410d-ab3c-48d9df0dc040\",\"resourceKind\":\"note_code\",\"resourceId\":\"platform-code-1\"},{\"success\":true,\"code\":\"created\",\"projectId\":\"project-727b87b0-59e3-410d-ab3c-48d9df0dc040\",\"resourceKind\":\"claim\",\"resourceId\":\"platform-claim-1\"}]"
+    },
+    {
+      "category": "研究对象",
+      "name": "论断和证据可建立可追溯关联",
+      "ok": true,
+      "detail": "linked"
+    },
+    {
+      "category": "研究成果",
+      "name": "研究产物以版本化草稿保存",
+      "ok": true,
+      "detail": "{\"success\":true,\"code\":\"versioned\",\"projectId\":\"project-727b87b0-59e3-410d-ab3c-48d9df0dc040\",\"resourceKind\":\"artifact_version\",\"resourceId\":\"platform-artifact-1\",\"version\":1}"
+    },
+    {
+      "category": "研究对象",
+      "name": "项目快照聚合完整研究对象",
+      "ok": true,
+      "detail": "{\"sources\":1,\"evidence\":1,\"noteCodes\":1,\"claims\":1,\"artifacts\":1}"
+    },
+    {
+      "category": "科研项目",
+      "name": "打开项目链接进入科研项目工作台并选中对应项目",
+      "ok": true,
+      "detail": "{\"page\":true,\"activeItem\":\"page\",\"artifactsTabSelected\":\"true\"}"
+    },
+    {
+      "category": "科研项目",
+      "name": "聊天/任务看板/研究成果三个模式页签均可切换",
+      "ok": true,
+      "detail": "[{\"mode\":\"chat\",\"clicked\":true,\"selected\":\"true\"},{\"mode\":\"kanban\",\"clicked\":true,\"selected\":\"true\"},{\"mode\":\"artifacts\",\"clicked\":true,\"selected\":\"true\"}]"
+    },
+    {
+      "category": "科研项目",
+      "name": "项目列表宽度可拖拽调节",
+      "ok": true,
+      "detail": "{\"found\":true,\"before\":248,\"after\":368,\"changed\":true}"
+    },
+    {
+      "category": "研究成果",
+      "name": "项目产物在研究成果中心可见",
+      "ok": true
+    },
+    {
+      "category": "研究成果",
+      "name": "产物条目直接显示类别与版本信息",
+      "ok": true,
+      "detail": "{\"item\":true,\"categories\":[\"论文\"],\"versions\":\"1 个版本\"}"
+    },
+    {
+      "category": "研究成果",
+      "name": "最终版标记在缺交付配置时被明确拒绝",
+      "ok": true,
+      "detail": "{\"markClicked\":true,\"rejectedNotice\":true,\"reviewStatus\":\"draft\"}"
+    },
+    {
+      "category": "研究成果",
+      "name": "右键标记「待审核」持久化到产物状态",
+      "ok": true,
+      "detail": "{\"pendingClicked\":true,\"pendingBadge\":true,\"pendingStatus\":\"pending\"}"
+    },
+    {
+      "category": "研究写作",
+      "name": "研究备忘录可持久化",
+      "ok": true,
+      "detail": "{\"success\":true,\"code\":\"saved\"}"
+    },
+    {
+      "category": "导航",
+      "name": "协同对话可打开",
+      "ok": true,
+      "detail": "latency=9ms"
+    },
+    {
+      "category": "导航",
+      "name": "协同对话入口状态与页面一致",
+      "ok": true,
+      "detail": "[\"converse\"]"
+    },
+    {
+      "category": "协同对话",
+      "name": "第三方 AI 分屏与 Metis 对话同屏",
+      "ok": true,
+      "detail": "{\"page\":true,\"host\":true,\"tabs\":[\"豆包\",\"Kimi\",\"智谱 GLM\",\"ChatGPT\",\"Claude\",\"DeepSeek\"],\"metisChat\":true}"
+    },
+    {
+      "category": "协同对话",
+      "name": "分屏宽度可拖拽调节且持久化",
+      "ok": true,
+      "detail": "{\"found\":true,\"before\":722,\"after\":562,\"changed\":true}"
+    },
+    {
+      "category": "协同对话",
+      "name": "Metis 对话直接链接当前科研项目",
+      "ok": true,
+      "detail": "{\"select\":true,\"linkedValue\":\"project-727b87b0-59e3-410d-ab3c-48d9df0dc040\",\"expected\":\"project-727b87b0-59e3-410d-ab3c-48d9df0dc040\",\"noProjectNotice\":false}"
+    },
+    {
+      "category": "研究对话",
+      "name": "可输入并发送项目研究问题",
+      "ok": true
+    },
+    {
+      "category": "研究对话",
+      "name": "流式回答完成且未泄漏工具标记",
+      "ok": true
+    },
+    {
+      "category": "研究对话",
+      "name": "工具调用回合被最终回答接续（list_sources → 回答）",
+      "ok": true,
+      "detail": "{\"before\":0,\"after\":1}"
+    },
+    {
+      "category": "研究对话",
+      "name": "回答完成后无空白助手消息气泡",
+      "ok": true,
+      "detail": "blank=0"
+    },
+    {
+      "category": "研究对话",
+      "name": "基于工具结果的最终回答已持久化",
+      "ok": true,
+      "detail": "{\"persistedMessages\":2}"
+    },
+    {
+      "category": "研究对话",
+      "name": "提出研究问题默认直接回答且不误建任务",
+      "ok": true,
+      "detail": "{\"suggestionBar\":true,\"noGoalCardAfterAmbiguous\":true,\"goalCountUnchanged\":true}"
+    },
+    {
+      "category": "研究对话",
+      "name": "显式任务命令零确认自动执行",
+      "ok": true,
+      "detail": "{\"explicitGoalCard\":true,\"goalsBefore\":0,\"goalsAfter\":1}"
+    },
+    {
+      "category": "快捷操作",
+      "name": "Ctrl+K 打开全局搜索",
+      "ok": true
+    },
+    {
+      "category": "全局搜索",
+      "name": "弹层有可访问名称且打开时焦点进入输入框",
+      "ok": true,
+      "detail": "{\"ariaLabel\":\"全局搜索\",\"focused\":true}"
+    },
+    {
+      "category": "全局搜索",
+      "name": "Esc 关闭后弹层卸载",
+      "ok": true
+    },
+    {
+      "category": "导航",
+      "name": "科研项目可打开",
+      "ok": true,
+      "detail": "latency=8ms"
+    },
+    {
+      "category": "导航",
+      "name": "科研项目入口状态与页面一致",
+      "ok": true,
+      "detail": "[\"projects\"]"
+    },
+    {
+      "category": "任务看板",
+      "name": "科研项目内的任务看板可打开",
+      "ok": true
+    },
+    {
+      "category": "任务看板",
+      "name": "刷新按钮显示本地化文案",
+      "ok": true,
+      "detail": "刷新"
+    },
+    {
+      "category": "任务",
+      "name": "可在看板通过界面创建项目研究任务记录",
+      "ok": true,
+      "detail": "{\"goalId\":\"goal_1786894033059_8s18he\",\"label\":\"核对模拟档案的来源边界\",\"status\":\"ready\",\"createdAt\":1786894033059,\"projectId\":\"project-727b87b0-59e3-410d-ab3c-48d9df0dc040\"}"
+    },
+    {
+      "category": "任务",
+      "name": "看板新建任务继承当前活动项目",
+      "ok": true,
+      "detail": "{\"expectedProjectId\":\"project-727b87b0-59e3-410d-ab3c-48d9df0dc040\",\"actual\":\"project-727b87b0-59e3-410d-ab3c-48d9df0dc040\"}"
+    },
+    {
+      "category": "任务",
+      "name": "任务卡可打开详情并保留上下文",
+      "ok": true
+    },
+    {
+      "category": "导航",
+      "name": "科研项目可打开",
+      "ok": true,
+      "detail": "latency=2ms"
+    },
+    {
+      "category": "导航",
+      "name": "科研项目入口状态与页面一致",
+      "ok": true,
+      "detail": "[\"projects\"]"
+    },
+    {
+      "category": "项目资料",
+      "name": "科研项目内的资料模式可打开",
+      "ok": true
+    },
+    {
+      "category": "项目资料",
+      "name": "资料模式内检索区与项目文献区完整",
+      "ok": true,
+      "detail": "{\"searchInput\":true,\"submit\":true,\"ncpssd\":true,\"openalex\":true,\"coreOnly\":true,\"mineOrEmpty\":true,\"toolbar\":true}"
+    },
+    {
+      "category": "方法库",
+      "name": "方法库面板可打开且内置方法就位",
+      "ok": true,
+      "detail": "builtinMethods=6"
+    },
+    {
+      "category": "文献订阅",
+      "name": "订阅面板可开合且输入框可用",
+      "ok": true
+    },
+    {
+      "category": "导航",
+      "name": "设置可打开",
+      "ok": true,
+      "detail": "latency=62ms"
+    },
+    {
+      "category": "导航",
+      "name": "设置入口状态与页面一致",
+      "ok": true,
+      "detail": "[\"settings\"]"
+    },
+    {
+      "category": "设置",
+      "name": "存储、微信及模型配置分区可见",
+      "ok": true,
+      "detail": "{\"sections\":13,\"storage\":true,\"wechat\":true,\"keyMasked\":true,\"hasPlainTestKey\":false}"
+    },
+    {
+      "category": "设置",
+      "name": "已保存模型密钥只显示掩码",
+      "ok": true
+    },
+    {
+      "category": "设置",
+      "name": "项目归档选择控件有程序化标签",
+      "ok": true
+    },
+    {
+      "category": "导航",
+      "name": "场景中心可打开",
+      "ok": true,
+      "detail": "latency=321ms"
+    },
+    {
+      "category": "导航",
+      "name": "场景中心入口状态与页面一致",
+      "ok": true,
+      "detail": "[\"personalization\"]"
+    },
+    {
+      "category": "场景",
+      "name": "场景中心连接真实个性化仓库",
+      "ok": true,
+      "detail": "{\"ok\":true,\"count\":0}"
+    },
+    {
+      "category": "场景",
+      "name": "AI 辅助创建面板可打开",
+      "ok": true
+    },
+    {
+      "category": "场景",
+      "name": "AI 辅助创建生成场景与智能体",
+      "ok": true,
+      "detail": "true"
+    },
+    {
+      "category": "场景",
+      "name": "AI 生成的智能体与场景已持久化",
+      "ok": true,
+      "detail": "{\"agents\":1,\"workflowSteps\":2}"
+    },
+    {
+      "category": "场景",
+      "name": "AI 生成场景记忆 Metis.md 并绑定到场景",
+      "ok": true,
+      "detail": "{\"rulesId\":\"user:rules/custom-rules\",\"rulesIds\":[\"user:rules/custom-rules\"]}"
+    },
+    {
+      "category": "场景",
+      "name": "AI 自动设计论文结构（引言+主体+结论）",
+      "ok": true,
+      "detail": "{\"sections\":[\"引言\",\"制度演变分析\",\"结论\"]}"
+    },
+    {
+      "category": "场景",
+      "name": "AI 结果已填入编辑器供用户修改",
+      "ok": true
+    },
+    {
+      "category": "场景",
+      "name": "模板识别把粘贴模板解析为逐节写作指引",
+      "ok": true
+    },
+    {
+      "category": "场景",
+      "name": "解析后的论文结构可保存并供自主科研使用",
+      "ok": true,
+      "detail": "{\"sections\":[\"引言\",\"研究现状\",\"研究方法\",\"结论\"]}"
+    },
+    {
+      "category": "导航",
+      "name": "自主科研可打开",
+      "ok": true,
+      "detail": "latency=21ms"
+    },
+    {
+      "category": "导航",
+      "name": "自主科研入口状态与页面一致",
+      "ok": true,
+      "detail": "[\"autonomous\"]"
+    },
+    {
+      "category": "自主科研",
+      "name": "工作台提供精简启动条与四项全局指标",
+      "ok": true,
+      "detail": "{\"input\":true,\"count\":true,\"start\":true,\"metrics\":4,\"countLabel\":true}"
+    },
+    {
+      "category": "自主科研",
+      "name": "旧控制台可经工作台打开并保留策略配置",
+      "ok": true
+    },
+    {
+      "category": "自主科研",
+      "name": "策略与论文结构选择控件有程序化标签",
+      "ok": true,
+      "detail": "{\"strategy\":true,\"structure\":true}"
+    },
+    {
+      "category": "自主科研",
+      "name": "策略编辑器动态表单控件均有可访问名称",
+      "ok": true,
+      "detail": "unlabeled=0"
+    },
+    {
+      "category": "自主科研",
+      "name": "无需方法确认即可直接开始探索",
+      "ok": true
+    },
+    {
+      "category": "自主科研",
+      "name": "自主研究完成且未停在人工确认",
+      "ok": true,
+      "detail": "{\"completed\":{\"version\":1,\"sessionId\":\"auto_msvyksvh\",\"sequence\":51,\"type\":\"engine-completed\",\"summary\":\"研究目标：利用当前项目资料探索地方救济制度的演变及其证据边界\\n\\n研究成果：\\n# 模拟研究响应\\n\\n这是后台平台体验测试的受控响应，用来验证真实界面、流式通信、工具调用与持久化链路。\\n请求摘要：研究目标：利用当前项目资料探索地方救济制度的演变及其证据边界\\n\\n论文结构（研究者定义，不可增删）：\\n1. 引言\\n2. 研究问题与背景\\n3. 方法与资料\\n4. 发现与分析\\n5. 结论\\n\\n前序阶段证据与论证：\\n## 阶段「question_formulation」的产出\\n# 模拟研究响应\\n\\n这是后台平台体验测试的受控响应，用来验证真实界面、流式通信、工具调用与持久化链路。\\n请求摘要：[status=ok code=ok] Tool result suppressed\\n\\n## 研究\\n\\n## 研究边界\\n没有声称完成真实外部检索，学术判断保持草稿。\\n\\n## 下一步\\n继续核对来源、证据锚点、论断与研究产物之间的可追溯关系。\\n\\n最终反思：方法阶段已执行完毕，产物与限制均已记录。\",\"artifactIds\":[\"auto-artifact-6430917dc1bd864546b2bf5807d02a73\",\"auto-artifact-379c5f06fca4bccd46f48d760401f2f3\",\"auto-artifact-e4949be91602e2f0950ae19f79811bca\",\"auto-artifact-94d0a0f7ddcf2d4e6362173c91f11ff4\",\"auto-artifact-f80cf4ef6659a68cd8244f4350e4aeb4\",\"auto-artifact-864e4f43313b1039d19ef9fcb7e8aaf2\",\"auto-artifact-b0ad70233e8569210a28731621fe9bea\",\"auto-artifact-d465ee6f28e2d6bbe23856866e9f2560\",\"auto-artifact-70526af41fb0e299a540b01e06335609\",\"auto-artifact-41e76fb7a66a4f10c6bb3270ed2f412e\"]},\"failed\":null}"
+    },
+    {
+      "category": "自主科研",
+      "name": "每个方法阶段形成持久成果",
+      "ok": true,
+      "detail": "artifactIds=10"
+    },
+    {
+      "category": "自主科研",
+      "name": "自主阶段真实读取当前项目资料工具",
+      "ok": true,
+      "detail": 11
+    },
+    {
+      "category": "自主科研",
+      "name": "完成进度达到真实总阶段数",
+      "ok": true,
+      "detail": "阶段进度: 10/10"
+    },
+    {
+      "category": "工作区",
+      "name": "独立自主运行完成（工作区走查数据源）",
+      "ok": true,
+      "detail": "[\"auto-artifact-6037c809d841b171ef733bde3ca0cb0f\",\"auto-artifact-f5921da69bdee99"
+    },
+    {
+      "category": "导航",
+      "name": "自主科研可打开",
+      "ok": true,
+      "detail": "latency=5ms"
+    },
+    {
+      "category": "导航",
+      "name": "自主科研入口状态与页面一致",
+      "ok": true,
+      "detail": "[\"autonomous\"]"
+    },
+    {
+      "category": "工作区",
+      "name": "工作台 overview 列出真实自主项目",
+      "ok": true,
+      "detail": "projects=1"
+    },
+    {
+      "category": "工作区",
+      "name": "detail IPC 返回真实研究内容",
+      "ok": true,
+      "detail": "{\"question\":\"地方救济制度演变的证据边界（工作区走查）\",\"version\":1,\"judgments\":0,\"findings\":0,\"artifacts\":10,\"decisions\":0}"
+    },
+    {
+      "category": "工作区",
+      "name": "三栏布局与左栏项目+六分区导航",
+      "ok": true,
+      "detail": "{\"rail\":true,\"subnav\":6,\"audit\":true}"
+    },
+    {
+      "category": "工作区",
+      "name": "研究问题直展带版本徽章与历史",
+      "ok": true,
+      "detail": "version=v1"
+    },
+    {
+      "category": "工作区",
+      "name": "核心判断/新发现/不确定性/成果/统计全部直展",
+      "ok": true,
+      "detail": "{\"judgments\":true,\"findings\":true,\"uncertainty\":true,\"artifacts\":10,\"stats\":true}"
+    },
+    {
+      "category": "工作区",
+      "name": "右 AI LIVE rail 滚动保持可见",
+      "ok": true
+    },
+    {
+      "category": "工作区",
+      "name": "研究轨迹分区直展真实动态",
+      "ok": true
+    },
+    {
+      "category": "工作区",
+      "name": "三栏工作区无任何审批/决策等待节点",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "category": "恢复",
+      "name": "重载后项目、笔记和任务仍存在",
+      "ok": true,
+      "detail": "{\"notes\":1,\"goals\":2,\"snapshot\":true}"
+    },
+    {
+      "category": "恢复",
+      "name": "成功自主运行不遗留恢复检查点",
+      "ok": true,
+      "detail": "{\"sessions\":[]}"
+    },
+    {
+      "category": "布局",
+      "name": "1400px 桌面宽度无整页横向滚动",
+      "ok": true,
+      "detail": "{\"width\":1387,\"scrollWidth\":1387,\"overflow\":false,\"navOverflow\":false}"
+    },
+    {
+      "category": "布局",
+      "name": "1100px 桌面宽度无整页横向滚动",
+      "ok": true,
+      "detail": "{\"width\":1087,\"scrollWidth\":1087,\"overflow\":false,\"navOverflow\":false}"
+    },
+    {
+      "category": "布局",
+      "name": "1000px 桌面宽度无整页横向滚动",
+      "ok": true,
+      "detail": "{\"width\":987,\"scrollWidth\":987,\"overflow\":false,\"navOverflow\":false}"
+    },
+    {
+      "category": "稳定性",
+      "name": "模拟期间无渲染器错误级控制台消息",
+      "ok": true,
+      "detail": "[]"
+    }
+  ],
+  "issues": [],
+  "surfaces": [
+    {
+      "name": "科研项目",
+      "title": "metis-workbench",
+      "textLength": 247,
+      "activeTopNavIds": [
+        "projects"
+      ],
+      "unlabeledButtons": [],
+      "unlabeledInputs": [],
+      "duplicateIds": [],
+      "horizontalOverflow": false,
+      "width": 1388,
+      "scrollWidth": 1388,
+      "overflowingElements": []
+    },
+    {
+      "name": "科研项目工作台",
+      "title": "metis-workbench",
+      "textLength": 212,
+      "activeTopNavIds": [
+        "projects"
+      ],
+      "unlabeledButtons": [],
+      "unlabeledInputs": [],
+      "duplicateIds": [],
+      "horizontalOverflow": false,
+      "width": 1388,
+      "scrollWidth": 1388,
+      "overflowingElements": []
+    },
+    {
+      "name": "协同对话",
+      "title": "metis-workbench",
+      "textLength": 278,
+      "activeTopNavIds": [
+        "converse"
+      ],
+      "unlabeledButtons": [],
+      "unlabeledInputs": [],
+      "duplicateIds": [],
+      "horizontalOverflow": false,
+      "width": 1388,
+      "scrollWidth": 1388,
+      "overflowingElements": []
+    },
+    {
+      "name": "科研项目",
+      "title": "metis-workbench",
+      "textLength": 248,
+      "activeTopNavIds": [
+        "projects"
+      ],
+      "unlabeledButtons": [],
+      "unlabeledInputs": [],
+      "duplicateIds": [],
+      "horizontalOverflow": false,
+      "width": 1388,
+      "scrollWidth": 1388,
+      "overflowingElements": []
+    },
+    {
+      "name": "科研项目",
+      "title": "metis-workbench",
+      "textLength": 415,
+      "activeTopNavIds": [
+        "projects"
+      ],
+      "unlabeledButtons": [],
+      "unlabeledInputs": [],
+      "duplicateIds": [],
+      "horizontalOverflow": false,
+      "width": 1388,
+      "scrollWidth": 1388,
+      "overflowingElements": []
+    },
+    {
+      "name": "设置",
+      "title": "metis-workbench",
+      "textLength": 1372,
+      "activeTopNavIds": [
+        "settings"
+      ],
+      "unlabeledButtons": [],
+      "unlabeledInputs": [],
+      "duplicateIds": [],
+      "horizontalOverflow": false,
+      "width": 1388,
+      "scrollWidth": 1388,
+      "overflowingElements": []
+    },
+    {
+      "name": "场景中心",
+      "title": "metis-workbench",
+      "textLength": 314,
+      "activeTopNavIds": [
+        "personalization"
+      ],
+      "unlabeledButtons": [],
+      "unlabeledInputs": [],
+      "duplicateIds": [],
+      "horizontalOverflow": false,
+      "width": 1388,
+      "scrollWidth": 1388,
+      "overflowingElements": []
+    },
+    {
+      "name": "自主科研",
+      "title": "metis-workbench",
+      "textLength": 673,
+      "activeTopNavIds": [
+        "autonomous"
+      ],
+      "unlabeledButtons": [],
+      "unlabeledInputs": [],
+      "duplicateIds": [],
+      "horizontalOverflow": false,
+      "width": 1388,
+      "scrollWidth": 1388,
+      "overflowingElements": []
+    },
+    {
+      "name": "自主科研",
+      "title": "metis-workbench",
+      "textLength": 4235,
+      "activeTopNavIds": [
+        "autonomous"
+      ],
+      "unlabeledButtons": [],
+      "unlabeledInputs": [],
+      "duplicateIds": [],
+      "horizontalOverflow": false,
+      "width": 1388,
+      "scrollWidth": 1388,
+      "overflowingElements": []
+    }
+  ],
+  "screenshots": [
+    "surface-projects.png",
+    "project-center.png",
+    "artifacts-center.png",
+    "surface-converse.png",
+    "conversation-answer.png",
+    "conversation-auto-goal.png",
+    "surface-projects.png",
+    "task-board-detail.png",
+    "surface-projects.png",
+    "project-materials.png",
+    "project-materials-tools.png",
+    "surface-settings.png",
+    "settings-overview.png",
+    "surface-personalization.png",
+    "personalization-center.png",
+    "template-recognition.png",
+    "surface-autonomous.png",
+    "autonomous-completed.png",
+    "surface-autonomous.png",
+    "workspace-detail.png"
+  ],
+  "console": [],
+  "requests": {
+    "total": 73,
+    "streaming": 45,
+    "toolCalls": {
+      "list_sources": 16
+    },
+    "byPath": {
+      "/v1/chat/completions": 71,
+      "/v1/models/gpt-4o-mini": 1,
+      "/v1/models": 1
+    }
+  },
+  "metrics": {
+    "navigation.projects.ms": 2,
+    "navigation.converse.ms": 9,
+    "chatSessionCount": {
+      "persisted": 2,
+      "activeMeta": "",
+      "visibleMessages": 2
+    },
+    "navigation.settings.ms": 62,
+    "navigation.personalization.ms": 321,
+    "navigation.autonomous.ms": 5,
+    "renderer": {
+      "usedJSHeapSize": 69271414,
+      "totalJSHeapSize": 106955818,
+      "domNodes": 123
+    },
+    "processMemoryKb": {
+      "residentSet": 223692,
+      "private": 169660,
+      "shared": 800
+    }
+  },
+  "finishedAt": "2026-08-16T15:27:34.981Z",
+  "summary": {
+    "passed": 97,
+    "failed": 0,
+    "issues": 0,
+    "consoleErrors": 0
+  }
+}

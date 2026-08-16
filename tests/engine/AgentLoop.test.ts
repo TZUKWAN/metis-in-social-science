@@ -140,7 +140,7 @@ function setupLoop(responses: NormalizedResponse[], opts?: { maxToolsPerSession?
 
 describe('AgentLoop', () => {
   it('completes immediately when provider returns no tool calls', async () => {
-    const { loop } = setupLoop([
+    const { loop, provider } = setupLoop([
       { content: 'Task completed successfully.', toolCalls: [], finishReason: 'stop', usage: makeUsage() },
     ]);
 
@@ -151,6 +151,18 @@ describe('AgentLoop', () => {
     expect(result.turnsUsed).toBe(1);
     expect(result.toolResults).toHaveLength(0);
     expect(result.errors).toHaveLength(0);
+    expect(provider.receivedToolNames).toEqual([['echo', 'fail_tool']]);
+  });
+
+  it('passes canonical ToolSpec objects to providers instead of wrapped function schemas', async () => {
+    const { loop, provider } = setupLoop([
+      { content: 'Only the requested tool was exposed.', toolCalls: [], finishReason: 'stop', usage: makeUsage() },
+    ]);
+
+    const result = await loop.run(makeRequest({ allowedTools: ['echo'] }));
+
+    expect(result.status).toBe('completed');
+    expect(provider.receivedToolNames).toEqual([['echo']]);
   });
 
   it('treats an explicit empty scenario allowlist as no tools, not all tools', async () => {

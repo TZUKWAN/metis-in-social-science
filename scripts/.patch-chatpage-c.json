@@ -1,0 +1,12 @@
+{
+  "replacements": [
+    {
+      "old": "      if (response.status !== 'completed') {\n        if (response.status === 'interrupted' || response.status === 'cancelled') {",
+      "new": "      if (response.status !== 'completed') {\n        // UX-CHAT-002: 先结算流式占位消息（空内容删除、部分内容标记草稿），\n        // 再追加明确收据；不残留空白气泡与错误气泡并存的序列。\n        settleStreamingPlaceholder(request);\n        if (response.status === 'interrupted' || response.status === 'cancelled') {"
+    },
+    {
+      "old": "    } catch (err) {\n      if (!isCurrentChatRequest(request)) return;\n      const errorMsg: ChatMessage = {\n        role: 'assistant',\n        content: presentExecutionError(err, locale, resolvedUIMode),\n        timestamp: now(),\n      };\n      setMessages((prev) => [...prev, errorMsg]);\n    } finally {\n      if (isCurrentChatRequest(request)) {\n        streamingIndexRef.current = -1;\n        activeChatRequestRef.current = null;\n        setIsLoading(false);\n        setControlState('idle');\n      }\n    }",
+      "new": "    } catch (err) {\n      if (!isCurrentChatRequest(request)) return;\n      // UX-CHAT-002: 异常路径同样结算流式占位消息。\n      settleStreamingPlaceholder(request);\n      const errorMsg: ChatMessage = {\n        role: 'assistant',\n        content: presentExecutionError(err, locale, resolvedUIMode),\n        timestamp: now(),\n      };\n      setMessages((prev) => [...prev, errorMsg]);\n    } finally {\n      if (isCurrentChatRequest(request)) {\n        streamingIndexRef.current = -1;\n        activeChatRequestRef.current = null;\n        setIsLoading(false);\n        setControlState('idle');\n        // UX-CHAT-004: 主进程已在回合内持久化消息，刷新权威会话摘要。\n        refreshSessionSummaries();\n      }\n    }"
+    }
+  ]
+}

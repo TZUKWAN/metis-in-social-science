@@ -23,7 +23,6 @@ function resetStore() {
     collections: [],
     selectedCollection: null,
     workflowRuns: [],
-    weeklyReadingGoal: 5,
     locale: 'zh',
     theme: 'light',
     isHydrated: true,
@@ -51,20 +50,28 @@ describe('App session restore', () => {
   });
 
   it('restores the saved navigation entry on launch', async () => {
-    window.localStorage.setItem(SESSION_KEY, JSON.stringify({ entry: 'library', mode: 'read', projectId: null }));
+    window.localStorage.setItem(SESSION_KEY, JSON.stringify({ entry: 'settings', mode: 'converse', projectId: null }));
     render(<App />);
-    // PapersPage is lazy-loaded, so wait for both the nav highlight and the
-    // resolved page rather than asserting synchronously.
     await waitFor(() => {
-      expect(activeNavButton()?.getAttribute('data-nav-id')).toBe('library');
-      expect(document.querySelector('.papers-page')).toBeTruthy();
+      expect(activeNavButton()?.getAttribute('data-nav-id')).toBe('settings');
+      expect(document.querySelector('.settings-page, .settings-group')).toBeTruthy();
+    });
+  });
+
+  it('migrates legacy browser/library entries to the projects entry', async () => {
+    window.localStorage.setItem(SESSION_KEY, JSON.stringify({ entry: 'library', mode: 'converse', projectId: null }));
+    render(<App />);
+    // 迁移后落在科研项目入口（converse 工作区仍正常工作，不落回设置页或崩溃）。
+    await waitFor(() => {
+      expect(activeNavButton()?.getAttribute('data-nav-id')).toBe('converse');
+      expect(document.querySelector('.library-page')).toBeNull();
     });
   });
 
   it('saves navigation changes back to localStorage', async () => {
     render(<App />);
     await waitFor(() => {
-      expect(activeNavButton()?.getAttribute('data-nav-id')).toBe('projects');
+      expect(activeNavButton()?.getAttribute('data-nav-id')).toBe('converse');
     });
 
     const settingsNav = within(screen.getByRole('navigation', { name: 'Metis' }))
@@ -86,7 +93,7 @@ describe('App session restore', () => {
     window.localStorage.setItem(SESSION_KEY, JSON.stringify({ entry: 'projects', mode: 'converse', projectId: 'p-restored' }));
     render(<App />);
     await waitFor(() => {
-      expect(activeNavButton()?.getAttribute('data-nav-id')).toBe('projects');
+      expect(activeNavButton()?.getAttribute('data-nav-id')).toBe('converse');
     });
     expect(researchWorkspaceStore.getState().activeProjectId).toBe('p-restored');
   });
@@ -96,7 +103,7 @@ describe('App session restore', () => {
     render(<App />);
     await waitFor(() => {
       // Falls back to the default projects entry and stays functional.
-      expect(activeNavButton()?.getAttribute('data-nav-id')).toBe('projects');
+      expect(activeNavButton()?.getAttribute('data-nav-id')).toBe('converse');
     });
     expect(researchWorkspaceStore.getState().activeProjectId).toBeNull();
   });
@@ -105,7 +112,7 @@ describe('App session restore', () => {
     window.localStorage.setItem(SESSION_KEY, JSON.stringify({ entry: 'hacked', mode: 'converse', projectId: null }));
     render(<App />);
     await waitFor(() => {
-      expect(activeNavButton()?.getAttribute('data-nav-id')).toBe('projects');
+      expect(activeNavButton()?.getAttribute('data-nav-id')).toBe('converse');
     });
   });
 });

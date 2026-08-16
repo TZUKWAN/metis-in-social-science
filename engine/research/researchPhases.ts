@@ -264,7 +264,7 @@ export const PAPER_PHASE_WORKFLOW: WorkflowDefinition = {
   dependencies: { outline: [], draft_sections: ['outline'], compile_latex: ['draft_sections'], final: ['compile_latex'] },
 };
 
-export const PHASE_WORKFLOWS: Record<ResearchPhaseKind, WorkflowDefinition> = {
+export const PHASE_WORKFLOWS: Partial<Record<ResearchPhaseKind, WorkflowDefinition>> = {
   idea: IDEA_PHASE_WORKFLOW,
   experiment: EXPERIMENT_PHASE_WORKFLOW,
   analysis: ANALYSIS_PHASE_WORKFLOW,

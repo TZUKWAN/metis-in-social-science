@@ -99,6 +99,12 @@ export function isExpectedLayoutAcceptanceFrame(
 ): boolean {
   try {
     const parsed = new URL(senderFrameUrl);
+    // Production builds serve the renderer over the custom metis-app:// scheme
+    // (metis-app://renderer/index.html); acceptance must recognize it exactly
+    // like the canonical file:// entry it replaces.
+    if (parsed.protocol === 'metis-app:' && parsed.host === 'renderer' && parsed.pathname === '/index.html') {
+      return true;
+    }
     if (parsed.protocol !== 'file:') return false;
     return path.resolve(fileURLToPath(parsed)) === path.resolve(expectedEntryPath);
   } catch {

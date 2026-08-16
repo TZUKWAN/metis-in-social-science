@@ -34,8 +34,8 @@ export default function ScenarioLauncher({
         </h2>
         <p>
           {zh
-            ? '请在“个性化”中从空白开始，组合你自己的智能体、技能、MCP、工作流与 Metis.md。'
-            : 'Start from a blank definition in Personalization, then compose your own Agents, Skills, MCPs, workflow, and Metis.md.'}
+            ? '请在“场景”中从空白开始，组合你自己的智能体、技能、MCP、工作流与 Metis.md。'
+            : 'Start from a blank scenario, then compose your own Agents, Skills, MCPs, workflow, and Metis.md.'}
         </p>
         <button
           type="button"
@@ -43,7 +43,7 @@ export default function ScenarioLauncher({
           onClick={onOpenPersonalization}
           disabled={!onOpenPersonalization}
         >
-          {zh ? '打开个性化' : 'Open Personalization'}
+          {zh ? '打开场景' : 'Open Scenarios'}
         </button>
       </div>
     </section>

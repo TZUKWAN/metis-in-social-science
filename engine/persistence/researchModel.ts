@@ -39,6 +39,8 @@ export type IdentifierType = 'doi' | 'arxiv' | 'isbn' | 'url' | 'other';
 export interface Source {
   id: string;
   projectId: string;
+  /** Canonical library paper mirrored by this project-local source, when any. */
+  libraryPaperId?: string | null;
   kind: SourceKind;
   title: string;
   authors: string[];

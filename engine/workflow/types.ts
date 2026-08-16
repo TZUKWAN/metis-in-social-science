@@ -6,6 +6,8 @@
  */
 
 import type { AgentRunResult } from '../core/types.js';
+import type { ProviderProfileBinding } from '../runtime/ProviderProfileContract.js';
+import type { AcceptanceCriterion } from './AcceptanceCriteria.js';
 
 // ─── Workflow Definition ──────────────────────────────────────
 
@@ -37,6 +39,12 @@ export interface WorkflowStep {
   retry?: StepRetryConfig;
   /** Eval gate names to check after step completion. */
   evalGates?: string[];
+  /**
+   * Objective acceptance criteria (O6). When present, the step only counts as
+   * completed when every criterion passes against the final output text, in
+   * addition to the agent's finalVerified + non-refusal heuristic.
+   */
+  acceptanceCriteria?: AcceptanceCriterion[];
 }
 
 export interface StepHITLConfig {
@@ -67,6 +75,28 @@ export interface WorkflowRun {
   completedAt: number | null;
   input: Record<string, unknown>;
   errors: string[];
+  /** O13: 本次运行绑定的 provider profile（全局默认或项目覆盖）。 */
+  providerBinding?: ProviderProfileBinding;
+}
+
+/**
+ * O13/O14: WorkflowEngine.run / resume 的执行选项。
+ */
+export interface WorkflowRunOptions {
+  /**
+   * O14: 是否从 checkpoint 恢复执行。为 true 时每个步骤的 AgentRunRequest
+   * 携带 resumeFromCheckpoint: true；配合 checkpointRun 跳过已完成步骤。
+   */
+  resumeFromCheckpoint?: boolean;
+  /**
+   * O14: 上次运行留下的 checkpoint（持久化的 WorkflowRun）。提供时，其中
+   * 状态为 completed 的步骤结果被搬入新 run 并跳过执行，从失败点续跑。
+   */
+  checkpointRun?: WorkflowRun;
+  /** O13: 本次运行生效的 provider profile 绑定，注入到每个步骤请求。 */
+  providerBinding?: ProviderProfileBinding;
+  /** O13/METIS-F12: 项目作用域，注入到每个步骤请求。 */
+  projectId?: string;
 }
 
 export interface StepResult {
@@ -77,6 +107,14 @@ export interface StepResult {
   startedAt: number;
   completedAt: number | null;
   retryCount: number;
+  /**
+   * O7: set when the step has failed repeatedly past the escalation threshold
+   * and is now awaiting a human decision (retry / skip / stop). The run pauses
+   * until the caller resolves it.
+   */
+  decisionRequired?: boolean;
+  /** O7: human-readable failure reasons accumulated across attempts. */
+  failureReasons?: string[];
 }
 
 // ─── Hooks ────────────────────────────────────────────────────

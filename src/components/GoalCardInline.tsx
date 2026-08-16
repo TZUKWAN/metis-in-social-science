@@ -43,6 +43,7 @@ interface GoalCardInlineProps {
   onCancel?: () => void;
   onResume?: () => void;
   onRetry?: () => void;
+  onOpenBoard?: () => void;
 }
 
 // ─── Status color map ────────────────────────────────────────
@@ -93,6 +94,7 @@ export default function GoalCardInline({
   onCancel,
   onResume,
   onRetry,
+  onOpenBoard,
 }: GoalCardInlineProps) {
   const { t, locale } = useTranslation();
   const diagnosticMode = uiMode === 'diagnostic';
@@ -230,6 +232,9 @@ export default function GoalCardInline({
         )}
         {data.phase === 'failed' && onResume && (
           <button className="btn-sm btn-secondary" onClick={onResume}>{t('chat.goalResume')}</button>
+        )}
+        {data.goalId && onOpenBoard && (
+          <button className="btn-sm btn-secondary" data-testid="goal-open-board" onClick={onOpenBoard}>{t('chat.goalOpenBoard')}</button>
         )}
       </div>
     </div>

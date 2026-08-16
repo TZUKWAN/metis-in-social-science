@@ -54,7 +54,12 @@ export interface ZoteroItem {
   data: ZoteroItemData;
 }
 
+export type ZoteroLibraryType = 'personal' | 'group';
+
 export interface ZoteroSearchOptions {
+  /** Explicit library identity. Prefer this over legacy userId/groupId. */
+  libraryType?: ZoteroLibraryType;
+  libraryId?: string;
   userId?: string;
   groupId?: string;
   apiKey: string;
@@ -97,22 +102,21 @@ function formatCreators(creators?: ZoteroCreator[]): string[] {
 }
 
 export async function searchZoteroLibrary(options: ZoteroSearchOptions): Promise<ZoteroSearchResult> {
-  const { userId, groupId, apiKey, query, itemType, tag, since, sort, order, collectionKey, qmode, start, maxResults = 10 } = options;
+  const { libraryType, libraryId, userId, groupId, apiKey, query, itemType, tag, since, sort, order, collectionKey, qmode, start, maxResults = 10 } = options;
 
   if (!apiKey.trim()) throw new Error('apiKey is required.');
 
-  let path: string;
-  if (userId) {
-    path = collectionKey?.trim()
-      ? `/users/${userId}/collections/${collectionKey.trim()}/items`
-      : `/users/${userId}/items`;
-  } else if (groupId) {
-    path = collectionKey?.trim()
-      ? `/groups/${groupId}/collections/${collectionKey.trim()}/items`
-      : `/groups/${groupId}/items`;
-  } else {
-    throw new Error('Either userId or groupId is required.');
-  }
+  // New callers must declare the library kind. The legacy shape remains only
+  // for existing tools, and rejects ambiguous user+group input instead of
+  // silently preferring the personal library.
+  const resolvedType = libraryType ?? (userId && !groupId ? 'personal' : groupId && !userId ? 'group' : undefined);
+  const resolvedId = libraryId?.trim() || (resolvedType === 'personal' ? userId?.trim() : groupId?.trim());
+  if (!resolvedType || !resolvedId) throw new Error('A single Zotero library type and ID are required.');
+
+  const basePath = resolvedType === 'personal' ? `/users/${resolvedId}` : `/groups/${resolvedId}`;
+  const path = collectionKey?.trim()
+    ? `${basePath}/collections/${collectionKey.trim()}/items`
+    : `${basePath}/items`;
 
   const limit = Math.min(Math.max(maxResults, 1), 100);
   const url = new URL(`${BASE_URL}${path}`);

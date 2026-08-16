@@ -67,6 +67,8 @@ export const LibraryPaperSaveRequestSchema = z.strictObject({
   archived: z.boolean().optional(),
   priority: z.enum(['high', 'medium', 'low']).optional(),
   deadline: z.string().trim().max(100).optional(),
+  projectId: z.string().max(100).optional(),
+  projectIds: BoundedIdArraySchema.optional(),
   addedAt: TimestampSchema,
 });
 export type LibraryPaperSaveRequest = z.infer<typeof LibraryPaperSaveRequestSchema>;
@@ -97,6 +99,8 @@ export type LibraryCollection = z.infer<typeof LibraryCollectionSchema>;
 
 export const LibraryNoteSchema = z.strictObject({
   id: RuntimeIdSchema,
+  scope: z.enum(['global', 'research']).default('global'),
+  projectId: RuntimeIdSchema.optional(),
   title: z.string().trim().min(1).max(LIBRARY_RUNTIME_LIMITS.titleChars),
   content: z.string().max(LIBRARY_RUNTIME_LIMITS.noteChars),
   tags: TagsSchema,
@@ -104,6 +108,14 @@ export const LibraryNoteSchema = z.strictObject({
   linkedNoteIds: BoundedIdArraySchema,
   starred: z.boolean().optional(),
   updatedAt: TimestampSchema,
+}).superRefine((value, context) => {
+  if (value.scope === 'research' && !value.projectId) {
+    context.addIssue({
+      code: 'custom',
+      path: ['projectId'],
+      message: 'Research notes require a project id',
+    });
+  }
 });
 export type LibraryNote = z.infer<typeof LibraryNoteSchema>;
 

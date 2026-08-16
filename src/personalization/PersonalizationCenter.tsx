@@ -20,6 +20,7 @@ import McpActivationPanel, {
 } from './McpActivationPanel';
 import ProjectMetisRulesEditor from './ProjectMetisRulesEditor';
 import { BuiltinSkillBrowserPanel } from './BuiltinSkillBrowserPanel';
+import SplitHandle from '../components/SplitHandle';
 import './PersonalizationCenter.css';
 
 type Kind = PersonalizationDefinition['kind'];
@@ -51,6 +52,11 @@ const KIND_LABELS = {
   en: { scenario: 'Scenarios', agent: 'Agents', skill: 'Skills', mcp: 'MCP', rules: 'Metis.md' },
 } as const;
 
+const LIBRARY_LABELS = {
+  zh: { scenario: '场景库', agent: '智能体库', skill: '技能库', mcp: 'MCP 库', rules: 'Metis.md 库' },
+  en: { scenario: 'Scenario library', agent: 'Agent library', skill: 'Skill library', mcp: 'MCP library', rules: 'Metis.md library' },
+} as const;
+
 const MEMORY_SCOPE_OPTIONS: ReadonlyArray<{
   value: AgentDefinition['memory']['scope'];
   zh: string;
@@ -74,18 +80,6 @@ const OUTPUT_FORMAT_OPTIONS: ReadonlyArray<{
   { value: 'custom', zh: '自定义', en: 'Custom' },
 ];
 
-const CAPABILITY_OPTIONS: ReadonlyArray<{
-  value: ScenarioDefinition['capability'];
-  zh: string;
-  en: string;
-}> = [
-  { value: 'research', zh: '研究', en: 'Research' },
-  { value: 'writing', zh: '写作', en: 'Writing' },
-  { value: 'analysis', zh: '分析', en: 'Analysis' },
-  { value: 'funding', zh: '基金申报', en: 'Funding' },
-  { value: 'custom', zh: '自定义', en: 'Custom' },
-  { value: 'presentation_reserved', zh: '演示文稿（预留）', en: 'Presentation (reserved)' },
-];
 
 const RULE_SCOPE_OPTIONS: ReadonlyArray<{
   value: Exclude<MetisRulesDefinition['scope'], 'project'>;
@@ -557,6 +551,8 @@ function DefinitionReferencePicker({
   filter,
   emptyLabel,
   compact = false,
+  onCreate,
+  createLabel,
 }: {
   label: string;
   help: string;
@@ -567,6 +563,8 @@ function DefinitionReferencePicker({
   filter?: (definition: PersonalizationDefinition) => boolean;
   emptyLabel: string;
   compact?: boolean;
+  onCreate?: () => void;
+  createLabel?: string;
 }) {
   const candidates = definitions.filter((definition) => (
     definition.kind === kind
@@ -578,7 +576,10 @@ function DefinitionReferencePicker({
     <legend>{label}</legend>
     <p>{help}</p>
     {candidates.length === 0
-      ? <div className="personalization-reference-picker__empty">{emptyLabel}</div>
+      ? <div className="personalization-reference-picker__empty">
+          <span>{emptyLabel}</span>
+          {onCreate && <button type="button" className="btn-sm btn-secondary" onClick={onCreate} data-testid={`quick-create-${kind}`}>{createLabel ?? (kind === 'agent' ? '新建智能体' : kind === 'skill' ? '新建技能' : kind === 'mcp' ? '新建 MCP' : '新建 Metis.md')}</button>}
+        </div>
       : <div className="personalization-reference-picker__options">
           {candidates.map((definition) => <label key={definition.id} data-definition-id={definition.id}>
             <input
@@ -1271,11 +1272,14 @@ function DefinitionEditor({
   definitions,
   onSaved,
   onDraftStateChange,
+  onQuickCreate,
 }: {
   definition: PersonalizationDefinition;
   definitions: readonly PersonalizationDefinition[];
-  onSaved: () => Promise<void>;
+  onSaved: (saved?: PersonalizationDefinition) => Promise<void>;
   onDraftStateChange: (definitionId: string, retained: boolean) => void;
+  /** 场景编辑器空状态里的「新建 X」跳转（创建后返回场景并重新选中）。 */
+  onQuickCreate?: (kind: Kind) => void;
 }) {
   const { locale, t } = useTranslation();
   const zh = locale === 'zh';
@@ -1418,7 +1422,7 @@ function DefinitionEditor({
     }
     savedRevisionReloadPendingRef.current = true;
     try {
-      await onSaved();
+      await onSaved(persistedDefinition);
     } finally {
       savedRevisionReloadPendingRef.current = false;
     }
@@ -1594,6 +1598,28 @@ function DefinitionEditor({
     && draft.capability === 'presentation_reserved';
   const nonAuthoritativeProjectRule = draft.kind === 'rules' && draft.scope === 'project';
   const schemaEditorsValid = draft.kind !== 'skill' || (inputSchemaValid && outputSchemaValid);
+  // UX: 场景的「最终交付物」只保留一个普通文本字段，避免复杂的输出计划表单。
+  const scenarioDeliverable = draft.kind === 'scenario'
+    ? (draft.output.plan?.primaryDeliverable ?? '')
+    : '';
+  const updateScenarioDeliverable = (value: string) => {
+    if (draft.kind !== 'scenario') return;
+    const next = value.trim();
+    const existing = draft.output.plan;
+    setDraft({
+      ...draft,
+      output: {
+        ...draft.output,
+        plan: next
+          ? {
+              primaryDeliverable: next,
+              supportingArtifacts: existing?.supportingArtifacts ?? [],
+              qualityCriteria: existing?.qualityCriteria ?? [],
+            }
+          : null,
+      },
+    });
+  };
 
   return (
     <section className="personalization-editor" aria-label={zh ? '定义编辑器' : 'Definition editor'}>
@@ -1684,25 +1710,27 @@ function DefinitionEditor({
           <strong>{zh ? '全权限运行' : 'Full Access'}</strong>
           <span>{zh ? '运行时不做逐步权限确认，允许用户随时发消息引导或打断。' : 'No per-action permission prompts; the user may steer or interrupt at any time.'}</span>
         </div>
-        <DefinitionReferencePicker label={zh ? '用于此场景的智能体' : 'Agents for this scenario'} help={zh ? '选择后才能创建工作流步骤。' : 'Select agents before adding workflow steps.'} kind="agent" definitions={definitions} selectedIds={draft.agentIds} onChange={(agentIds) => setDraft({ ...draft, agentIds, workflow: draft.workflow.filter((step) => agentIds.includes(step.agentId)) })} emptyLabel={zh ? '还没有可用智能体。' : 'No agents are available.'} />
-        <DefinitionReferencePicker label={zh ? '场景可使用的技能' : 'Skills available to this scenario'} help={zh ? '工作流步骤只能从这些技能中选择。' : 'Workflow steps can choose from this scenario-level set.'} kind="skill" definitions={definitions} selectedIds={draft.skillIds} onChange={(skillIds) => setDraft({ ...draft, skillIds, workflow: draft.workflow.map((step) => ({ ...step, skillIds: step.skillIds.filter((id) => skillIds.includes(id)) })) })} emptyLabel={zh ? '还没有可用技能。' : 'No skills are available.'} />
-        <DefinitionReferencePicker label={zh ? '场景可使用的 MCP' : 'MCP available to this scenario'} help={zh ? '工作流步骤只能从这些 MCP 中选择。' : 'Workflow steps can choose from this scenario-level set.'} kind="mcp" definitions={definitions} selectedIds={draft.mcpIds} onChange={(mcpIds) => setDraft({ ...draft, mcpIds, workflow: draft.workflow.map((step) => ({ ...step, mcpIds: step.mcpIds.filter((id) => mcpIds.includes(id)) })) })} emptyLabel={zh ? '还没有可用 MCP。' : 'No MCP definitions are available.'} />
-        <DefinitionReferencePicker label={zh ? '场景专属 Metis.md' : 'Scenario-specific Metis.md'} help={zh ? '全局 Metis.md 会自动生效；这里只选择绑定到该场景的规则。项目 Metis.md 由“当前项目 Metis.md”独立管理。' : 'Global Metis.md applies automatically. Select only scenario-bound rules here; project Metis.md is managed separately.'} kind="rules" definitions={definitions} selectedIds={draft.rulesIds} onChange={(rulesIds) => setDraft({ ...draft, rulesIds })} filter={(candidate) => candidate.kind === 'rules' && candidate.scope === 'scenario' && candidate.scopeId === draft.id} emptyLabel={zh ? '还没有绑定到此场景的 Metis.md。' : 'No Metis.md definition is bound to this scenario yet.'} />
+        <DefinitionReferencePicker label={zh ? '用于此场景的智能体' : 'Agents for this scenario'} help={zh ? '选择后才能创建工作流步骤。' : 'Select agents before adding workflow steps.'} kind="agent" definitions={definitions} selectedIds={draft.agentIds} onChange={(agentIds) => setDraft({ ...draft, agentIds, workflow: draft.workflow.filter((step) => agentIds.includes(step.agentId)) })} emptyLabel={zh ? '还没有可用智能体。' : 'No agents are available.'} onCreate={onQuickCreate ? () => onQuickCreate('agent') : undefined} createLabel={zh ? '新建智能体' : 'Create an agent'} />
+        <DefinitionReferencePicker label={zh ? '场景可使用的技能' : 'Skills available to this scenario'} help={zh ? '工作流步骤只能从这些技能中选择。' : 'Workflow steps can choose from this scenario-level set.'} kind="skill" definitions={definitions} selectedIds={draft.skillIds} onChange={(skillIds) => setDraft({ ...draft, skillIds, workflow: draft.workflow.map((step) => ({ ...step, skillIds: step.skillIds.filter((id) => skillIds.includes(id)) })) })} emptyLabel={zh ? '还没有可用技能。' : 'No skills are available.'} onCreate={onQuickCreate ? () => onQuickCreate('skill') : undefined} createLabel={zh ? '新建技能' : 'Create a skill'} />
+        <DefinitionReferencePicker label={zh ? '场景可使用的 MCP' : 'MCP available to this scenario'} help={zh ? '工作流步骤只能从这些 MCP 中选择。' : 'Workflow steps can choose from this scenario-level set.'} kind="mcp" definitions={definitions} selectedIds={draft.mcpIds} onChange={(mcpIds) => setDraft({ ...draft, mcpIds, workflow: draft.workflow.map((step) => ({ ...step, mcpIds: step.mcpIds.filter((id) => mcpIds.includes(id)) })) })} emptyLabel={zh ? '还没有可用 MCP。' : 'No MCP definitions are available.'} onCreate={onQuickCreate ? () => onQuickCreate('mcp') : undefined} createLabel={zh ? '新建 MCP' : 'Create an MCP'} />
+        <DefinitionReferencePicker label={zh ? '场景专属 Metis.md' : 'Scenario-specific Metis.md'} help={zh ? '全局 Metis.md 会自动生效；这里只选择绑定到该场景的规则。项目 Metis.md 由“当前项目 Metis.md”独立管理。' : 'Global Metis.md applies automatically. Select only scenario-bound rules here; project Metis.md is managed separately.'} kind="rules" definitions={definitions} selectedIds={draft.rulesIds} onChange={(rulesIds) => setDraft({ ...draft, rulesIds })} filter={(candidate) => candidate.kind === 'rules' && candidate.scope === 'scenario' && candidate.scopeId === draft.id} emptyLabel={zh ? '还没有绑定到此场景的 Metis.md。' : 'No Metis.md definition is bound to this scenario yet.'} onCreate={onQuickCreate ? () => onQuickCreate('rules') : undefined} createLabel={zh ? '新建 Metis.md' : 'Create a Metis.md'} />
         <div className="personalization-grid personalization-grid--2">
-          <label><span>{zh ? '场景能力' : 'Scenario capability'}</span><select value={draft.capability} onChange={(event) => setDraft({ ...draft, capability: event.target.value as ScenarioDefinition['capability'] })}>{CAPABILITY_OPTIONS.filter((option) => option.value !== 'presentation_reserved' || draft.capability === 'presentation_reserved').map((option) => <option value={option.value} key={option.value}>{option[zh ? 'zh' : 'en']}</option>)}</select></label>
           <label><span>{zh ? '触发短语' : 'Trigger phrases'}</span><textarea rows={3} value={csv(draft.triggerPhrases)} onChange={(event) => setDraft({ ...draft, triggerPhrases: parseCsv(event.target.value) })} /></label>
           <label><span>{zh ? '记忆范围' : 'Memory scope'}</span><select value={draft.memory.scope} onChange={(event) => setDraft({ ...draft, memory: { ...draft.memory, scope: event.target.value as ScenarioDefinition['memory']['scope'] } })}>{MEMORY_SCOPE_OPTIONS.map((option) => <option value={option.value} key={option.value}>{option[zh ? 'zh' : 'en']}</option>)}</select></label>
           <label><span>{zh ? '记忆摘要上限' : 'Memory summary limit'}</span><input type="number" min={1000} max={500000} value={draft.memory.maxSummaryChars} onChange={(event) => setDraft({ ...draft, memory: { ...draft.memory, maxSummaryChars: boundedInteger(event.target.value, 1000, 500000, draft.memory.maxSummaryChars) } })} /></label>
-          <label><span>{zh ? '产物格式' : 'Artifact format'}</span><select value={draft.output.format} onChange={(event) => setDraft({ ...draft, output: { ...draft.output, format: event.target.value as ScenarioDefinition['output']['format'] } })}>{OUTPUT_FORMAT_OPTIONS.map((option) => <option value={option.value} key={option.value}>{option[zh ? 'zh' : 'en']}</option>)}</select></label>
         </div>
         <div className="personalization-inline-checks">
           <label><input type="checkbox" checked={draft.memory.retainDecisions} onChange={(event) => setDraft({ ...draft, memory: { ...draft.memory, retainDecisions: event.target.checked } })} />{zh ? '保留场景决策摘要' : 'Retain scenario decisions'}</label>
           <label><input type="checkbox" checked={draft.memory.retainArtifacts} onChange={(event) => setDraft({ ...draft, memory: { ...draft.memory, retainArtifacts: event.target.checked } })} />{zh ? '保留场景产物索引' : 'Retain scenario artifacts'}</label>
         </div>
-        <OutputPlanEditor output={draft.output} onChange={(output) => setDraft({ ...draft, output })} zh={zh} />
+        <details className="personalization-deliverable" open={Boolean(scenarioDeliverable)}>
+          <summary>{zh ? '最终交付物（可选）' : 'Final deliverable (optional)'}</summary>
+          <p className="personalization-deliverable__help">{zh ? '填写后，模型完成工作流后会按此汇总最终结果；不填则直接汇总最后一步的输出。' : 'If filled, the model summarizes the final result against this deliverable after the workflow finishes; otherwise the last step output is summarized.'}</p>
+          <label><span>{zh ? '交付物描述' : 'Deliverable description'}</span><textarea rows={2} value={scenarioDeliverable} onChange={(event) => updateScenarioDeliverable(event.target.value)} placeholder={zh ? '例如：一份关于地方救济制度演变的综述报告' : 'e.g. A review report on the evolution of local relief systems'} /></label>
+        </details>
         <div className="personalization-truth-lock" role="note"><strong>{zh ? '真实性底座自动生效' : 'Truth controls apply automatically'}</strong><span>{zh ? '证据封装、完整性报告、引用与来源状态不提供关闭开关。' : 'Evidence envelopes, integrity reports, citation checks, and source-state checks cannot be disabled here.'}</span></div>
         <div className="personalization-workflow">
-          <div className="personalization-workflow__header"><div><strong>{zh ? '工作流步骤' : 'Workflow steps'}</strong><p>{zh ? '依赖关系决定真实执行顺序；失败步骤会阻断其下游。启用输出计划时，请把所有分支汇入唯一的最终步骤。' : 'Dependencies define execution order; failed steps block downstream work. When an output plan is enabled, connect all branches to one final step.'}</p></div><button type="button" onClick={addWorkflowStep}>{zh ? '添加步骤' : 'Add step'}</button></div>
+          <div className="personalization-workflow__header"><div><strong>{zh ? '工作流步骤' : 'Workflow steps'}</strong><p>{draft.agentIds.length === 0 ? (zh ? '请先在「用于此场景的智能体」中选择至少一个智能体，然后才能添加步骤。' : 'Choose at least one agent for this scenario before adding steps.') : (zh ? '依赖关系决定真实执行顺序；失败步骤会阻断其下游。' : 'Dependencies define execution order; failed steps block downstream work.')}</p></div><button type="button" onClick={addWorkflowStep} disabled={draft.agentIds.length === 0} title={draft.agentIds.length === 0 ? (zh ? '请先选择智能体' : 'Choose an agent first') : undefined}>{zh ? '添加步骤' : 'Add step'}</button></div>
           {draft.workflow.map((step, index) => <article className="personalization-step" key={`${step.id}-${index}`}>
             <div className="personalization-step__title"><strong>{index + 1}. {step.name || step.id}</strong><button type="button" onClick={() => removeWorkflowStep(index)}>{zh ? '移除' : 'Remove'}</button></div>
             <div className="personalization-grid personalization-grid--2">
@@ -1771,6 +1799,59 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [draftIds, setDraftIds] = useState<Set<string>>(() => retainedPersonalizationDraftIds());
+  // AI 辅助创建（场景）：描述需求 → 生成场景 + 智能体 + 工作流 → 用户修改后保存。
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiDescription, setAiDescription] = useState('');
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiStatus, setAiStatus] = useState('');
+  // 模板识别（论文结构）：粘贴模板 → AI 解析为逐节写作指引 → 用户修改后保存。
+  const [tplOpen, setTplOpen] = useState(false);
+  // 库面板宽度：用户可拖拽调节，本地持久化。
+  const [libraryWidth, setLibraryWidth] = useState(() => {
+    try {
+      const raw = window.localStorage.getItem('metis-personalization-library-width');
+      const value = raw === null ? NaN : Number(raw);
+      return Number.isFinite(value) ? Math.min(480, Math.max(220, value)) : 330;
+    } catch {
+      return 330;
+    }
+  });
+  const layoutRef = useRef<HTMLDivElement>(null);
+  const [narrowLayout, setNarrowLayout] = useState(() => (
+    typeof window.matchMedia === 'function' ? window.matchMedia('(max-width: 1120px)').matches : false
+  ));
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const media = window.matchMedia('(max-width: 1120px)') as MediaQueryList & { addListener?: (listener: (event: MediaQueryListEvent) => void) => void; removeListener?: (listener: (event: MediaQueryListEvent) => void) => void };
+    const listener = (event: MediaQueryListEvent) => setNarrowLayout(event.matches);
+    if (typeof media.addEventListener === 'function') {
+      media.addEventListener('change', listener);
+      return () => media.removeEventListener('change', listener);
+    }
+    // 旧实现/测试桩可能只提供 addListener。
+    media.addListener?.(listener);
+    return () => media.removeListener?.(listener);
+  }, []);
+
+  const handleLibraryDrag = useCallback((clientX: number) => {
+    const rect = layoutRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    setLibraryWidth(Math.min(480, Math.max(220, clientX - rect.left)));
+  }, []);
+
+  const saveLibraryWidth = useCallback((value: number) => {
+    try { window.localStorage.setItem('metis-personalization-library-width', String(Math.round(value))); } catch { /* best-effort */ }
+  }, []);
+
+  // 宽度持久化放 effect：拖动结束时读到的是最新值。
+  useEffect(() => { saveLibraryWidth(libraryWidth); }, [libraryWidth, saveLibraryWidth]);
+  const [tplText, setTplText] = useState('');
+  const [tplBusy, setTplBusy] = useState(false);
+  const [tplStatus, setTplStatus] = useState('');
+  const [tplName, setTplName] = useState('');
+  const [tplSections, setTplSections] = useState<Array<{ title: string; instruction: string }>>([]);
+  /** 场景编辑器空状态「新建 X」跳转后，保存成功时返回场景并重新选中。 */
+  const pendingReturnRef = useRef<{ createdKind: Kind; createdId: string; returnSelectedId: string | null } | null>(null);
   const activeProjectId = useResearchWorkspaceStore((state) => state.activeProjectId);
   const mcpActivationDependencies = useMemo<McpActivationPanelDependencies>(() => ({
     activateMcp: async (request) => (
@@ -1825,20 +1906,269 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
     setSelectedId(definitionId);
   };
 
-  const create = async () => {
-    const defaultName = zh ? `我的${KIND_LABELS.zh[kind]}` : `My ${KIND_LABELS.en[kind]}`;
-    const definition = createDefinition(kind, defaultName, definitions);
+  const saveNew = async (definition: PersonalizationDefinition) => {
     try {
       const result = await window.metis?.savePersonalization({ contractVersion: 1, definition, expectedRevision: 0 });
-      if (!result) { setStatus(zh ? '个性化服务不可用' : 'Personalization service is unavailable'); return; }
+      if (!result) { setStatus(zh ? '个性化服务不可用' : 'Personalization service is unavailable'); return null; }
       setStatus(resultMessage(result, zh));
       if (result.ok && result.code === 'saved') {
         await load();
         setSelectedId(result.definition.id);
+        return result.definition;
       }
+      return null;
     } catch {
       setStatus(zh ? '新建未完成，没有创建半成品。请重试。' : 'Creation did not complete and no partial definition was created. Try again.');
+      return null;
     }
+  };
+
+  const create = async () => {
+    const defaultName = zh ? `我的${KIND_LABELS.zh[kind]}` : `My ${KIND_LABELS.en[kind]}`;
+    await saveNew(createDefinition(kind, defaultName, definitions));
+  };
+
+  // 场景编辑器空状态「新建 X」：切换到对应类型创建，保存后自动回到场景。
+  const quickCreate = async (targetKind: Kind) => {
+    const returnSelectedId = selectedId;
+    const created = createDefinition(
+      targetKind,
+      zh ? `我的${KIND_LABELS.zh[targetKind]}` : `My ${KIND_LABELS.en[targetKind]}`,
+      definitions,
+    );
+    pendingReturnRef.current = { createdKind: targetKind, createdId: created.id, returnSelectedId };
+    setKind(targetKind);
+    await saveNew(created);
+  };
+
+  const handleEditorSaved = async (saved?: PersonalizationDefinition) => {
+    await load();
+    const pending = pendingReturnRef.current;
+    if (pending && saved && saved.kind === pending.createdKind && saved.id === pending.createdId) {
+      pendingReturnRef.current = null;
+      setKind('scenario');
+      setSelectedId(pending.returnSelectedId);
+      setStatus(zh ? '已创建，回到场景继续配置。' : 'Created; back to the scenario to continue.');
+    }
+  };
+
+  const aiGenerate = async () => {
+    const description = aiDescription.trim();
+    if (description.length < 2) {
+      setAiStatus(zh ? '请先描述你的研究场景需求。' : 'Describe your research scenario first.');
+      return;
+    }
+    if (!window.metis?.aiGenerateScenario) {
+      setAiStatus(zh ? 'AI 辅助创建服务不可用，请检查模型连接后重试。' : 'AI-assisted creation is unavailable. Check the model connection and retry.');
+      return;
+    }
+    setAiBusy(true);
+    setAiStatus('');
+    try {
+      const result = await window.metis.aiGenerateScenario({
+        description,
+        definitions: definitions.map((d) => ({
+          id: d.id,
+          kind: d.kind,
+          name: d.name,
+          description: d.description,
+        })),
+      });
+      if (!result.ok || !result.scenario || !result.agents) {
+        setAiStatus(zh
+          ? `生成失败（${result.code ?? 'unknown'}）${result.message ? `：${result.message}` : '。请调整描述后重试。'}`
+          : `Generation failed (${result.code ?? 'unknown'})${result.message ? `: ${result.message}` : '. Adjust the description and retry.'}`);
+        return;
+      }
+      // 1) 保存生成的智能体，按名称记录真实 id。
+      const agentIdByName = new Map<string, string>();
+      for (const agent of result.agents) {
+        const created = createDefinition('agent', agent.name, definitions) as AgentDefinition;
+        const full: AgentDefinition = {
+          ...created,
+          role: agent.role || created.role,
+          systemPrompt: agent.systemPrompt || created.systemPrompt,
+          skillIds: agent.skillIds.filter((id) => definitions.some((d) => d.id === id && d.kind === 'skill')),
+          toolIds: agent.toolIds,
+          mcpIds: agent.mcpIds.filter((id) => definitions.some((d) => d.id === id && d.kind === 'mcp')),
+          maxTurns: Math.min(100, Math.max(1, agent.maxTurns || created.maxTurns)),
+        };
+        const saved = await window.metis.savePersonalization({ contractVersion: 1, definition: full, expectedRevision: 0 });
+        if (!saved.ok || saved.code !== 'saved' || !saved.definition) {
+          setAiStatus(zh
+            ? `智能体「${agent.name}」保存失败（${saved.code}），已生成的配置未落地。`
+            : `Agent "${agent.name}" could not be saved (${saved.code}); nothing was committed.`);
+          return;
+        }
+        agentIdByName.set(agent.name, saved.definition.id);
+      }
+      // 2) 保存场景：工作流步骤引用已保存的智能体 id。场景记忆文档的
+      // 规则 id 此时尚未落地（依赖校验要求被引用定义已存在），因此先不
+      // 绑定，待规则保存成功后通过版本递增更新把 id 写回场景。
+      const createdScenario = createDefinition('scenario', result.scenario.name, definitions) as ScenarioDefinition;
+      const scenario: ScenarioDefinition = {
+        ...createdScenario,
+        description: result.scenario.description || createdScenario.description,
+        triggerPhrases: result.scenario.triggerPhrases,
+        agentIds: result.agents.map((agent) => agentIdByName.get(agent.name) ?? '').filter(Boolean),
+        workflow: (result.workflow ?? []).map((step, index) => ({
+          id: `step-${index + 1}`,
+          name: step.name,
+          description: step.description,
+          agentId: agentIdByName.get(step.agent) ?? '',
+          skillIds: step.skillIds.filter((id) => definitions.some((d) => d.id === id && d.kind === 'skill')),
+          toolIds: step.toolIds,
+          mcpIds: step.mcpIds.filter((id) => definitions.some((d) => d.id === id && d.kind === 'mcp')),
+          dependsOn: index > 0 ? [`step-${index}`] : [],
+          maxTurns: Math.min(100, Math.max(1, step.maxTurns || 12)),
+        })).filter((step) => step.agentId),
+        output: {
+          ...createdScenario.output,
+          format: 'markdown',
+          plan: result.scenario.deliverable
+            ? {
+                primaryDeliverable: result.scenario.deliverable,
+                supportingArtifacts: [],
+                qualityCriteria: [],
+              }
+            : null,
+        },
+      };
+      const savedScenario = await window.metis.savePersonalization({
+        contractVersion: 1,
+        definition: scenario,
+        expectedRevision: 0,
+      });
+      if (!savedScenario.ok || savedScenario.code !== 'saved' || !savedScenario.definition) {
+        setAiStatus(zh
+          ? `场景保存失败（${savedScenario.code}）：生成的智能体已保存，可在智能体库查看。`
+          : `Scenario save failed (${savedScenario.code}); generated agents were saved.`);
+        return;
+      }
+      // 3) 场景记忆 Metis.md：绑定到刚保存的场景，再把规则 id 写回场景。
+      let scenarioRulesId: string | null = null;
+      if (result.rules) {
+        const rulesDefinition = {
+          ...createDefinition('rules', `${result.scenario.name} · 场景记忆`, definitions),
+          id: availableUserId('rules', `${result.scenario.name} · 场景记忆`, definitions),
+          scope: 'scenario' as const,
+          scopeId: savedScenario.definition.id,
+          markdown: `# ${result.scenario.name} · 场景记忆\n\n${result.rules}`,
+        } as MetisRulesDefinition;
+        const savedRules = await window.metis.savePersonalization({
+          contractVersion: 1,
+          definition: rulesDefinition,
+          expectedRevision: 0,
+        });
+        if (!savedRules.ok || savedRules.code !== 'saved' || !savedRules.definition) {
+          setAiStatus(zh
+            ? `场景已保存，但场景记忆文档保存失败（${savedRules.code}），可在场景编辑器中补建。`
+            : `Scenario saved, but its memory doc failed to save (${savedRules.code}). You can create it in the scenario editor.`);
+          return;
+        }
+        scenarioRulesId = savedRules.definition.id;
+        const boundScenario = editableCopy(savedScenario.definition) as ScenarioDefinition;
+        boundScenario.rulesIds = [...(boundScenario.rulesIds ?? []), scenarioRulesId];
+        const bound = await window.metis.savePersonalization({
+          contractVersion: 1,
+          definition: boundScenario,
+          expectedRevision: savedScenario.definition.revision,
+        });
+        if (!bound.ok || bound.code !== 'saved') {
+          setAiStatus(zh
+            ? `场景记忆文档已保存，但绑定到场景失败（${bound.code}），可在场景编辑器手动绑定。`
+            : `Memory doc saved, but binding it to the scenario failed (${bound.code}). Bind it manually in the scenario editor.`);
+          return;
+        }
+      }
+      // 4) 论文结构自动设计：引言 + 主体章节 + 结论，逐节写作指引。
+      const structureSections = (result.paperStructure ?? []).filter((section) => section.title);
+      if (structureSections.length > 0) {
+        await window.metis.structureSave?.({
+          id: `structure-${Date.now().toString(36)}`,
+          name: `${result.scenario.name} · 论文结构`,
+          sections: structureSections.map((section, index) => ({
+            id: `sec-${index + 1}`,
+            title: section.title,
+            instruction: section.instruction,
+          })),
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          isDefault: false,
+        });
+      }
+      setAiStatus(zh
+        ? `已生成「${savedScenario.definition.name}」：智能体、工作流、场景记忆文档与论文结构已创建，请在右侧检查修改后保存。`
+        : `Generated "${savedScenario.definition.name}": agents, workflow, scenario memory doc and paper structure created. Review and tweak on the right, then save.`);
+      setAiOpen(false);
+      setKind('scenario');
+      await load();
+      setSelectedId(savedScenario.definition.id);
+    } catch {
+      setAiStatus(zh ? 'AI 辅助创建未完成，请重试。' : 'AI-assisted creation did not complete. Try again.');
+    } finally {
+      setAiBusy(false);
+    }
+  };
+
+  const updateTplSection = (index: number, field: 'title' | 'instruction', value: string) => {
+    setTplSections((prev) => prev.map((section, i) => (i === index ? { ...section, [field]: value } : section)));
+  };
+
+  const removeTplSection = (index: number) => {
+    setTplSections((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const parsePaperTemplate = async () => {
+    const text = tplText.trim();
+    if (text.length < 10) {
+      setTplStatus(zh ? '请先粘贴论文结构模板文本。' : 'Paste a paper template first.');
+      return;
+    }
+    if (!window.metis?.aiParsePaperTemplate) {
+      setTplStatus(zh ? '模板解析服务不可用，请检查模型连接后重试。' : 'Template parsing is unavailable. Check the model connection and retry.');
+      return;
+    }
+    setTplBusy(true);
+    setTplStatus('');
+    try {
+      const result = await window.metis.aiParsePaperTemplate({ text });
+      if (!result.ok || !result.sections || result.sections.length < 3) {
+        setTplStatus(zh
+          ? `模板解析失败（${result.code ?? 'parse_failed'}），请调整模板文本后重试。`
+          : `Template parse failed (${result.code ?? 'parse_failed'}). Adjust the text and retry.`);
+        return;
+      }
+      setTplSections(result.sections);
+      setTplName(zh ? '解析的论文模板' : 'Parsed paper template');
+      setTplStatus(zh
+        ? `解析出 ${result.sections.length} 个章节，可逐节修改写作指引后保存。`
+        : `Parsed ${result.sections.length} sections; edit each writing guide and save.`);
+    } catch {
+      setTplStatus(zh ? '模板解析未完成，请重试。' : 'Template parsing did not complete. Try again.');
+    } finally {
+      setTplBusy(false);
+    }
+  };
+
+  const savePaperTemplate = async () => {
+    const name = tplName.trim();
+    if (!name || tplSections.length === 0) return;
+    const result = await window.metis?.structureSave?.({
+      id: `structure-${Date.now().toString(36)}`,
+      name,
+      sections: tplSections.map((section, index) => ({
+        id: `sec-${index + 1}`,
+        title: section.title,
+        instruction: section.instruction,
+      })),
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      isDefault: false,
+    });
+    setTplStatus(result?.ok
+      ? (zh ? `已保存论文结构「${name}」，可在自主科研中使用。` : `Paper structure "${name}" saved — usable in autonomous research.`)
+      : (zh ? '保存失败，请重试。' : 'Save failed, please retry.'));
   };
 
   const fork = async (definition: PersonalizationDefinition) => {
@@ -1951,8 +2281,8 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
     <div className="personalization-page">
       <header className="personalization-hero">
         <div>
-          <span className="personalization-eyebrow">{zh ? '研究个性化工作台' : 'RESEARCH PERSONALIZATION WORKBENCH'}</span>
-          <h1>{zh ? '个性化' : 'Personalization'}</h1>
+          <span className="personalization-eyebrow">{zh ? '研究场景工作台' : 'RESEARCH SCENARIO WORKBENCH'}</span>
+          <h1>{zh ? '场景' : 'Scenarios'}</h1>
           <p>{zh ? '从空白场景开始，将你创建的智能体、技能、MCP 与 Metis.md 组合成专属研究系统。' : 'Start from a blank scenario and compose the agents, skills, MCP servers, and Metis.md that belong to your research system.'}</p>
         </div>
         <div className="personalization-truth-card">
@@ -1961,7 +2291,7 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
         </div>
       </header>
 
-      <nav className="personalization-tabs" aria-label={zh ? '个性化分类' : 'Personalization categories'}>
+      <nav className="personalization-tabs" aria-label={zh ? '场景分类' : 'Scenario categories'}>
         {KIND_ORDER.map((item) => <button key={item} className={kind === item ? 'active' : ''} aria-pressed={kind === item} onClick={() => { setKind(item); setSelectedId(null); }}>{KIND_LABELS[zh ? 'zh' : 'en'][item]}<span>{userDefinitions.filter((definition) => definition.kind === item).length}</span></button>)}
       </nav>
 
@@ -1971,12 +2301,93 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
         <span>{zh ? '配置包包含所选定义及其依赖；凭据不会导出。' : 'Bundles include the selected definition graph; credentials are never exported.'}</span>
       </div>
 
-      <div className="personalization-layout">
+      <div
+        className="personalization-layout"
+        ref={layoutRef}
+        style={narrowLayout ? undefined : { gridTemplateColumns: `${Math.round(libraryWidth)}px 7px minmax(480px, 1fr)` }}
+      >
         <aside className="personalization-library">
           <div className="personalization-library__header">
-            <div><h2>{KIND_LABELS[zh ? 'zh' : 'en'][kind]}</h2><p>{zh ? '由你创建和安装' : 'Created and installed by you'}</p></div>
-            {kind !== 'mcp' && <button className="btn-primary" onClick={() => void create()}>{zh ? '新建' : 'New'}</button>}
+            <div><h2>{LIBRARY_LABELS[zh ? 'zh' : 'en'][kind]}</h2><p>{zh ? '由你创建和安装' : 'Created and installed by you'}</p></div>
+            <div className="personalization-library__actions">
+              {kind === 'scenario' && (
+                <button type="button" className="btn-secondary" data-testid="ai-create-toggle" onClick={() => { setAiOpen((open) => !open); setAiStatus(''); }} aria-expanded={aiOpen}>
+                  {zh ? 'AI 辅助创建' : 'AI-assisted creation'}
+                </button>
+              )}
+              {kind !== 'mcp' && <button className="btn-primary" onClick={() => void create()}>{zh ? '新建' : 'New'}</button>}
+            </div>
           </div>
+          {kind === 'scenario' && aiOpen && (
+            <div className="personalization-ai-create" data-testid="ai-create-panel">
+              <p>{zh ? '用一句话描述你的研究场景，AI 会自动生成场景、智能体与工作流，你可以在此基础上修改。' : 'Describe your research scenario in one sentence. AI generates the scenario, agents, and workflow, which you can then refine.'}</p>
+              <label>
+                <span>{zh ? '场景需求描述' : 'Scenario requirement'}</span>
+                <textarea rows={3} value={aiDescription} onChange={(event) => setAiDescription(event.target.value)} data-testid="ai-create-input" placeholder={zh ? '例如：分析地方历史档案，梳理档案目录，提取关键证据并形成论断网络。' : 'e.g. Analyze local historical archives: inventory the catalogs, extract key evidence, and build a claim network.'} />
+              </label>
+              <div className="personalization-ai-create__actions">
+                <button type="button" className="btn-primary btn-sm" disabled={aiBusy || !aiDescription.trim()} onClick={() => void aiGenerate()} data-testid="ai-create-submit">
+                  {aiBusy ? (zh ? '生成中…' : 'Generating…') : (zh ? 'AI 生成' : 'Generate')}
+                </button>
+                <button type="button" className="btn-secondary btn-sm" onClick={() => { setAiOpen(false); setAiStatus(''); }}>{zh ? '收起' : 'Collapse'}</button>
+              </div>
+              {aiStatus && <p className="personalization-ai-create__status" role="status" aria-live="polite" data-testid="ai-create-status">{aiStatus}</p>}
+            </div>
+          )}
+          {kind === 'scenario' && (
+            <div className="personalization-template">
+              <button type="button" className="btn-secondary" data-testid="template-parse-toggle" onClick={() => setTplOpen((open) => !open)} aria-expanded={tplOpen}>
+                {zh ? '模板识别（论文结构）' : 'Template recognition (paper structure)'}
+              </button>
+              {tplOpen && (
+                <div className="personalization-template__panel" data-testid="template-parse-panel">
+                  <p>{zh ? '粘贴论文写作模板（如国家社科基金申请书、论文结构规范），AI 会解析为逐节写作指引，你可修改后保存为论文结构，供自主科研使用。' : 'Paste a paper template (e.g. a grant application or thesis structure). AI parses it into per-section writing guides you can edit and save as a paper structure for autonomous research.'}</p>
+                  <label>
+                    <span>{zh ? '模板文本' : 'Template text'}</span>
+                    <textarea rows={3} value={tplText} onChange={(event) => setTplText(event.target.value)} data-testid="template-parse-input" placeholder={zh ? '粘贴模板文本…' : 'Paste template text…'} />
+                  </label>
+                  <div className="personalization-ai-create__actions">
+                    <button type="button" className="btn-primary btn-sm" disabled={tplBusy || tplText.trim().length < 10} onClick={() => void parsePaperTemplate()} data-testid="template-parse-submit">
+                      {tplBusy ? (zh ? '解析中…' : 'Parsing…') : (zh ? '解析模板' : 'Parse template')}
+                    </button>
+                  </div>
+                  {tplSections.length > 0 && (
+                    <div className="personalization-template__sections" data-testid="template-parse-sections">
+                      <label>
+                        <span>{zh ? '结构名称' : 'Structure name'}</span>
+                        <input className="settings-input" value={tplName} onChange={(event) => setTplName(event.target.value)} data-testid="template-name-input" />
+                      </label>
+                      {tplSections.map((section, index) => (
+                        <div key={index} className="personalization-template__section" data-testid="template-section">
+                          <input
+                            className="settings-input"
+                            value={section.title}
+                            aria-label={zh ? `第 ${index + 1} 节标题` : `Section ${index + 1} title`}
+                            onChange={(event) => updateTplSection(index, 'title', event.target.value)}
+                          />
+                          <textarea
+                            rows={2}
+                            value={section.instruction}
+                            aria-label={zh ? `第 ${index + 1} 节写作指引` : `Section ${index + 1} writing guide`}
+                            onChange={(event) => updateTplSection(index, 'instruction', event.target.value)}
+                          />
+                          <button type="button" className="btn-secondary btn-sm" onClick={() => removeTplSection(index)}>
+                            {zh ? '删除' : 'Remove'}
+                          </button>
+                        </div>
+                      ))}
+                      <div className="personalization-ai-create__actions">
+                        <button type="button" className="btn-primary btn-sm" disabled={!tplName.trim()} onClick={() => void savePaperTemplate()} data-testid="template-save">
+                          {zh ? '保存为论文结构' : 'Save as paper structure'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  {tplStatus && <p className="personalization-ai-create__status" role="status" aria-live="polite" data-testid="template-parse-status">{tplStatus}</p>}
+                </div>
+              )}
+            </div>
+          )}
           {loading && <p>{zh ? '正在加载…' : 'Loading…'}</p>}
           {!loading && loadError && <div className="personalization-load-error" role="alert"><span>{loadError}</span><button type="button" onClick={() => void load()}>{zh ? '重试' : 'Retry'}</button></div>}
           {!loading && !loadError && filtered.length === 0 && <p className="personalization-empty">{kind === 'scenario' ? (zh ? '还没有场景。从新建场景开始。' : 'No scenarios yet. Start by creating one.') : (zh ? '还没有自定义内容。' : 'No custom definitions yet.')}</p>}
@@ -2039,9 +2450,20 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
           <div className="personalization-library__status" role="status" aria-live="polite">{status}</div>
         </aside>
 
+        {!narrowLayout && (
+          <SplitHandle
+            label={zh ? '拖动调整库面板宽度' : 'Drag to resize the library panel'}
+            testId="personalization-split-library"
+            onDrag={handleLibraryDrag}
+            onKeyDelta={(delta) => {
+              setLibraryWidth((current) => Math.min(480, Math.max(220, current + delta)));
+            }}
+          />
+        )}
+
         <section
           className="personalization-detail"
-          aria-label={zh ? '个性化详情' : 'Personalization details'}
+          aria-label={zh ? '场景详情' : 'Scenario details'}
         >
           {kind === 'rules' && !selected && (
             <ProjectMetisRulesEditor projectId={activeProjectId} />
@@ -2079,7 +2501,7 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
             />
           )}
           {!selected && kind !== 'rules' && <div className="personalization-welcome"><h2>{kind === 'scenario' ? (zh ? '创建你的第一个场景' : 'Create your first scenario') : (zh ? '选择或新建配置' : 'Choose or create a configuration')}</h2><p>{kind === 'scenario' ? (zh ? '从空白场景开始，再按名称组合你自己的智能体、技能、MCP 和 Metis.md。' : 'Start from a blank scenario, then compose your own agents, skills, MCP, and Metis.md by name.') : (zh ? '这里只展示你创建或安装的内容。' : 'Only content you create or install is shown here.')}</p>{kind === 'scenario' && <button className="btn-primary" type="button" onClick={() => void create()}>{zh ? '新建场景' : 'Create scenario'}</button>}</div>}
-          {selected && isDirectlyEditable(selected) && <DefinitionEditor key={`${selected.id}:${selected.revision}`} definition={selected} definitions={userDefinitions} onSaved={load} onDraftStateChange={handleDraftStateChange} />}
+          {selected && isDirectlyEditable(selected) && <DefinitionEditor key={`${selected.id}:${selected.revision}`} definition={selected} definitions={userDefinitions} onSaved={handleEditorSaved} onDraftStateChange={handleDraftStateChange} onQuickCreate={quickCreate} />}
           {selected && selected.provenance.origin !== 'builtin' && !isDirectlyEditable(selected) && (
             <div className="personalization-welcome">
               <h2>{selected.name}</h2>

@@ -42,6 +42,8 @@ export const SessionTitleSchema = z.string()
 
 export const SessionCreateRequestSchema = z.strictObject({
   sessionId: SessionIdSchema,
+  /** Owning project id so conversations can travel with their project. */
+  projectId: RuntimeIdSchema.optional(),
 });
 
 export const SessionListRequestSchema = z.strictObject({});
@@ -143,6 +145,7 @@ export const SessionListItemSchema = z.strictObject({
   lastActivity: TimestampSchema,
   messageCount: z.number().int().min(0).max(SESSION_RUNTIME_LIMITS.messageCount),
   archived: z.boolean(),
+  projectId: RuntimeIdSchema.optional(),
 }).refine((value) => value.lastActivity >= value.createdAt, {
   message: 'Session activity cannot predate session creation',
   path: ['lastActivity'],
@@ -158,6 +161,7 @@ const LegacySessionRecordSchema = z.strictObject({
   messageCount: z.number().int().min(0).max(SESSION_RUNTIME_LIMITS.messageCount),
   archived: z.unknown().optional(),
   metadata: z.unknown().optional(),
+  projectId: RuntimeIdSchema.optional(),
 }).refine((value) => value.lastActivity >= value.createdAt, {
   message: 'Session activity cannot predate session creation',
   path: ['lastActivity'],
@@ -222,6 +226,7 @@ export function decodeLegacySessionRecord(input: unknown): SessionRecordDecodeRe
     lastActivity: record.lastActivity,
     messageCount: record.messageCount,
     archived: metadata.archived || record.archived === true,
+    ...(record.projectId === undefined ? {} : { projectId: record.projectId }),
   };
   const value = parseWithoutThrow(SessionListItemSchema, presentation);
   return value === undefined

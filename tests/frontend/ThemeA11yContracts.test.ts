@@ -75,12 +75,12 @@ describe('FIX-METIS-408 single-source theme contract', () => {
 
   it('reads light and dark token values from computed CSS instead of a mirrored TS palette', () => {
     const light = readComputedDesignTokens(document.documentElement);
-    expect(light.accentPrimary).toBe('#b05832');
+    expect(light.accentPrimary).toBe('#263a59');
     expect(light.chartPalette[3]).toBe('#4d7a9e');
 
     document.documentElement.dataset.theme = 'dark';
     const dark = readComputedDesignTokens(document.documentElement);
-    expect(dark.accentPrimary).toBe('#e49a72');
+    expect(dark.accentPrimary).toBe('#a3b6d3');
     expect(dark.chartPalette[3]).toBe('#7aa2d4');
   });
 

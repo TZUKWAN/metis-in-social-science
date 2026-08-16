@@ -120,7 +120,7 @@ function ListItem({ markerColor, text, meta, onClick, ariaLabel }: {
 }
 
 export default function DashboardPage({ onNavigate }: { onNavigate?: (page: Page) => void }) {
-  const { papers, notes, experiments, setSelectedPaperId, selectNote, setExperimentSearchQuery, setPaperFilter, weeklyReadingGoal } = useMetisStore();
+  const { papers, notes, experiments, setSelectedPaperId, selectNote, setExperimentSearchQuery, setPaperFilter } = useMetisStore();
   const { t, locale } = useTranslation();
   const chartColors = useChartColors();
   const [now] = useState(() => Date.now());
@@ -197,7 +197,7 @@ export default function DashboardPage({ onNavigate }: { onNavigate?: (page: Page
   };
 
   const openPaper = useCallback((paperId: string) => {
-    setSelectedPaperId(paperId); onNavigate?.('papers');
+    setSelectedPaperId(paperId); onNavigate?.('pdf');
   }, [setSelectedPaperId, onNavigate]);
   const openNote = useCallback((noteId: string) => {
     selectNote(noteId); onNavigate?.('notes');
@@ -207,7 +207,7 @@ export default function DashboardPage({ onNavigate }: { onNavigate?: (page: Page
   }, [setExperimentSearchQuery, onNavigate]);
   const goPapers = useCallback((filter?: Parameters<typeof setPaperFilter>[0]) => {
     if (filter) setPaperFilter(filter);
-    onNavigate?.('papers');
+    onNavigate?.('pdf');
   }, [setPaperFilter, onNavigate]);
   const goNotes = useCallback(() => onNavigate?.('notes'), [onNavigate]);
   const goExperiments = useCallback(() => onNavigate?.('experiments'), [onNavigate]);
@@ -343,7 +343,7 @@ export default function DashboardPage({ onNavigate }: { onNavigate?: (page: Page
     <div className="dash-page">
       <div className="dash-page-header">
         <h2>{t('dashboard.pageTitle')}</h2>
-        {!isEmpty && <p>{t('dashboard.statPapersNeedAttention').replace('{count}', String(stats.unreadPapers))} &middot; {stats.papersReadThisWeek}/{weeklyReadingGoal} {t('dashboard.statReadingProgress', { current: stats.papersReadThisWeek, goal: weeklyReadingGoal })}</p>}
+        {!isEmpty && <p>{t('dashboard.statPapersNeedAttention').replace('{count}', String(stats.unreadPapers))} &middot; {stats.papersReadThisWeek} {t('dashboard.statReadThisWeek')}</p>}
         {stats.papersReadThisWeek > 0 && (
           <button
             className="btn-sm btn-secondary"
@@ -383,7 +383,7 @@ export default function DashboardPage({ onNavigate }: { onNavigate?: (page: Page
           <h3>{t('dashboard.emptyTitle')}</h3>
           <p>{t('dashboard.emptyDescription')}</p>
           <div className="dash-actions" style={{ marginTop: 8 }}>
-            <button className="btn-primary" onClick={() => onNavigate?.('papers')}>{t('dashboard.actionOpenPapers')}</button>
+            <button className="btn-primary" onClick={() => onNavigate?.('pdf')}>{t('dashboard.actionOpenPapers')}</button>
             <button className="btn-secondary" onClick={() => onNavigate?.('notes')}>{t('dashboard.actionOpenNotes')}</button>
           </div>
         </div>
@@ -397,9 +397,9 @@ export default function DashboardPage({ onNavigate }: { onNavigate?: (page: Page
               accentColor={chartColors[0] ?? '#2c5282'} onClick={() => goPapers()} clickLabel={t('dashboard.actionOpenPapers')}
             />
             <CoreMetric
-              label={t('dashboard.statReadThisWeek')} value={t('dashboard.statReadingProgress', { current: stats.papersReadThisWeek, goal: weeklyReadingGoal })}
-              sub={stats.papersReadThisWeek >= weeklyReadingGoal ? t('dashboard.statGoalReached') : t('dashboard.statLast7Days')}
-              accentColor={chartColors[5]} progress={Math.min(1, stats.papersReadThisWeek / weeklyReadingGoal)}
+              label={t('dashboard.statReadThisWeek')} value={String(stats.papersReadThisWeek)}
+              sub={t('dashboard.statLast7Days')}
+              accentColor={chartColors[5]} progress={0}
               onClick={() => goPapers({ readStatus: 'read', readWithinDays: 7 })}
               clickLabel={t('dashboard.statReadThisWeek')}
             />
@@ -540,7 +540,7 @@ export default function DashboardPage({ onNavigate }: { onNavigate?: (page: Page
             <DashSection title={t('dashboard.sectionTagCloud')}>
               <div className="dash-tag-cloud">
                 {tagCloud.map(({ name, count, weight }) => (
-                  <button key={name} className="dash-tag" type="button" style={{ fontSize: `${0.7 + weight * 0.45}rem` }} onClick={() => { setPaperFilter({ tag: name }); onNavigate?.('papers'); }} title={t('dashboard.tagCount', { count })}>{name}</button>
+                  <button key={name} className="dash-tag" type="button" style={{ fontSize: `${0.7 + weight * 0.45}rem` }} onClick={() => { setPaperFilter({ tag: name }); onNavigate?.('pdf'); }} title={t('dashboard.tagCount', { count })}>{name}</button>
                 ))}
               </div>
             </DashSection>
@@ -585,7 +585,7 @@ export default function DashboardPage({ onNavigate }: { onNavigate?: (page: Page
 
           {/* ── Quick Actions ── */}
           <div className="dash-actions">
-            <button className="btn-primary" onClick={() => onNavigate?.('papers')}>{t('dashboard.actionOpenPapers')}</button>
+            <button className="btn-primary" onClick={() => onNavigate?.('pdf')}>{t('dashboard.actionOpenPapers')}</button>
             <button className="btn-secondary" onClick={() => onNavigate?.('notes')}>{t('dashboard.actionOpenNotes')}</button>
             <button className="btn-secondary" onClick={() => onNavigate?.('timeline')}>{t('dashboard.actionOpenTimeline')}</button>
           </div>

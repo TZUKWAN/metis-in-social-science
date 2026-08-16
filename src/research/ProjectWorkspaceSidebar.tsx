@@ -2,6 +2,8 @@ import {
   Activity,
   ArchiveRestore,
   BookOpen,
+  Download,
+  CheckIcon,
   FileOutput,
   FolderKanban,
   GitBranch,
@@ -19,6 +21,7 @@ import {
 } from 'lucide-react';
 import {
   useEffect,
+  useCallback,
   useId,
   useMemo,
   useRef,
@@ -50,6 +53,10 @@ const SIDEBAR_COPY = {
     importProject: '导入项目',
     searchProjects: '搜索项目',
     refresh: '刷新研究工作台',
+    exportProject: '导出项目',
+    exportProjectSuccess: '已导出：{path}',
+    exportProjectFailed: '导出项目失败：{error}',
+    exportProjectRunning: '正在导出…',
     loading: '正在同步项目…',
     empty: '尚无研究项目。创建一个项目后，资料、证据、论断与成果会持续保留在同一工作台中。',
     createTitle: '创建研究项目',
@@ -84,6 +91,7 @@ const SIDEBAR_COPY = {
     claims: '论断网络',
     artifacts: '研究成果',
     runs: '执行记录',
+    goals: '任务',
     recycleBin: '回收站',
     activeProject: '当前项目',
     noActiveProject: '未选择项目',
@@ -101,6 +109,10 @@ const SIDEBAR_COPY = {
     importProject: 'Import project',
     searchProjects: 'Search projects',
     refresh: 'Refresh research workspace',
+    exportProject: 'Export project',
+    exportProjectSuccess: 'Exported: {path}',
+    exportProjectFailed: 'Project export failed: {error}',
+    exportProjectRunning: 'Exporting…',
     loading: 'Syncing projects…',
     empty: 'No research projects yet. Create one to keep sources, evidence, claims, and outputs in one persistent workspace.',
     createTitle: 'Create research project',
@@ -135,6 +147,7 @@ const SIDEBAR_COPY = {
     claims: 'Claim network',
     artifacts: 'Research outputs',
     runs: 'Run history',
+    goals: 'Tasks',
     recycleBin: 'Recycle bin',
     activeProject: 'Active project',
     noActiveProject: 'No project selected',
@@ -152,7 +165,7 @@ interface NavigationItem {
   section: ResearchWorkspaceSection;
   label: keyof Pick<
     SidebarCopy,
-    'projectOverview' | 'sources' | 'evidence' | 'noteCodes' | 'claims' | 'artifacts'
+    'projectOverview' | 'sources' | 'evidence' | 'noteCodes' | 'claims' | 'artifacts' | 'goals'
   >;
   icon: typeof FolderKanban;
   count: number | null;
@@ -223,6 +236,33 @@ export default function ProjectWorkspaceSidebar({
   const [imageImportOpen, setImageImportOpen] = useState(false);
   const [imageImportCapability, setImageImportCapability] = useState<FileCapabilityDescriptor | null>(null);
   const [imageImportCaption, setImageImportCaption] = useState('');
+  const [exporting, setExporting] = useState(false);
+  const [exportNotice, setExportNotice] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
+
+  // Export the active project as a single .mts archive that can be
+  // imported on another device (research entities + attachments + linked
+  // library papers and their PDFs).
+  const handleExportProject = useCallback(async () => {
+    const projectId = researchWorkspaceStore.getState().activeProjectId;
+    if (!projectId || exporting) return;
+    setExporting(true);
+    setExportNotice(null);
+    try {
+      const result = await window.metis?.exportProject?.({ projectId });
+      if (result?.ok && result.path) {
+        setExportNotice({ kind: 'success', message: copy.exportProjectSuccess.replace('{path}', result.path) });
+      } else {
+        setExportNotice({ kind: 'error', message: copy.exportProjectFailed.replace('{error}', result?.error ?? 'unknown') });
+      }
+    } catch (err) {
+      setExportNotice({
+        kind: 'error',
+        message: copy.exportProjectFailed.replace('{error}', err instanceof Error ? err.message : String(err)),
+      });
+    } finally {
+      setExporting(false);
+    }
+  }, [exporting, copy]);
   const [imageImportOrdinal, setImageImportOrdinal] = useState(0);
   const [imageImportOrdinalRaw, setImageImportOrdinalRaw] = useState('0');
   const [imageImportError, setImageImportError] = useState('');
@@ -307,6 +347,12 @@ export default function ProjectWorkspaceSidebar({
       label: 'artifacts',
       icon: FileOutput,
       count: snapshot?.artifacts.filter((item) => item.deletedAt === null).length ?? null,
+    },
+    {
+      section: 'goals',
+      label: 'goals',
+      icon: CheckIcon,
+      count: null,
     },
   ], [snapshot]);
 
@@ -851,6 +897,29 @@ export default function ProjectWorkspaceSidebar({
           <span>{copy.recycleBin}</span>
           <span className="research-navigation-count">{recycleCount}</span>
         </button>
+        <div className="research-navigation-divider" />
+        <button
+          type="button"
+          className="research-navigation-item"
+          onClick={() => void handleExportProject()}
+          disabled={!snapshot || exporting}
+          aria-label={copy.exportProject}
+          title={copy.exportProject}
+          data-testid="sidebar-export-project"
+        >
+          <Download size={16} aria-hidden="true" />
+          <span>{exporting ? copy.exportProjectRunning : copy.exportProject}</span>
+          {exporting && <LoaderCircle size={13} className="is-spinning" aria-hidden="true" />}
+        </button>
+        {exportNotice && (
+          <p
+            className="research-workspace-form-error"
+            role="status"
+            style={{ color: exportNotice.kind === 'error' ? 'var(--status-failed)' : 'var(--status-completed)' }}
+          >
+            {exportNotice.message}
+          </p>
+        )}
       </nav>
 
       <footer className="research-workspace-sidebar__footer">

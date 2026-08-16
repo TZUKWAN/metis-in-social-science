@@ -156,3 +156,32 @@ describe('text tool protocol (Qwen3 thinking models)', () => {
     expect(messages.some((m) => m.content.includes('Available Tools') && m.content.includes('search'))).toBe(true);
   });
 });
+
+// ─── stripTextToolMarkup (F4: <tool_calls> leak) ─────────────
+
+import { stripTextToolMarkup } from '../../engine/tools/TextToolProtocol.js';
+
+describe('stripTextToolMarkup', () => {
+  it('removes a paired <tool_calls> block and keeps the real answer', () => {
+    const input = '我会先检索。<tool_calls> <thorough_search> <query>meta-analysis</query> </thorough_search> </tool_calls> 元分析是一种统计方法。';
+    expect(stripTextToolMarkup(input)).toBe('我会先检索。 元分析是一种统计方法。');
+  });
+
+  it('removes an unclosed trailing <tool_calls> block (truncated stream)', () => {
+    const input = '答案是 42。\n<tool_calls> <thorough_search> <query>unfinished';
+    expect(stripTextToolMarkup(input)).toBe('答案是 42。');
+  });
+
+  it('removes <tool_call> singular blocks too', () => {
+    expect(stripTextToolMarkup('A<tool_call>{"name":"x"}</tool_call>B')).toBe('AB');
+  });
+
+  it('passes through text without markup unchanged', () => {
+    const plain = '元分析合并多个独立研究的结果。\n\n第二段。';
+    expect(stripTextToolMarkup(plain)).toBe(plain);
+  });
+
+  it('returns empty string when the whole output was markup', () => {
+    expect(stripTextToolMarkup('<tool_calls> <query>x</query> </tool_calls>')).toBe('');
+  });
+});

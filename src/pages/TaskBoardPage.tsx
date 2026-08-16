@@ -6,8 +6,9 @@
  * between columns to change status; click a card for the detail panel.
  */
 
-import { useEffect, useMemo, useState, useCallback } from 'react';
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { useTranslation } from '../i18n';
+import { researchWorkspaceStore } from '../research/researchWorkspaceStore';
 import './TaskBoardPage.css';
 
 type GoalStatus = 'draft' | 'planning' | 'ready' | 'running' | 'paused' | 'completed' | 'failed';
@@ -19,6 +20,7 @@ interface KanbanGoal {
   status: GoalStatus;
   priority?: Priority;
   createdAt: number;
+  projectId?: string;
 }
 
 // Map Goal status to kanban column.
@@ -28,7 +30,10 @@ function statusToColumn(status: GoalStatus): ColumnId {
   switch (status) {
     case 'draft': return 'backlog';
     case 'planning': case 'ready': return 'todo';
-    case 'running': case 'paused': return 'inprogress';
+    case 'running': return 'inprogress';
+    // GoalEngine has no distinct review status. Paused is presented honestly as
+    // "waiting", rather than pretending a review column survives reload.
+    case 'paused': return 'inreview';
     case 'completed': return 'done';
     case 'failed': return 'cancelled';
     default: return 'todo';
@@ -40,7 +45,7 @@ function columnToStatus(column: ColumnId): GoalStatus {
     case 'backlog': return 'draft';
     case 'todo': return 'ready';
     case 'inprogress': return 'running';
-    case 'inreview': return 'paused'; // closest mapping — paused = waiting for review
+    case 'inreview': return 'paused';
     case 'done': return 'completed';
     case 'cancelled': return 'failed';
     default: return 'ready';
@@ -71,7 +76,12 @@ function formatAge(ts: number, locale: string): string {
   return locale === 'zh' ? `${days} 天前` : `${days}d ago`;
 }
 
-export default function TaskBoardPage() {
+export interface TaskBoardPageProps {
+  /** Initial project filter applied to the board (e.g. the active research project). */
+  defaultProjectFilter?: string;
+}
+
+export default function TaskBoardPage({ defaultProjectFilter = '' }: TaskBoardPageProps = {}) {
   const { t, locale } = useTranslation();
   const [goals, setGoals] = useState<KanbanGoal[]>([]);
   const [loading, setLoading] = useState(false);
@@ -79,10 +89,15 @@ export default function TaskBoardPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [filterText, setFilterText] = useState('');
   const [priorityFilter, setPriorityFilter] = useState('');
+  const [projectFilter, setProjectFilter] = useState(defaultProjectFilter);
+  const [projects, setProjects] = useState<Array<{ id: string; title: string }>>([]);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverColumn, setDragOverColumn] = useState<ColumnId | null>(null);
   const [newTaskColumn, setNewTaskColumn] = useState<ColumnId | null>(null);
   const [newTaskText, setNewTaskText] = useState('');
+  // UX-KANBAN-002: 新建任务的项目归属。null=未选择（禁止静默创建）；''=未关联；
+  // 其他值为具体项目 id。打开创建区时优先继承当前活动项目或明确的项目筛选值。
+  const [newTaskProject, setNewTaskProject] = useState<string | null>(null);
 
   const loadGoals = useCallback(async () => {
     const metis = window.metis;
@@ -91,12 +106,19 @@ export default function TaskBoardPage() {
     try {
       const result = await metis.listGoals();
       if (result.success) {
+        if (metis.listProjects) {
+          const projectResult = await metis.listProjects();
+          if (projectResult.success) {
+            setProjects(projectResult.projects.map((project) => ({ id: project.id, title: project.title || project.id })));
+          }
+        }
         setGoals((result.goals ?? []).map((g) => ({
           id: g.goalId,
           description: g.label,
           status: g.status as GoalStatus,
           priority: (g as unknown as { priority?: Priority }).priority,
           createdAt: g.createdAt,
+          projectId: g.projectId,
         })));
       }
     } catch {
@@ -109,14 +131,50 @@ export default function TaskBoardPage() {
   // eslint-disable-next-line react-hooks/set-state-in-effect -- loadGoals sets loading state synchronously before its first await
   useEffect(() => { void loadGoals(); }, [loadGoals]);
 
+  // Live sync: any goal change from the chat side (create / plan / execute /
+  // pause) refreshes the board without polling.
+  useEffect(() => {
+    const metis = window.metis;
+    if (!metis?.onGoalChanged) return;
+    let stale = false;
+    const unsubscribe = metis.onGoalChanged(() => { if (!stale) void loadGoals(); });
+    return () => { stale = true; unsubscribe(); };
+  }, [loadGoals]);
+
+  // Board focus handoff from a chat goal card ("open this task on the board").
+  const pendingFocusRef = useRef<string | null>(null);
+  useEffect(() => {
+    const pending = window.sessionStorage.getItem('metis-pending-goal-focus');
+    if (pending) {
+      pendingFocusRef.current = pending;
+      window.sessionStorage.removeItem('metis-pending-goal-focus');
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time handoff initialization; the filter must not hide the focused card
+      setFilterText('');
+    }
+  }, []);
+  useEffect(() => {
+    const goalId = pendingFocusRef.current;
+    if (!goalId || !goals.some((g) => g.id === goalId)) return;
+    pendingFocusRef.current = null;
+    setSelectedId(goalId);
+    requestAnimationFrame(() => {
+      const card = document.querySelector(`[data-goal-id="${goalId}"]`);
+      if (card && typeof (card as HTMLElement).scrollIntoView === 'function') {
+        (card as HTMLElement).scrollIntoView({ block: 'center' });
+      }
+    });
+  }, [goals]);
+
   const filtered = useMemo(() => {
     const q = filterText.trim().toLowerCase();
     return goals.filter((g) => {
       if (q && !g.description.toLowerCase().includes(q)) return false;
       if (priorityFilter && g.priority !== priorityFilter) return false;
+      if (projectFilter === 'unbound') return !g.projectId;
+      if (projectFilter && g.projectId !== projectFilter) return false;
       return true;
     });
-  }, [goals, filterText, priorityFilter]);
+  }, [goals, filterText, priorityFilter, projectFilter]);
 
   const byColumn = useMemo(() => {
     const map = new Map<ColumnId, KanbanGoal[]>();
@@ -147,22 +205,36 @@ export default function TaskBoardPage() {
     setDragOverColumn(null);
   }, []);
 
+  // Keyboard equivalent of drag-and-drop: focus a card, then move it with
+  // ArrowLeft / ArrowRight between adjacent columns.
+  const moveGoalToColumn = useCallback(async (goalId: string, columnId: ColumnId) => {
+    const goal = goals.find((g) => g.id === goalId);
+    if (!goal) return;
+    const newStatus = columnToStatus(columnId);
+    if (goal.status === newStatus) return;
+    const metis = window.metis;
+    if (!metis?.updateGoalStatus) return;
+    const result = await metis.updateGoalStatus({ goalId, status: newStatus });
+    if (result.ok) await loadGoals();
+  }, [goals, loadGoals]);
+
   const handleDrop = useCallback(async (e: React.DragEvent, columnId: ColumnId) => {
     e.preventDefault();
     setDragOverColumn(null);
     if (!draggingId) return;
-    const newStatus = columnToStatus(columnId);
-    const goal = goals.find((g) => g.id === draggingId);
-    if (!goal || goal.status === newStatus) { setDraggingId(null); return; }
-
-    const metis = window.metis;
-    if (!metis?.updateGoalStatus) { setDraggingId(null); return; }
-    const result = await metis.updateGoalStatus({ goalId: draggingId, status: newStatus });
-    if (result.ok) {
-      await loadGoals();
-    }
+    await moveGoalToColumn(draggingId, columnId);
     setDraggingId(null);
-  }, [draggingId, goals, loadGoals]);
+  }, [draggingId, moveGoalToColumn]);
+
+  const handleCardKeyDown = useCallback((e: React.KeyboardEvent, goalId: string, currentColumn: ColumnId) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    const currentIndex = COLUMNS.findIndex((column) => column.id === currentColumn);
+    const nextIndex = e.key === 'ArrowRight' ? currentIndex + 1 : currentIndex - 1;
+    const target = COLUMNS[nextIndex];
+    if (!target) return;
+    void moveGoalToColumn(goalId, target.id);
+  }, [moveGoalToColumn]);
 
   // ── Card actions ──
 
@@ -183,18 +255,34 @@ export default function TaskBoardPage() {
     await loadGoals();
   }, [loadGoals]);
 
+  // UX-KANBAN-002: 新建任务的默认归属——优先继承当前活动项目，其次明确的项目
+  // 筛选值（含「未关联」筛选）；两者都没有时必须显式选择，绝不静默创建全局任务。
+  const defaultTaskProject = useCallback((): string | null => {
+    if (projectFilter === 'unbound') return '';
+    if (projectFilter) return projectFilter;
+    return researchWorkspaceStore.getState().activeProjectId ?? null;
+  }, [projectFilter]);
+
   const handleCreateTask = useCallback(async (columnId: ColumnId) => {
     const metis = window.metis;
     if (!metis?.createGoal || !newTaskText.trim()) return;
+    // 归属未显式选择时不允许提交——用户必须先在下拉框里做出选择。
+    if (newTaskProject === null) return;
     const status = columnToStatus(columnId);
-    const result = await metis.createGoal(newTaskText.trim());
+    const projectId = newTaskProject === '' ? undefined : newTaskProject;
+    const result = await metis.createGoal(
+      newTaskText.trim(),
+      undefined,
+      projectId,
+    );
     if (result.success && result.goalId) {
       await metis.updateGoalStatus?.({ goalId: result.goalId, status });
       await loadGoals();
       setNewTaskColumn(null);
       setNewTaskText('');
+      setNewTaskProject(null);
     }
-  }, [newTaskText, loadGoals]);
+  }, [loadGoals, newTaskText, newTaskProject]);
 
   return (
     <div className="kanban-page">
@@ -215,6 +303,19 @@ export default function TaskBoardPage() {
           onChange={(e) => setFilterText(e.target.value)}
           style={{ width: 200 }}
         />
+        <select
+          className="btn-sm"
+          value={projectFilter}
+          onChange={(e) => setProjectFilter(e.target.value)}
+          aria-label={t('kanban.filterProject')}
+          data-testid="kanban-project-filter"
+        >
+          <option value="">{t('kanban.allProjects')}</option>
+          <option value="unbound">{t('kanban.unboundProjects')}</option>
+          {projects.map((project) => (
+            <option key={project.id} value={project.id}>{project.title}</option>
+          ))}
+        </select>
         <select
           className="btn-sm"
           value={priorityFilter}
@@ -253,7 +354,11 @@ export default function TaskBoardPage() {
                 <button
                   className="kanban-column__add"
                   data-testid={`kanban-add-${col.id}`}
-                  onClick={() => { setNewTaskColumn(newTaskColumn === col.id ? null : col.id); setNewTaskText(''); }}
+                  onClick={() => {
+                    setNewTaskColumn(newTaskColumn === col.id ? null : col.id);
+                    setNewTaskText('');
+                    setNewTaskProject(defaultTaskProject());
+                  }}
                   title={t('kanban.addTask')}
                 >
                   +
@@ -272,6 +377,24 @@ export default function TaskBoardPage() {
                     autoFocus
                     onKeyDown={(e) => { if (e.key === 'Enter') void handleCreateTask(col.id); if (e.key === 'Escape') setNewTaskColumn(null); }}
                   />
+                  <select
+                    className="btn-sm"
+                    value={newTaskProject === null ? '' : (newTaskProject === '' ? '__unbound__' : newTaskProject)}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      if (value === '__unbound__') setNewTaskProject('');
+                      else if (value === '') setNewTaskProject(null);
+                      else setNewTaskProject(value);
+                    }}
+                    data-testid="kanban-new-task-project"
+                    aria-label={t('kanban.taskProject')}
+                  >
+                    {newTaskProject === null && <option value="" disabled>{t('kanban.selectProject')}</option>}
+                    <option value="__unbound__">{t('kanban.unboundProjects')}</option>
+                    {projects.map((project) => (
+                      <option key={project.id} value={project.id}>{project.title}</option>
+                    ))}
+                  </select>
                   <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
                     <button className="btn-primary btn-sm" data-testid={`kanban-create-${col.id}`} onClick={() => void handleCreateTask(col.id)}>{t('common.save')}</button>
                     <button className="btn-secondary btn-sm" onClick={() => setNewTaskColumn(null)}>{t('common.cancel')}</button>
@@ -285,9 +408,14 @@ export default function TaskBoardPage() {
                     key={goal.id}
                     className={`kanban-card ${selectedId === goal.id ? 'kanban-card--selected' : ''} ${draggingId === goal.id ? 'kanban-card--dragging' : ''}`}
                     data-testid="kanban-card"
+                    data-goal-id={goal.id}
                     draggable
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`${goal.description}，${t(`kanban.status_${goal.status}`)}`}
                     onDragStart={(e) => handleDragStart(e, goal.id)}
                     onClick={() => setSelectedId(goal.id)}
+                    onKeyDown={(e) => handleCardKeyDown(e, goal.id, col.id)}
                   >
                     <div className="kanban-card__title">{goal.description}</div>
                     <div className="kanban-card__meta">
@@ -309,12 +437,19 @@ export default function TaskBoardPage() {
         })}
       </div>
 
-      {/* Detail panel */}
+      {/* Detail panel — dialog semantics with keyboard close */}
       {selected && (
-        <div className="kanban-detail" data-testid="kanban-detail">
+        <div
+          className="kanban-detail"
+          data-testid="kanban-detail"
+          role="dialog"
+          aria-modal="true"
+          aria-label={selected.description}
+          onKeyDown={(e) => { if (e.key === 'Escape') setSelectedId(null); }}
+        >
           <div className="kanban-detail__header">
             <h3>{selected.description}</h3>
-            <button className="btn-sm btn-secondary" onClick={() => setSelectedId(null)}>×</button>
+            <button className="btn-sm btn-secondary" autoFocus onClick={() => setSelectedId(null)} aria-label={t('common.close') ?? '关闭'}>×</button>
           </div>
           <div className="kanban-detail__body">
             <div className="kanban-detail__row">
@@ -340,6 +475,16 @@ export default function TaskBoardPage() {
               <span className="kanban-detail__value">{new Date(selected.createdAt).toLocaleString(locale === 'zh' ? 'zh-CN' : 'en-US')}</span>
             </div>
             <div className="kanban-detail__actions">
+              <button
+                className="btn-sm btn-primary"
+                data-testid="kanban-discuss-in-chat"
+                onClick={() => {
+                  setSelectedId(null);
+                  window.dispatchEvent(new CustomEvent('metis:open-goal', { detail: { goalId: selected.id } }));
+                }}
+              >
+                {t('kanban.discussInChat')}
+              </button>
               <button
                 className="btn-sm"
                 data-testid="kanban-delete"

@@ -15,6 +15,8 @@ export interface Goal {
   status: 'draft' | 'planning' | 'ready' | 'running' | 'paused' | 'completed' | 'failed';
   /** Kanban priority: low|medium|high|urgent (default medium). */
   priority?: 'low' | 'medium' | 'high' | 'urgent';
+  /** Owning research project (absent = unbound/global task). */
+  projectId?: string;
 }
 
 export interface PlanResult {
@@ -38,9 +40,15 @@ RULES:
 2. Steps should be 5-15 in number. If the goal is simple, use fewer. If complex, use more.
 3. Each step must have clear input/output contracts.
 4. Use sequential dependencies (step N depends on step N-1) unless parallel is obvious.
-5. Max turns per step: 3 (small model limit).
+5. Max turns per step: 6 (small model limit).
 6. Tools allowed: read_file, write_file, search_web, summarize_text, compare_items.
-7. Output MUST be valid JSON matching the WorkflowDefinition schema.
+7. Every step MUST define objective acceptanceCriteria so completion is machine-verifiable, not just LLM self-assessment. A step is only "done" when all its criteria pass. Use these kinds:
+   - { "kind": "minLength", "value": "50", "description": "回答不少于 50 字" }
+   - { "kind": "contains", "value": "参考文献", "description": "必须列出参考文献" }
+   - { "kind": "notContains", "value": "我无法", "description": "不得是拒答" }
+   - { "kind": "regex", "value": "10\\\\.\\\\d{4,9}/.+", "description": "包含 DOI" }
+   Add 1-3 criteria per step that would be cheap to verify but catch hollow/off-topic answers.
+8. Output MUST be valid JSON matching the WorkflowDefinition schema.
 
 OUTPUT FORMAT (JSON):
 {
@@ -56,7 +64,10 @@ OUTPUT FORMAT (JSON):
       "prompt": "Detailed prompt for the agent. Use {{input.key}} for global input, {{stepId.output}} for upstream output.",
       "inputFrom": ["step_0"],
       "tools": ["read_file"],
-      "maxTurns": 3
+      "maxTurns": 6,
+      "acceptanceCriteria": [
+        { "kind": "minLength", "value": "50", "description": "输出不少于 50 字" }
+      ]
     }
   ],
   "dependencies": {
@@ -113,7 +124,7 @@ export class GoalPlanner {
     for (const step of workflow.steps) {
       if (!step.id) errors.push(`Step missing id`);
       if (!step.prompt) errors.push(`Step '${step.id}' missing prompt`);
-      if (step.maxTurns > 5) {
+      if (step.maxTurns > 10) {
         warnings.push(`Step '${step.id}' has maxTurns=${step.maxTurns}, consider splitting`);
       }
       if (step.prompt && step.prompt.length > 2000) {
@@ -179,13 +190,14 @@ export class GoalPlanner {
   /**
    * Create a new Goal object.
    */
-  static createGoal(description: string, context?: string): Goal {
+  static createGoal(description: string, context?: string, projectId?: string): Goal {
     return {
       id: `goal_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       description,
       context,
       createdAt: Date.now(),
       status: 'draft',
+      ...(projectId ? { projectId } : {}),
     };
   }
 }

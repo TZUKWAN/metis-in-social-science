@@ -29,7 +29,6 @@ describe('DashboardPage artifact stat card', () => {
       experiments: [],
       collections: [],
       workflowRuns: [],
-      weeklyReadingGoal: 5,
       locale: 'zh',
       theme: 'light',
       isHydrated: true,

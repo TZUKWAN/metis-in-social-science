@@ -21,9 +21,9 @@ function mockMetis(overrides: Record<string, unknown> = {}) {
         { id: 'proj-b', title: 'Attention 综述', updatedAt: 2000, archivedAt: null },
       ],
     })),
-    exportProject: vi.fn(async () => ({ ok: true, path: 'C:\\data\\exports\\proj-a-2026.metisproj' })),
+    exportProject: vi.fn(async () => ({ ok: true, path: 'C:\\data\\exports\\proj-a-2026.mts' })),
     importProject: vi.fn(async () => ({ ok: true, projectId: 'proj-c', restored: { projectId: 'proj-c', entityCounts: {}, attachedFiles: { count: 0, bytes: 0, restoredPaths: [] } } })),
-    pickProjectArchive: vi.fn(async () => ({ canceled: false, path: 'C:\\backups\\export.metisproj' })),
+    pickProjectArchive: vi.fn(async () => ({ canceled: false, path: 'C:\\backups\\export.mts' })),
     ...overrides,
   };
   (window as unknown as { metis: unknown }).metis = metis;
@@ -49,7 +49,7 @@ describe('SettingsProjectArchiveSection', () => {
       expect(screen.getByText(/项目归档已导出/)).toBeDefined();
     });
     // The saved path is surfaced so the user knows where the archive lives.
-    expect(screen.getByText(/proj-a-2026.metisproj/)).toBeDefined();
+    expect(screen.getByText(/proj-a-2026.mts/)).toBeDefined();
   });
 
   it('imports a picked archive with the overwrite toggle', async () => {
@@ -63,7 +63,7 @@ describe('SettingsProjectArchiveSection', () => {
     await waitFor(() => {
       expect(metis.pickProjectArchive).toHaveBeenCalled();
       expect(metis.importProject).toHaveBeenCalledWith({
-        archivePath: 'C:\\backups\\export.metisproj',
+        archivePath: 'C:\\backups\\export.mts',
         overwrite: true,
       });
       expect(screen.getByText(/项目归档已导入/)).toBeDefined();

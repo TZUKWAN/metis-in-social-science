@@ -1,0 +1,13 @@
+{
+  "replacements": [
+    {
+      "old": "  compareGroup?: string;\n}",
+      "new": "  compareGroup?: string;\n  /**\n   * UX-CHAT-002: 回合失败/中断/取消时留下的未完成草稿标记。流式占位消息在\n   * 非成功结算时保留部分内容并打上此标记；空内容则直接删除。\n   */\n  incomplete?: boolean;\n}"
+    },
+    {
+      "old": "        if (!content && !reasoning && !isFinished) return;",
+      "new": "        // UX-CHAT-002: 空内容事件（含空 isFinished）不创建占位气泡，避免\n        // 失败结算时残留空白 Metis 消息。\n        if (!content && !reasoning) return;",
+      "replaceAll": true
+    }
+  ]
+}

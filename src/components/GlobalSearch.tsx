@@ -1,5 +1,5 @@
 /**
- * Global Search — quick access to papers, notes, experiments and collections.
+ * Global Search — quick access to papers, notes, experiments and pages.
  * Open with Cmd/Ctrl+K from anywhere in the app.
  */
 
@@ -31,29 +31,24 @@ const RESEARCH_PAGES: Page[] = [
   'projects',
   'dashboard',
   'goal',
-  'library',
-  'papers',
-  'collections',
-  'tags',
   'graph',
   'timeline',
   'latex',
   'pdf',
   'notes',
   'experiments',
+  'kanban',
+  'autonomous',
   'settings',
 ];
 
 const PAGE_LABEL_KEYS: Record<Page, string> = {
   projects: 'nav.projects',
-  library: 'nav.library',
   settings: 'nav.settings',
+  'autonomous-console': 'nav.autonomous',
   dashboard: 'nav.dashboard',
   chat: 'nav.chat',
   goal: 'nav.goal',
-  papers: 'nav.papers',
-  collections: 'nav.collections',
-  tags: 'nav.tags',
   graph: 'nav.knowledgeGraph',
   artifacts: 'nav.artifacts',
   office: 'nav.office',
@@ -74,7 +69,7 @@ interface GlobalSearchProps {
 
 export default function GlobalSearch({ onNavigate, onClose }: GlobalSearchProps) {
   const { t } = useTranslation();
-  const { papers, notes, experiments, collections, setSelectedPaperId, selectNote, setExperimentSearchQuery } = useMetisStore();
+  const { papers, notes, experiments, setSelectedPaperId, selectNote, setExperimentSearchQuery } = useMetisStore();
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [typeFilter, setTypeFilter] = useState<'all' | 'page' | 'paper' | 'note' | 'experiment' | 'collection'>('all');
@@ -91,6 +86,7 @@ export default function GlobalSearch({ onNavigate, onClose }: GlobalSearchProps)
     } catch { return []; }
   });
   const inputRef = useRef<HTMLInputElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
   const searchablePages = useMemo<Page[]>(
     () => isNavVisible('evals') ? [...RESEARCH_PAGES, 'evals'] : RESEARCH_PAGES,
     [],
@@ -98,6 +94,19 @@ export default function GlobalSearch({ onNavigate, onClose }: GlobalSearchProps)
 
   useEffect(() => {
     inputRef.current?.focus();
+  }, []);
+
+  // A11Y-001: restore focus to the previously focused element when the dialog
+  // closes, so keyboard users never get stranded inside the overlay.
+  useEffect(() => {
+    const previouslyFocused = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    return () => {
+      if (previouslyFocused && typeof previouslyFocused.focus === 'function') {
+        previouslyFocused.focus();
+      }
+    };
   }, []);
 
   const saveRecentSearch = useCallback((q: string) => {
@@ -198,7 +207,7 @@ export default function GlobalSearch({ onNavigate, onClose }: GlobalSearchProps)
         scored.push({
           item: {
             id: paper.id,
-            page: 'papers',
+            page: 'pdf',
             kind: 'entity',
             entityType: 'paper',
             title: paper.title || t('papers.untitled'),
@@ -254,27 +263,6 @@ export default function GlobalSearch({ onNavigate, onClose }: GlobalSearchProps)
       }
     }
 
-    if (!tag) {
-      for (const collection of collections) {
-        const nameScore = scoreMatch(collection.name);
-        const otherText = (collection.description || '').toLowerCase();
-        const score = nameScore || (otherText.includes(text) ? 1 : 0);
-        if (score > 0) {
-          scored.push({
-            item: {
-              id: collection.id,
-              page: 'papers',
-              kind: 'entity',
-              entityType: 'collection',
-              title: collection.name,
-              subtitle: t('papers.collectionCount', { count: collection.paperIds.length }),
-            },
-            score,
-          });
-        }
-      }
-    }
-
     const filtered = scored.filter(({ item }) => {
       if (typeFilter === 'page') return item.kind === 'page';
       if (typeFilter !== 'all') return item.entityType === typeFilter;
@@ -283,7 +271,7 @@ export default function GlobalSearch({ onNavigate, onClose }: GlobalSearchProps)
 
     filtered.sort((a, b) => b.score - a.score);
     return filtered.slice(0, 20).map((s) => s.item);
-  }, [searchParams, searchablePages, papers, notes, experiments, collections, t, typeFilter, starredOnly]);
+  }, [searchParams, searchablePages, papers, notes, experiments, t, typeFilter, starredOnly]);
 
   // ── Full-text paper-body search (main process, debounced) ──
   const fullTextQuery = searchParams.text ?? '';
@@ -327,7 +315,7 @@ export default function GlobalSearch({ onNavigate, onClose }: GlobalSearchProps)
     );
     const fullTextItems: ResultItem[] = fullTextResults.map((hit) => ({
       id: `fulltext-${hit.id}`,
-      page: 'papers',
+      page: 'pdf',
       kind: 'entity',
       entityType: 'paper',
       title: hit.title,
@@ -343,7 +331,7 @@ export default function GlobalSearch({ onNavigate, onClose }: GlobalSearchProps)
   const handleSelect = useCallback((item: ResultItem) => {
     saveRecentSearch(query);
     if (item.kind === 'entity') {
-      if (item.page === 'papers' && item.entityType !== 'collection') {
+      if (item.page === 'pdf') {
         setSelectedPaperId(item.selectId ?? item.id);
       } else if (item.page === 'notes') {
         selectNote(item.id);
@@ -360,6 +348,25 @@ export default function GlobalSearch({ onNavigate, onClose }: GlobalSearchProps)
     function handleKeyDown(e: KeyboardEvent) {
       if (e.key === 'Escape') {
         onClose();
+        return;
+      }
+      // A11Y-001: keep Tab focus cycling inside the modal dialog so keyboard
+      // navigation never leaks into the background page.
+      if (e.key === 'Tab' && overlayRef.current) {
+        const focusables = [...overlayRef.current.querySelectorAll<HTMLElement>(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+        )].filter((element) => element.offsetParent !== null || element === document.activeElement);
+        if (focusables.length > 0) {
+          const first = focusables[0]!;
+          const last = focusables[focusables.length - 1]!;
+          if (e.shiftKey && (document.activeElement === first || document.activeElement === overlayRef.current)) {
+            e.preventDefault();
+            last.focus();
+          } else if (!e.shiftKey && document.activeElement === last) {
+            e.preventDefault();
+            first.focus();
+          }
+        }
         return;
       }
       if (mergedResults.length === 0) return;
@@ -379,7 +386,15 @@ export default function GlobalSearch({ onNavigate, onClose }: GlobalSearchProps)
   }, [onClose, mergedResults, safeSelectedIndex, handleSelect]);
 
   return (
-    <div className="modal-overlay" onClick={onClose} style={{ alignItems: 'flex-start', paddingTop: '10vh' }}>
+    <div
+      ref={overlayRef}
+      className="modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label={t('globalSearch.title')}
+      onClick={onClose}
+      style={{ alignItems: 'flex-start', paddingTop: '10vh' }}
+    >
       <div
         className="modal"
         style={{ width: 560, maxWidth: '90vw', padding: 0, overflow: 'hidden' }}

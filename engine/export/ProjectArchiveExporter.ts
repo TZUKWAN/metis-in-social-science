@@ -16,7 +16,9 @@ import { createHash } from 'node:crypto';
 
 export const PROJECT_ARCHIVE_FORMAT = 'metis-project-archive';
 export const PROJECT_ARCHIVE_FORMAT_VERSION = 1;
-export const PROJECT_ARCHIVE_EXT = '.metisproj';
+export const PROJECT_ARCHIVE_EXT = '.mts';
+/** Legacy extension still accepted on import (archives made before the rename). */
+export const PROJECT_ARCHIVE_LEGACY_EXTS = ['.metisproj'] as const;
 
 export const PROJECT_ARCHIVE_DEFAULTS = Object.freeze({
   /** Single attached file size cap (bytes). Larger files are skipped, never fatal. */
@@ -69,7 +71,7 @@ export interface ProjectArchiveExportOptions {
   /** Live main database (e.g. store.raw). Must be a file-backed database. */
   db: Database.Database;
   projectId: string;
-  /** Destination path for the .metisproj archive. */
+  /** Destination path for the .mts archive. */
   destPath: string;
   appVersion?: string;
   maxFileBytes?: number;
@@ -114,6 +116,12 @@ export interface ProjectArchiveImportResult {
 function tableColumns(database: Database.Database, table: string): string[] {
   return (database.prepare(`PRAGMA table_info("${table}")`).all() as Array<{ name: string }>)
     .map((row) => row.name);
+}
+
+function tableExists(database: Database.Database, table: string): boolean {
+  return (database.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+  ).get(table) as { 1: number } | undefined) !== undefined;
 }
 
 function isProjectScoped(table: string): boolean {
@@ -166,6 +174,9 @@ export async function exportProjectArchive(options: ProjectArchiveExportOptions)
     const needed = [
       ...PROJECT_SCOPED_TABLES,
       ...Object.keys(LINKED_TABLES),
+      'papers',
+      'sessions',
+      'messages',
       'archive_meta',
       'archive_files',
     ];
@@ -210,6 +221,31 @@ export async function exportProjectArchive(options: ProjectArchiveExportOptions)
         ).run(projectId);
         entityCounts[table] = count.changes;
       }
+      // The full library travels with a project archive so the imported
+      // project keeps working without its literature on the new device.
+      if (existing.has('papers')) {
+        const paperCount = archive.prepare(
+          'INSERT INTO papers SELECT * FROM srv.papers',
+        ).run().changes;
+        if (paperCount > 0) entityCounts.papers = paperCount;
+      }
+      // Conversations that belong to this project (sessions carry project_id)
+      // travel with their full message history.
+      if (existing.has('sessions')) {
+        const sessionCount = archive.prepare(
+          'INSERT INTO sessions SELECT * FROM srv.sessions WHERE project_id = ?',
+        ).run(projectId).changes;
+        if (sessionCount > 0) {
+          entityCounts.sessions = sessionCount;
+          if (existing.has('messages')) {
+            const messageCount = archive.prepare(
+              `INSERT INTO messages SELECT * FROM srv.messages WHERE session_id IN
+               (SELECT id FROM srv.sessions WHERE project_id = ?)`,
+            ).run(projectId).changes;
+            if (messageCount > 0) entityCounts.messages = messageCount;
+          }
+        }
+      }
     });
     copy();
 
@@ -219,6 +255,48 @@ export async function exportProjectArchive(options: ProjectArchiveExportOptions)
         (source_id, original_name, original_path, sha256, bytes, status, data)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
+    const embedFile = (
+      key: string,
+      filePath: string,
+      displayName: string,
+      originPath: string,
+    ): void => {
+      let stat: fs.Stats;
+      try {
+        stat = fs.statSync(filePath);
+      } catch {
+        skippedFiles.push({ sourceId: key, reason: 'file_missing' });
+        fileInsert.run(key, displayName, originPath, '', 0, 'missing', null);
+        return;
+      }
+      if (!stat.isFile()) {
+        skippedFiles.push({ sourceId: key, reason: 'not_a_file' });
+        fileInsert.run(key, displayName, originPath, '', 0, 'missing', null);
+        return;
+      }
+      if (stat.size > maxFileBytes) {
+        skippedFiles.push({ sourceId: key, reason: `oversize_${stat.size}` });
+        fileInsert.run(key, displayName, originPath, '', stat.size, 'skipped_oversize', null);
+        return;
+      }
+      if (attachedCount >= maxAttachedFiles) {
+        skippedFiles.push({ sourceId: key, reason: 'too_many_files' });
+        fileInsert.run(key, displayName, originPath, '', stat.size, 'skipped_limit', null);
+        return;
+      }
+      let data: Buffer;
+      try {
+        data = fs.readFileSync(filePath);
+      } catch (err) {
+        skippedFiles.push({ sourceId: key, reason: `unreadable:${(err as Error).message.slice(0, 120)}` });
+        fileInsert.run(key, displayName, originPath, '', stat.size, 'unreadable', null);
+        return;
+      }
+      const hash = sha256Of(data);
+      fileInsert.run(key, displayName, originPath, hash, data.length, 'ok', data);
+      attachedCount++;
+      attachedBytes += data.length;
+    };
     const sourceRows = archive.prepare("SELECT id, title, file_path FROM sources WHERE project_id = ?").all(projectId) as Array<{
       id: string;
       title: string;
@@ -227,41 +305,18 @@ export async function exportProjectArchive(options: ProjectArchiveExportOptions)
     for (const source of sourceRows) {
       const filePath = source.file_path;
       if (!filePath) continue;
-      let stat: fs.Stats;
-      try {
-        stat = fs.statSync(filePath);
-      } catch {
-        skippedFiles.push({ sourceId: source.id, reason: 'file_missing' });
-        fileInsert.run(source.id, path.basename(filePath), filePath, '', 0, 'missing', null);
-        continue;
-      }
-      if (!stat.isFile()) {
-        skippedFiles.push({ sourceId: source.id, reason: 'not_a_file' });
-        fileInsert.run(source.id, path.basename(filePath), filePath, '', 0, 'missing', null);
-        continue;
-      }
-      if (stat.size > maxFileBytes) {
-        skippedFiles.push({ sourceId: source.id, reason: `oversize_${stat.size}` });
-        fileInsert.run(source.id, path.basename(filePath), filePath, '', stat.size, 'skipped_oversize', null);
-        continue;
-      }
-      if (attachedCount >= maxAttachedFiles) {
-        skippedFiles.push({ sourceId: source.id, reason: 'too_many_files' });
-        fileInsert.run(source.id, path.basename(filePath), filePath, '', stat.size, 'skipped_limit', null);
-        continue;
-      }
-      let data: Buffer;
-      try {
-        data = fs.readFileSync(filePath);
-      } catch (err) {
-        skippedFiles.push({ sourceId: source.id, reason: `unreadable:${(err as Error).message.slice(0, 120)}` });
-        fileInsert.run(source.id, path.basename(filePath), filePath, '', stat.size, 'unreadable', null);
-        continue;
-      }
-      const hash = sha256Of(data);
-      fileInsert.run(source.id, path.basename(filePath), filePath, hash, data.length, 'ok', data);
-      attachedCount++;
-      attachedBytes += data.length;
+      embedFile(source.id, filePath, path.basename(filePath), filePath);
+    }
+    // PDFs of library papers (the whole library travels with the project).
+    const paperRows = archive.prepare('SELECT id, title, pdf_path FROM papers').all() as Array<{
+      id: string;
+      title: string;
+      pdf_path: string | null;
+    }>;
+    for (const paper of paperRows) {
+      const pdfPath = paper.pdf_path;
+      if (!pdfPath) continue;
+      embedFile(`paper:${paper.id}`, pdfPath, `${paper.title || paper.id}.pdf`, pdfPath);
     }
 
     // 4. Archive metadata.
@@ -339,6 +394,23 @@ export async function importProjectArchive(options: ProjectArchiveImportOptions)
         const count = copyTableRows(archive!, db, table, targetId, archivedProjectId, existing);
         entityCounts[table] = count;
       }
+      // Library papers linked to the archived project (already filtered at
+      // export time; copyTableRows remaps their project_id below).
+      if (tableExists(archive!, 'papers')) {
+        const count = copyTableRows(archive!, db, 'papers', targetId, archivedProjectId, existing);
+        if (count > 0) entityCounts.papers = count;
+      }
+      // Project conversations and their messages.
+      if (tableExists(archive!, 'sessions')) {
+        const sessionCount = copyTableRows(archive!, db, 'sessions', targetId, archivedProjectId, existing);
+        if (sessionCount > 0) {
+          entityCounts.sessions = sessionCount;
+          if (tableExists(archive!, 'messages')) {
+            const messageCount = copyTableRows(archive!, db, 'messages', targetId, archivedProjectId, existing);
+            if (messageCount > 0) entityCounts.messages = messageCount;
+          }
+        }
+      }
     });
     runCopy();
 
@@ -353,23 +425,45 @@ export async function importProjectArchive(options: ProjectArchiveImportOptions)
       bytes: number;
       data: Buffer | null;
     }>;
+    const writeVerified = (key: string, data: Buffer, sha256: string, bytes: number): string | null => {
+      const actualHash = sha256Of(data);
+      if (actualHash !== sha256) return null;
+      if (data.length !== bytes) return null;
+      const safeName = `${sha256.slice(0, 16)}_${path.basename(key).replace(/[^A-Za-z0-9._-]/g, '_')}`;
+      return safeName;
+    };
     const sourcesDir = path.join(filesDir, targetId, 'sources');
     fs.mkdirSync(sourcesDir, { recursive: true });
     for (const file of fileRows) {
+      if (file.source_id.startsWith('paper:')) continue; // handled below
       if (!file.data) continue;
-      const actualHash = sha256Of(file.data);
-      if (actualHash !== file.sha256) {
-        // Corrupt archive content — refuse silently? No: record it and continue.
+      const safeName = writeVerified(file.source_id, file.data, file.sha256, file.bytes);
+      if (!safeName) {
+        // Corrupt archive content — record it and continue.
         fileCount++;
         continue;
       }
-      if (file.data.length !== file.bytes) continue;
-      const safeName = `${file.sha256.slice(0, 16)}_${path.basename(file.original_name).replace(/[^A-Za-z0-9._-]/g, '_')}`;
       const destFile = path.join(sourcesDir, safeName);
       fs.writeFileSync(destFile, file.data);
       // Repoint the source's file_path (both archived and remapped ids are handled
       // by the caller of copyTableRows via project remapping).
       db.prepare('UPDATE sources SET file_path = ? WHERE id = ?').run(destFile, file.source_id);
+      restoredPaths.push(destFile);
+      fileCount++;
+      fileBytes += file.data.length;
+    }
+
+    // 3b. Restore PDFs of linked library papers.
+    const papersDir = path.join(filesDir, targetId, 'papers');
+    fs.mkdirSync(papersDir, { recursive: true });
+    for (const file of fileRows) {
+      if (!file.source_id.startsWith('paper:') || !file.data) continue;
+      const paperId = file.source_id.slice('paper:'.length);
+      const safeName = writeVerified(file.source_id, file.data, file.sha256, file.bytes);
+      if (!safeName) continue;
+      const destFile = path.join(papersDir, safeName);
+      fs.writeFileSync(destFile, file.data);
+      db.prepare('UPDATE papers SET pdf_path = ? WHERE id = ?').run(destFile, paperId);
       restoredPaths.push(destFile);
       fileCount++;
       fileBytes += file.data.length;
@@ -422,6 +516,10 @@ function copyTableRows(
     if (table === 'projects') {
       // projects rows are keyed by id; remap the project id itself.
       row.id = targetId;
+    } else if (table === 'papers' || table === 'sessions') {
+      // Papers keep their own ids but follow the remapped project id; sessions
+      // likewise (their messages travel along unchanged).
+      if (row.project_id === archivedProjectId) row.project_id = targetId;
     } else if (isProjectScoped(table)) {
       row.project_id = targetId;
     }

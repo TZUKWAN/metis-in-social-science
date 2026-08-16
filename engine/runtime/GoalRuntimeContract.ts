@@ -33,6 +33,7 @@ export const GoalCreateRequestSchema = z.strictObject({
     (value) => !UNSAFE_CONTROL_CHARACTERS.test(value),
     { message: 'Goal context contains unsafe control characters' },
   ).optional(),
+  projectId: z.string().max(100).optional(),
 });
 
 export const GoalIdRequestSchema = z.strictObject({
@@ -106,6 +107,16 @@ export const GoalSummarySchema = z.strictObject({
   label: PresentationLabelSchema,
   status: GoalStatusInputSchema,
   createdAt: TimestampSchema,
+  projectId: z.string().max(100).optional(),
+  /**
+   * O14: checkpoint 摘要——存在持久化 run 且可从断点继续时由主进程附带。
+   * 可选字段，旧渲染端忽略即可，向后兼容。
+   */
+  checkpoint: z.strictObject({
+    resumable: z.boolean(),
+    completedSteps: z.number().int().min(0).max(GOAL_RUNTIME_LIMITS.steps),
+    totalSteps: z.number().int().min(0).max(GOAL_RUNTIME_LIMITS.steps),
+  }).optional(),
 });
 
 export type GoalSummary = z.infer<typeof GoalSummarySchema>;
@@ -263,4 +274,100 @@ export function createGoalExecutionRecovery(): GoalExecutionResult {
 
 export function decodeGoalExecutionResult(input: unknown): GoalExecutionResult {
   return parseWithoutThrow(GoalExecutionResultSchema, input) ?? createGoalExecutionRecovery();
+}
+
+// ─── Goal changed broadcast event ─────────────────────────────
+// Sent to the renderer whenever a goal's presentation state changes from any
+// surface (chat /goal flow, kanban moves, plan generation). Consumers refresh
+// their goal cards or board without polling.
+
+export const GoalChangedEventSchema = z.strictObject({
+  goalId: RuntimeIdSchema,
+  label: PresentationLabelSchema,
+  status: GoalStatusInputSchema,
+  priority: z.enum(['low', 'medium', 'high', 'urgent']).optional(),
+  createdAt: TimestampSchema,
+});
+
+export type GoalChangedEvent = z.infer<typeof GoalChangedEventSchema>;
+
+export function decodeGoalChangedEvent(input: unknown): GoalChangedEvent | undefined {
+  const result = GoalChangedEventSchema.safeParse(input);
+  return result.success ? result.data : undefined;
+}
+
+// ─── O17: Goal 工作流可视化契约 ───────────────────────────────
+// 渲染端 WorkflowGraph 只读展示某个 goal 的 WorkflowDefinition（DAG 节点 +
+// 依赖连线）与最新 run 的步骤结果。契约对字段长度做了有界约束，主进程在
+// present 阶段负责截断，渲染端拿到的永远是可安全渲染的形状。
+
+const WORKFLOW_VIEW_TEXT_LIMIT = 20_000;
+
+/** 有界自由文本：允许换行，禁止控制字符。 */
+const WorkflowViewTextSchema = z.string()
+  .max(WORKFLOW_VIEW_TEXT_LIMIT)
+  .refine((value) => !UNSAFE_CONTROL_CHARACTERS.test(value), {
+    message: 'Workflow view text contains unsafe control characters',
+  });
+
+const WorkflowViewIdSchema = z.string()
+  .min(1)
+  .max(GOAL_RUNTIME_LIMITS.labelChars)
+  .refine((value) => !UNSAFE_CONTROL_CHARACTERS.test(value), {
+    message: 'Workflow view id contains unsafe control characters',
+  });
+
+export const GoalWorkflowStepViewSchema = z.strictObject({
+  id: WorkflowViewIdSchema,
+  name: WorkflowViewTextSchema,
+  description: WorkflowViewTextSchema,
+  prompt: WorkflowViewTextSchema,
+  tools: z.array(WorkflowViewIdSchema).max(GOAL_RUNTIME_LIMITS.steps),
+  maxTurns: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+  /** 验收标准的人类可读摘要（kind + value/description 的展示串）。 */
+  acceptanceCriteria: z.array(WorkflowViewTextSchema).max(GOAL_RUNTIME_LIMITS.steps).optional(),
+});
+export type GoalWorkflowStepView = z.infer<typeof GoalWorkflowStepViewSchema>;
+
+export const GoalWorkflowStepResultViewSchema = z.strictObject({
+  status: z.enum(['pending', 'running', 'completed', 'failed', 'skipped']),
+  output: WorkflowViewTextSchema,
+  retryCount: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+  failureReasons: z.array(WorkflowViewTextSchema).max(GOAL_RUNTIME_LIMITS.steps).optional(),
+  decisionRequired: z.boolean().optional(),
+});
+export type GoalWorkflowStepResultView = z.infer<typeof GoalWorkflowStepResultViewSchema>;
+
+const GoalWorkflowSuccessSchema = z.strictObject({
+  success: z.literal(true),
+  goalId: RuntimeIdSchema,
+  workflow: z.strictObject({
+    id: WorkflowViewIdSchema,
+    name: WorkflowViewTextSchema,
+    description: WorkflowViewTextSchema,
+    version: WorkflowViewIdSchema,
+    steps: z.array(GoalWorkflowStepViewSchema).max(GOAL_RUNTIME_LIMITS.steps),
+    dependencies: z.record(WorkflowViewIdSchema, z.array(WorkflowViewIdSchema).max(GOAL_RUNTIME_LIMITS.steps)),
+  }),
+  stepResults: z.record(WorkflowViewIdSchema, GoalWorkflowStepResultViewSchema),
+});
+
+const GoalWorkflowFailureSchema = z.strictObject({
+  success: z.literal(false),
+  code: z.literal('goal_workflow_unavailable'),
+});
+
+export const GoalWorkflowResponseSchema = z.discriminatedUnion('success', [
+  GoalWorkflowSuccessSchema,
+  GoalWorkflowFailureSchema,
+]);
+
+export type GoalWorkflowResponse = z.infer<typeof GoalWorkflowResponseSchema>;
+
+export function createGoalWorkflowRecovery(): GoalWorkflowResponse {
+  return { success: false, code: 'goal_workflow_unavailable' };
+}
+
+export function decodeGoalWorkflowResponse(input: unknown): GoalWorkflowResponse {
+  return parseWithoutThrow(GoalWorkflowResponseSchema, input) ?? createGoalWorkflowRecovery();
 }

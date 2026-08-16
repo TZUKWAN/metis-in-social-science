@@ -194,7 +194,7 @@ export default function OfficeDocumentPage() {
     } finally {
       setLoading(false);
     }
-  }, [activeProjectId, filePath, status, t]);
+  }, [activeProjectId, ensureHeadingStyles, filePath, refreshPreview, status, t]);
 
   const openFromFile = useCallback(async () => {
     const metis = window.metis;
@@ -219,7 +219,7 @@ export default function OfficeDocumentPage() {
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [refreshPreview, t]);
 
   const handleClose = useCallback(async () => {
     const target = cleanupRef.current;
@@ -359,7 +359,7 @@ export default function OfficeDocumentPage() {
     } finally {
       setLoading(false);
     }
-  }, [editMode, filePath, headingText, paragraphText, tableRows, tableCols, t]);
+  }, [editMode, filePath, headingText, paragraphText, refreshPreview, tableRows, tableCols, t]);
 
   /**
    * AI natural-language edit: ask the provider to translate the instruction
@@ -405,7 +405,7 @@ export default function OfficeDocumentPage() {
     } finally {
       setAiRunning(false);
     }
-  }, [aiInstruction, aiRunning, filePath, t]);
+  }, [aiInstruction, aiRunning, filePath, refreshPreview, t]);
 
   // Cleanup on unmount: tear down the live document.
   useEffect(() => {

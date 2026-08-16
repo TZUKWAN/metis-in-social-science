@@ -18,14 +18,12 @@ export interface ShortcutSpec {
   mod: boolean; // requires Cmd (mac) / Ctrl (others)
   shift?: boolean;
   /** What it does (for the handler switch). */
-  action: 'switch_converse' | 'switch_read' | 'switch_analyze' | 'switch_write' | 'toggle_left' | 'toggle_right' | 'global_search' | 'send_message' | 'help';
+  action: 'switch_converse' | 'switch_write' | 'toggle_left' | 'toggle_right' | 'global_search' | 'send_message' | 'help';
 }
 
 export const SHORTCUTS: readonly ShortcutSpec[] = [
   { id: 'mode-converse', description: '切换到对话模式', descriptionEn: 'Switch to Converse', key: '1', mod: true, action: 'switch_converse' },
-  { id: 'mode-read', description: '切换到阅读模式', descriptionEn: 'Switch to Read', key: '2', mod: true, action: 'switch_read' },
-  { id: 'mode-analyze', description: '切换到分析模式', descriptionEn: 'Switch to Analyze', key: '3', mod: true, action: 'switch_analyze' },
-  { id: 'mode-write', description: '切换到写作模式', descriptionEn: 'Switch to Write', key: '4', mod: true, action: 'switch_write' },
+  { id: 'mode-write', description: '切换到写作模式', descriptionEn: 'Switch to Write', key: '2', mod: true, action: 'switch_write' },
   { id: 'toggle-left', description: '收起/展开资料栏', descriptionEn: 'Toggle left panel', key: '[', mod: true, action: 'toggle_left' },
   { id: 'toggle-right', description: '收起/展开检查器', descriptionEn: 'Toggle right panel', key: ']', mod: true, action: 'toggle_right' },
   { id: 'global-search', description: '打开全局搜索', descriptionEn: 'Global search', key: 'k', mod: true, action: 'global_search' },
@@ -50,8 +48,6 @@ export function matchShortcut(e: { key: string; metaKey: boolean; ctrlKey: boole
 export function modeForAction(action: ShortcutSpec['action']): WorkspaceMode | null {
   switch (action) {
     case 'switch_converse': return 'converse';
-    case 'switch_read': return 'read';
-    case 'switch_analyze': return 'analyze';
     case 'switch_write': return 'write';
     default: return null;
   }

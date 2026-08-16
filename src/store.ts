@@ -32,11 +32,14 @@ function resolveTheme(theme: ThemeMode): 'light' | 'dark' {
   }
   return theme;
 }
-export type TopLevelEntry = 'projects' | 'library' | 'settings';
-export type Page = TopLevelEntry | 'dashboard' | 'chat' | 'goal' | 'papers' | 'collections' | 'tags' | 'graph' | 'timeline' | 'latex' | 'pdf' | 'notes' | 'experiments' | 'evals' | 'artifacts' | 'office' | 'kanban' | 'autonomous';
+export type TopLevelEntry = 'projects' | 'settings';
+export type Page = TopLevelEntry | 'dashboard' | 'chat' | 'goal' | 'graph' | 'timeline' | 'latex' | 'pdf' | 'notes' | 'experiments' | 'evals' | 'artifacts' | 'office' | 'kanban' | 'autonomous' | 'autonomous-console';
 
 export interface NoteItem {
   id: string;
+  /** Global scratch note or project-scoped research memo. */
+  scope?: 'global' | 'research';
+  projectId?: string;
   title: string;
   content: string;
   tags: string[];
@@ -194,6 +197,10 @@ export function findDuplicatePaper(papers: PaperItem[], candidate: PaperItem): P
 }
 
 export function mergePaper(existing: PaperItem, incoming: PaperItem): PaperItem {
+  const projectIds = [...new Set([
+    ...(existing.projectIds ?? (existing.projectId ? [existing.projectId] : [])),
+    ...(incoming.projectIds ?? (incoming.projectId ? [incoming.projectId] : [])),
+  ])];
   return {
     ...existing,
     title: existing.title || incoming.title,
@@ -207,6 +214,8 @@ export function mergePaper(existing: PaperItem, incoming: PaperItem): PaperItem 
     tags: [...new Set([...existing.tags, ...incoming.tags])],
     notes: existing.notes || incoming.notes,
     referenceIds: [...new Set([...existing.referenceIds, ...incoming.referenceIds])],
+    projectId: projectIds[0],
+    projectIds,
   };
 }
 
@@ -224,10 +233,6 @@ export interface MetisState {
   theme: ThemeMode;
   setTheme: (theme: ThemeMode) => void;
 
-  // Reading goal
-  weeklyReadingGoal: number;
-  setWeeklyReadingGoal: (goal: number) => void;
-
   // Papers
   papers: PaperItem[];
   paperFilter: { query: string; semantic?: boolean; yearFrom?: number; yearTo?: number; readStatus?: ReadStatus; readWithinDays?: number; minRating?: number; minCitations?: number; venue?: string; collectionId?: string; starred?: boolean; tag?: string; archived?: boolean; priority?: 'high' | 'medium' | 'low'; deadlineStatus?: 'overdue' | 'today' | 'upcoming' };
@@ -235,6 +240,7 @@ export interface MetisState {
   removePaper: (id: string) => Promise<void>;
   updatePaper: (id: string, updates: Partial<Omit<PaperItem, 'id'>>) => Promise<void>;
   togglePaperStar: (id: string) => Promise<void>;
+  mergePapers: (keepId: string, dropId: string) => Promise<void>;
   addPaperReference: (sourceId: string, targetId: string) => Promise<void>;
   removePaperReference: (sourceId: string, targetId: string) => Promise<void>;
   archivePaper: (id: string) => Promise<void>;
@@ -296,6 +302,9 @@ export interface MetisState {
   // Global search / navigation selections
   selectedPaperId: string | null;
   setSelectedPaperId: (id: string | null) => void;
+  /** O8: page number to jump to when the PDF reader opens a paper (citation backlink). */
+  pendingPaperPage: number | null;
+  setPendingPaperPage: (page: number | null) => void;
   experimentSearchQuery: string;
   setExperimentSearchQuery: (query: string) => void;
 
@@ -385,22 +394,6 @@ export const useMetisStore = create<MetisState>((set, get) => ({
     }
   },
 
-  weeklyReadingGoal: (() => {
-    try {
-      const stored = typeof localStorage !== 'undefined' ? localStorage.getItem('metis-reading-goal') : null;
-      if (stored) { const n = Number(stored); if (n >= 1 && n <= 100) return n; }
-    } catch { /* ignore */ }
-    return 5;
-  })(),
-  setWeeklyReadingGoal: (goal) => {
-    const clamped = Math.max(1, Math.min(100, Math.round(goal)));
-    set({ weeklyReadingGoal: clamped });
-    try { localStorage.setItem('metis-reading-goal', String(clamped)); } catch { /* ignore */ }
-    const metis = typeof window !== 'undefined' ? window.metis : undefined;
-    if (metis?.setSettings) {
-      void metis.setSettings({ theme: useMetisStore.getState().theme, weeklyReadingGoal: clamped });
-    }
-  },
 
   papers: [],
   paperFilter: { query: '', archived: false },
@@ -446,6 +439,28 @@ export const useMetisStore = create<MetisState>((set, get) => ({
     const current = get().papers.find((p) => p.id === id);
     if (!current) return;
     await get().updatePaper(id, { starred: !current.starred });
+  },
+  /** 合并两条重复题录：保留 keepId，字段按 mergePaper 规则归并，丢弃另一条。 */
+  mergePapers: async (keepId, dropId) => {
+    if (keepId === dropId) return;
+    const papers = get().papers;
+    const keep = papers.find((p) => p.id === keepId);
+    const drop = papers.find((p) => p.id === dropId);
+    if (!keep || !drop) return;
+    // 后加入的作为 incoming 参与 mergePaper（其补充字段填空）。
+    const incoming = drop.addedAt >= keep.addedAt ? drop : keep;
+    const existing = incoming.id === keep.id ? drop : keep;
+    const merged = mergePaper(existing, incoming);
+    const metis = getMetis();
+    if (metis) {
+      await metis.savePaper(merged);
+      await metis.deletePaper(dropId);
+    }
+    set((s) => ({
+      papers: s.papers
+        .filter((p) => p.id !== dropId)
+        .map((p) => (p.id === keepId ? merged : p)),
+    }));
   },
   addPaperReference: async (sourceId, targetId) => {
     if (sourceId === targetId) return;
@@ -725,6 +740,8 @@ export const useMetisStore = create<MetisState>((set, get) => ({
 
   selectedPaperId: null,
   setSelectedPaperId: (id) => set({ selectedPaperId: id }),
+  pendingPaperPage: null,
+  setPendingPaperPage: (page) => set({ pendingPaperPage: page }),
   experimentSearchQuery: '',
   setExperimentSearchQuery: (query) => set({ experimentSearchQuery: query }),
 

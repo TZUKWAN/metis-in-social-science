@@ -42,7 +42,7 @@ import SelectionActionBar from './SelectionActionBar';
 import ProjectSwitcher, { type ProjectItem } from './ProjectSwitcher';
 import ImportCreateDialog from './ImportCreateDialog';
 
-export type WorkspaceMode = 'converse' | 'read' | 'analyze' | 'write';
+export type WorkspaceMode = 'converse' | 'write' | 'projects';
 export type InspectorTab = 'metis' | 'plan' | 'evidence' | 'properties';
 
 export interface ProjectShellProps {
@@ -59,6 +59,8 @@ export interface ProjectShellProps {
   /** Currently active workspace mode (controls the center's mode switcher). */
   mode: WorkspaceMode;
   onModeChange: (mode: WorkspaceMode) => void;
+  /** The global application top bar may own mode navigation. Default keeps the shell self-contained. */
+  showModeSwitcher?: boolean;
   /** Controlled collapse state, used to preserve layout across workspace modes. */
   leftCollapsed?: boolean;
   rightCollapsed?: boolean;
@@ -180,12 +182,11 @@ export interface ProjectShellProps {
   };
 }
 
-const MODE_ORDER: WorkspaceMode[] = ['converse', 'read', 'analyze', 'write'];
+const MODE_ORDER: WorkspaceMode[] = ['converse', 'write'];
 const MODE_LABELS: Record<WorkspaceMode, string> = {
   converse: '对话',
-  read: '阅读',
-  analyze: '分析',
-  write: '写作',
+  write: '研究写作',
+  projects: '科研项目',
 };
 const INSPECTOR_TAB_LABELS: Record<InspectorTab, string> = {
   metis: 'Metis',
@@ -216,6 +217,7 @@ export default function ProjectShell({
   workspaceClassName = '',
   mode,
   onModeChange,
+  showModeSwitcher = true,
   leftCollapsed: controlledLeftCollapsed,
   rightCollapsed: controlledRightCollapsed,
   onLeftCollapsedChange,
@@ -563,24 +565,26 @@ export default function ProjectShell({
               )}
             </div>
           )}
-          <div className="shell-mode-switcher" role="tablist" aria-label="工作模式">
-            {MODE_ORDER.map((m) => (
-              <button
-                key={m}
-                ref={(element) => { modeTabRefs.current[m] = element; }}
-                id={`${instanceId}-project-shell-mode-${m}`}
-                role="tab"
-                aria-selected={mode === m}
-                aria-controls={workspaceId}
-                tabIndex={mode === m ? 0 : -1}
-                className={`shell-mode-btn ${mode === m ? 'active' : ''}`}
-                onClick={() => onModeChange(m)}
-                onKeyDown={(event) => handleModeTabKeyDown(event, m)}
-              >
-                {MODE_LABELS[m]}
-              </button>
-            ))}
-          </div>
+          {showModeSwitcher && (
+            <div className="shell-mode-switcher" role="tablist" aria-label="工作模式">
+              {MODE_ORDER.map((m) => (
+                <button
+                  key={m}
+                  ref={(element) => { modeTabRefs.current[m] = element; }}
+                  id={`${instanceId}-project-shell-mode-${m}`}
+                  role="tab"
+                  aria-selected={mode === m}
+                  aria-controls={workspaceId}
+                  tabIndex={mode === m ? 0 : -1}
+                  className={`shell-mode-btn ${mode === m ? 'active' : ''}`}
+                  onClick={() => onModeChange(m)}
+                  onKeyDown={(event) => handleModeTabKeyDown(event, m)}
+                >
+                  {MODE_LABELS[m]}
+                </button>
+              ))}
+            </div>
+          )}
           {objectTabs && objectTabs.length > 0 && (
             <ObjectTabs
               tabs={objectTabs}
@@ -596,7 +600,7 @@ export default function ProjectShell({
             className={`shell-workspace ${workspaceClassName}`.trim()}
             role="tabpanel"
             aria-label={`${MODE_LABELS[mode]}工作区`}
-            aria-labelledby={`${instanceId}-project-shell-mode-${mode}`}
+            aria-labelledby={showModeSwitcher ? `${instanceId}-project-shell-mode-${mode}` : undefined}
             data-responsive-band={responsiveBand}
           >
             {workspaceContent}

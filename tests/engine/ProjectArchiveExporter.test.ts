@@ -192,7 +192,7 @@ describe('ProjectArchiveExporter', () => {
 
   it('exports a single-file archive whose metadata round-trips', async () => {
     seedProject(repo);
-    const destPath = path.join(dir, 'exports', 'p1.metisproj');
+    const destPath = path.join(dir, 'exports', 'p1.mts');
 
     const result = await exportProjectArchive({ db: store.raw, projectId: 'p1', destPath, appVersion: '0.1.0-test' });
     expect(result.ok).toBe(true);
@@ -224,7 +224,7 @@ describe('ProjectArchiveExporter', () => {
 
   it('round-trips a project into a fresh database with full fidelity', async () => {
     seedProject(repo);
-    const archivePath = path.join(dir, 'p1.metisproj');
+    const archivePath = path.join(dir, 'p1.mts');
     const exportResult = await exportProjectArchive({ db: store.raw, projectId: 'p1', destPath: archivePath });
     expect(exportResult.ok).toBe(true);
 
@@ -285,7 +285,7 @@ describe('ProjectArchiveExporter', () => {
 
   it('rejects a conflicting import unless overwrite is requested', async () => {
     seedProject(repo);
-    const archivePath = path.join(dir, 'p1.metisproj');
+    const archivePath = path.join(dir, 'p1.mts');
     const exportResult = await exportProjectArchive({ db: store.raw, projectId: 'p1', destPath: archivePath });
     expect(exportResult.ok).toBe(true);
 
@@ -302,7 +302,7 @@ describe('ProjectArchiveExporter', () => {
 
   it('imports under a remapped project id without touching the original', async () => {
     seedProject(repo);
-    const archivePath = path.join(dir, 'p1.metisproj');
+    const archivePath = path.join(dir, 'p1.mts');
     const exportResult = await exportProjectArchive({ db: store.raw, projectId: 'p1', destPath: archivePath });
     expect(exportResult.ok).toBe(true);
 
@@ -342,7 +342,7 @@ describe('ProjectArchiveExporter', () => {
     seedProject(repo);
     repo.saveSource({ ...repo.getSource('s1', true)!, filePath: attachment });
 
-    const archivePath = path.join(dir, 'p1.metisproj');
+    const archivePath = path.join(dir, 'p1.mts');
     const exportResult = await exportProjectArchive({ db: store.raw, projectId: 'p1', destPath: archivePath });
     expect(exportResult.ok).toBe(true);
     expect(exportResult.manifest!.attachedFiles.count).toBe(1);
@@ -374,7 +374,7 @@ describe('ProjectArchiveExporter', () => {
     seedProject(repo);
     repo.saveSource({ ...repo.getSource('s1', true)!, filePath: path.join(dir, 'does-not-exist.pdf') });
 
-    const archivePath = path.join(dir, 'p1.metisproj');
+    const archivePath = path.join(dir, 'p1.mts');
     const exportResult = await exportProjectArchive({ db: store.raw, projectId: 'p1', destPath: archivePath });
     expect(exportResult.ok).toBe(true);
     expect(exportResult.manifest!.attachedFiles.count).toBe(0);
@@ -383,8 +383,210 @@ describe('ProjectArchiveExporter', () => {
   });
 
   it('fails cleanly for an unknown project', async () => {
-    const result = await exportProjectArchive({ db: store.raw, projectId: 'nope', destPath: path.join(dir, 'x.metisproj') });
+    const result = await exportProjectArchive({ db: store.raw, projectId: 'nope', destPath: path.join(dir, 'x.mts') });
     expect(result.ok).toBe(false);
     expect(result.error).toContain('Project not found');
+  });
+});
+
+describe('ProjectArchiveExporter linked library papers', () => {
+  let dir: string;
+  let store: PersistenceStore;
+  let repo: ResearchRepository;
+
+  beforeEach(() => {
+    dir = tempDir();
+    store = new PersistenceStore(path.join(dir, 'metis.db'));
+    repo = new ResearchRepository(store.raw);
+  });
+
+  afterEach(() => {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('carries linked library papers and their PDFs across devices', async () => {
+    seedProject(repo);
+    // A paper linked to the project, with a real PDF file on disk.
+    const pdfPath = path.join(dir, 'paper-one.pdf');
+    fs.writeFileSync(pdfPath, Buffer.from('%PDF-1.4\nlinked paper content'));
+    store.savePaper({
+      id: 'paper-1',
+      title: 'Linked Paper',
+      authors: ['Ada'],
+      year: 2024,
+      venue: 'ACL',
+      abstract: 'abstract',
+      doi: '10.1/linked',
+      pdfPath,
+      tags: [],
+      notes: '',
+      readStatus: 'unread',
+      rating: 0,
+      addedAt: T0,
+      projectId: 'p1',
+    });
+    // A library-only paper must NOT travel with this project.
+    store.savePaper({
+      id: 'paper-global',
+      title: 'Global Paper',
+      authors: [],
+      year: 2024,
+      venue: '',
+      abstract: '',
+      tags: [],
+      notes: '',
+      readStatus: 'unread',
+      rating: 0,
+      addedAt: T0,
+    });
+
+    const destPath = path.join(dir, 'exports', 'p1.mts');
+    const exported = await exportProjectArchive({ db: store.raw, projectId: 'p1', destPath });
+    expect(exported.ok).toBe(true);
+    // The whole library travels with the archive (linked + global papers).
+    expect(exported.manifest?.entityCounts.papers).toBe(2);
+    expect(exported.manifest?.attachedFiles.count).toBe(1);
+
+    // "Second device": a fresh database + repository.
+    const freshDir = path.join(dir, 'device2');
+    fs.mkdirSync(freshDir, { recursive: true });
+    const freshStore = new PersistenceStore(path.join(freshDir, 'metis.db'));
+    try {
+      const imported = await importProjectArchive({
+        db: freshStore.raw,
+        archivePath: destPath,
+        filesDir: freshDir,
+      });
+      expect(imported.ok).toBe(true);
+
+      const papers = freshStore.getPapers();
+      expect(papers.some((p) => p.id === 'paper-1')).toBe(true);
+      expect(papers.find((p) => p.id === 'paper-1')?.projectId).toBe('p1');
+      // The whole library travels with the archive.
+      expect(papers.some((p) => p.id === 'paper-global')).toBe(true);
+      // The PDF was restored and repointed.
+      const restored = papers.find((p) => p.id === 'paper-1');
+      expect(restored?.pdfPath).toBeTruthy();
+      expect(fs.existsSync(restored!.pdfPath!)).toBe(true);
+      expect(fs.readFileSync(restored!.pdfPath!)).toEqual(Buffer.from('%PDF-1.4\nlinked paper content'));
+    } finally {
+      freshStore.close();
+    }
+  });
+
+  it('remaps paper project links when importing under a new project id', async () => {
+    seedProject(repo);
+    store.savePaper({
+      id: 'paper-2',
+      title: 'Remap Paper',
+      authors: [],
+      year: 2024,
+      venue: '',
+      abstract: '',
+      tags: [],
+      notes: '',
+      readStatus: 'unread',
+      rating: 0,
+      addedAt: T0,
+      projectId: 'p1',
+    });
+    const destPath = path.join(dir, 'exports', 'p1.mts');
+    const exported = await exportProjectArchive({ db: store.raw, projectId: 'p1', destPath });
+    expect(exported.ok).toBe(true);
+
+    const freshDir = path.join(dir, 'device2');
+    fs.mkdirSync(freshDir, { recursive: true });
+    const freshStore = new PersistenceStore(path.join(freshDir, 'metis.db'));
+    try {
+      const imported = await importProjectArchive({
+        db: freshStore.raw,
+        archivePath: destPath,
+        projectId: 'imported-copy',
+        filesDir: freshDir,
+      });
+      expect(imported.ok).toBe(true);
+      const papers = freshStore.getPapers();
+      expect(papers.find((p) => p.id === 'paper-2')?.projectId).toBe('imported-copy');
+    } finally {
+      freshStore.close();
+    }
+  });
+});
+
+describe('ProjectArchiveExporter conversations', () => {
+  let dir: string;
+  let store: PersistenceStore;
+  let repo: ResearchRepository;
+
+  beforeEach(() => {
+    dir = tempDir();
+    store = new PersistenceStore(path.join(dir, 'metis.db'));
+    repo = new ResearchRepository(store.raw);
+  });
+
+  afterEach(() => {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('carries project conversations with their full message history', async () => {
+    seedProject(repo);
+    // A project-bound conversation with messages.
+    store.createSession('session-p1', undefined, 'p1');
+    store.appendMessage('session-p1', 'user', '项目里的问题');
+    store.appendMessage('session-p1', 'assistant', '项目里的回答');
+    // A global conversation that must NOT travel with the project.
+    store.createSession('session-global');
+    store.appendMessage('session-global', 'user', '全局对话');
+
+    const destPath = path.join(dir, 'exports', 'p1.mts');
+    const exported = await exportProjectArchive({ db: store.raw, projectId: 'p1', destPath });
+    expect(exported.ok).toBe(true);
+    expect(exported.manifest?.entityCounts.sessions).toBe(1);
+    expect(exported.manifest?.entityCounts.messages).toBe(2);
+
+    const freshDir = path.join(dir, 'device2');
+    fs.mkdirSync(freshDir, { recursive: true });
+    const freshStore = new PersistenceStore(path.join(freshDir, 'metis.db'));
+    try {
+      const imported = await importProjectArchive({ db: freshStore.raw, archivePath: destPath, filesDir: freshDir });
+      expect(imported.ok).toBe(true);
+
+      const sessions = freshStore.listSessions();
+      expect(sessions.some((s) => s.id === 'session-p1' && s.projectId === 'p1')).toBe(true);
+      expect(sessions.some((s) => s.id === 'session-global')).toBe(false);
+      const messages = freshStore.getMessages('session-p1');
+      expect(messages.map((m) => m.content)).toEqual(['项目里的问题', '项目里的回答']);
+    } finally {
+      freshStore.close();
+    }
+  });
+
+  it('remaps conversation project links when importing under a new id', async () => {
+    seedProject(repo);
+    store.createSession('session-p1', undefined, 'p1');
+    store.appendMessage('session-p1', 'user', '消息');
+    const destPath = path.join(dir, 'exports', 'p1.mts');
+    const exported = await exportProjectArchive({ db: store.raw, projectId: 'p1', destPath });
+    expect(exported.ok).toBe(true);
+
+    const freshDir = path.join(dir, 'device2');
+    fs.mkdirSync(freshDir, { recursive: true });
+    const freshStore = new PersistenceStore(path.join(freshDir, 'metis.db'));
+    try {
+      const imported = await importProjectArchive({
+        db: freshStore.raw,
+        archivePath: destPath,
+        projectId: 'imported-copy',
+        filesDir: freshDir,
+      });
+      expect(imported.ok).toBe(true);
+      const sessions = freshStore.listSessions();
+      expect(sessions.find((s) => s.id === 'session-p1')?.projectId).toBe('imported-copy');
+      expect(freshStore.getMessages('session-p1')).toHaveLength(1);
+    } finally {
+      freshStore.close();
+    }
   });
 });

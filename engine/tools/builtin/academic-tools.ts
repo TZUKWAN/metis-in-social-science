@@ -245,6 +245,20 @@ export const READ_PDF_TOOL: ToolSpec = {
   ],
 };
 
+/** T2：本地文献库全文检索（题录+摘要+PDF 全文+笔记），供基于证据的问答与综述使用。 */
+export const SEARCH_PAPER_TEXT_TOOL: ToolSpec = {
+  name: 'search_paper_text',
+  description: 'Search the local METIS library FULL TEXT (titles, abstracts, extracted PDF text, notes). Use this to ground answers and literature reviews in the user\'s own imported papers; returns per-paper hit snippets with page markers.',
+  parameters: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'Search terms (Chinese or English); multiple words are AND-ish scored.' },
+      limit: { type: 'number', description: 'Maximum papers to return (1-20, default 8).' },
+    },
+    required: ['query'],
+  },
+};
+
 export const SEMANTIC_SCHOLAR_SEARCH_TOOL: ToolSpec = {
   name: 'search_papers',
   description: 'Search for academic papers across all disciplines using Semantic Scholar. Returns title, authors, year, venue, abstract, DOI, arXiv ID, citation counts, and open access PDF links.',
@@ -1219,6 +1233,34 @@ function formatBibtexNative(authors: string[], year: number, title: string, jour
 }
 
 // ─── Semantic Scholar search handler ──────────────────────────
+
+/** T2：本地文献库全文检索 handler（确定性 SQL 检索，零模型调用）。 */
+export const searchPaperTextHandler: ToolHandler = async (args) => {
+  const query = String(args.query ?? '').trim();
+  if (!query) return 'Error: query is required.';
+  const limit = Math.min(Math.max(Number(args.limit ?? 8), 1), 20);
+  if (!sharedStore) {
+    return JSON.stringify({ query, available: false, results: [], note: '本地文献库不可用（持久化未初始化）。' });
+  }
+  const hits = sharedStore.searchLibrary(query, limit).filter((hit) => hit.type === 'paper');
+  return JSON.stringify({
+    query,
+    available: true,
+    total: hits.length,
+    note: hits.length === 0
+      ? '本地文献库没有命中。可提示用户在资料模式检索导入，或 PDF 尚未抽取全文。'
+      : '命中片段来自用户自己的文献库（含 PDF 全文），引用时使用返回的 title/year/doi。',
+    results: hits.map((hit) => ({
+      paperId: hit.id,
+      title: hit.title,
+      authors: hit.authors,
+      year: hit.year,
+      identifier: hit.sourceId,
+      snippet: hit.snippet,
+      score: hit.score,
+    })),
+  });
+};
 
 export const searchPapersHandler: ToolHandler = async (args) => {
   const query = String(args.query ?? '');
