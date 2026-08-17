@@ -27,6 +27,11 @@ export const PERSONALIZATION_LIMITS = Object.freeze({
   tagChars: 128,
   tools: 512,
   workflowSteps: 128,
+  deliverableSections: 96,
+  deliverableSectionDepth: 4,
+  materialInsights: 64,
+  materials: 32,
+  adaptTriggers: 32,
   definitionList: 2_000,
   version: 1_000_000_000,
 } as const);
@@ -259,6 +264,165 @@ export const MetisRulesDefinitionSchema = DefinitionHeaderSchema.extend({
   }
 });
 
+// ── 成果结构（Deliverable）：场景对最终成果及其各部分写作要求的定义 ──
+
+export const DeliverableSectionKindSchema = z.enum([
+  'title', 'abstract', 'keywords', 'chapter', 'section', 'grant_column',
+  'attachment', 'references', 'other',
+]);
+
+/** 部分 status：锁定（AI 不可增删改核心功能）/ 必选 / 可选 / 条件出现。 */
+export const DeliverableSectionStatusSchema = z.enum(['locked', 'required', 'optional', 'conditional']);
+
+/** 单个部分上 AI 可执行的调整（未提供时按 status 推导：locked 全 false，其余默认可调）。 */
+export const SectionAiAdjustSchema = z.strictObject({
+  renameTitle: z.boolean(),
+  addChildren: z.boolean(),
+  split: z.boolean(),
+  merge: z.boolean(),
+  move: z.boolean(),
+  remove: z.boolean(),
+  adjustLength: z.boolean(),
+});
+
+export interface DeliverableSectionInput {
+  id: string;
+  title: string;
+  kind: z.infer<typeof DeliverableSectionKindSchema>;
+  status: z.infer<typeof DeliverableSectionStatusSchema>;
+  condition?: string;
+  purpose?: string;
+  requirements?: string[];
+  optionalContent?: string[];
+  forbidden?: string[];
+  lengthTarget?: string;
+  method?: string;
+  evidence?: string;
+  aiAdjust?: z.infer<typeof SectionAiAdjustSchema>;
+  children?: DeliverableSectionInput[];
+}
+
+export const DeliverableSectionSchema: z.ZodType<DeliverableSectionInput> = z.lazy(() => z.strictObject({
+  id: PersonalizationLocalIdSchema,
+  title: singleLine(PERSONALIZATION_LIMITS.nameChars),
+  kind: DeliverableSectionKindSchema,
+  status: DeliverableSectionStatusSchema,
+  condition: multiline(PERSONALIZATION_LIMITS.descriptionChars).optional(),
+  purpose: multiline(PERSONALIZATION_LIMITS.descriptionChars).optional(),
+  requirements: z.array(singleLine(500)).max(32).refine(uniqueStrings, { message: 'Section requirements must be unique' }).optional(),
+  optionalContent: z.array(singleLine(500)).max(32).refine(uniqueStrings, { message: 'Section optional content must be unique' }).optional(),
+  forbidden: z.array(singleLine(500)).max(32).refine(uniqueStrings, { message: 'Section forbidden rules must be unique' }).optional(),
+  lengthTarget: singleLine(200).optional(),
+  method: singleLine(500).optional(),
+  evidence: singleLine(500).optional(),
+  aiAdjust: SectionAiAdjustSchema.optional(),
+  children: z.array(DeliverableSectionSchema).max(24).optional(),
+}));
+
+/** 成果结构策略：默认章节数与允许范围（仅约束 chapter/section 类部分的顶层计数）。 */
+export const DeliverableStructurePolicySchema = z.strictObject({
+  defaultSections: z.number().int().min(1).max(48),
+  suggestedMin: z.number().int().min(1).max(48),
+  suggestedMax: z.number().int().min(1).max(64),
+}).refine((value) => value.suggestedMin <= value.suggestedMax, {
+  message: 'suggestedMin cannot exceed suggestedMax',
+  path: ['suggestedMin'],
+});
+
+export const DeliverableTypeSchema = z.enum([
+  'theory_paper', 'empirical_paper', 'computational_paper', 'case_study', 'review_paper',
+  'grant_nssfc', 'grant_nsfc', 'grant_postdoc', 'grant_other',
+  'policy_report', 'survey_report', 'tech_report', 'industry_report',
+  'thesis', 'opening_report', 'completion_report', 'custom',
+]);
+
+/** 场景级成果定义：类型 + 结构树 + 结构策略 + 全局要求。 */
+export const DeliverableSpecSchema = z.strictObject({
+  type: DeliverableTypeSchema,
+  typeLabel: singleLine(120).optional(),
+  sections: z.array(DeliverableSectionSchema).max(48).optional(),
+  structurePolicy: DeliverableStructurePolicySchema.optional(),
+  globalLength: singleLine(200).optional(),
+  language: z.enum(['zh', 'en']).optional(),
+  journalTier: z.enum(['any', 'core', 'general']).optional(),
+}).superRefine((value, context) => {
+  let total = 0;
+  const visit = (sections: readonly DeliverableSectionInput[], depth: number): void => {
+    for (const section of sections) {
+      total += 1;
+      if (total > PERSONALIZATION_LIMITS.deliverableSections) {
+        context.addIssue({ code: 'custom', message: 'Deliverable section count exceeds limit', path: ['sections'] });
+        return;
+      }
+      if (section.status === 'conditional' && !section.condition) {
+        context.addIssue({ code: 'custom', message: 'Conditional sections require a condition', path: ['sections'] });
+      }
+      if (depth >= PERSONALIZATION_LIMITS.deliverableSectionDepth) {
+        context.addIssue({ code: 'custom', message: 'Deliverable section nesting exceeds limit', path: ['sections'] });
+        return;
+      }
+      if (section.children && section.children.length > 0) visit(section.children, depth + 1);
+    }
+  };
+  visit(value.sections ?? [], 0);
+});
+
+// ── 自适应策略（Adaptivity）：AI 在场景内可自主调整的边界 ──
+
+export const AdaptivityPolicySchema = z.strictObject({
+  structure: z.strictObject({
+    addSections: z.boolean(),
+    deleteUnlockedSections: z.boolean(),
+    splitSections: z.boolean(),
+    mergeSections: z.boolean(),
+    reorderSections: z.boolean(),
+    adjustLength: z.boolean(),
+  }),
+  content: z.strictObject({
+    reviseQuestion: z.boolean(),
+    addQuestion: z.boolean(),
+    reviseHypothesis: z.boolean(),
+    dropUnsupportedHypothesis: z.boolean(),
+    adjustFramework: z.boolean(),
+  }),
+  method: z.strictObject({
+    addMethod: z.boolean(),
+    replaceUnsuitableMethod: z.boolean(),
+    addRobustness: z.boolean(),
+    addHeterogeneity: z.boolean(),
+    addMechanism: z.boolean(),
+  }),
+  /** 允许的回溯边（如 "analysis->literature"、"writing->framework"）。 */
+  allowedBacktracks: z.array(singleLine(120)).max(32).refine(uniqueStrings, { message: 'Backtrack edges must be unique' }).optional(),
+  /** 何时允许 AI 进行重大调整（原则描述，不逐次审批但须记录依据）。 */
+  majorAdjustmentTriggers: z.array(singleLine(500)).max(PERSONALIZATION_LIMITS.adaptTriggers).refine(uniqueStrings, { message: 'Adjustment triggers must be unique' }).optional(),
+});
+
+// ── 参考材料（Reference Material）：AI 学习科研方式的原始材料，区别于 Metis.md 规则文档 ──
+
+export const MaterialKindSchema = z.enum([
+  'template', 'exemplar', 'paper', 'textbook', 'method_book',
+  'guide', 'policy', 'format_spec', 'user_spec', 'other',
+]);
+
+export const MaterialInsightsSchema = z.strictObject({
+  structureRules: z.array(singleLine(500)).max(PERSONALIZATION_LIMITS.materialInsights).default([]),
+  writingPrinciples: z.array(singleLine(500)).max(PERSONALIZATION_LIMITS.materialInsights).default([]),
+  methodSuggestions: z.array(singleLine(500)).max(PERSONALIZATION_LIMITS.materialInsights).default([]),
+  hardRequirements: z.array(singleLine(500)).max(PERSONALIZATION_LIMITS.materialInsights).default([]),
+});
+
+export const ReferenceMaterialSchema = z.strictObject({
+  id: PersonalizationLocalIdSchema,
+  name: singleLine(PERSONALIZATION_LIMITS.nameChars),
+  kind: MaterialKindSchema,
+  /** 主进程管理目录中的相对路径（材料以文本形态持久化）。 */
+  storageRef: singleLine(PERSONALIZATION_LIMITS.urlChars).optional(),
+  byteLength: z.number().int().min(0).max(50_000_000).optional(),
+  analyzedAt: PersonalizationTimestampSchema,
+  insights: MaterialInsightsSchema.optional(),
+});
+
 export const ScenarioDefinitionSchema = DefinitionHeaderSchema.extend({
   kind: z.literal('scenario'),
   agentIds: ReferenceListSchema,
@@ -277,7 +441,41 @@ export const ScenarioDefinitionSchema = DefinitionHeaderSchema.extend({
     message: 'Trigger phrases must be unique',
   }),
   capability: z.enum(['research', 'writing', 'analysis', 'funding', 'presentation_reserved', 'custom']),
+  deliverable: DeliverableSpecSchema.optional(),
+  adaptivity: AdaptivityPolicySchema.optional(),
+  /** 内容规范（写作规范类规则，场景级；区别于逐部分规则）。 */
+  writingRules: z.array(singleLine(500)).max(64).refine(uniqueStrings, { message: 'Writing rules must be unique' }).optional(),
+  /** 研究方法策略：推荐/允许/条件/禁止。 */
+  methodPolicy: z.strictObject({
+    recommended: z.array(singleLine(200)).max(24).default([]),
+    allowed: z.array(singleLine(200)).max(24).default([]),
+    conditional: z.array(singleLine(200)).max(24).default([]),
+    forbidden: z.array(singleLine(200)).max(24).default([]),
+  }).optional(),
+  materials: z.array(ReferenceMaterialSchema).max(PERSONALIZATION_LIMITS.materials).optional(),
 }).strict().superRefine((value, context) => {
+  // 成果结构：树深度/总节点数/条件状态必须给出条件说明。
+  if (value.deliverable) {
+    let total = 0;
+    const visit = (sections: readonly DeliverableSectionInput[], depth: number): void => {
+      for (const section of sections) {
+        total += 1;
+        if (total > PERSONALIZATION_LIMITS.deliverableSections) {
+          context.addIssue({ code: 'custom', message: 'Deliverable section count exceeds limit', path: ['deliverable', 'sections'] });
+          return;
+        }
+        if (section.status === 'conditional' && !section.condition) {
+          context.addIssue({ code: 'custom', message: 'Conditional sections require a condition', path: ['deliverable', 'sections'] });
+        }
+        if (depth >= PERSONALIZATION_LIMITS.deliverableSectionDepth) {
+          context.addIssue({ code: 'custom', message: 'Deliverable section nesting exceeds limit', path: ['deliverable', 'sections'] });
+          return;
+        }
+        if (section.children && section.children.length > 0) visit(section.children, depth + 1);
+      }
+    };
+    visit(value.deliverable.sections ?? [], 0);
+  }
   const stepIds = new Set(value.workflow.map((step) => step.id));
   const selectedAgentIds = new Set(value.agentIds);
   const selectedSkillIds = new Set(value.skillIds);
@@ -403,6 +601,11 @@ export type SkillDefinitionV2 = z.infer<typeof SkillDefinitionV2Schema>;
 export type McpDefinition = z.infer<typeof McpDefinitionSchema>;
 export type MetisRulesDefinition = z.infer<typeof MetisRulesDefinitionSchema>;
 export type ScenarioDefinition = z.infer<typeof ScenarioDefinitionSchema>;
+export type DeliverableSection = z.infer<typeof DeliverableSectionSchema>;
+export type DeliverableSpec = z.infer<typeof DeliverableSpecSchema>;
+export type AdaptivityPolicy = z.infer<typeof AdaptivityPolicySchema>;
+export type ReferenceMaterial = z.infer<typeof ReferenceMaterialSchema>;
+export type MaterialInsights = z.infer<typeof MaterialInsightsSchema>;
 export type PersonalizationDefinition = z.infer<typeof PersonalizationDefinitionSchema>;
 
 export const PersonalizationListRequestSchema = z.strictObject({

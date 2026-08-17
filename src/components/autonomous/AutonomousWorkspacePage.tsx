@@ -137,7 +137,7 @@ export default function AutonomousWorkspacePage({ onOpenConsole }: { onOpenConso
       setPrompt('');
       void reloadOverview([]);
     }
-  }, [prompt, count, generating, reloadOverview]);
+  }, [prompt, count, method, output, generating, reloadOverview]);
 
   const projects = overview?.projects ?? [];
   const metrics = overview?.metrics ?? { running: 0, decisions24h: 0, evidenceToday: 0, newFindings7d: 0 };

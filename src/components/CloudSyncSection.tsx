@@ -42,7 +42,6 @@ export default function CloudSyncSection() {
       }
     });
     return () => { alive = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const save = useCallback(async () => {

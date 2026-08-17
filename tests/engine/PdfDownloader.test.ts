@@ -45,18 +45,29 @@ describe('PdfDownloader', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  // 本机磁盘存在秒级写延迟（见交接文档 §五.5：写入后立即读可能读到旧内容），
+  // 全量并行跑时更明显；下载 promise 在流 finish 后已 resolve，这里轮询等待内容落盘。
+  async function expectPdfContent(dest: string) {
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      if (fs.existsSync(dest) && fs.readFileSync(dest).toString().includes('%PDF-1.4')) return;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    expect(fs.readFileSync(dest).toString()).toContain('%PDF-1.4');
+  }
+
   it('downloads a PDF file', async () => {
     const dest = path.join(tmpDir, 'downloaded.pdf');
     await downloadFile(`${serverUrl}/paper.pdf`, dest);
     expect(fs.existsSync(dest)).toBe(true);
-    expect(fs.readFileSync(dest).toString()).toContain('%PDF-1.4');
+    await expectPdfContent(dest);
   });
 
   it('follows redirects', async () => {
     const dest = path.join(tmpDir, 'redirected.pdf');
     await downloadFile(`${serverUrl}/redirect`, dest);
     expect(fs.existsSync(dest)).toBe(true);
-    expect(fs.readFileSync(dest).toString()).toContain('%PDF-1.4');
+    await expectPdfContent(dest);
   });
 
   it('throws on non-2xx status', async () => {

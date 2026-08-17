@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { formatScenarioExecutionContext } from './ScenarioExecutionContext.js';
 import {
   PersonalizationDigestSchema,
   ResolvedRunManifestSchema,
@@ -324,6 +325,8 @@ export class PersonalizationResolver {
             maxTurns: agents[0]!.maxTurns,
           })
         : undefined;
+      // 场景成果结构/自适应边界/写作规范/方法策略：作为场景级约束层注入执行提示词（场景重构 P3）。
+      const scenarioExecutionContext = formatScenarioExecutionContext(scenario);
       const promptStack: ResolvedPromptLayer[] = [
         ...skills.map((skill) => promptLayer(skill.id, 'skill', 100, skillPromptContent(skill))),
         ...agents.map((agent) => promptLayer(agent.id, 'agent', 200, agentPromptContent(agent))),
@@ -331,6 +334,9 @@ export class PersonalizationResolver {
           .map((rule) => promptLayer(rule.id, 'rules', 300, rule.markdown)),
         ...rules.filter((rule) => rule.scope === 'scenario')
           .map((rule) => promptLayer(rule.id, 'rules', 400, rule.markdown)),
+        ...(scenarioExecutionContext
+          ? [promptLayer(scenario.id, 'rules', 450, scenarioExecutionContext)]
+          : []),
         ...rules.filter((rule) => rule.scope === 'project')
           .map((rule) => promptLayer(rule.id, 'rules', 500, rule.markdown)),
       ];

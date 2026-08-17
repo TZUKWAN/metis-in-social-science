@@ -70,6 +70,11 @@ export const AutonomousStartRequestSchema = z.strictObject({
   strategyId: RuntimeIdSchema.optional(),
   /** Paper structure template id for the writing action (strategy mode). */
   structureId: RuntimeIdSchema.optional(),
+  /** Personalization scenario id (namespaced path, e.g. user:scenario/cssci-empirical). */
+  scenarioId: z.string().min(3).max(160)
+    .regex(/^(?:builtin|user|url|generated):[A-Za-z0-9][A-Za-z0-9._/-]*$/u, 'Invalid scenario id')
+    .refine((value) => !value.includes('..') && !value.includes('\\'), 'Unsafe scenario id')
+    .optional(),
 });
 export type AutonomousStartRequest = z.infer<typeof AutonomousStartRequestSchema>;
 

@@ -162,6 +162,78 @@ function chooseProviderResponse(body) {
       }),
     };
   }
+  if (systemText.includes('人文社科科研场景设计师')) {
+    return {
+      content: JSON.stringify({
+        summary: {
+          deliverableType: 'theory_paper',
+          deliverableTypeLabel: '纯理论论文',
+          structureTitles: ['题目', '摘要', '关键词', '1 引言', '2 理论框架', '3 结论'],
+          hardRuleCount: 2,
+          writingPrincipleCount: 3,
+          methods: ['概念分析', '文本分析'],
+          adjustable: ['主体章节数量', '二三级标题'],
+          recommended: { agents: 1, skills: 2, mcps: 0, rules: 1 },
+        },
+        materials: [{
+          name: '模拟写作方法材料.md',
+          kind: 'method_book',
+          insights: {
+            structureRules: ['正文三到五章，每章承担独立论证功能'],
+            writingPrinciples: ['摘要不出现本文', '每节开头给出本节论点'],
+            methodSuggestions: ['概念界定先于机制分析'],
+            hardRequirements: ['引用必须真实可查'],
+          },
+        }],
+        scenario: {
+          name: 'CSSCI 纯理论论文场景',
+          description: '面向 CSSCI 的纯理论论文研究场景。',
+          triggerPhrases: ['理论论文'],
+          deliverable: {
+            type: 'theory_paper',
+            typeLabel: '纯理论论文',
+            sections: [
+              { id: 'title', title: '题目', kind: 'title', status: 'locked', purpose: '概括核心论点' },
+              { id: 'abstract', title: '摘要', kind: 'abstract', status: 'required', requirements: ['研究问题', '核心论点'], forbidden: ['出现本文'] },
+              { id: 'keywords', title: '关键词', kind: 'keywords', status: 'required' },
+              { id: 'c1', title: '1 引言', kind: 'chapter', status: 'required', purpose: '提出研究问题', lengthTarget: '1500-2000 字' },
+              { id: 'c2', title: '2 理论框架', kind: 'chapter', status: 'required', purpose: '建构理论框架', method: '概念分析' },
+              { id: 'c3', title: '3 结论', kind: 'chapter', status: 'locked', purpose: '总结论点与边界' },
+              { id: 'r1', title: '机制分析', kind: 'section', status: 'conditional', condition: '理论框架含明确机制时' },
+            ],
+            structurePolicy: { defaultSections: 3, suggestedMin: 3, suggestedMax: 5 },
+            globalLength: '10000-12000 字',
+            language: 'zh',
+            journalTier: 'core',
+          },
+          adaptivity: {
+            structure: { addSections: true, deleteUnlockedSections: true, splitSections: true, mergeSections: false, reorderSections: false, adjustLength: true },
+            content: { reviseQuestion: true, addQuestion: false, reviseHypothesis: true, dropUnsupportedHypothesis: true, adjustFramework: true },
+            method: { addMethod: true, replaceUnsuitableMethod: true, addRobustness: false, addHeterogeneity: false, addMechanism: true },
+            allowedBacktracks: ['analysis->literature'],
+            majorAdjustmentTriggers: ['新证据推翻原假设', '原结构无法解释重要发现'],
+          },
+          writingRules: ['摘要禁止出现"本文"', '每节开头给出本节论点'],
+          methodPolicy: { recommended: ['概念分析'], allowed: ['文本分析'], conditional: [], forbidden: ['问卷调查'] },
+          agents: [{
+            name: '理论建构智能体',
+            role: '理论分析与写作',
+            systemPrompt: '负责理论框架建构、论证推进与论文撰写，遵守证据边界。',
+            skillIds: [],
+            toolIds: ['list_sources', 'draft_claim', 'save_artifact'],
+            mcpIds: [],
+            maxTurns: 12,
+          }],
+          workflow: [
+            { name: '文献研究', description: '梳理经典文献与理论脉络。', agent: '理论建构智能体', skillIds: [], toolIds: ['list_sources'], mcpIds: [], maxTurns: 8 },
+            { name: '理论建构', description: '形成理论框架与核心论点。', agent: '理论建构智能体', skillIds: [], toolIds: ['draft_claim'], mcpIds: [], maxTurns: 8 },
+            { name: '论文撰写', description: '按成果结构撰写全文。', agent: '理论建构智能体', skillIds: [], toolIds: ['save_artifact'], mcpIds: [], maxTurns: 8 },
+          ],
+          rules: '## 研究目标\n产出可投稿 CSSCI 的纯理论论文。\n## 证据边界\n文献性论断必须来自本地文献库。',
+        },
+      }),
+    };
+  }
   if (systemText.includes('论文结构模板解析助手')) {
     return {
       content: JSON.stringify({
@@ -924,51 +996,147 @@ async function main() {
   const personalization = await run(`window.metis.listPersonalization({ contractVersion: 1, includeDisabled: true })`);
   check('场景', '场景中心连接真实个性化仓库', personalization?.ok === true && Array.isArray(personalization.definitions), JSON.stringify({ ok: personalization?.ok, count: personalization?.definitions?.length }));
 
-  // UX: AI 辅助创建——描述需求 → 自动生成场景 + 智能体 + 工作流 → 填入编辑器供修改。
-  const aiToggle = await click('[data-testid="ai-create-toggle"]');
-  check('场景', 'AI 辅助创建面板可打开', aiToggle === true);
-  const aiPanelOpen = await waitFor(`Boolean(document.querySelector('[data-testid="ai-create-panel"]'))`, 3000);
-  const aiTyped = aiPanelOpen && await run(`(() => {
-    const input = document.querySelector('[data-testid="ai-create-input"]');
+  // 场景重构：三栏工作台 + AI 创建（描述 + 真实材料文件上传）。
+  const workbenchSurface = await run(`(() => ({
+    workbench: Boolean(document.querySelector('[data-testid="scenario-workbench"]')),
+    aiEntry: Boolean(document.querySelector('[data-testid="sw-ai-create"]')),
+    newEntry: Boolean(document.querySelector('[data-testid="sw-new-scenario"]')),
+    libraryViews: Array.from(document.querySelectorAll('[data-testid="sw-library-view"]')).map((el) => el.textContent.trim().slice(0, 24)).filter(Boolean),
+  }))()`);
+  check('场景', '三栏工作台就位（待创建场景后校验五分区与树）', workbenchSurface.workbench === true
+    && workbenchSurface.aiEntry === true
+    && workbenchSurface.newEntry === true
+    && workbenchSurface.libraryViews.length >= 6,
+    JSON.stringify(workbenchSurface));
+
+  // 准备一份真实参考材料文件（写作方法书节选），通过材料导入 IPC 上传。
+  const materialPath = path.join(profileDir, '模拟写作方法材料.md');
+  fs.writeFileSync(materialPath, [
+    '# 学术论文写作方法（模拟节选）',
+    '',
+    '## 结构规则',
+    '- 正文三到五章，每章承担独立论证功能。',
+    '- 引言交代研究问题与边界，结论不得引入新证据。',
+    '',
+    '## 写作原则',
+    '- 摘要不得出现"本文"，只陈述论点与结论。',
+    '- 每节开头给出本节论点，段首句承担论证功能。',
+    '',
+    '## 方法建议',
+    '- 概念界定先于机制分析。',
+    '',
+    '## 硬性要求',
+    '- 引用必须真实可查，不得编造文献。',
+    '',
+  ].join('\n'), 'utf8');
+  const materialImport = await run(`window.metis.importScenarioMaterials({ files: [{ path: ${JSON.stringify(materialPath)}, name: '模拟写作方法材料.md' }] })`);
+  const materialId = materialImport?.ok ? materialImport.materials?.[0]?.id : null;
+  check('场景', '任意参考材料可导入（txt/md 真实读取）', materialImport?.ok === true && Boolean(materialId), JSON.stringify({ ok: materialImport?.ok, code: materialImport?.code, errors: materialImport?.errors ?? [] }));
+
+  // AI 创建：描述 + 材料 → 分析摘要 → 生成场景。
+  const aiOpen = await click('[data-testid="sw-ai-create"]');
+  const dialogOpen = aiOpen && await waitFor(`Boolean(document.querySelector('[data-testid="scenario-ai-create"]'))`, 3000);
+  const aiTyped = dialogOpen && await run(`(() => {
+    const input = document.querySelector('[data-testid="scai-description"]');
     if (!input) return false;
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
-    setter.call(input, '分析地方历史档案：梳理档案目录，提取关键证据并形成论断网络。');
+    setter.call(input, '创建一个 CSSCI 纯理论论文场景：强调理论逻辑与经典文献，不做实证，允许 AI 调整主体章节数量。');
     input.dispatchEvent(new Event('input', { bubbles: true }));
     return true;
   })()`);
-  const aiSubmitted = aiTyped && await click('[data-testid="ai-create-submit"]');
-  const aiDone = aiSubmitted && await waitFor(`document.body.innerText.includes('历史档案研究场景')`, 30_000, 250);
-  check('场景', 'AI 辅助创建生成场景与智能体', Boolean(aiDone), String(aiDone ?? ''));
-  if (!aiDone) {
-    issue('P1', '场景', 'AI 辅助创建未完成', await run(`document.querySelector('[data-testid="ai-create-status"]')?.textContent ?? ''`), '检查 AI 生成 IPC 与模型连接。');
+  const aiAnalyzed = aiTyped && await click('[data-testid="scai-analyze"]');
+  const summaryShown = aiAnalyzed && await waitFor(`Boolean(document.querySelector('[data-testid="scai-summary"]'))`, 60_000, 300);
+  check('场景', 'AI 分析材料后给出场景理解摘要', summaryShown === true, String(summaryShown ?? ''));
+  const summaryState = summaryShown ? await run(`(() => ({
+    type: document.querySelector('[data-testid="scai-summary"]')?.textContent?.includes('纯理论论文') ?? false,
+    sources: document.querySelector('[data-testid="scai-summary"]')?.textContent?.includes('模拟写作方法材料') ?? false,
+  }))()`) : null;
+  check('场景', '摘要包含成果类型与材料学习来源', summaryState?.type === true && summaryState?.sources === true, JSON.stringify(summaryState ?? {}));
+  const aiGenerated = summaryShown && await click('[data-testid="scai-generate"]');
+  const generatedShown = aiGenerated && await waitFor(`document.body.innerText.includes('CSSCI 纯理论论文场景')`, 30_000, 250);
+  check('场景', 'AI 创建生成场景（描述 + 材料综合）', generatedShown === true, String(generatedShown ?? ''));
+  if (!generatedShown) {
+    issue('P1', '场景', 'AI 创建场景未完成', await run(`document.querySelector('[data-testid="scai-status"]')?.textContent ?? ''`), '检查 scenario:analyzeMaterials 与保存管线。');
   }
+
+  // 生成结果落到真实仓库：场景 + 智能体 + 场景记忆 + 成果结构/自适应/参考材料。
   const aiDefinitions = await run(`window.metis.listPersonalization({ contractVersion: 1, includeDisabled: true })`);
-  const aiScenario = aiDefinitions?.definitions?.find?.((d) => d.kind === 'scenario' && d.name === '历史档案研究场景');
+  const aiScenario = aiDefinitions?.definitions?.find?.((d) => d.kind === 'scenario' && d.name === 'CSSCI 纯理论论文场景');
   const aiAgentCount = aiDefinitions?.definitions?.filter?.((d) => d.kind === 'agent' && d.provenance?.origin === 'user')?.length ?? 0;
   check('场景', 'AI 生成的智能体与场景已持久化', aiAgentCount >= 1 && Boolean(aiScenario) && (aiScenario?.agentIds?.length ?? 0) >= 1 && (aiScenario?.workflow?.length ?? 0) >= 2, JSON.stringify({ agents: aiAgentCount, workflowSteps: aiScenario?.workflow?.length ?? 0 }));
-  // 场景记忆文档绑定到场景；论文结构自动设计（引言+主体+结论）。
+  const deliverableState = aiScenario ? {
+    type: aiScenario.deliverable?.type,
+    sections: aiScenario.deliverable?.sections?.length ?? 0,
+    lockedSections: (aiScenario.deliverable?.sections ?? []).filter((sec) => sec.status === 'locked').length,
+    conditionalSections: (aiScenario.deliverable?.sections ?? []).filter((sec) => sec.status === 'conditional').length,
+    adaptive: Boolean(aiScenario.adaptivity),
+    backtracks: aiScenario.adaptivity?.allowedBacktracks?.length ?? 0,
+    writingRules: aiScenario.writingRules?.length ?? 0,
+    methods: aiScenario.methodPolicy?.recommended?.length ?? 0,
+    materials: aiScenario.materials?.length ?? 0,
+    insights: aiScenario.materials?.[0]?.insights?.writingPrinciples?.length ?? 0,
+  } : null;
+  check('场景', '成果结构进入场景定义（锁定/条件部分 + 结构策略）', deliverableState?.type === 'theory_paper'
+    && deliverableState.sections >= 6
+    && deliverableState.lockedSections >= 2
+    && deliverableState.conditionalSections >= 1, JSON.stringify(deliverableState));
+  check('场景', '自适应边界与写作规范/方法策略落地', deliverableState?.adaptive === true
+    && deliverableState.backtracks >= 1
+    && deliverableState.writingRules >= 1
+    && deliverableState.methods >= 1, JSON.stringify(deliverableState));
+  check('场景', '参考材料及其学习洞察绑定场景', deliverableState?.materials === 1 && deliverableState.insights >= 1, JSON.stringify(deliverableState));
   const aiRules = aiDefinitions?.definitions?.find?.((d) => d.kind === 'rules' && d.scope === 'scenario' && d.scopeId === aiScenario?.id);
-  check('场景', 'AI 生成场景记忆 Metis.md 并绑定到场景', Boolean(aiRules) && aiRules.markdown.includes('研究边界') && (aiScenario?.rulesIds ?? []).includes(aiRules?.id), JSON.stringify({ rulesId: aiRules?.id, rulesIds: aiScenario?.rulesIds ?? [] }));
-  if (!aiRules || !aiRules.markdown.includes('研究边界')) {
-    issue('P1', '场景', '场景记忆文档未生成或未绑定', JSON.stringify({ aiRules, scenarioRulesIds: aiScenario?.rulesIds }), 'AI 创建场景时应一并生成绑定到该场景的 Metis.md 记忆文档。');
-  }
-  const aiStructures = await run(`window.metis.structureList()`);
-  const aiStructure = aiStructures?.ok ? aiStructures.templates?.find?.((t) => t.name === '历史档案研究场景 · 论文结构') : null;
-  check('场景', 'AI 自动设计论文结构（引言+主体+结论）', Boolean(aiStructure) && Array.isArray(aiStructure.sections) && aiStructure.sections.length >= 3 && aiStructure.sections.some((s) => s.title.includes('引言')), JSON.stringify({ sections: aiStructure?.sections?.map((s) => s.title) }));
-  if (!aiStructure) {
-    issue('P1', '场景', '论文结构自动设计未落地', '', 'AI 创建场景时应生成可编辑的论文结构模板供自主科研使用。');
-  }
-  const aiEditorFilled = await run(`(() => {
-    const editor = document.querySelector('.personalization-editor');
-    if (!editor) return false;
-    return editor.textContent.includes('历史档案研究场景')
-      && editor.querySelectorAll('.personalization-step').length >= 2
-      && editor.textContent.includes('档案梳理员');
+  check('场景', 'AI 生成场景记忆 Metis.md 并绑定到场景', Boolean(aiRules) && aiRules.markdown.includes('研究目标') && (aiScenario?.rulesIds ?? []).includes(aiRules?.id), JSON.stringify({ rulesId: aiRules?.id, rulesIds: aiScenario?.rulesIds ?? [] }));
+
+  // 工作台展示生成场景：等待异步刷新 → 选中 → 五分区 → 结构树 → 右栏编辑 → 自适应开关。
+  const scenarioItemReady = await waitFor(`(() => {
+    const items = Array.from(document.querySelectorAll('[data-testid="sw-scenario-item"]'));
+    const target = items.find((item) => item.textContent.includes('CSSCI 纯理论论文场景'));
+    if (!target) return false;
+    target.click();
+    return true;
+  })()`, 15_000, 250);
+  check('场景', 'AI 生成场景出现在工作台并可选中', Boolean(scenarioItemReady));
+  const tabsShown = scenarioItemReady && await waitFor(`JSON.stringify(Array.from(document.querySelectorAll('[data-testid^="sw-tab-"]')).map((el) => el.getAttribute('data-testid'))) === JSON.stringify(['sw-tab-overview', 'sw-tab-structure', 'sw-tab-rules', 'sw-tab-adapt', 'sw-tab-capability'])`, 5000, 200);
+  check('场景', '选中后五个一级分区就位', Boolean(tabsShown));
+  const structureShown = scenarioItemReady && await click('[data-testid="sw-tab-structure"]');
+  const treeState = structureShown && await run(`(() => ({
+    rows: document.querySelectorAll('[data-testid="sw-tree-row"]').length,
+    lockedIcons: document.querySelectorAll('.sw-tree__row.status-locked').length,
+    conditionalIcons: document.querySelectorAll('.sw-tree__row.status-conditional').length,
+  }))()`);
+  check('场景', '成果结构树直展（含锁定与条件标识）', (treeState?.rows ?? 0) >= 6 && (treeState?.lockedIcons ?? 0) >= 2 && (treeState?.conditionalIcons ?? 0) >= 1, JSON.stringify(treeState ?? {}));
+  const sectionOpened = treeState && await run(`(() => {
+    const rows = Array.from(document.querySelectorAll('[data-testid="sw-tree-row"]'));
+    const target = rows.find((row) => row.textContent.includes('理论框架'));
+    if (!target) return false;
+    target.click(); return true;
   })()`);
-  check('场景', 'AI 结果已填入编辑器供用户修改', aiEditorFilled === true);
-  if (!aiEditorFilled) {
-    issue('P1', '场景', 'AI 生成结果未在编辑器展示', '', 'AI 创建后应选中新场景并在编辑器中展示完整配置。');
-  }
+  const contextEditor = sectionOpened && await waitFor(`Boolean(document.querySelector('[data-testid="sw-context-editor"]')?.textContent?.includes('理论框架'))`, 3000);
+  check('场景', '点击章节 → 右栏上下文编辑器', contextEditor === true);
+  const adaptShown = await click('[data-testid="sw-tab-adapt"]');
+  const adaptState = adaptShown && await run(`(() => ({
+    groups: document.querySelectorAll('.sw-adapt__group').length,
+    checked: document.querySelectorAll('[data-testid^="sw-adapt-"]:checked').length,
+    backtracks: document.querySelector('.sw-adapt__backtracks textarea')?.value ?? '',
+    triggers: document.querySelector('.sw-adapt__triggers textarea')?.value ?? '',
+  }))()`);
+  check('场景', '自适应页展示 AI 自主边界（含回溯与触发条件）', (adaptState?.groups ?? 0) >= 3 && (adaptState?.checked ?? 0) >= 5 && adaptState.backtracks.includes('analysis->literature') && adaptState.triggers.length > 0, JSON.stringify(adaptState ?? {}));
+  const rulesTabShown = await click('[data-testid="sw-tab-rules"]');
+  const rulesState = (rulesTabShown && await run(`document.querySelector('[data-testid="sw-rules"]')?.textContent ?? ''`)) || '';
+  check('场景', '规则与方法页含写作规范与方法策略', rulesTabShown === true && rulesState.includes('摘要禁止出现') && rulesState.includes('概念分析'), rulesState.slice(0, 80));
+  const capabilityShown = await click('[data-testid="sw-tab-capability"]');
+  const capabilityState = capabilityShown && await run(`(() => ({
+    agents: document.querySelectorAll('[data-testid="sw-cap-agent"]:checked').length,
+    workflowSteps: document.querySelectorAll('[data-testid="sw-workflow-step"]').length,
+    advanced: Boolean(document.querySelector('[data-testid="sw-advanced"]')),
+  }))()`);
+  check('场景', '能力与运行页含绑定/工作流/高级设置', (capabilityState?.agents ?? 0) >= 1 && (capabilityState?.workflowSteps ?? 0) >= 2 && capabilityState.advanced === true, JSON.stringify(capabilityState ?? {}));
+  // 参考材料区属于总览页：返回总览校验材料已随场景落库展示。
+  await click('[data-testid="sw-tab-overview"]');
+  const overviewMaterials = await waitFor(`Boolean(document.querySelector('[data-testid="sw-materials"]')?.textContent?.includes('模拟写作方法材料'))`, 3000);
+  check('场景', '总览页展示参考材料及学习洞察', Boolean(overviewMaterials));
+  await screenshot('scenario-workbench');
   await screenshot('personalization-center');
 
   // 模板识别：粘贴模板 → AI 解析为逐节写作指引 → 修改后保存为论文结构。
@@ -1041,8 +1209,9 @@ async function main() {
   const consoleReady = await waitFor(`Boolean(document.querySelector('[data-testid="strategy-select"]'))`, 3000);
   check('自主科研', '旧控制台可经工作台打开并保留策略配置', consoleOpened === true && consoleReady === true);
   const strategySelectLabel = await run(`Boolean(document.querySelector('label[for="strategy-select"]')) && Boolean(document.querySelector('#strategy-select'))`);
-  const structureSelectLabel = await run(`Boolean(document.querySelector('label[for="structure-select"]')) && Boolean(document.querySelector('#structure-select'))`);
-  check('自主科研', '策略与论文结构选择控件有程序化标签', strategySelectLabel === true && structureSelectLabel === true, JSON.stringify({ strategy: strategySelectLabel, structure: structureSelectLabel }));
+  // structures 列表异步加载，结构选择控件在其就绪后才渲染：等待其出现。
+  const structureReady = await waitFor(`Boolean(document.querySelector('label[for="structure-select"]')) && Boolean(document.querySelector('#structure-select'))`, 8000, 250);
+  check('自主科研', '策略与论文结构选择控件有程序化标签', strategySelectLabel === true && Boolean(structureReady), JSON.stringify({ strategy: strategySelectLabel, structure: Boolean(structureReady) }));
   await click('[data-testid="strategy-editor-toggle"]');
   const editorOpen = await waitFor(`Boolean(document.querySelector('[data-testid="strategy-editor"]'))`, 3000);
   const newStrategyButton = await waitFor(`Boolean(document.querySelector('[data-testid="strategy-new"]'))`, 3000);

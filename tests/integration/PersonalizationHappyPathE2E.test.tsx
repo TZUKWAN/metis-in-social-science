@@ -231,20 +231,21 @@ describe('Personalization persisted UI-to-runtime happy paths', () => {
     }));
 
     fireEvent.click(within(screen.getByRole('navigation', { name: 'Scenario categories' })).getByRole('button', { name: /^Scenarios/u }));
-    fireEvent.click(screen.getByRole('button', { name: 'New' }));
+    // 场景工作台：新建菜单 → 手动创建（落库默认场景并选中）。
+    fireEvent.click(await screen.findByTestId('sw-new-scenario'));
+    fireEvent.click(screen.getByTestId('sw-new-menu').querySelectorAll('button')[1]!);
 
-    const editor = await screen.findByRole('region', { name: 'Definition editor' });
-    fireEvent.change(within(editor).getAllByLabelText('Name')[0]!, {
-      target: { value: 'Durable custom conversation' },
-    });
-    fireEvent.change(within(editor).getByLabelText('Description'), {
-      target: { value: 'Created through the rendered personalization center.' },
-    });
-    fireEvent.click(within(editor).getByRole('checkbox', { name: /^Durable custom agent/u }));
-    fireEvent.click(within(editor).getByRole('button', { name: 'Add step' }));
-    expect((within(editor).getByRole('combobox', { name: 'Executing agent' }) as HTMLSelectElement).value)
-      .toBe(CUSTOM_AGENT_ID);
-    fireEvent.click(within(editor).getByRole('button', { name: 'Save new revision' }));
+    const nameInput = await screen.findByDisplayValue('My Scenarios');
+    fireEvent.change(nameInput, { target: { value: 'Durable custom conversation' } });
+    fireEvent.change(screen.getByDisplayValue(''), { target: { value: 'Created through the rendered personalization center.' } });
+    fireEvent.click(screen.getByTestId('sw-tab-capability'));
+    const agentCheckbox = (await screen.findAllByTestId('sw-cap-agent'))
+      .find((input) => input.closest('label')?.textContent?.includes('Durable custom agent')) as HTMLInputElement;
+    fireEvent.click(agentCheckbox);
+    fireEvent.click(screen.getByTestId('sw-workflow-add'));
+    const stepAgentSelect = screen.getAllByTestId('sw-workflow-step')[0]!.querySelector('select') as HTMLSelectElement;
+    expect(stepAgentSelect.value).toBe(CUSTOM_AGENT_ID);
+    fireEvent.click(screen.getByTestId('sw-save'));
 
     await waitFor(() => expect(initial.repository.get(CUSTOM_SCENARIO_ID)).toMatchObject({
       kind: 'scenario',
@@ -253,13 +254,11 @@ describe('Personalization persisted UI-to-runtime happy paths', () => {
       revision: 2,
       agentIds: [CUSTOM_AGENT_ID],
       workflow: [expect.objectContaining({
-        id: 'step-1',
         agentId: CUSTOM_AGENT_ID,
       })],
     }));
-    fireEvent.click(within(definitionCard(CUSTOM_SCENARIO_ID)).getByRole('button', {
-      name: 'Use in conversation',
-    }));
+    fireEvent.click(screen.getByTestId('sw-use'));
+    fireEvent.click(screen.getByTestId('sw-use-current'));
 
     const selector = await screen.findByRole('combobox', { name: 'Active scenario' }, { timeout: 5000 }) as HTMLSelectElement;
     await waitFor(() => expect(selector.value).toBe(CUSTOM_SCENARIO_ID));
@@ -314,7 +313,7 @@ describe('Personalization persisted UI-to-runtime happy paths', () => {
     expect(restartedResolution?.ok).toBe(true);
     fireEvent.click(screen.getByTestId('personalization-trigger'));
     await screen.findByText('Durable custom conversation');
-    expect(definitionCard(CUSTOM_SCENARIO_ID)).toBeDefined();
+    expect(screen.getAllByTestId('sw-scenario-item').length).toBeGreaterThanOrEqual(1);
 
     restartedApp.unmount();
     closeDatabase(restarted.database);

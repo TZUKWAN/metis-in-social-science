@@ -62,6 +62,8 @@ import { LiteratureWatchService } from './LiteratureWatchService.js';
 import { ResearchAgendaService } from './ResearchAgendaService.js';
 import { CloudSyncService } from './CloudSyncService.js';
 import { AutonomousProfileService } from './AutonomousProfileService.js';
+import { ScenarioMaterialService } from './ScenarioMaterialService.js';
+import { formatScenarioExecutionContext } from '../engine/personalization/ScenarioExecutionContext.js';
 import { AutonomousWorkspaceService } from './AutonomousWorkspaceService.js';
 import { setBrowserControlBridge } from '../engine/tools/browser-tools.js';
 import { BackupService } from './BackupService.js';
@@ -138,6 +140,7 @@ import { searchWorks } from '../engine/research/CrossrefClient.js';
 import {
   AUTONOMOUS_CONTRACT_VERSION,
   AUTONOMOUS_CHANNELS,
+  AUTONOMOUS_LIMITS,
   decodeAutonomousStartRequest,
   decodeAutonomousControlRequest,
   decodeAutonomousLiveEvent,
@@ -1103,6 +1106,24 @@ ipcMain.handle('research:deleteProject', (event, rawProjectId: unknown) => {
 });
 
 // ── 项目自定义目录（批2）：PDF 归档位置，默认数据目录自动管理 ──
+ipcMain.handle('dialog:openReferenceFiles', async (event) => {
+  try {
+    requireRendererMainFrame(event);
+    const { dialog } = await import('electron');
+    const result = await dialog.showOpenDialog({
+      title: '选择场景参考材料（模板 / 范文 / 论文 / 教材 / 指南 / 规范 / 任意文件）',
+      properties: ['openFile', 'multiSelections'],
+      filters: [
+        { name: '科研参考材料', extensions: ['pdf', 'docx', 'txt', 'md', 'markdown', 'csv', 'json'] },
+        { name: '所有文件', extensions: ['*'] },
+      ],
+    });
+    return result.canceled ? [] : result.filePaths.slice(0, 8);
+  } catch {
+    return [];
+  }
+});
+
 ipcMain.handle('dialog:openDirectory', async (event) => {
   try {
     requireRendererMainFrame(event);
@@ -6863,8 +6884,37 @@ function setupIPC(): void {
     } catch {
       return { ok: false, error: 'project_creation_failed' };
     }
+    // 场景注入（场景重构 P3）：把场景成果结构/自适应边界/写作规范/方法策略与场景规则
+    // 追加到研究目标，使自主科研的执行受场景配置驱动；运行中的结构调整不反写场景。
+    let effectiveGoal = request.goal;
+    const scenarioRepository = personalizationRepository;
+    if (request.scenarioId && scenarioRepository) {
+      const scenarioDefinition = scenarioRepository.get(request.scenarioId);
+      if (!scenarioDefinition || scenarioDefinition.kind !== 'scenario') {
+        return { ok: false, error: 'scenario_not_found' };
+      }
+      if (!scenarioDefinition.enabled) {
+        return { ok: false, error: 'scenario_disabled' };
+      }
+      const scenario = scenarioDefinition;
+      const scenarioRules = scenario.rulesIds
+        .map((ruleId) => scenarioRepository.get(ruleId))
+        .filter((rule): rule is NonNullable<typeof rule> => Boolean(rule) && rule?.kind === 'rules')
+        .map((rule) => (rule as { markdown?: string }).markdown ?? '')
+        .filter(Boolean)
+        .join('\n\n');
+      const executionContext = formatScenarioExecutionContext(scenario);
+      const scenarioBlock = [
+        executionContext,
+        scenarioRules ? `# 场景规则（Metis.md）\n${scenarioRules}` : '',
+        '# 场景执行要求\n- 研究与成果生成必须遵循上述成果结构、内容规范与方法策略。\n- 在自适应边界内可根据研究实际自主调整非锁定内容；重大调整记录调整前后内容、原因与依据。\n- 本项目内的结构调整只影响当前项目，不回写场景定义。',
+      ].filter(Boolean).join('\n\n');
+      effectiveGoal = `${request.goal}
+
+${scenarioBlock}`.slice(0, AUTONOMOUS_LIMITS.goalTextChars);
+    }
     activeAutonomousSessionId = sessionId;
-    spawnAutonomousRun(event.sender, sessionId, request.goal, resolvedProjectId, strategy, structure);
+    spawnAutonomousRun(event.sender, sessionId, effectiveGoal, resolvedProjectId, strategy, structure);
 
     return { ok: true, sessionId, projectId: resolvedProjectId };
   });
@@ -7417,6 +7467,142 @@ function setupIPC(): void {
       return { ok: true, ...parsed };
     } catch {
       return { ok: false, code: 'generation_failed' };
+    }
+  });
+
+  // ── 场景参考材料与 AI 场景生成（场景重构 P1）──
+  const scenarioMaterials = new ScenarioMaterialService(DATA_DIR);
+  ipcMain.handle('scenario:importMaterials', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      if (!isRecord(rawRequest) || !Array.isArray(rawRequest.files)) return { ok: false, code: 'invalid_request' };
+      const { getPdfReader } = await import('../engine/research/PdfReader.js');
+      const reader = getPdfReader();
+      const imported: Array<{ id: string; name: string; kind: string; storageRef: string; charCount: number; text: string }> = [];
+      const errors: Array<{ name: string; error: string }> = [];
+      for (const file of rawRequest.files.slice(0, 8)) {
+        if (!isRecord(file) || typeof file.path !== 'string' || !file.path) continue;
+        const name = typeof file.name === 'string' ? file.name : undefined;
+        try {
+          const material = await scenarioMaterials.importMaterial(file.path, {
+            name,
+            extractPdf: (filePath: string) => reader.extractText(filePath),
+          });
+          imported.push({ ...material, text: scenarioMaterials.loadMaterialText(material.id) ?? '' });
+        } catch (err) {
+          errors.push({ name: name ?? file.path.split('/').pop() ?? 'file', error: String((err as Error).message ?? err).slice(0, 120) });
+        }
+      }
+      if (imported.length === 0) return { ok: false, code: 'import_failed', errors };
+      return { ok: true, materials: imported, errors };
+    } catch (err) {
+      return { ok: false, code: 'import_failed', error: String((err as Error).message ?? err).slice(0, 200) };
+    }
+  });
+
+  ipcMain.handle('scenario:analyzeMaterials', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      if (!isRecord(rawRequest)) return { ok: false, code: 'invalid_request' };
+      const prompt = typeof rawRequest.prompt === 'string' ? rawRequest.prompt.trim() : '';
+      const materialIds = Array.isArray(rawRequest.materialIds)
+        ? rawRequest.materialIds.filter((id): id is string => typeof id === 'string')
+        : [];
+      const importedMaterials = Array.isArray(rawRequest.importedMaterials)
+        ? rawRequest.importedMaterials.filter((item): item is Record<string, unknown> => isRecord(item) && typeof item.text === 'string')
+        : [];
+      if (!prompt && materialIds.length === 0 && importedMaterials.length === 0) return { ok: false, code: 'invalid_request' };
+      if (!agentLoop) return { ok: false, code: 'agent_not_initialized' };
+      const materials: Array<{ name: string; text: string }> = [];
+      for (const id of materialIds.slice(0, 32)) {
+        const text = scenarioMaterials.loadMaterialText(id);
+        if (text) materials.push({ name: id, text });
+      }
+      for (const item of importedMaterials.slice(0, 8)) {
+        materials.push({ name: typeof item.name === 'string' ? item.name : '材料', text: String(item.text).slice(0, 500_000) });
+      }
+      const catalogInput = Array.isArray(rawRequest.definitions)
+        ? rawRequest.definitions.filter((item): item is Record<string, unknown> => isRecord(item))
+        : [];
+      const catalog = catalogInput
+        .map((item) => {
+          const kind = typeof item.kind === 'string' ? item.kind : '';
+          const name = typeof item.name === 'string' ? item.name : '';
+          const id = typeof item.id === 'string' ? item.id : '';
+          return kind && name ? '- ' + kind + '「' + name + '」 id=' + id : '';
+        })
+        .filter(Boolean)
+        .slice(0, 500)
+        .join('\n');
+      const prompts = scenarioMaterials.buildAnalysisPrompts(prompt, materials, catalog);
+      const answer = await runEphemeralChatTurn({
+        agentLoop,
+        sessionId: 'ai-scenario-materials-' + Date.now().toString(36),
+        messages: [{ role: 'user', content: prompts.user }],
+        requestId: 'ai_scmat_' + ++requestCounter,
+        skillPrompt: prompts.system,
+      });
+      if (answer.status !== 'completed' || !answer.answer.trim()) {
+        return { ok: false, code: 'generation_failed', message: answer.diagnostics?.[0]?.code ?? answer.status };
+      }
+      const result = scenarioMaterials.parseAnalysisResponse(answer.answer);
+      if (!result) return { ok: false, code: 'parse_failed' };
+      return { ok: true, result };
+    } catch (err) {
+      return { ok: false, code: 'generation_failed', error: String((err as Error).message ?? err).slice(0, 200) };
+    }
+  });
+
+  ipcMain.handle('scenario:aiRefine', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      if (!isRecord(rawRequest)) return { ok: false, code: 'invalid_request' };
+      const targetKind = rawRequest.targetKind;
+      if (targetKind !== 'section' && targetKind !== 'writingRules' && targetKind !== 'methodPolicy' && targetKind !== 'adaptivity') {
+        return { ok: false, code: 'invalid_request' };
+      }
+      const instruction = typeof rawRequest.instruction === 'string' ? rawRequest.instruction : '';
+      const currentValue = typeof rawRequest.currentValue === 'string' ? rawRequest.currentValue : '';
+      if (instruction.trim().length < 2 || currentValue.length > 20_000) return { ok: false, code: 'invalid_request' };
+      if (!agentLoop) return { ok: false, code: 'agent_not_initialized' };
+      let materialsText = '';
+      const materialIds = Array.isArray(rawRequest.materialIds)
+        ? rawRequest.materialIds.filter((id): id is string => typeof id === 'string')
+        : [];
+      for (const id of materialIds.slice(0, 8)) {
+        const text = scenarioMaterials.loadMaterialText(id);
+        if (text) materialsText += '\n\n【' + id + '】\n' + text.slice(0, 20_000);
+      }
+      const prompts = scenarioMaterials.buildRefinePrompts({
+        targetKind,
+        targetTitle: typeof rawRequest.targetTitle === 'string' ? rawRequest.targetTitle : '',
+        currentValue,
+        instruction,
+        materialsText: materialsText || undefined,
+      });
+      const answer = await runEphemeralChatTurn({
+        agentLoop,
+        sessionId: 'ai-scenario-refine-' + Date.now().toString(36),
+        messages: [{ role: 'user', content: prompts.user }],
+        requestId: 'ai_scref_' + ++requestCounter,
+        skillPrompt: prompts.system,
+      });
+      if (answer.status !== 'completed' || !answer.answer.trim()) {
+        return { ok: false, code: 'generation_failed' };
+      }
+      const cleaned = answer.answer.trim().replace(/```(?:json)?/gu, '');
+      const start = cleaned.indexOf('{');
+      const end = cleaned.lastIndexOf('}');
+      if (start < 0 || end <= start) return { ok: false, code: 'parse_failed' };
+      let patch: unknown;
+      try {
+        patch = JSON.parse(cleaned.slice(start, end + 1));
+      } catch {
+        return { ok: false, code: 'parse_failed' };
+      }
+      return { ok: true, patch };
+    } catch (err) {
+      return { ok: false, code: 'generation_failed', error: String((err as Error).message ?? err).slice(0, 200) };
     }
   });
 

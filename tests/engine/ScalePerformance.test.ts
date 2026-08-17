@@ -52,7 +52,6 @@ describe('规模压力（1 万条题录）', () => {
     expect(hits.length).toBeGreaterThan(0);
     expect(insertMs).toBeLessThan(20_000); // 批量写入 10s 内（事务批量）
     expect(searchMs).toBeLessThan(300); // 检索 300ms 内（T32 验收标准）
-    // eslint-disable-next-line no-console
     console.log(`[scale] insert=${insertMs}ms search=${searchMs}ms hits=${hits.length}`);
   });
 

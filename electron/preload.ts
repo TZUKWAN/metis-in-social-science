@@ -1352,7 +1352,7 @@ const api = {
   },
 
   // ── Autonomous research engine ───────────────────────────
-  autonomousStart: async (request: { goal: string; projectId?: string; sessionId?: string; strategyId?: string; structureId?: string }) => {
+  autonomousStart: async (request: { goal: string; projectId?: string; sessionId?: string; strategyId?: string; structureId?: string; scenarioId?: string }) => {
     const decoded = decodeAutonomousStartRequest({ version: AUTONOMOUS_CONTRACT_VERSION, ...request });
     if (!decoded) return { ok: false, error: 'invalid_request' };
     return ipcRenderer.invoke(AUTONOMOUS_CHANNELS.start, decoded) as Promise<{ ok: boolean; sessionId?: string; projectId?: string; error?: string }>;
@@ -1531,6 +1531,45 @@ const api = {
       workflow?: Array<{ name: string; description: string; agent: string; skillIds: string[]; toolIds: string[]; mcpIds: string[]; maxTurns: number }>;
       rules?: string;
       paperStructure?: Array<{ title: string; instruction: string }> | null;
+    }>
+  ),
+  openReferenceFileDialog: async () => ipcRenderer.invoke('dialog:openReferenceFiles') as Promise<string[]>,
+  importScenarioMaterials: async (rawRequest: unknown) => (
+    ipcRenderer.invoke('scenario:importMaterials', rawRequest) as Promise<{
+      ok: boolean;
+      code?: string;
+      error?: string;
+      errors?: Array<{ name: string; error: string }>;
+      materials?: Array<{ id: string; name: string; kind: string; storageRef: string; charCount: number; text: string }>;
+    }>
+  ),
+  analyzeScenarioMaterials: async (rawRequest: unknown) => (
+    ipcRenderer.invoke('scenario:analyzeMaterials', rawRequest) as Promise<{
+      ok: boolean;
+      code?: string;
+      message?: string;
+      error?: string;
+      result?: {
+        summary: {
+          deliverableType: string;
+          deliverableTypeLabel: string;
+          structureTitles: string[];
+          hardRuleCount: number;
+          writingPrincipleCount: number;
+          methods: string[];
+          adjustable: string[];
+          recommended: { agents: number; skills: number; mcps: number; rules: number };
+        };
+        materials: Array<{ name: string; kind: string; insights: { structureRules: string[]; writingPrinciples: string[]; methodSuggestions: string[]; hardRequirements: string[] } }>;
+        draft: Record<string, unknown>;
+      };
+    }>
+  ),
+  refineScenarioConfig: async (rawRequest: unknown) => (
+    ipcRenderer.invoke('scenario:aiRefine', rawRequest) as Promise<{
+      ok: boolean;
+      code?: string;
+      patch?: unknown;
     }>
   ),
   aiParsePaperTemplate: async (rawRequest: unknown) => (

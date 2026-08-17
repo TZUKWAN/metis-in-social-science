@@ -112,7 +112,9 @@ describe('AutonomousWorkspaceService.buildOverview', () => {
     repository.saveClaim({ id: 'c-m', projectId: 'p-auto', statement: '指标论断', claimType: 'finding', confidence: 0.6, status: 'supported', metadata: {}, createdAt: Date.now(), updatedAt: Date.now(), deletedAt: null } as never);
     const overview = service.buildOverview(new Set(['p-auto']));
     expect(overview.projects.map((p) => p.id).sort()).toEqual(['p-auto', 'p-cons']);
-    expect(overview.projects[0]!.status).toBe('running');
+    // listProjects 按 updated_at 倒序，运行中项目不保证排第一：按 id 定位断言状态。
+    const autoProject = overview.projects.find((p) => p.id === 'p-auto')!;
+    expect(autoProject.status).toBe('running');
     expect(overview.metrics.running).toBe(1);
     expect(overview.metrics.newFindings7d).toBe(1);
   });

@@ -36,7 +36,6 @@ export default function ToastHost() {
     };
     window.addEventListener('metis:toast', handler);
     return () => { window.removeEventListener('metis:toast', handler); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   if (items.length === 0) return null;

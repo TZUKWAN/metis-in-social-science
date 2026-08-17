@@ -118,7 +118,8 @@ function readContinuousFromStorage(): boolean {
 }
 
 export default function AutonomousResearchPage(): ReactNode {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
+  const zh = locale === 'zh';
   const metis = window.metis;
   const activeProjectId = useResearchWorkspaceStore((state) => state.activeProjectId);
   const setActiveProject = useResearchWorkspaceStore((state) => state.setActiveProject);
@@ -145,6 +146,10 @@ export default function AutonomousResearchPage(): ReactNode {
   const [interrupted, setInterrupted] = useState(false);
   const [strategies, setStrategies] = useState<ResearchStrategy[]>([]);
   const [selectedStrategyId, setSelectedStrategyId] = useState('');
+  const [scenarios, setScenarios] = useState<Array<{ id: string; name: string; disabled?: boolean }>>([]);
+  const [selectedScenarioId, setSelectedScenarioId] = useState(() => {
+    try { return localStorage.getItem('metis-autonomous-scenario-preset') ?? ''; } catch { return ''; }
+  });
   const [structures, setStructures] = useState<PaperStructureTemplate[]>([]);
   const [selectedStructureId, setSelectedStructureId] = useState('');
   const [showStrategyEditor, setShowStrategyEditor] = useState(false);
@@ -391,6 +396,16 @@ export default function AutonomousResearchPage(): ReactNode {
           metis.strategyList(),
           metis.structureList?.(),
         ]);
+        try { localStorage.removeItem('metis-autonomous-scenario-preset'); } catch { /* consumed */ }
+        const personalizationList = await metis.listPersonalization?.({ contractVersion: 1, kind: 'scenario', includeDisabled: true });
+        if (!cancelled && personalizationList?.ok && Array.isArray(personalizationList.definitions)) {
+          const scenarioList = personalizationList.definitions
+            .map((definition) => ({ id: String((definition as { id?: unknown }).id ?? ''), name: String((definition as { name?: unknown }).name ?? ''), enabled: (definition as { enabled?: unknown }).enabled !== false }))
+            .filter((scenario) => scenario.id && scenario.name)
+            .map((scenario) => ({ id: scenario.id, name: scenario.name, disabled: !scenario.enabled }));
+          setScenarios(scenarioList);
+          setSelectedScenarioId((current) => (scenarioList.some((scenario) => scenario.id === current) ? current : ''));
+        }
         if (cancelled) return;
         if (strategyResult.ok && Array.isArray(strategyResult.strategies)) {
           const list = strategyResult.strategies as unknown as ResearchStrategy[];
@@ -445,6 +460,7 @@ export default function AutonomousResearchPage(): ReactNode {
         projectId: effectiveProjectId,
         strategyId: selectedStrategyId || undefined,
         structureId: selectedStructureId || undefined,
+        scenarioId: selectedScenarioId || undefined,
       });
       if (result.ok && result.sessionId) {
         setSessionId(result.sessionId);
@@ -460,7 +476,7 @@ export default function AutonomousResearchPage(): ReactNode {
       setError(t('autonomous.startFailed') + ': ' + (err instanceof Error ? err.message : String(err)));
       setRunning(false);
     }
-  }, [metis, running, t, activeProjectId, projectChoice, selectedStrategyId, selectedStructureId, setActiveProject]);
+  }, [metis, running, t, activeProjectId, projectChoice, selectedStrategyId, selectedStructureId, selectedScenarioId, setActiveProject]);
 
   // 供事件回调（完成后自动开始下一个）使用的最新 startRun。
   useEffect(() => {
@@ -626,6 +642,20 @@ export default function AutonomousResearchPage(): ReactNode {
               </select>
             </>
           )}
+          <label htmlFor="scenario-select-run">{zh ? '研究场景（成果结构与自适应）' : 'Scenario (deliverable & adaptivity)'}</label>
+          <select
+            className="settings-input"
+            id="scenario-select-run"
+            value={selectedScenarioId}
+            onChange={(e) => setSelectedScenarioId(e.target.value)}
+            disabled={running}
+            data-testid="scenario-select-run"
+          >
+            <option value="">{zh ? '不使用场景' : 'No scenario'}</option>
+            {scenarios.map((scenario) => (
+              <option key={scenario.id} value={scenario.id} disabled={scenario.disabled}>{scenario.name}</option>
+            ))}
+          </select>
           <label htmlFor="autonomous-project-select">{t('autonomous.projectLabel')}</label>
           <select
             className="settings-input"

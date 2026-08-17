@@ -83,6 +83,7 @@ let activatePersonalizationMcp: ReturnType<typeof vi.fn>;
 let getWorkspaceAgents: ReturnType<typeof vi.fn>;
 let setWorkspaceAgents: ReturnType<typeof vi.fn>;
 let aiGenerateScenario: ReturnType<typeof vi.fn>;
+let analyzeScenarioMaterials: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   window.localStorage.clear();
@@ -182,6 +183,7 @@ beforeEach(() => {
     ok: false,
     code: 'not_configured',
   });
+  analyzeScenarioMaterials = vi.fn().mockResolvedValue({ ok: false, code: 'not_configured' });
   setWorkspaceAgents = vi.fn().mockResolvedValue({
     success: true,
     code: 'saved',
@@ -208,6 +210,7 @@ beforeEach(() => {
       getWorkspaceAgents,
       setWorkspaceAgents,
       aiGenerateScenario,
+      analyzeScenarioMaterials,
     },
   });
 });
@@ -220,6 +223,11 @@ afterEach(() => {
   window.sessionStorage.clear();
   Object.defineProperty(window, 'metis', { configurable: true, writable: true, value: undefined });
 });
+
+async function selectScenarioInWorkbench(name: string | RegExp) {
+  const item = await screen.findByText(name);
+  fireEvent.click(item.closest('[data-testid="sw-scenario-item"]')?.querySelector('button') ?? item.closest('button')!);
+}
 
 describe('PersonalizationCenter', () => {
   it('does not background-load authoritative project rules while another personalization tab is active', async () => {
@@ -260,11 +268,12 @@ describe('PersonalizationCenter', () => {
 
   it('starts with an empty user library even when legacy factory definitions are returned', async () => {
     render(<PersonalizationCenter />);
-    expect(await screen.findByText('No scenarios yet. Start by creating one.')).toBeDefined();
+    expect(await screen.findByText('No scenarios in this view.')).toBeDefined();
     expect(screen.queryByText('General research')).toBeNull();
     expect(screen.queryByText('Academic monograph')).toBeNull();
     expect(screen.getByRole('button', { name: /Scenarios/u }).textContent).toContain('0');
     expect(screen.getByText('Automatic truth controls always remain enforced')).toBeDefined();
+    expect(screen.getByTestId('scenario-workbench')).toBeDefined();
     expect(listPersonalization).toHaveBeenCalledWith({ contractVersion: 1, includeDisabled: true });
   });
 
@@ -282,7 +291,7 @@ describe('PersonalizationCenter', () => {
 
   it('does not expose factory-copy actions in the zero-preset product', async () => {
     render(<PersonalizationCenter />);
-    await screen.findByText('Create your first scenario');
+    await screen.findByText('No scenarios in this view.');
     expect(screen.queryByRole('button', { name: 'Create editable copy' })).toBeNull();
     expect(forkPersonalization).not.toHaveBeenCalled();
   });
@@ -603,13 +612,12 @@ describe('PersonalizationCenter', () => {
 
     render(<PersonalizationCenter />);
     expect(await screen.findByText('研究场景工作台')).toBeDefined();
-    fireEvent.click(document.querySelector(`[data-definition-id="${scenario.id}"]`) as HTMLButtonElement);
-    expect(await screen.findByText('全权限运行')).toBeDefined();
-    expect(screen.queryByText('Full Access')).toBeNull();
+    fireEvent.click(screen.getByTestId('sw-scenario-item'));
+    fireEvent.click(screen.getByTestId('sw-tab-capability'));
+    expect(await screen.findByText('全权限运行：自动执行、实时纠偏、失败不自动回滚外部副作用；真实性层始终强制。')).toBeDefined();
 
-    // UX: 场景编辑器不再展示「场景能力」「产物格式」两个字段。
+    // UX: 工作台不展示「场景能力」「产物格式」旧字段名。
     expect(screen.queryByRole('combobox', { name: '场景能力' })).toBeNull();
-    expect(screen.queryByRole('combobox', { name: '产物格式' })).toBeNull();
 
     const memory = screen.getByRole('combobox', { name: '记忆范围' });
     expect(within(memory).getByRole('option', { name: '当前项目' })).toBeDefined();
@@ -732,28 +740,35 @@ describe('PersonalizationCenter', () => {
     } as PersonalizationDefinition;
     definitions.push(custom);
     render(<PersonalizationCenter />);
-    await screen.findByText('Editable workflow');
-    fireEvent.click(document.querySelector('[data-definition-id="user:scenarios/workflow-editor"]') as HTMLButtonElement);
-    expect(await screen.findByText('Full Access')).toBeDefined();
+    await selectScenarioInWorkbench('Editable workflow');
+    fireEvent.click(screen.getByTestId('sw-tab-capability'));
+    expect(await screen.findByTestId('sw-full-access')).toBeDefined();
     expect(screen.queryByRole('button', { name: /permission|confirm/iu })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Add step' }));
-    expect(screen.getByDisplayValue('step-2')).toBeDefined();
-    fireEvent.click(screen.getByRole('button', { name: 'Add step' }));
-    expect(screen.getByDisplayValue('step-3')).toBeDefined();
-    fireEvent.change(screen.getAllByRole('textbox', { name: 'ID' })[1]!, { target: { value: 'audit' } });
-    expect(screen.getAllByRole('textbox', { name: 'Dependency step IDs' })[2]).toHaveProperty('value', 'audit');
-    fireEvent.click(screen.getAllByRole('button', { name: 'Remove' })[1]!);
-    expect(screen.getAllByRole('textbox', { name: 'Dependency step IDs' })[1]).toHaveProperty('value', '');
-    fireEvent.click(screen.getByRole('button', { name: 'Add step' }));
-    expect(screen.getByDisplayValue('step-4')).toBeDefined();
-    fireEvent.click(screen.getByRole('button', { name: 'Save new revision' }));
+    const steps = () => screen.getAllByTestId('sw-workflow-step');
+    const before = steps().length;
+    fireEvent.click(screen.getByTestId('sw-workflow-add'));
+    expect(steps().length).toBe(before + 1);
+    const firstAdded = steps()[before]!;
+    const addedId = firstAdded.querySelector<HTMLInputElement>('input[aria-label*="name"]')!.getAttribute('aria-label')!.match(/Step (.+) name/)![1];
+    fireEvent.change(firstAdded.querySelector<HTMLInputElement>('input[aria-label*="name"]')!, { target: { value: 'Audit pass' } });
+    fireEvent.click(firstAdded.querySelector('button[title="Remove step"]')!);
+    expect(steps().length).toBe(before);
+    fireEvent.click(screen.getByTestId('sw-workflow-add'));
+    const secondAdded = steps()[before]!;
+    const secondId = secondAdded.querySelector<HTMLInputElement>('input[aria-label*="name"]')!.getAttribute('aria-label')!.match(/Step (.+) name/)![1];
+    fireEvent.click(screen.getByTestId('sw-save'));
     await waitFor(() => {
       const request = savePersonalization.mock.calls.at(-1)?.[0] as { definition: PersonalizationDefinition };
       expect(request.definition.kind).toBe('scenario');
       if (request.definition.kind === 'scenario') {
-        expect(request.definition.workflow.map((step) => step.id)).toEqual(['research', 'step-3', 'step-4']);
-        expect(request.definition.workflow[1]?.dependsOn).toEqual([]);
-        expect(request.definition.workflow[2]?.dependsOn).toEqual(['step-3']);
+        const originalIds = request.definition.workflow.slice(0, before).map((step) => step.id);
+        expect(request.definition.workflow).toHaveLength(before + 1);
+        expect(request.definition.workflow[request.definition.workflow.length - 1]?.name).toBe('New step');
+        expect(request.definition.workflow[request.definition.workflow.length - 1]?.dependsOn)
+          .toEqual([request.definition.workflow[request.definition.workflow.length - 2]?.id]);
+        expect(originalIds.length).toBe(before);
+        expect(addedId).toBeTruthy();
+        expect(secondId).toBeTruthy();
       }
     });
   });
@@ -1092,8 +1107,7 @@ describe('PersonalizationCenter', () => {
     } as PersonalizationDefinition;
     definitions.push(custom);
     render(<PersonalizationCenter />);
-    const first = await screen.findByText('Export root');
-    fireEvent.click(first.closest('[data-definition-id]') as HTMLButtonElement);
+    await selectScenarioInWorkbench('Export root');
     fireEvent.click(screen.getByRole('button', { name: 'Export selected configuration' }));
     await waitFor(() => expect(exportPersonalizationBundle).toHaveBeenCalledTimes(1));
     const exportRequest = exportPersonalizationBundle.mock.calls[0]?.[0] as Record<string, unknown>;
@@ -1109,7 +1123,7 @@ describe('PersonalizationCenter', () => {
   it('does not inject a funding preset workflow into a blank scenario library', async () => {
     researchWorkspaceStore.setState({ activeProjectId: 'project-funding' });
     render(<PersonalizationCenter />);
-    await screen.findByText('No scenarios yet. Start by creating one.');
+    await screen.findByText('No scenarios in this view.');
     expect(screen.queryByRole('region', { name: 'Funding application templates' })).toBeNull();
     expect(fundingTemplate).not.toHaveBeenCalled();
   });
@@ -1132,7 +1146,8 @@ describe('PersonalizationCenter', () => {
 
   it('creates a blank custom scenario without silently binding arbitrary definitions', async () => {
     render(<PersonalizationCenter />);
-    fireEvent.click(await screen.findByRole('button', { name: 'New' }));
+    fireEvent.click(await screen.findByTestId('sw-new-scenario'));
+    fireEvent.click(screen.getByTestId('sw-new-menu').querySelectorAll('button')[1]!);
     await waitFor(() => expect(savePersonalization).toHaveBeenCalledTimes(1));
     const request = savePersonalization.mock.calls[0]![0] as { definition: PersonalizationDefinition };
     expect(request.definition.kind).toBe('scenario');
@@ -1175,22 +1190,26 @@ describe('PersonalizationCenter', () => {
     } as PersonalizationDefinition;
     definitions.push(agent, skill, custom);
     render(<PersonalizationCenter />);
-    const card = (await screen.findByText('Readable picker scenario')).closest('[data-definition-id]') as HTMLButtonElement;
-    fireEvent.click(card);
+    await selectScenarioInWorkbench('Readable picker scenario');
+    fireEvent.click(screen.getByTestId('sw-tab-capability'));
 
+    // 绑定以可读名称的勾选项呈现，而不是原始 ID 输入框。
     expect(screen.queryByRole('textbox', { name: 'Agent IDs' })).toBeNull();
     expect(screen.queryByRole('textbox', { name: 'Skill IDs' })).toBeNull();
-    expect(screen.queryByRole('textbox', { name: 'MCP IDs' })).toBeNull();
-    expect(screen.queryByRole('textbox', { name: 'Metis.md rule IDs' })).toBeNull();
+    const agentCheckbox = screen.getAllByTestId('sw-cap-agent')
+      .find((input) => input.closest('label')?.textContent?.includes(agent.name)) as HTMLInputElement;
+    const skillCheckbox = screen.getAllByTestId('sw-cap-skill')
+      .find((input) => input.closest('label')?.textContent?.includes(skill.name)) as HTMLInputElement;
+    fireEvent.click(agentCheckbox);
+    fireEvent.click(skillCheckbox);
 
-    fireEvent.click(document.querySelector(`[data-definition-id="${agent.id}"] input`) as HTMLInputElement);
-    fireEvent.click(document.querySelector(`[data-definition-id="${skill.id}"] input`) as HTMLInputElement);
-    fireEvent.click(screen.getByRole('button', { name: 'Add step' }));
-    const executingAgent = screen.getByRole('combobox', { name: 'Executing agent' }) as HTMLSelectElement;
-    expect(executingAgent.value).toBe(agent.id);
+    fireEvent.click(screen.getByTestId('sw-workflow-add'));
+    const stepAgentSelect = screen.getAllByTestId('sw-workflow-step')[0]!
+      .querySelector('select') as HTMLSelectElement;
+    expect(stepAgentSelect.value).toBe(agent.id);
     expect(screen.getByRole('option', { name: agent.name })).toBeDefined();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Save new revision' }));
+    fireEvent.click(screen.getByTestId('sw-save'));
     await waitFor(() => expect(savePersonalization).toHaveBeenCalledTimes(1));
     const saved = (savePersonalization.mock.calls[0]![0] as { definition: PersonalizationDefinition }).definition;
     expect(saved.kind).toBe('scenario');
@@ -1500,7 +1519,7 @@ describe('PersonalizationCenter', () => {
     render(<PersonalizationCenter />);
     expect(await screen.findByText(/Personalization configurations could not be loaded/u)).toBeDefined();
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
-    expect(await screen.findByText('No scenarios yet. Start by creating one.')).toBeDefined();
+    expect(await screen.findByText('No scenarios in this view.')).toBeDefined();
     expect(screen.queryByText('General research')).toBeNull();
     expect(listPersonalization).toHaveBeenCalledTimes(2);
   });
@@ -1549,8 +1568,9 @@ describe('PersonalizationCenter', () => {
       provenance: { ...source.provenance, origin: 'user', parentId: null, locallyModified: true },
     } as PersonalizationDefinition);
     render(<PersonalizationCenter onActivateScenario={activate} />);
-    const card = (await screen.findByText('My workflow')).closest('.personalization-card') as HTMLElement;
-    fireEvent.click(within(card).getByRole('button', { name: 'Use in conversation' }));
+    await selectScenarioInWorkbench('My workflow');
+    fireEvent.click(screen.getByTestId('sw-use'));
+    fireEvent.click(screen.getByTestId('sw-use-current'));
     await waitFor(() => expect(activate).toHaveBeenCalledWith('user:scenarios/my-workflow'));
     expect(screen.queryByText('Academic monograph')).toBeNull();
   });
@@ -1573,17 +1593,19 @@ describe('PersonalizationCenter', () => {
     definitions.push(agent, emptyScenario, singleAgentScenario);
 
     render(<PersonalizationCenter onActivateScenario={activate} />);
-    const emptyCard = (await screen.findByText('Empty Agent scenario')).closest('.personalization-card') as HTMLElement;
-    const emptyUseButton = within(emptyCard).getByRole('button', { name: 'Use in conversation' });
+    await selectScenarioInWorkbench('Empty Agent scenario');
+    const nameInput = await screen.findByDisplayValue('Empty Agent scenario');
+    expect(nameInput).toBeDefined();
+    fireEvent.click(screen.getByTestId('sw-use'));
+    const emptyUseButton = screen.getByTestId('sw-use-current');
     expect(emptyUseButton).toHaveProperty('disabled', true);
-    expect(within(emptyCard).getByText('Bind at least one Agent before using this scenario in conversation.')).toBeDefined();
-    fireEvent.click(emptyCard.querySelector('[data-definition-id="user:scenarios/empty-agent"]') as HTMLButtonElement);
-    expect(await screen.findByRole('textbox', { name: 'Description' })).toBeDefined();
-    fireEvent.click(emptyUseButton);
+    expect(emptyUseButton.getAttribute('title')).toContain('Bind at least one Agent');
+    fireEvent.click(screen.getByTestId('sw-use'));
     expect(activate).not.toHaveBeenCalled();
 
-    const singleAgentCard = screen.getByText('Single Agent scenario').closest('.personalization-card') as HTMLElement;
-    const singleAgentUseButton = within(singleAgentCard).getByRole('button', { name: 'Use in conversation' });
+    await selectScenarioInWorkbench('Single Agent scenario');
+    fireEvent.click(screen.getByTestId('sw-use'));
+    const singleAgentUseButton = screen.getByTestId('sw-use-current');
     expect(singleAgentUseButton).toHaveProperty('disabled', false);
     fireEvent.click(singleAgentUseButton);
     await waitFor(() => expect(activate).toHaveBeenCalledWith('user:scenarios/single-agent'));
@@ -1628,46 +1650,72 @@ describe('PersonalizationCenter', () => {
     definitions.push(firstAgent, secondAgent, ambiguous, routed);
 
     render(<PersonalizationCenter onActivateScenario={activate} />);
-    const ambiguousCard = (await screen.findByText(ambiguous.name)).closest('.personalization-card') as HTMLElement;
-    expect(within(ambiguousCard).getByRole('button', { name: 'Use in conversation' })).toHaveProperty('disabled', true);
-    expect(within(ambiguousCard).getByText(/Bind exactly one Agent, or add workflow steps/u)).toBeDefined();
+    await selectScenarioInWorkbench(ambiguous.name);
+    fireEvent.click(screen.getByTestId('sw-use'));
+    const ambiguousUse = screen.getByTestId('sw-use-current');
+    expect(ambiguousUse).toHaveProperty('disabled', true);
+    expect(ambiguousUse.getAttribute('title')).toMatch(/Bind exactly one Agent, or add workflow steps/u);
+    fireEvent.click(screen.getByTestId('sw-use'));
+    expect(activate).not.toHaveBeenCalledWith(ambiguous.id);
 
-    const routedCard = screen.getByText(routed.name).closest('.personalization-card') as HTMLElement;
-    const routedUse = within(routedCard).getByRole('button', { name: 'Use in conversation' });
+    await selectScenarioInWorkbench(routed.name);
+    fireEvent.click(screen.getByTestId('sw-use'));
+    const routedUse = screen.getByTestId('sw-use-current');
     expect(routedUse).toHaveProperty('disabled', false);
     fireEvent.click(routedUse);
     await waitFor(() => expect(activate).toHaveBeenCalledWith(routed.id));
-    expect(activate).not.toHaveBeenCalledWith(ambiguous.id);
   });
 
-  it('AI-assisted creation generates agents and a scenario, then selects it in the editor', async () => {
-    aiGenerateScenario.mockResolvedValue({
+  it('AI-assisted creation generates agents and a scenario, then selects it in the workbench', async () => {
+    analyzeScenarioMaterials.mockResolvedValue({
       ok: true,
-      scenario: {
-        name: 'AI Archive Scenario',
-        description: 'Analyze local archives and build a claim network.',
-        triggerPhrases: ['archive'],
-        deliverable: 'A review report on the archive evidence chain',
+      result: {
+        summary: {
+          deliverableType: 'survey_report',
+          deliverableTypeLabel: '调研报告',
+          structureTitles: ['题目', '摘要', '1 引言'],
+          hardRuleCount: 2,
+          writingPrincipleCount: 3,
+          methods: ['档案分析'],
+          adjustable: ['主体章节'],
+          recommended: { agents: 1, skills: 2, mcps: 0, rules: 1 },
+        },
+        materials: [],
+        draft: {
+          name: 'AI Archive Scenario',
+          description: 'Analyze local archives and build a claim network.',
+          triggerPhrases: ['archive'],
+          deliverableType: 'survey_report',
+          deliverableTypeLabel: '调研报告',
+          sections: [
+            { id: 'title', title: '题目', kind: 'title', status: 'locked' },
+            { id: 'c1', title: '1 引言', kind: 'chapter', status: 'required', requirements: ['研究缺口'] },
+          ],
+          structurePolicy: { defaultSections: 3, suggestedMin: 3, suggestedMax: 5 },
+          writingRules: ['引用必须真实可查'],
+          agents: [{
+            name: 'Archivist',
+            role: 'Evidence extraction',
+            systemPrompt: 'Extract evidence from archives and mark source boundaries.',
+            skillIds: [],
+            toolIds: ['list_sources', 'extract_evidence'],
+            mcpIds: [],
+            maxTurns: 12,
+          }],
+          workflow: [
+            { name: 'List catalogs', description: 'List archive catalogs.', agent: 'Archivist', skillIds: [], toolIds: ['list_sources'], mcpIds: [], maxTurns: 8 },
+            { name: 'Extract evidence', description: 'Extract evidence excerpts.', agent: 'Archivist', skillIds: [], toolIds: ['extract_evidence'], mcpIds: [], maxTurns: 8 },
+          ],
+          rulesMarkdown: '',
+        },
       },
-      agents: [{
-        name: 'Archivist',
-        role: 'Evidence extraction',
-        systemPrompt: 'Extract evidence from archives and mark source boundaries.',
-        skillIds: [],
-        toolIds: ['list_sources', 'extract_evidence'],
-        mcpIds: [],
-        maxTurns: 12,
-      }],
-      workflow: [
-        { name: 'List catalogs', description: 'List archive catalogs.', agent: 'Archivist', skillIds: [], toolIds: ['list_sources'], mcpIds: [], maxTurns: 8 },
-        { name: 'Extract evidence', description: 'Extract evidence excerpts.', agent: 'Archivist', skillIds: [], toolIds: ['extract_evidence'], mcpIds: [], maxTurns: 8 },
-      ],
     });
     render(<PersonalizationCenter />);
-    fireEvent.click(await screen.findByRole('button', { name: 'AI-assisted creation' }));
-    const input = await screen.findByTestId('ai-create-input');
-    fireEvent.change(input, { target: { value: 'Analyze local historical archives and build a claim network.' } });
-    fireEvent.click(screen.getByTestId('ai-create-submit'));
+    fireEvent.click(await screen.findByTestId('sw-ai-create'));
+    fireEvent.change(await screen.findByTestId('scai-description'), { target: { value: 'Analyze local historical archives and build a claim network.' } });
+    fireEvent.click(screen.getByTestId('scai-analyze'));
+    expect(await screen.findByTestId('scai-summary')).toBeDefined();
+    fireEvent.click(screen.getByTestId('scai-generate'));
     await waitFor(() => expect(savePersonalization.mock.calls.length).toBeGreaterThanOrEqual(2));
 
     const calls = savePersonalization.mock.calls.map(
@@ -1683,13 +1731,13 @@ describe('PersonalizationCenter', () => {
     expect(scenario.workflow).toHaveLength(2);
     expect(scenario.workflow[0]!.agentId).toBe(savedAgents[0]!.id);
     expect(scenario.workflow[1]!.dependsOn).toContain(scenario.workflow[0]!.id);
-    expect(scenario.output.plan?.primaryDeliverable).toBe('A review report on the archive evidence chain');
+    // 成果结构与写作规范进入场景定义（场景真正驱动执行的数据基础）。
+    expect(scenario.deliverable?.type).toBe('survey_report');
+    expect(scenario.deliverable?.sections?.[1]?.requirements).toContain('研究缺口');
+    expect(scenario.writingRules).toContain('引用必须真实可查');
 
-    // 生成后选中新场景，编辑器展示完整配置供用户修改。
-    expect(await screen.findByRole('heading', { name: 'AI Archive Scenario' })).toBeDefined();
-    expect(screen.getAllByText('Archivist').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText(/List catalogs/u).length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText(/Extract evidence/u).length).toBeGreaterThanOrEqual(1);
+    // 生成后选中新场景，工作台直接展示。
+    expect(await screen.findByDisplayValue('AI Archive Scenario')).toBeDefined();
   });
 
   it('scenario editor no longer shows capability or artifact format fields', async () => {
@@ -1697,8 +1745,8 @@ describe('PersonalizationCenter', () => {
     const custom = editableUserDefinition(source, 'user:scenarios/cleanup', 'Cleanup scenario');
     definitions.push(custom);
     render(<PersonalizationCenter />);
-    fireEvent.click((await screen.findByText('Cleanup scenario')).closest('[data-definition-id]') as HTMLButtonElement);
-    expect(await screen.findByRole('heading', { name: 'Cleanup scenario' })).toBeDefined();
+    await selectScenarioInWorkbench('Cleanup scenario');
+    expect(await screen.findByDisplayValue('Cleanup scenario')).toBeDefined();
     expect(screen.queryByText('Scenario capability')).toBeNull();
     expect(screen.queryByText('Artifact format')).toBeNull();
   });
@@ -1716,15 +1764,18 @@ describe('PersonalizationCenter', () => {
     definitions.push(agent);
 
     render(<PersonalizationCenter />);
-    fireEvent.click((await screen.findByText('Gating scenario')).closest('[data-definition-id]') as HTMLButtonElement);
-    const addStep = await screen.findByRole('button', { name: 'Add step' });
+    await selectScenarioInWorkbench('Gating scenario');
+    fireEvent.click(screen.getByTestId('sw-tab-capability'));
+    const addStep = await screen.findByTestId('sw-workflow-add');
     expect(addStep).toHaveProperty('disabled', true);
 
     // 勾选智能体后步骤添加可用。
-    fireEvent.click(document.querySelector(`[data-definition-id="${agent.id}"]`) as HTMLElement);
-    await waitFor(() => expect(addStep).toHaveProperty('disabled', false));
-    fireEvent.click(addStep);
-    expect(screen.getByText('1. Step 1')).toBeDefined();
+    const agentCheckbox = screen.getAllByTestId('sw-cap-agent')
+      .find((input) => input.closest('label')?.textContent?.includes(agent.name)) as HTMLInputElement;
+    fireEvent.click(agentCheckbox);
+    await waitFor(() => expect(screen.getByTestId('sw-workflow-add')).toHaveProperty('disabled', false));
+    fireEvent.click(screen.getByTestId('sw-workflow-add'));
+    expect(screen.getAllByTestId('sw-workflow-step').length).toBe(1);
   });
 
   it('scenario editor offers one simplified deliverable field', async () => {
@@ -1732,55 +1783,68 @@ describe('PersonalizationCenter', () => {
     const custom = editableUserDefinition(source, 'user:scenarios/deliverable', 'Deliverable scenario');
     definitions.push(custom);
     render(<PersonalizationCenter />);
-    fireEvent.click((await screen.findByText('Deliverable scenario')).closest('[data-definition-id]') as HTMLButtonElement);
-    fireEvent.click(await screen.findByText('Final deliverable (optional)'));
-    const textarea = await screen.findByRole('textbox', { name: 'Deliverable description' });
-    fireEvent.change(textarea, { target: { value: 'A review report' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save new revision' }));
+    await selectScenarioInWorkbench('Deliverable scenario');
+    fireEvent.click(screen.getByTestId('sw-tab-capability'));
+    const field = await screen.findByRole('textbox', { name: 'Primary deliverable' });
+    fireEvent.change(field, { target: { value: 'A review report' } });
+    fireEvent.click(screen.getByTestId('sw-save'));
     await waitFor(() => {
       const lastCall = savePersonalization.mock.calls.at(-1)![0] as { definition: PersonalizationDefinition };
       expect(lastCall.definition.output.plan?.primaryDeliverable).toBe('A review report');
     });
   });
 
-  it('AI-assisted creation surfaces a friendly error when generation fails', async () => {
-    aiGenerateScenario.mockResolvedValue({ ok: false, code: 'parse_failed' });
+  it('AI-assisted creation surfaces a friendly error when analysis fails', async () => {
+    analyzeScenarioMaterials.mockResolvedValue({ ok: false, code: 'parse_failed' });
     render(<PersonalizationCenter />);
-    fireEvent.click(await screen.findByRole('button', { name: 'AI-assisted creation' }));
-    const input = await screen.findByTestId('ai-create-input');
-    fireEvent.change(input, { target: { value: 'Analyze archives' } });
-    fireEvent.click(screen.getByTestId('ai-create-submit'));
-    const status = await screen.findByTestId('ai-create-status');
+    fireEvent.click(await screen.findByTestId('sw-ai-create'));
+    fireEvent.change(await screen.findByTestId('scai-description'), { target: { value: 'Analyze archives' } });
+    fireEvent.click(screen.getByTestId('scai-analyze'));
+    const status = await screen.findByTestId('scai-status');
     await waitFor(() => expect(status.textContent).toMatch(/parse_failed/u));
   });
 
-  it('AI-assisted creation also saves the scenario memory doc and paper structure', async () => {
-    const structureSave = vi.fn().mockResolvedValue({ ok: true });
-    Object.assign(window.metis, { structureSave });
-    aiGenerateScenario.mockResolvedValue({
+  it('AI-assisted creation also saves the scenario memory doc and carries the deliverable structure', async () => {
+    analyzeScenarioMaterials.mockResolvedValue({
       ok: true,
-      scenario: {
-        name: 'Archive Memory Scenario',
-        description: 'Analyze archives.',
-        triggerPhrases: ['archive'],
-        deliverable: 'A review report',
+      result: {
+        summary: {
+          deliverableType: 'theory_paper',
+          deliverableTypeLabel: '纯理论论文',
+          structureTitles: ['题目', '摘要', '关键词'],
+          hardRuleCount: 1,
+          writingPrincipleCount: 2,
+          methods: ['概念分析'],
+          adjustable: ['主体章节'],
+          recommended: { agents: 1, skills: 0, mcps: 0, rules: 1 },
+        },
+        materials: [],
+        draft: {
+          name: 'Archive Memory Scenario',
+          description: 'Analyze archives.',
+          triggerPhrases: ['archive'],
+          deliverableType: 'theory_paper',
+          deliverableTypeLabel: '纯理论论文',
+          sections: [
+            { id: 'title', title: '题目', kind: 'title', status: 'locked' },
+            { id: 'abs', title: '摘要', kind: 'abstract', status: 'required' },
+            { id: 'kw', title: '关键词', kind: 'keywords', status: 'required' },
+          ],
+          writingRules: [],
+          agents: [{
+            name: 'Archivist', role: 'Extraction', systemPrompt: 'Extract evidence.', skillIds: [], toolIds: [], mcpIds: [], maxTurns: 12,
+          }],
+          workflow: [{ name: 'List', description: 'List catalogs.', agent: 'Archivist', skillIds: [], toolIds: [], mcpIds: [], maxTurns: 8 }],
+          rulesMarkdown: '## 研究边界\n只使用地方档案作为证据来源。',
+        },
       },
-      agents: [{
-        name: 'Archivist', role: 'Extraction', systemPrompt: 'Extract evidence.', skillIds: [], toolIds: [], mcpIds: [], maxTurns: 12,
-      }],
-      workflow: [{ name: 'List', description: 'List catalogs.', agent: 'Archivist', skillIds: [], toolIds: [], mcpIds: [], maxTurns: 8 }],
-      rules: '## 研究边界\n只使用地方档案作为证据来源。',
-      paperStructure: [
-        { title: '引言', instruction: '交代研究问题与档案背景。' },
-        { title: '制度演变', instruction: '按时间梳理制度变化并引用档案。' },
-        { title: '结论', instruction: '总结研究发现与边界。' },
-      ],
     });
     render(<PersonalizationCenter />);
-    fireEvent.click(await screen.findByRole('button', { name: 'AI-assisted creation' }));
-    const input = await screen.findByTestId('ai-create-input');
-    fireEvent.change(input, { target: { value: 'Archive memory analysis scenario' } });
-    fireEvent.click(screen.getByTestId('ai-create-submit'));
+    fireEvent.click(await screen.findByTestId('sw-ai-create'));
+    fireEvent.change(await screen.findByTestId('scai-description'), { target: { value: 'Archive memory analysis scenario' } });
+    fireEvent.click(screen.getByTestId('scai-analyze'));
+    await screen.findByTestId('scai-summary');
+    fireEvent.click(screen.getByTestId('scai-generate'));
 
     const savedDefinitions = () => savePersonalization.mock.calls.map(
       (call) => (call[0] as { definition: PersonalizationDefinition }).definition,
@@ -1798,16 +1862,12 @@ describe('PersonalizationCenter', () => {
       scopeId: string | null;
       markdown: string;
     };
-    // 场景记忆文档绑定到场景。
     expect(rules.scope).toBe('scenario');
-    expect(rules.scopeId).toBe(savedScenarios[0]!.id);
-    expect(rules.markdown).toContain('研究边界');
+    expect(rules.scopeId).toBe(scenario.id);
+    expect(rules.markdown).toContain('只使用地方档案作为证据来源');
     expect(scenario.rulesIds).toContain(rules.id);
-    // 论文结构自动设计：引言 + 主体 + 结论。
-    await waitFor(() => expect(structureSave).toHaveBeenCalledTimes(1));
-    const structure = structureSave.mock.calls[0]![0] as { name: string; sections: Array<{ title: string }> };
-    expect(structure.name).toBe('Archive Memory Scenario · 论文结构');
-    expect(structure.sections.map((section) => section.title)).toEqual(['引言', '制度演变', '结论']);
+    // 论文结构不再另存为独立模板：作为成果结构进入场景本身（供对话与自主科研直接执行）。
+    expect(scenario.deliverable?.sections?.map((section) => section.title)).toEqual(['题目', '摘要', '关键词']);
   });
 
   it('template recognition parses a pasted template into editable sections and saves it', async () => {
