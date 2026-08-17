@@ -64,8 +64,8 @@ describe('formatScenarioExecutionContext', () => {
     expect(text).toContain('成果类型：实证论文');
     expect(text).toContain('总篇幅：10000-12000 字');
     expect(text).toContain('默认 5，建议 4-7 章');
-    expect(text).toContain('🔒 题目（锁定）');
-    expect(text).toContain('● 3 研究设计（必选）');
+    expect(text).toContain('[锁定] 题目（锁定）');
+    expect(text).toContain('[必选] 3 研究设计（必选）');
     expect(text).toContain('必须包含：数据来源；变量定义');
     expect(text).toContain('禁止：堆砌不相关检验');
     expect(text).toContain('方法：双重差分');

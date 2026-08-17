@@ -7,6 +7,7 @@
  * → 场景 Metis.md 绑定。
  */
 import { useMemo, useRef, useState } from 'react';
+import { Sparkles, X } from 'lucide-react';
 import type { AgentDefinition, DeliverableSpec, MetisRulesDefinition, PersonalizationDefinition, ScenarioDefinition } from '../../engine/runtime/PersonalizationRuntimeContract.js';
 import { availableUserId, createDefinition } from './personalizationLib.js';
 
@@ -260,8 +261,8 @@ export default function ScenarioAiCreateDialog({
     <div className="scai-overlay" data-testid="scenario-ai-create" role="dialog" aria-modal="true" aria-label={zh ? 'AI 创建场景' : 'AI scenario creation'}>
       <div className="scai-dialog">
         <header className="scai-dialog__head">
-          <h2>✨ {zh ? 'AI 创建场景' : 'AI scenario creation'}</h2>
-          <button type="button" className="btn-secondary btn-sm" onClick={onClose} aria-label={zh ? '关闭' : 'Close'}>✕</button>
+          <h2><Sparkles size={16} aria-hidden="true" /> {zh ? 'AI 创建场景' : 'AI scenario creation'}</h2>
+          <button type="button" className="btn-secondary btn-sm" onClick={onClose} aria-label={zh ? '关闭' : 'Close'}><X size={14} aria-hidden="true" /></button>
         </header>
 
         {step !== 'summary' && (

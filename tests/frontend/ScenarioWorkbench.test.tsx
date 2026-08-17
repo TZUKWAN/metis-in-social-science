@@ -62,6 +62,7 @@ function makeHarness(overrides: Partial<Parameters<typeof import('../../src/pers
   const save = vi.fn().mockResolvedValue({ ok: true, definition: scenario });
   const reload = vi.fn().mockResolvedValue(undefined);
   const onActivateScenario = vi.fn();
+  const onDeleteScenario = vi.fn();
   const props = {
     zh: true,
     definitions: [scenario as PersonalizationDefinition],
@@ -70,11 +71,12 @@ function makeHarness(overrides: Partial<Parameters<typeof import('../../src/pers
     save,
     createScenario: vi.fn(),
     onActivateScenario,
+    onDeleteScenario,
     reload,
     onOpenAiCreate: vi.fn(),
     ...overrides,
   };
-  return { props, save, reload, onActivateScenario, scenario };
+  return { props, save, reload, onActivateScenario, onDeleteScenario, scenario };
 }
 
 describe('ScenarioWorkbench', () => {
@@ -173,5 +175,39 @@ describe('ScenarioWorkbench', () => {
     expect(screen.getByTestId('sw-ai-create')).toBeTruthy();
     expect(screen.getByTestId('sw-new-scenario')).toBeTruthy();
     expect(screen.getAllByTestId('sw-scenario-item').length).toBe(1);
+  });
+
+  it('删除场景：确认后调用 onDeleteScenario 并清选中', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const { props, onDeleteScenario, scenario } = makeHarness();
+    const { default: ScenarioWorkbench } = await import('../../src/personalization/ScenarioWorkbench.js');
+    render(<ScenarioWorkbench {...props} />);
+    // 头部删除按钮（选中场景时渲染）
+    fireEvent.click(screen.getByTestId('sw-delete'));
+    expect(onDeleteScenario).toHaveBeenCalledWith(scenario.id);
+    expect(props.onSelect).toHaveBeenCalledWith(null);
+    vi.restoreAllMocks();
+  });
+
+  it('删除场景：取消确认则不删除', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const { props, onDeleteScenario } = makeHarness();
+    const { default: ScenarioWorkbench } = await import('../../src/personalization/ScenarioWorkbench.js');
+    render(<ScenarioWorkbench {...props} />);
+    fireEvent.click(screen.getByTestId('sw-delete'));
+    expect(onDeleteScenario).not.toHaveBeenCalled();
+    vi.restoreAllMocks();
+  });
+
+  it('左栏场景项有删除按钮', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const { props, onDeleteScenario, scenario } = makeHarness();
+    const { default: ScenarioWorkbench } = await import('../../src/personalization/ScenarioWorkbench.js');
+    render(<ScenarioWorkbench {...props} />);
+    const delButtons = screen.getAllByTestId('sw-scenario-delete');
+    expect(delButtons.length).toBe(1);
+    fireEvent.click(delButtons[0]!);
+    expect(onDeleteScenario).toHaveBeenCalledWith(scenario.id);
+    vi.restoreAllMocks();
   });
 });

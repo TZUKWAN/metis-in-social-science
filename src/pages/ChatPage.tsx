@@ -2120,7 +2120,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
           const projectId = researchWorkspaceStore.getState().activeProjectId ?? undefined;
           const result = await window.metis?.autonomousStart?.({ goal: arg, projectId });
           if (result?.ok) {
-            reply(`🚀 已启动自主科研（目标：${arg}${projectId ? ` · 项目：${projectId}` : ''}）。请打开顶部「自主科研」面板查看 idea→实验→分析→论文 的实时进度，或用 /stop 中断。`);
+            reply(`已启动自主科研（目标：${arg}${projectId ? ` · 项目：${projectId}` : ''}）。请打开顶部「自主科研」面板查看 idea→实验→分析→论文 的实时进度，或用 /stop 中断。`);
           } else {
             reply(`启动失败：${result?.error ?? '未知错误'}。可能已有任务在运行，或引擎未就绪。`);
           }

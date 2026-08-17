@@ -2065,6 +2065,7 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
           }}
           createScenario={() => void create()}
           onActivateScenario={(id) => onActivateScenario?.(id)}
+          onDeleteScenario={(id) => { const def = userDefinitions.find((d) => d.id === id); if (def) void archive(def); }}
           reload={load}
           onOpenAiCreate={() => setScenarioAiOpen(true)}
           initialTab={scenarioWorkbenchTab}

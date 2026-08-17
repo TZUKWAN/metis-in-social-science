@@ -869,7 +869,7 @@ export default function AutonomousResearchPage(): ReactNode {
                   data-status={status}
                 >
                   <span className={`autonomous-pipeline-icon autonomous-pipeline-icon--${status}`} aria-hidden="true">
-                    {status === 'done' ? '✓' : status === 'failed' ? '✕' : status === 'running' ? '◉' : '○'}
+                    {status === 'done' ? '已完成' : status === 'failed' ? '失败' : status === 'running' ? '进行中' : '待开始'}
                   </span>
                   <span className="autonomous-pipeline-name">{item.name}</span>
                   <span className="autonomous-pipeline-progress">

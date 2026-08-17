@@ -17,7 +17,7 @@ const STATUS_LABEL: Record<string, string> = {
 
 function sectionLine(section: Section, depth: number): string[] {
   const indent = '  '.repeat(depth);
-  const marker = section.status === 'locked' ? '🔒' : section.status === 'conditional' ? '◇' : '●';
+  const marker = section.status === 'locked' ? '[锁定]' : section.status === 'conditional' ? '[条件]' : section.status === 'optional' ? '[可选]' : '[必选]';
   const lines = [`${indent}${marker} ${section.title}（${STATUS_LABEL[section.status] ?? section.status}）`];
   if (section.status === 'conditional' && section.condition) lines.push(`${indent}  条件：${section.condition}`);
   if (section.purpose) lines.push(`${indent}  作用：${section.purpose}`);

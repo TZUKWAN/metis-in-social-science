@@ -134,6 +134,20 @@
   font-size: 14px;
 }
 .sw-library__fav.on { color: #c99700; }
+.sw-library__fav svg, .sw-library__del svg { display: block; margin: 0 auto; }
+.sw-library__fav.on svg { fill: #c99700; }
+.sw-library__del {
+  width: 26px;
+  border: none;
+  background: none;
+  color: var(--text-muted, #9aa4b2);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+}
+.sw-library__del:hover { color: #b3261e; background: rgba(179, 38, 30, 0.08); }
 .sw-library__empty, .sw-empty {
   color: var(--text-muted, #6b7686);
   font-size: 12.5px;
@@ -294,7 +308,8 @@
   text-align: left;
   font-size: 13px;
 }
-.sw-tree__icon { width: 18px; text-align: center; color: var(--accent, #1f3a5f); }
+.sw-tree__icon { width: 18px; display: inline-flex; align-items: center; justify-content: center; color: var(--accent, #1f3a5f); }
+.sw-tree__icon svg { display: block; }
 .sw-tree__row.status-optional .sw-tree__icon,
 .sw-tree__row.status-required .sw-tree__icon { color: var(--text-muted, #6b7686); }
 .sw-tree__row.status-conditional .sw-tree__icon { color: #8a6d1f; }
@@ -311,7 +326,9 @@
   width: 22px; height: 22px;
   border: none; background: none; cursor: pointer;
   border-radius: 3px; color: var(--text-muted, #6b7686); font-size: 12px;
+  display: inline-flex; align-items: center; justify-content: center;
 }
+.sw-tree__ops button svg { display: block; }
 .sw-tree__ops button:hover:not(:disabled) { background: rgba(31, 58, 95, 0.08); color: var(--accent, #1f3a5f); }
 .sw-tree__ops button:disabled { opacity: 0.3; cursor: not-allowed; }
 .sw-tree__children { list-style: none; margin: 0; padding-left: 22px; border-left: 1px dashed var(--border-light); }

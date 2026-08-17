@@ -6,6 +6,9 @@
  * 全部编辑落到 ScenarioDefinition 草稿，保存走版本化 savePersonalization。
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  ArrowDown, ArrowUp, ChevronDown, Circle, Diamond, Lock, Plus, Sparkles, Star, Trash2, Unlock, X,
+} from 'lucide-react';
 import type {
   DeliverableSection,
   PersonalizationDefinition,
@@ -45,12 +48,17 @@ const SECTION_KIND_LABELS: Record<string, string> = {
   grant_column: '申报栏目', attachment: '附件', references: '参考文献', other: '其他',
 };
 
-const STATUS_LABELS: Record<string, { zh: string; en: string; icon: string }> = {
-  locked: { zh: '锁定', en: 'Locked', icon: '🔒' },
-  required: { zh: '必选', en: 'Required', icon: '●' },
-  optional: { zh: '可选', en: 'Optional', icon: '●' },
-  conditional: { zh: '条件', en: 'Conditional', icon: '◇' },
+const STATUS_LABELS: Record<string, { zh: string; en: string; Icon: React.ComponentType<{ size?: number | string }> }> = {
+  locked: { zh: '锁定', en: 'Locked', Icon: Lock },
+  required: { zh: '必选', en: 'Required', Icon: Circle },
+  optional: { zh: '可选', en: 'Optional', Icon: Circle },
+  conditional: { zh: '条件', en: 'Conditional', Icon: Diamond },
 };
+
+function StatusIcon({ status }: { status: string }) {
+  const Icon = STATUS_LABELS[status]?.Icon;
+  return Icon ? <Icon size={12} aria-hidden="true" /> : null;
+}
 
 const RECENT_KEY = 'metis-scenario-recent:v1';
 const FAVORITES_KEY = 'metis-scenario-favorites:v1';
@@ -104,7 +112,7 @@ function nextStatus(status: Section['status']): Section['status'] {
 }
 
 export default function ScenarioWorkbench({
-  zh, definitions, selectedId, onSelect, save, createScenario, onActivateScenario, reload, onOpenAiCreate, initialTab, children,
+  zh, definitions, selectedId, onSelect, save, createScenario, onActivateScenario, onDeleteScenario, reload, onOpenAiCreate, initialTab, children,
 }: {
   zh: boolean;
   definitions: PersonalizationDefinition[];
@@ -113,6 +121,7 @@ export default function ScenarioWorkbench({
   save(definition: PersonalizationDefinition, expectedRevision: number): Promise<{ ok: boolean; code?: string; definition?: PersonalizationDefinition }>;
   createScenario(): void;
   onActivateScenario(id: string): void;
+  onDeleteScenario(id: string): Promise<void> | void;
   reload(): Promise<void>;
   onOpenAiCreate(): void;
   initialTab?: WorkbenchTab;
@@ -162,6 +171,18 @@ export default function ScenarioWorkbench({
     try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(next)); } catch { /* 忽略 */ }
     setFavoritesVersion((version) => version + 1);
     onSelect(id);
+  };
+
+  // 删除：用户场景走 archive 软删除（内置原版 factory_protected，可删除的 workbench 定义均为用户定义）。
+  const requestDeleteScenario = (scenario: ScenarioDefinition) => {
+    const confirmed = typeof window !== 'undefined' && typeof window.confirm === 'function'
+      ? window.confirm(zh
+          ? '删除场景「' + scenario.name + '」？该场景将移入归档，列表中不再显示；引用它的项目/规则不受影响。'
+          : 'Delete scenario "' + scenario.name + '"? It will be archived and hidden from the library; referencing projects/rules are unaffected.')
+      : true;
+    if (!confirmed) return;
+    if (selectedId === scenario.id) onSelect(null);
+    void onDeleteScenario(scenario.id);
   };
 
   const persistDraft = useCallback(async () => {
@@ -470,18 +491,18 @@ export default function ScenarioWorkbench({
     <li key={section.id} className={`sw-tree__row depth-${Math.min(depth, 3)} ${selectedSectionId === section.id ? 'selected' : ''} status-${section.status}`}>
       <div className="sw-tree__line">
         <button type="button" className="sw-tree__select" onClick={() => { setSelectedSectionId(section.id); setTab('structure'); }} data-testid="sw-tree-row">
-          <span className="sw-tree__icon" aria-label={STATUS_LABELS[section.status]?.[zh ? 'zh' : 'en']}>{STATUS_LABELS[section.status]?.icon ?? '●'}</span>
+          <span className="sw-tree__icon" aria-label={STATUS_LABELS[section.status]?.[zh ? 'zh' : 'en']}><StatusIcon status={section.status} /></span>
           <span className="sw-tree__title">{section.title}</span>
           <span className="sw-tree__kind">{SECTION_KIND_LABELS[section.kind] ?? section.kind}</span>
           {section.children && section.children.length > 0 && <span className="sw-tree__count">{section.children.length}</span>}
         </button>
         <span className="sw-tree__ops">
-          <button type="button" title={zh ? '上移' : 'Move up'} disabled={depth === 0 && false} onClick={() => moveSection(section.id, -1)}>↑</button>
-          <button type="button" title={zh ? '下移' : 'Move down'} onClick={() => moveSection(section.id, 1)}>↓</button>
-          <button type="button" title={zh ? '加子部分' : 'Add child'} onClick={() => addSection(section.id)}>＋</button>
-          <button type="button" title={zh ? (section.status === 'locked' ? '锁定（不可切换）' : '切换状态：必选/可选/条件') : 'Cycle status'} disabled={section.status === 'locked'} onClick={() => cycleSectionStatus(section.id)}>{STATUS_LABELS[section.status]?.icon}</button>
-          <button type="button" title={zh ? '锁定/解锁' : 'Lock/unlock'} onClick={() => updateSection(section.id, { status: section.status === 'locked' ? 'required' : 'locked' })}>{section.status === 'locked' ? '🔓' : '🔒'}</button>
-          <button type="button" title={zh ? '删除（锁定不可删）' : 'Remove'} disabled={section.status === 'locked'} onClick={() => removeSection(section.id)}>✕</button>
+          <button type="button" title={zh ? '上移' : 'Move up'} disabled={depth === 0 && false} onClick={() => moveSection(section.id, -1)}><ArrowUp size={12} aria-hidden="true" /></button>
+          <button type="button" title={zh ? '下移' : 'Move down'} onClick={() => moveSection(section.id, 1)}><ArrowDown size={12} aria-hidden="true" /></button>
+          <button type="button" title={zh ? '加子部分' : 'Add child'} onClick={() => addSection(section.id)}><Plus size={12} aria-hidden="true" /></button>
+          <button type="button" title={zh ? (section.status === 'locked' ? '锁定（不可切换）' : '切换状态：必选/可选/条件') : 'Cycle status'} disabled={section.status === 'locked'} onClick={() => cycleSectionStatus(section.id)}><StatusIcon status={section.status} /></button>
+          <button type="button" title={zh ? '锁定/解锁' : 'Lock/unlock'} onClick={() => updateSection(section.id, { status: section.status === 'locked' ? 'required' : 'locked' })}>{section.status === 'locked' ? <Unlock size={12} aria-hidden="true" /> : <Lock size={12} aria-hidden="true" />}</button>
+          <button type="button" title={zh ? '删除（锁定不可删）' : 'Remove'} disabled={section.status === 'locked'} onClick={() => removeSection(section.id)}><X size={12} aria-hidden="true" /></button>
         </span>
       </div>
       {section.children && section.children.length > 0 && (
@@ -510,7 +531,7 @@ export default function ScenarioWorkbench({
           <h4>{zh ? '成果结构' : 'Structure'}</h4>
           <ul>
             {(draft.deliverable?.sections ?? []).slice(0, 8).map((section) => (
-              <li key={section.id}><span>{STATUS_LABELS[section.status]?.icon}</span>{section.title}</li>
+              <li key={section.id}><span><StatusIcon status={section.status} /></span>{section.title}</li>
             ))}
             {(draft.deliverable?.sections?.length ?? 0) === 0 && <li className="sw-card__empty">{zh ? '尚未定义结构' : 'No structure yet'}</li>}
           </ul>
@@ -567,7 +588,7 @@ export default function ScenarioWorkbench({
     <div className="sw-structure" data-testid="sw-structure">
       <div className="sw-structure__toolbar">
         <button type="button" className="btn-primary btn-sm" onClick={() => addSection(null)} data-testid="sw-add-section">{zh ? '＋ 新增部分' : '＋ Add section'}</button>
-        <span className="sw-structure__hint">{zh ? '🔒 锁定 · ● 必选 · ◇ 条件（点击行在右侧编辑）' : '🔒 locked · ● required · ◇ conditional'}</span>
+        <span className="sw-structure__hint">{zh ? '锁定 · 必选 · 可选 · 条件（点击行在右侧编辑）' : 'Locked · Required · Optional · Conditional (click a row to edit on the right)'}</span>
       </div>
       <ul className="sw-tree" data-testid="sw-structure-tree">
         {(draft.deliverable?.sections ?? []).map((section) => sectionRow(section, 0))}
@@ -850,9 +871,9 @@ export default function ScenarioWorkbench({
                   ))}
                 </select>
                 <span className="sw-cap__ops">
-                  <button type="button" title={zh ? '上移' : 'Move up'} onClick={() => moveWorkflowStep(step.id, -1)}>↑</button>
-                  <button type="button" title={zh ? '下移' : 'Move down'} onClick={() => moveWorkflowStep(step.id, 1)}>↓</button>
-                  <button type="button" title={zh ? '删除步骤' : 'Remove step'} onClick={() => removeWorkflowStep(step.id)}>✕</button>
+                  <button type="button" title={zh ? '上移' : 'Move up'} onClick={() => moveWorkflowStep(step.id, -1)}><ArrowUp size={12} aria-hidden="true" /></button>
+                  <button type="button" title={zh ? '下移' : 'Move down'} onClick={() => moveWorkflowStep(step.id, 1)}><ArrowDown size={12} aria-hidden="true" /></button>
+                  <button type="button" title={zh ? '删除步骤' : 'Remove step'} onClick={() => removeWorkflowStep(step.id)}><X size={12} aria-hidden="true" /></button>
                 </span>
               </div>
               <input
@@ -1072,10 +1093,10 @@ export default function ScenarioWorkbench({
       <aside className="sw-library">
         <div className="sw-library__actions">
           <button type="button" className="btn-primary" onClick={() => { setNewMenuOpen((open) => !open); }} data-testid="sw-new-scenario">{zh ? '＋ 新建场景' : '＋ New'}</button>
-          <button type="button" className="sw-library__ai" onClick={onOpenAiCreate} data-testid="sw-ai-create">✨ {zh ? 'AI 创建场景' : 'AI create'}</button>
+          <button type="button" className="sw-library__ai" onClick={onOpenAiCreate} data-testid="sw-ai-create"><Sparkles size={14} aria-hidden="true" /> {zh ? 'AI 创建场景' : 'AI create'}</button>
           {newMenuOpen && (
             <div className="sw-newmenu" role="menu" data-testid="sw-new-menu">
-              <button type="button" onClick={() => { setNewMenuOpen(false); onOpenAiCreate(); }}>✨ {zh ? 'AI 创建（推荐）' : 'AI create (recommended)'}</button>
+              <button type="button" onClick={() => { setNewMenuOpen(false); onOpenAiCreate(); }}><Sparkles size={13} aria-hidden="true" /> {zh ? 'AI 创建（推荐）' : 'AI create (recommended)'}</button>
               <button type="button" onClick={() => { setNewMenuOpen(false); createScenario(); }}>{zh ? '手动创建' : 'Manual create'}</button>
             </div>
           )}
@@ -1106,7 +1127,8 @@ export default function ScenarioWorkbench({
                     {scenario.enabled ? (zh ? '已启用' : 'Enabled') : (zh ? '已停用' : 'Disabled')}
                   </span>
                 </button>
-                <button type="button" className={`sw-library__fav ${favorites.includes(scenario.id) ? 'on' : ''}`} onClick={() => toggleFavorite(scenario.id)} aria-label={zh ? '收藏' : 'Favorite'}>★</button>
+                <button type="button" className={`sw-library__fav ${favorites.includes(scenario.id) ? 'on' : ''}`} onClick={() => toggleFavorite(scenario.id)} aria-label={zh ? '收藏' : 'Favorite'}><Star size={13} aria-hidden="true" /></button>
+                <button type="button" className="sw-library__del" title={zh ? '删除场景' : 'Delete scenario'} aria-label={zh ? '删除场景' : 'Delete scenario'} onClick={() => requestDeleteScenario(scenario)} data-testid="sw-scenario-delete"><Trash2 size={13} aria-hidden="true" /></button>
               </div>
             );
           })}
@@ -1117,7 +1139,7 @@ export default function ScenarioWorkbench({
       <main className="sw-main">
         {!draft && (
           <div className="sw-empty" data-testid="sw-empty">
-            <p>{zh ? '选择左侧场景，或用 ✨AI 创建场景 开始。' : 'Pick a scenario on the left, or start with AI creation.'}</p>
+            <p>{zh ? '选择左侧场景，或使用「AI 创建场景」开始。' : 'Pick a scenario on the left, or start with AI creation.'}</p>
           </div>
         )}
         {draft && (
@@ -1145,8 +1167,11 @@ export default function ScenarioWorkbench({
                 </label>
                 <span className="sw-head__save-state" data-testid="sw-save-state">{saveState}</span>
                 <button type="button" className="btn-secondary btn-sm" disabled={!draft || !selected} onClick={() => void persistDraft()} data-testid="sw-save">{zh ? '保存' : 'Save'}</button>
+                {selected && (
+                  <button type="button" className="btn-secondary btn-sm sw-head__delete" title={zh ? '删除场景' : 'Delete scenario'} onClick={() => requestDeleteScenario(selected)} data-testid="sw-delete">{zh ? '删除' : 'Delete'}</button>
+                )}
                 <div className="sw-use">
-                  <button type="button" className="btn-primary btn-sm" onClick={() => setUseMenuOpen((open) => !open)} data-testid="sw-use">{zh ? '使用此场景' : 'Use scenario'} ▾</button>
+                  <button type="button" className="btn-primary btn-sm" onClick={() => setUseMenuOpen((open) => !open)} data-testid="sw-use">{zh ? '使用此场景' : 'Use scenario'} <ChevronDown size={13} aria-hidden="true" /></button>
                   {useMenuOpen && (
                     <div className="sw-use__menu" role="menu" data-testid="sw-use-menu">
                       <button type="button" disabled={useBlocked} title={useBlockedTitle} data-testid="sw-use-current" onClick={() => void applyScenarioUse('current')}>{zh ? '用于当前项目' : 'Current project'}</button>
@@ -1191,7 +1216,7 @@ function AiRefineBox({
 }) {
   return (
     <div className="sw-airefine" data-testid="sw-ai-refine">
-      <h4>✨ {zh ? '让 AI 帮我配置' : 'AI assist'}</h4>
+      <h4><Sparkles size={13} aria-hidden="true" /> {zh ? '让 AI 帮我配置' : 'AI assist'}</h4>
       <textarea rows={2} value={instruction} placeholder={placeholder} onChange={(event) => onInstructionChange(event.target.value)} data-testid="sw-ai-refine-input" />
       <button type="button" className="btn-primary btn-sm" disabled={busy || instruction.trim().length < 2} onClick={onRun} data-testid="sw-ai-refine-run">
         {busy ? (zh ? '生成中…' : 'Working…') : (zh ? 'AI 补全' : 'Refine')}
