@@ -312,7 +312,9 @@ describe('Personalization persisted UI-to-runtime happy paths', () => {
     });
     expect(restartedResolution?.ok).toBe(true);
     fireEvent.click(screen.getByTestId('personalization-trigger'));
-    await screen.findByText('Durable custom conversation');
+    // 树形库中同一场景在「全部」与其所属分组重复出现，用 findAllByText。
+    const matches = await screen.findAllByText('Durable custom conversation');
+    expect(matches.length).toBeGreaterThan(0);
     expect(screen.getAllByTestId('sw-scenario-item').length).toBeGreaterThanOrEqual(1);
 
     restartedApp.unmount();

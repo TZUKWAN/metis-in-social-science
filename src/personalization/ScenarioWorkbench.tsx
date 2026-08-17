@@ -7,7 +7,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  ArrowDown, ArrowUp, ChevronDown, Circle, Diamond, Lock, Plus, Sparkles, Star, Trash2, Unlock, X,
+  ArrowDown, ArrowUp, ChevronDown, ChevronRight, Circle, Diamond, Lock, Plus, Sparkles, Star, Trash2, Unlock, X,
 } from 'lucide-react';
 import type {
   DeliverableSection,
@@ -62,6 +62,10 @@ function StatusIcon({ status }: { status: string }) {
 
 const RECENT_KEY = 'metis-scenario-recent:v1';
 const FAVORITES_KEY = 'metis-scenario-favorites:v1';
+const CATEGORIES_KEY = 'metis-scenario-categories:v1';
+const CATEGORY_MAP_KEY = 'metis-scenario-category-map:v1';
+
+interface UserCategory { id: string; name: string; }
 
 function readJsonMap(key: string): Record<string, number> {
   try {
@@ -79,6 +83,36 @@ function readFavorites(): string[] {
   } catch {
     return [];
   }
+}
+
+function readCategories(): UserCategory[] {
+  try {
+    const raw = localStorage.getItem(CATEGORIES_KEY);
+    const parsed = raw ? JSON.parse(raw) as unknown : [];
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is UserCategory => Boolean(item) && typeof (item as UserCategory).id === 'string' && typeof (item as UserCategory).name === 'string')
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeCategories(list: UserCategory[]): void {
+  try { localStorage.setItem(CATEGORIES_KEY, JSON.stringify(list)); } catch { /* 忽略 */ }
+}
+
+function readCategoryMap(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(CATEGORY_MAP_KEY);
+    const parsed = raw ? JSON.parse(raw) as unknown : {};
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, string> : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeCategoryMap(map: Record<string, string>): void {
+  try { localStorage.setItem(CATEGORY_MAP_KEY, JSON.stringify(map)); } catch { /* 忽略 */ }
 }
 
 /** 在章节树中定位：返回父数组、下标与路径深度。 */
@@ -112,7 +146,7 @@ function nextStatus(status: Section['status']): Section['status'] {
 }
 
 export default function ScenarioWorkbench({
-  zh, definitions, selectedId, onSelect, save, createScenario, onActivateScenario, onDeleteScenario, reload, onOpenAiCreate, initialTab, children,
+  zh, definitions, selectedId, onSelect, save, createScenario, onActivateScenario, onDeleteScenario, reload, onOpenAiCreate, onOpenTemplateRecognize, initialTab,
 }: {
   zh: boolean;
   definitions: PersonalizationDefinition[];
@@ -124,8 +158,8 @@ export default function ScenarioWorkbench({
   onDeleteScenario(id: string): Promise<void> | void;
   reload(): Promise<void>;
   onOpenAiCreate(): void;
+  onOpenTemplateRecognize?: () => void;
   initialTab?: WorkbenchTab;
-  children?: React.ReactNode;
 }) {
   const scenarios = useMemo(() => definitions.filter((definition) => definition.kind === 'scenario') as ScenarioDefinition[], [definitions]);
   const selected = useMemo(() => scenarios.find((scenario) => scenario.id === selectedId) ?? null, [scenarios, selectedId]);
@@ -135,7 +169,6 @@ export default function ScenarioWorkbench({
   const [saveState, setSaveState] = useState('');
   const [useMenuOpen, setUseMenuOpen] = useState(false);
   const [newMenuOpen, setNewMenuOpen] = useState(false);
-  const [libraryView, setLibraryView] = useState<'all' | 'recent' | 'favorites' | string>('all');
   const [aiBusy, setAiBusy] = useState(false);
   const [aiInstruction, setAiInstruction] = useState('');
   const [aiNote, setAiNote] = useState('');
@@ -164,6 +197,58 @@ export default function ScenarioWorkbench({
 
   const [favoritesVersion, setFavoritesVersion] = useState(0);
   const favorites = useMemo(() => readFavorites(), [favoritesVersion]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 自定义分类：localStorage 持久化（与收藏/最近一致，见交接文档 §五.7）。
+  const [categoriesVersion, setCategoriesVersion] = useState(0);
+  const categories = useMemo(() => readCategories(), [categoriesVersion]); // eslint-disable-line react-hooks/exhaustive-deps
+  const categoryMap = useMemo(() => readCategoryMap(), [categoriesVersion]); // eslint-disable-line react-hooks/exhaustive-deps
+  // 折叠状态用「已展开集合」表示：默认仅「全部」展开，其余分组默认收起，点箭头展开。
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(['all']));
+  const [newCategoryOpen, setNewCategoryOpen] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [deletingCategory, setDeletingCategory] = useState<UserCategory | null>(null);
+
+  const toggleCollapse = (id: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const createCategory = () => {
+    const name = newCategoryName.trim();
+    if (!name) return;
+    const list = readCategories();
+    list.push({ id: 'cat-' + Date.now().toString(36), name });
+    writeCategories(list);
+    setCategoriesVersion((version) => version + 1);
+    setNewCategoryName('');
+    setNewCategoryOpen(false);
+  };
+
+  // 指派场景到自定义分类；categoryId 为 null 时回到自动归类（按成果类型）。
+  const assignCategory = (scenarioId: string, categoryId: string | null) => {
+    const map = readCategoryMap();
+    if (categoryId) map[scenarioId] = categoryId; else delete map[scenarioId];
+    writeCategoryMap(map);
+    setCategoriesVersion((version) => version + 1);
+  };
+
+  // 删除分类：deleteScenarios 为 true 时连同分类内场景一起删除，否则保留场景（回到全部/自动分组）。
+  const deleteCategory = (category: UserCategory, deleteScenarios: boolean) => {
+    const map = readCategoryMap();
+    const sceneIds = scenarios.filter((s) => map[s.id] === category.id).map((s) => s.id);
+    if (deleteScenarios) {
+      for (const id of sceneIds) void onDeleteScenario(id);
+      if (selectedId && sceneIds.includes(selectedId)) onSelect(null);
+    }
+    for (const id of sceneIds) delete map[id];
+    writeCategoryMap(map);
+    writeCategories(readCategories().filter((item) => item.id !== category.id));
+    setCategoriesVersion((version) => version + 1);
+    setDeletingCategory(null);
+  };
 
   const toggleFavorite = (id: string) => {
     const current = readFavorites();
@@ -439,9 +524,11 @@ export default function ScenarioWorkbench({
     }
   };
 
+  // 已指派到自定义分类的场景从内置分组排除（互斥：只出现在自定义分类 + 全部）。
   const grouped = useMemo(() => {
     const groups = new Map<string, ScenarioDefinition[]>();
     for (const scenario of scenarios) {
+      if (categoryMap[scenario.id]) continue;
       const type = scenario.deliverable?.type;
       let groupId = 'mine';
       if (type) {
@@ -453,17 +540,18 @@ export default function ScenarioWorkbench({
       groups.set(groupId, list);
     }
     return groups;
-  }, [scenarios]);
+  }, [scenarios, categoryMap]);
 
-  const libraryScenarios = useMemo(() => {
-    if (libraryView === 'all') return scenarios;
-    if (libraryView === 'recent') {
-      const recent = readJsonMap(RECENT_KEY);
-      return [...scenarios].sort((a, b) => (recent[b.id] ?? 0) - (recent[a.id] ?? 0)).slice(0, 8);
+  const categoryScenarios = useMemo(() => {
+    const map = new Map<string, ScenarioDefinition[]>();
+    for (const category of categories) map.set(category.id, []);
+    for (const scenario of scenarios) {
+      const categoryId = categoryMap[scenario.id];
+      if (categoryId && map.has(categoryId)) map.get(categoryId)!.push(scenario);
     }
-    if (libraryView === 'favorites') return scenarios.filter((scenario) => favorites.includes(scenario.id));
-    return grouped.get(libraryView) ?? [];
-  }, [scenarios, libraryView, grouped, favorites]);
+    return map;
+  }, [scenarios, categories, categoryMap]);
+
 
   const applyScenarioUse = async (mode: 'current' | 'new' | 'autonomous') => {
     if (!draft) return;
@@ -1088,6 +1176,54 @@ export default function ScenarioWorkbench({
     ['capability', zh ? '能力与运行' : 'Capabilities'],
   ];
 
+  const renderScenarioItem = (scenario: ScenarioDefinition): React.ReactElement => {
+    const typeLabel = DELIVERABLE_LABELS[scenario.deliverable?.type ?? ''] ?? (zh ? '自定义' : 'Custom');
+    return (
+      <div key={scenario.id} className={'sw-library__item' + (selectedId === scenario.id ? ' selected' : '')}>
+        <button type="button" className="sw-library__select" onClick={() => onSelect(scenario.id)} data-testid="sw-scenario-item">
+          <strong>{scenario.name}</strong>
+          <span className="sw-library__meta">
+            <em>{typeLabel}</em>
+            {scenario.enabled ? (zh ? '已启用' : 'Enabled') : (zh ? '已停用' : 'Disabled')}
+          </span>
+        </button>
+        <button type="button" className={'sw-library__fav' + (favorites.includes(scenario.id) ? ' on' : '')} onClick={() => toggleFavorite(scenario.id)} aria-label={zh ? '收藏' : 'Favorite'}><Star size={13} aria-hidden="true" /></button>
+        <button type="button" className="sw-library__del" title={zh ? '删除场景' : 'Delete scenario'} aria-label={zh ? '删除场景' : 'Delete scenario'} onClick={() => requestDeleteScenario(scenario)} data-testid="sw-scenario-delete"><Trash2 size={13} aria-hidden="true" /></button>
+      </div>
+    );
+  };
+
+  // 可折叠分组：全部/最近/收藏 + 内置分组 + 自定义分类。头部左侧箭头折叠/展开，自定义分类可删除。
+  const renderGroup = (groupId: string, label: string, list: ScenarioDefinition[], opts?: { deletable?: boolean }): React.ReactElement => {
+    const isCollapsed = !expanded.has(groupId);
+    return (
+      <div key={groupId} className="sw-group">
+        <div className="sw-group__head">
+          <button type="button" className="sw-group__toggle" onClick={() => toggleCollapse(groupId)} aria-expanded={!isCollapsed} data-testid="sw-library-view">
+            {isCollapsed ? <ChevronRight size={13} aria-hidden="true" /> : <ChevronDown size={13} aria-hidden="true" />}
+            <span className="sw-group__label">{label}</span>
+            <span className="sw-group__count">{list.length}</span>
+          </button>
+          {opts?.deletable && (
+            <button type="button" className="sw-group__del" title={zh ? '删除分类' : 'Delete category'} aria-label={zh ? '删除分类' : 'Delete category'} onClick={() => setDeletingCategory(categories.find((item) => item.id === groupId) ?? null)} data-testid={'sw-category-delete-' + groupId}><Trash2 size={12} aria-hidden="true" /></button>
+          )}
+        </div>
+        {!isCollapsed && (
+          <div className="sw-group__list">
+            {list.map(renderScenarioItem)}
+            {list.length === 0 && <p className="sw-library__empty">{zh ? '暂无场景' : 'No scenarios'}</p>}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const recentScenarios = (() => {
+    const recent = readJsonMap(RECENT_KEY);
+    return [...scenarios].sort((a, b) => (recent[b.id] ?? 0) - (recent[a.id] ?? 0)).slice(0, 8);
+  })();
+  const favoriteScenarios = scenarios.filter((scenario) => favorites.includes(scenario.id));
+
   return (
     <div className="sw-layout" data-testid="scenario-workbench">
       <aside className="sw-library">
@@ -1098,41 +1234,46 @@ export default function ScenarioWorkbench({
             <div className="sw-newmenu" role="menu" data-testid="sw-new-menu">
               <button type="button" onClick={() => { setNewMenuOpen(false); onOpenAiCreate(); }}><Sparkles size={13} aria-hidden="true" /> {zh ? 'AI 创建（推荐）' : 'AI create (recommended)'}</button>
               <button type="button" onClick={() => { setNewMenuOpen(false); createScenario(); }}>{zh ? '手动创建' : 'Manual create'}</button>
+              {onOpenTemplateRecognize && (
+                <button type="button" onClick={() => { setNewMenuOpen(false); onOpenTemplateRecognize(); }} data-testid="sw-new-template">{zh ? '模板识别（论文结构）' : 'Template recognition'}</button>
+              )}
             </div>
           )}
         </div>
-        <nav className="sw-library__views">
-          {([
-            ['all', zh ? '全部' : 'All'],
-            ['recent', zh ? '最近使用' : 'Recent'],
-            ['favorites', zh ? '收藏' : 'Favorites'],
-            ...CATEGORY_GROUPS.map((group) => [group.id, zh ? group.labelZh : group.labelEn] as [string, string]),
-            ['mine', zh ? '我的场景' : 'My scenarios'],
-          ] as Array<[string, string]>).map(([value, label]) => (
-            <button key={value} type="button" className={libraryView === value ? 'active' : ''} onClick={() => setLibraryView(value)} data-testid="sw-library-view">
-              {label}<span>{value === 'all' ? scenarios.length : (libraryScenarios.length && value === libraryView ? libraryScenarios.length : (grouped.get(value)?.length ?? 0))}</span>
-            </button>
-          ))}
-        </nav>
-        {children && <div className="sw-library__extra">{children}</div>}
-        <div className="sw-library__list">
-          {libraryScenarios.map((scenario) => {
-            const typeLabel = DELIVERABLE_LABELS[scenario.deliverable?.type ?? ''] ?? (zh ? '自定义' : 'Custom');
-            return (
-              <div key={scenario.id} className={`sw-library__item ${selectedId === scenario.id ? 'selected' : ''}`}>
-                <button type="button" className="sw-library__select" onClick={() => onSelect(scenario.id)} data-testid="sw-scenario-item">
-                  <strong>{scenario.name}</strong>
-                  <span className="sw-library__meta">
-                    <em>{typeLabel}</em>
-                    {scenario.enabled ? (zh ? '已启用' : 'Enabled') : (zh ? '已停用' : 'Disabled')}
-                  </span>
-                </button>
-                <button type="button" className={`sw-library__fav ${favorites.includes(scenario.id) ? 'on' : ''}`} onClick={() => toggleFavorite(scenario.id)} aria-label={zh ? '收藏' : 'Favorite'}><Star size={13} aria-hidden="true" /></button>
-                <button type="button" className="sw-library__del" title={zh ? '删除场景' : 'Delete scenario'} aria-label={zh ? '删除场景' : 'Delete scenario'} onClick={() => requestDeleteScenario(scenario)} data-testid="sw-scenario-delete"><Trash2 size={13} aria-hidden="true" /></button>
-              </div>
-            );
-          })}
-          {libraryScenarios.length === 0 && <p className="sw-library__empty">{zh ? '此分类下暂无场景。' : 'No scenarios in this view.'}</p>}
+        <div className="sw-library__tree">
+          {renderGroup('all', zh ? '全部' : 'All', scenarios)}
+          {renderGroup('recent', zh ? '最近使用' : 'Recent', recentScenarios)}
+          {renderGroup('favorites', zh ? '收藏' : 'Favorites', favoriteScenarios)}
+          <div className="sw-library__cathead">
+            <span>{zh ? '分类' : 'Categories'}</span>
+            <button type="button" className="sw-library__catnew" title={zh ? '新建分类' : 'New category'} aria-label={zh ? '新建分类' : 'New category'} onClick={() => setNewCategoryOpen((open) => !open)} data-testid="sw-new-category"><Plus size={13} aria-hidden="true" /></button>
+          </div>
+          {newCategoryOpen && (
+            <div className="sw-library__catnewform" data-testid="sw-new-category-form">
+              <input
+                type="text"
+                value={newCategoryName}
+                onChange={(event) => setNewCategoryName(event.target.value)}
+                onKeyDown={(event) => { if (event.key === 'Enter') createCategory(); }}
+                placeholder={zh ? '分类名称' : 'Category name'}
+                aria-label={zh ? '分类名称' : 'Category name'}
+                data-testid="sw-new-category-input"
+              />
+              <button type="button" className="btn-primary btn-sm" onClick={createCategory} data-testid="sw-new-category-submit">{zh ? '新建' : 'Create'}</button>
+            </div>
+          )}
+          {CATEGORY_GROUPS.map((group) => renderGroup(group.id, zh ? group.labelZh : group.labelEn, grouped.get(group.id) ?? []))}
+          {renderGroup('mine', zh ? '我的场景' : 'My scenarios', grouped.get('mine') ?? [])}
+          {categories.map((category) => renderGroup(category.id, category.name, categoryScenarios.get(category.id) ?? [], { deletable: true }))}
+          {deletingCategory && (
+            <div className="sw-catdel" data-testid="sw-category-delete-panel">
+              <p className="sw-catdel__title">{zh ? ('删除分类「' + deletingCategory.name + '」？') : ('Delete category "' + deletingCategory.name + '"?')}</p>
+              <p className="sw-catdel__meta">{zh ? ('分类内有 ' + (categoryScenarios.get(deletingCategory.id)?.length ?? 0) + ' 个场景') : ((categoryScenarios.get(deletingCategory.id)?.length ?? 0) + ' scenario(s) inside')}</p>
+              <button type="button" className="btn-secondary btn-sm" onClick={() => deleteCategory(deletingCategory, false)} data-testid="sw-category-delete-keep">{zh ? '保留场景，仅删分类' : 'Keep scenarios, delete category'}</button>
+              <button type="button" className="btn-secondary btn-sm sw-catdel__danger" onClick={() => deleteCategory(deletingCategory, true)} data-testid="sw-category-delete-all">{zh ? ('连同 ' + (categoryScenarios.get(deletingCategory.id)?.length ?? 0) + ' 个场景一起删除') : ('Delete category and its scenarios')}</button>
+              <button type="button" className="sw-catdel__cancel" onClick={() => setDeletingCategory(null)} data-testid="sw-category-delete-cancel">{zh ? '取消' : 'Cancel'}</button>
+            </div>
+          )}
         </div>
       </aside>
 
@@ -1161,6 +1302,22 @@ export default function ScenarioWorkbench({
                 />
               </div>
               <div className="sw-head__actions">
+                {categories.length > 0 && selected && (
+                  <label className="sw-head__category" title={zh ? '归入自定义分类' : 'Assign to custom category'}>
+                    <span>{zh ? '分类' : 'Category'}</span>
+                    <select
+                      value={categoryMap[selected.id] ?? ''}
+                      onChange={(event) => assignCategory(selected.id, event.target.value || null)}
+                      data-testid="sw-assign-category"
+                      aria-label={zh ? '归入分类' : 'Assign category'}
+                    >
+                      <option value="">{zh ? '自动（按成果类型）' : 'Auto (by deliverable type)'}</option>
+                      {categories.map((category) => (
+                        <option key={category.id} value={category.id}>{category.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                )}
                 <label className="sw-head__enabled">
                   <input type="checkbox" checked={draft.enabled} onChange={() => mutateDraft((scenario) => { scenario.enabled = !scenario.enabled; })} />
                   {zh ? '启用' : 'Enabled'}

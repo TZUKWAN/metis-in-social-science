@@ -225,7 +225,9 @@ afterEach(() => {
 });
 
 async function selectScenarioInWorkbench(name: string | RegExp) {
-  const item = await screen.findByText(name);
+  // 树形库中同一场景会在「全部」与其所属分组重复出现，取第一个匹配项点击。
+  const items = await screen.findAllByText(name);
+  const item = items[0]!;
   fireEvent.click(item.closest('[data-testid="sw-scenario-item"]')?.querySelector('button') ?? item.closest('button')!);
 }
 
@@ -268,7 +270,7 @@ describe('PersonalizationCenter', () => {
 
   it('starts with an empty user library even when legacy factory definitions are returned', async () => {
     render(<PersonalizationCenter />);
-    expect(await screen.findByText('No scenarios in this view.')).toBeDefined();
+    expect(await screen.findAllByText('No scenarios')).toBeDefined();
     expect(screen.queryByText('General research')).toBeNull();
     expect(screen.queryByText('Academic monograph')).toBeNull();
     expect(screen.getByRole('button', { name: /Scenarios/u }).textContent).toContain('0');
@@ -291,7 +293,7 @@ describe('PersonalizationCenter', () => {
 
   it('does not expose factory-copy actions in the zero-preset product', async () => {
     render(<PersonalizationCenter />);
-    await screen.findByText('No scenarios in this view.');
+    await screen.findAllByText('No scenarios');
     expect(screen.queryByRole('button', { name: 'Create editable copy' })).toBeNull();
     expect(forkPersonalization).not.toHaveBeenCalled();
   });
@@ -612,7 +614,7 @@ describe('PersonalizationCenter', () => {
 
     render(<PersonalizationCenter />);
     expect(await screen.findByText('研究场景工作台')).toBeDefined();
-    fireEvent.click(screen.getByTestId('sw-scenario-item'));
+    fireEvent.click(screen.getAllByTestId('sw-scenario-item')[0]!);
     fireEvent.click(screen.getByTestId('sw-tab-capability'));
     expect(await screen.findByText('全权限运行：自动执行、实时纠偏、失败不自动回滚外部副作用；真实性层始终强制。')).toBeDefined();
 
@@ -1123,7 +1125,7 @@ describe('PersonalizationCenter', () => {
   it('does not inject a funding preset workflow into a blank scenario library', async () => {
     researchWorkspaceStore.setState({ activeProjectId: 'project-funding' });
     render(<PersonalizationCenter />);
-    await screen.findByText('No scenarios in this view.');
+    await screen.findAllByText('No scenarios');
     expect(screen.queryByRole('region', { name: 'Funding application templates' })).toBeNull();
     expect(fundingTemplate).not.toHaveBeenCalled();
   });
@@ -1519,7 +1521,7 @@ describe('PersonalizationCenter', () => {
     render(<PersonalizationCenter />);
     expect(await screen.findByText(/Personalization configurations could not be loaded/u)).toBeDefined();
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
-    expect(await screen.findByText('No scenarios in this view.')).toBeDefined();
+    expect(await screen.findAllByText('No scenarios')).toBeDefined();
     expect(screen.queryByText('General research')).toBeNull();
     expect(listPersonalization).toHaveBeenCalledTimes(2);
   });
@@ -1882,7 +1884,9 @@ describe('PersonalizationCenter', () => {
     const structureSave = vi.fn().mockResolvedValue({ ok: true });
     Object.assign(window.metis, { aiParsePaperTemplate, structureSave });
     render(<PersonalizationCenter />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Template recognition (paper structure)' }));
+    // 模板识别入口在「新建场景」菜单中。
+    fireEvent.click(await screen.findByTestId('sw-new-scenario'));
+    fireEvent.click(await screen.findByTestId('sw-new-template'));
     await screen.findByTestId('template-parse-panel');
 
     fireEvent.change(screen.getByTestId('template-parse-input'), {

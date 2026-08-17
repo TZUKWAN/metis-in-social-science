@@ -23,6 +23,7 @@ import SplitHandle from '../components/SplitHandle';
 import { availableUserId, createDefinition, localId } from './personalizationLib.js';
 import ScenarioWorkbench, { type WorkbenchTab } from './ScenarioWorkbench.js';
 import ScenarioAiCreateDialog from './ScenarioAiCreateDialog.js';
+import { Upload, X } from 'lucide-react';
 import './PersonalizationCenter.css';
 
 type Kind = PersonalizationDefinition['kind'];
@@ -1842,6 +1843,32 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
     }
   };
 
+  // 模板识别支持两种方式：粘贴文本，或上传文件（txt/md/docx/pdf，复用材料导入读取文本）。
+  const importTemplateFile = async () => {
+    if (!window.metis?.openReferenceFileDialog || !window.metis?.importScenarioMaterials) {
+      setTplStatus(zh ? '文件导入服务不可用。' : 'File import is unavailable.');
+      return;
+    }
+    setTplBusy(true);
+    setTplStatus('');
+    try {
+      const paths = await window.metis.openReferenceFileDialog();
+      if (!paths || paths.length === 0) { setTplBusy(false); return; }
+      const result = await window.metis.importScenarioMaterials({ contractVersion: 1, paths });
+      if (!result?.ok || !result.materials || result.materials.length === 0) {
+        setTplStatus(zh ? ('文件读取失败：' + (result?.error ?? result?.code ?? 'import_failed')) : ('File read failed: ' + (result?.error ?? result?.code ?? 'import_failed')));
+        return;
+      }
+      const combined = result.materials.map((material) => material.text).filter(Boolean).join('\n\n');
+      setTplText((prev) => (prev.trim() ? prev + '\n\n' + combined : combined));
+      setTplStatus(zh ? ('已读取 ' + result.materials.length + ' 个文件，文本已填入。') : ('Loaded ' + result.materials.length + ' file(s) into the text box.'));
+    } catch {
+      setTplStatus(zh ? '文件导入未完成，请重试。' : 'File import did not complete. Try again.');
+    } finally {
+      setTplBusy(false);
+    }
+  };
+
   const savePaperTemplate = async () => {
     const name = tplName.trim();
     if (!name || tplSections.length === 0) return;
@@ -1969,20 +1996,24 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
   };
 
   const isScenarioKind = kind === 'scenario';
-  const scenarioTemplatePanel = isScenarioKind ? (
-
-            <div className="personalization-template">
-              <button type="button" className="btn-secondary" data-testid="template-parse-toggle" onClick={() => setTplOpen((open) => !open)} aria-expanded={tplOpen}>
-                {zh ? '模板识别（论文结构）' : 'Template recognition (paper structure)'}
-              </button>
-              {tplOpen && (
+  const scenarioTemplatePanel = isScenarioKind && tplOpen ? (
+            <div className="scai-overlay" data-testid="template-parse-modal" role="dialog" aria-modal="true" aria-label={zh ? '模板识别' : 'Template recognition'}>
+              <div className="scai-dialog">
+                <header className="scai-dialog__head">
+                  <h2>{zh ? '模板识别（论文结构）' : 'Template recognition (paper structure)'}</h2>
+                  <button type="button" className="btn-secondary btn-sm" onClick={() => setTplOpen(false)} aria-label={zh ? '关闭' : 'Close'}><X size={14} aria-hidden="true" /></button>
+                </header>
+                <div className="scai-dialog__body">
                 <div className="personalization-template__panel" data-testid="template-parse-panel">
-                  <p>{zh ? '粘贴论文写作模板（如国家社科基金申请书、论文结构规范），AI 会解析为逐节写作指引，你可修改后保存为论文结构，供自主科研使用。' : 'Paste a paper template (e.g. a grant application or thesis structure). AI parses it into per-section writing guides you can edit and save as a paper structure for autonomous research.'}</p>
+                  <p>{zh ? '粘贴论文写作模板，或上传模板文件（txt/md/docx/pdf），AI 会解析为逐节写作指引，你可修改后保存为论文结构，供自主科研使用。' : 'Paste a paper template or upload a template file (txt/md/docx/pdf). AI parses it into per-section writing guides you can edit and save as a paper structure for autonomous research.'}</p>
                   <label>
                     <span>{zh ? '模板文本' : 'Template text'}</span>
                     <textarea rows={3} value={tplText} onChange={(event) => setTplText(event.target.value)} data-testid="template-parse-input" placeholder={zh ? '粘贴模板文本…' : 'Paste template text…'} />
                   </label>
                   <div className="personalization-ai-create__actions">
+                    <button type="button" className="btn-secondary btn-sm" disabled={tplBusy} onClick={() => void importTemplateFile()} data-testid="template-upload-file">
+                      <Upload size={13} aria-hidden="true" /> {zh ? '上传文件' : 'Upload file'}
+                    </button>
                     <button type="button" className="btn-primary btn-sm" disabled={tplBusy || tplText.trim().length < 10} onClick={() => void parsePaperTemplate()} data-testid="template-parse-submit">
                       {tplBusy ? (zh ? '解析中…' : 'Parsing…') : (zh ? '解析模板' : 'Parse template')}
                     </button>
@@ -2021,9 +2052,9 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
                   )}
                   {tplStatus && <p className="personalization-ai-create__status" role="status" aria-live="polite" data-testid="template-parse-status">{tplStatus}</p>}
                 </div>
-              )}
+                </div>
+              </div>
             </div>
-          
   ) : null;
 
   return (
@@ -2068,10 +2099,9 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
           onDeleteScenario={(id) => { const def = userDefinitions.find((d) => d.id === id); if (def) void archive(def); }}
           reload={load}
           onOpenAiCreate={() => setScenarioAiOpen(true)}
+          onOpenTemplateRecognize={() => setTplOpen(true)}
           initialTab={scenarioWorkbenchTab}
-        >
-          {scenarioTemplatePanel}
-        </ScenarioWorkbench>
+        />
       ) : (
       <div
         className="personalization-layout"
@@ -2223,6 +2253,7 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
           }}
         />
       )}
+      {scenarioTemplatePanel}
     </div>
   );
 }

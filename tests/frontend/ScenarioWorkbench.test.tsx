@@ -174,7 +174,8 @@ describe('ScenarioWorkbench', () => {
     render(<ScenarioWorkbench {...props} />);
     expect(screen.getByTestId('sw-ai-create')).toBeTruthy();
     expect(screen.getByTestId('sw-new-scenario')).toBeTruthy();
-    expect(screen.getAllByTestId('sw-scenario-item').length).toBe(1);
+    // 树形库中同一场景会出现在「全部」与其所属分组，因此至少出现一次。
+    expect(screen.getAllByTestId('sw-scenario-item').length).toBeGreaterThan(0);
   });
 
   it('删除场景：确认后调用 onDeleteScenario 并清选中', async () => {
@@ -205,9 +206,73 @@ describe('ScenarioWorkbench', () => {
     const { default: ScenarioWorkbench } = await import('../../src/personalization/ScenarioWorkbench.js');
     render(<ScenarioWorkbench {...props} />);
     const delButtons = screen.getAllByTestId('sw-scenario-delete');
-    expect(delButtons.length).toBe(1);
+    expect(delButtons.length).toBeGreaterThan(0);
     fireEvent.click(delButtons[0]!);
     expect(onDeleteScenario).toHaveBeenCalledWith(scenario.id);
     vi.restoreAllMocks();
+  });
+
+  it('新建分类：输入名称后出现在分类树', async () => {
+    const { props } = makeHarness();
+    const { default: ScenarioWorkbench } = await import('../../src/personalization/ScenarioWorkbench.js');
+    render(<ScenarioWorkbench {...props} />);
+    fireEvent.click(screen.getByTestId('sw-new-category'));
+    fireEvent.change(screen.getByTestId('sw-new-category-input'), { target: { value: '重点课题' } });
+    fireEvent.click(screen.getByTestId('sw-new-category-submit'));
+    expect((await screen.findAllByText('重点课题')).length).toBeGreaterThan(0);
+  });
+
+  it('分类分组可折叠与展开', async () => {
+    const { props } = makeHarness();
+    const { default: ScenarioWorkbench } = await import('../../src/personalization/ScenarioWorkbench.js');
+    render(<ScenarioWorkbench {...props} />);
+    const before = screen.queryAllByTestId('sw-scenario-item').length;
+    expect(before).toBeGreaterThan(0);
+    // 第一个分组是「全部」，收起后其场景列表消失，总数减少。
+    const toggles = screen.getAllByTestId('sw-library-view');
+    fireEvent.click(toggles[0]!);
+    const after = screen.queryAllByTestId('sw-scenario-item').length;
+    expect(after).toBeLessThan(before);
+    // 再点展开恢复
+    fireEvent.click(screen.getAllByTestId('sw-library-view')[0]!);
+    expect(screen.queryAllByTestId('sw-scenario-item').length).toBe(before);
+  });
+
+  it('删除分类：保留场景仅删分类', async () => {
+    window.localStorage.setItem('metis-scenario-categories:v1', JSON.stringify([{ id: 'cat-1', name: '重点课题' }]));
+    window.localStorage.setItem('metis-scenario-category-map:v1', JSON.stringify({ 'user:scenario/emp': 'cat-1' }));
+    const { props, onDeleteScenario } = makeHarness();
+    const { default: ScenarioWorkbench } = await import('../../src/personalization/ScenarioWorkbench.js');
+    render(<ScenarioWorkbench {...props} />);
+    expect((await screen.findAllByText('重点课题')).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByTestId('sw-category-delete-cat-1'));
+    fireEvent.click(await screen.findByTestId('sw-category-delete-keep'));
+    await waitFor(() => expect(screen.queryByText('重点课题')).toBeNull());
+    expect(onDeleteScenario).not.toHaveBeenCalled();
+  });
+
+  it('删除分类：连同分类内场景一起删除', async () => {
+    window.localStorage.setItem('metis-scenario-categories:v1', JSON.stringify([{ id: 'cat-1', name: '重点课题' }]));
+    window.localStorage.setItem('metis-scenario-category-map:v1', JSON.stringify({ 'user:scenario/emp': 'cat-1' }));
+    const { props, onDeleteScenario } = makeHarness();
+    const { default: ScenarioWorkbench } = await import('../../src/personalization/ScenarioWorkbench.js');
+    render(<ScenarioWorkbench {...props} />);
+    expect((await screen.findAllByText('重点课题')).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByTestId('sw-category-delete-cat-1'));
+    fireEvent.click(await screen.findByTestId('sw-category-delete-all'));
+    await waitFor(() => expect(onDeleteScenario).toHaveBeenCalledWith('user:scenario/emp'));
+  });
+
+  it('头部下拉把场景归入自定义分类', async () => {
+    window.localStorage.setItem('metis-scenario-categories:v1', JSON.stringify([{ id: 'cat-1', name: '重点课题' }]));
+    const { props } = makeHarness();
+    const { default: ScenarioWorkbench } = await import('../../src/personalization/ScenarioWorkbench.js');
+    render(<ScenarioWorkbench {...props} />);
+    const select = await screen.findByTestId('sw-assign-category');
+    fireEvent.change(select, { target: { value: 'cat-1' } });
+    await waitFor(() => {
+      const map = JSON.parse(window.localStorage.getItem('metis-scenario-category-map:v1') ?? '{}') as Record<string, string>;
+      expect(map['user:scenario/emp']).toBe('cat-1');
+    });
   });
 });
