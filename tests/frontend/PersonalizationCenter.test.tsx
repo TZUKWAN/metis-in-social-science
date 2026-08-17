@@ -1148,8 +1148,8 @@ describe('PersonalizationCenter', () => {
 
   it('creates a blank custom scenario without silently binding arbitrary definitions', async () => {
     render(<PersonalizationCenter />);
+    // 新建场景按钮点击直接创建空白场景（不再有下拉菜单）。
     fireEvent.click(await screen.findByTestId('sw-new-scenario'));
-    fireEvent.click(screen.getByTestId('sw-new-menu').querySelectorAll('button')[1]!);
     await waitFor(() => expect(savePersonalization).toHaveBeenCalledTimes(1));
     const request = savePersonalization.mock.calls[0]![0] as { definition: PersonalizationDefinition };
     expect(request.definition.kind).toBe('scenario');
@@ -1160,6 +1160,19 @@ describe('PersonalizationCenter', () => {
       expect(request.definition.rulesIds).toEqual([]);
       expect(request.definition.workflow).toEqual([]);
     }
+  });
+
+  it('新建场景：id 被已删除（归档）记录占用时自动换唯一 id 重试，保证创建成功', async () => {
+    // 第一次保存：id 被归档记录占用 → revision_conflict；重试换 id 后回落到默认 mock（saved）。
+    savePersonalization.mockImplementationOnce(() => Promise.resolve({ ok: false, code: 'revision_conflict', currentRevision: 1 }));
+    render(<PersonalizationCenter />);
+    fireEvent.click(await screen.findByTestId('sw-new-scenario'));
+    await waitFor(() => expect(savePersonalization).toHaveBeenCalledTimes(2));
+    const firstId = (savePersonalization.mock.calls[0]![0] as { definition: PersonalizationDefinition }).definition.id;
+    const secondId = (savePersonalization.mock.calls[1]![0] as { definition: PersonalizationDefinition }).definition.id;
+    // 重试时 id 追加唯一后缀，避开被占用的 id。
+    expect(secondId).not.toBe(firstId);
+    expect(secondId.startsWith(firstId + '-')).toBe(true);
   });
 
   it('binds scenario agents and skills by readable choices instead of raw IDs', async () => {

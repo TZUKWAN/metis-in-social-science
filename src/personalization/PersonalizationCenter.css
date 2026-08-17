@@ -33,8 +33,13 @@
 }
 .personalization-truth-card span { color: var(--text-secondary); font-size: 12px; }
 
-.personalization-tabs { max-width: 1520px; margin: 0 auto 12px; display: flex; gap: 2px; overflow-x: auto; border-bottom: 1px solid var(--border-light); }
+.personalization-tabs { max-width: 1520px; margin: 0 auto 12px; display: flex; align-items: center; gap: 2px; overflow-x: auto; border-bottom: 1px solid var(--border-light); }
 .personalization-tabs button { border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--text-secondary); padding: 9px 13px 8px; border-radius: 0; cursor: pointer; white-space: nowrap; font-weight: 600; }
+/* 「组件库」分组标签：弱化，表明 智能体/技能/MCP/Metis.md 是场景的可复用组件而非并列主体 */
+.personalization-tabs__grouplabel { margin: 0 4px 0 14px; padding-left: 12px; border-left: 1px solid var(--border-light); color: var(--text-tertiary, var(--text-secondary)); font-size: 11px; font-weight: 600; letter-spacing: .4px; text-transform: uppercase; white-space: nowrap; opacity: .8; }
+/* 场景页：组件库按钮进一步弱化（无计数徽章，视觉从属于场景主体） */
+.personalization-tabs__grouplabel ~ button { font-weight: 500; opacity: .82; }
+.personalization-tabs__grouplabel ~ button:hover, .personalization-tabs__grouplabel ~ button.active { opacity: 1; }
 .personalization-tabs button span { margin-left: 8px; opacity: .65; }
 .personalization-tabs button:hover { background: color-mix(in srgb, var(--primary) 6%, transparent); color: var(--text-primary); }
 .personalization-tabs button.active { background: color-mix(in srgb, var(--primary) 8%, transparent); color: var(--primary); border-bottom-color: var(--primary); }

@@ -168,7 +168,6 @@ export default function ScenarioWorkbench({
   const [selectedSectionId, setSelectedSectionId] = useState<string | null>(null);
   const [saveState, setSaveState] = useState('');
   const [useMenuOpen, setUseMenuOpen] = useState(false);
-  const [newMenuOpen, setNewMenuOpen] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
   const [aiInstruction, setAiInstruction] = useState('');
   const [aiNote, setAiNote] = useState('');
@@ -1228,16 +1227,10 @@ export default function ScenarioWorkbench({
     <div className="sw-layout" data-testid="scenario-workbench">
       <aside className="sw-library">
         <div className="sw-library__actions">
-          <button type="button" className="btn-primary" onClick={() => { setNewMenuOpen((open) => !open); }} data-testid="sw-new-scenario">{zh ? '＋ 新建场景' : '＋ New'}</button>
+          <button type="button" className="btn-primary" onClick={() => { createScenario(); }} data-testid="sw-new-scenario">{zh ? '＋ 新建场景' : '＋ New'}</button>
           <button type="button" className="sw-library__ai" onClick={onOpenAiCreate} data-testid="sw-ai-create"><Sparkles size={14} aria-hidden="true" /> {zh ? 'AI 创建场景' : 'AI create'}</button>
-          {newMenuOpen && (
-            <div className="sw-newmenu" role="menu" data-testid="sw-new-menu">
-              <button type="button" onClick={() => { setNewMenuOpen(false); onOpenAiCreate(); }}><Sparkles size={13} aria-hidden="true" /> {zh ? 'AI 创建（推荐）' : 'AI create (recommended)'}</button>
-              <button type="button" onClick={() => { setNewMenuOpen(false); createScenario(); }}>{zh ? '手动创建' : 'Manual create'}</button>
-              {onOpenTemplateRecognize && (
-                <button type="button" onClick={() => { setNewMenuOpen(false); onOpenTemplateRecognize(); }} data-testid="sw-new-template">{zh ? '模板识别（论文结构）' : 'Template recognition'}</button>
-              )}
-            </div>
+          {onOpenTemplateRecognize && (
+            <button type="button" className="sw-library__template" onClick={onOpenTemplateRecognize} data-testid="sw-new-template">{zh ? '模板识别（论文结构）' : 'Template recognition'}</button>
           )}
         </div>
         <div className="sw-library__tree">

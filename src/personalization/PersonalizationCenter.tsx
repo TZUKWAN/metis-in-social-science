@@ -1759,7 +1759,13 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
 
   const saveNew = async (definition: PersonalizationDefinition) => {
     try {
-      const result = await window.metis?.savePersonalization({ contractVersion: 1, definition, expectedRevision: 0 });
+      // 新建时若 id 被历史（含已删除/归档）记录占用，后端返回 revision_conflict；改用唯一 id 重试，保证「新建」总能成功。
+      let active = definition;
+      let result = await window.metis?.savePersonalization({ contractVersion: 1, definition: active, expectedRevision: 0 });
+      if (result && !result.ok && result.code === 'revision_conflict') {
+        active = { ...definition, id: `${definition.id}-${Date.now().toString(36)}` };
+        result = await window.metis?.savePersonalization({ contractVersion: 1, definition: active, expectedRevision: 0 });
+      }
       if (!result) { setStatus(zh ? '个性化服务不可用' : 'Personalization service is unavailable'); return null; }
       setStatus(resultMessage(result, zh));
       if (result.ok && result.code === 'saved') {
@@ -2071,8 +2077,11 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
         </div>
       </header>
 
+      {/* 以场景为单位：场景是组合主体（主 tab）；智能体/技能/MCP/Metis.md 是可复用组件，归入「组件库」分组弱化呈现，且在场景页不显示计数徽章。这些组件在场景的「能力与运行」分区内绑定到具体场景。 */}
       <nav className="personalization-tabs" aria-label={zh ? '场景分类' : 'Scenario categories'}>
-        {KIND_ORDER.map((item) => <button key={item} className={kind === item ? 'active' : ''} aria-pressed={kind === item} onClick={() => { setKind(item); setSelectedId(null); }}>{KIND_LABELS[zh ? 'zh' : 'en'][item]}<span>{userDefinitions.filter((definition) => definition.kind === item).length}</span></button>)}
+        <button type="button" className={kind === 'scenario' ? 'active' : ''} aria-pressed={kind === 'scenario'} onClick={() => { setKind('scenario'); setSelectedId(null); }}>{KIND_LABELS[zh ? 'zh' : 'en'].scenario}<span>{userDefinitions.filter((definition) => definition.kind === 'scenario').length}</span></button>
+        <span className="personalization-tabs__grouplabel">{zh ? '组件库' : 'Library'}</span>
+        {KIND_ORDER.filter((item) => item !== 'scenario').map((item) => <button key={item} type="button" className={kind === item ? 'active' : ''} aria-pressed={kind === item} onClick={() => { setKind(item); setSelectedId(null); }}>{KIND_LABELS[zh ? 'zh' : 'en'][item]}{!isScenarioKind && <span>{userDefinitions.filter((definition) => definition.kind === item).length}</span>}</button>)}
       </nav>
 
       <div className="personalization-bundle-actions" aria-label={zh ? '配置包导入导出' : 'Bundle import and export'}>

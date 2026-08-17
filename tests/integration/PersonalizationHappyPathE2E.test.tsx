@@ -231,9 +231,8 @@ describe('Personalization persisted UI-to-runtime happy paths', () => {
     }));
 
     fireEvent.click(within(screen.getByRole('navigation', { name: 'Scenario categories' })).getByRole('button', { name: /^Scenarios/u }));
-    // 场景工作台：新建菜单 → 手动创建（落库默认场景并选中）。
+    // 场景工作台：新建场景按钮点击直接创建（落库默认场景并选中，不再有下拉菜单）。
     fireEvent.click(await screen.findByTestId('sw-new-scenario'));
-    fireEvent.click(screen.getByTestId('sw-new-menu').querySelectorAll('button')[1]!);
 
     const nameInput = await screen.findByDisplayValue('My Scenarios');
     fireEvent.change(nameInput, { target: { value: 'Durable custom conversation' } });

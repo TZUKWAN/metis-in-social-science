@@ -41,6 +41,17 @@
   font-weight: 600;
 }
 .sw-library__ai:hover { background: rgba(31, 58, 95, 0.06); }
+/* 模板识别：与 AI 创建一致的次要按钮样式 */
+.sw-library__template {
+  border: 1px dashed var(--border-light);
+  color: var(--text-secondary);
+  background: transparent;
+  border-radius: 4px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.sw-library__template:hover { background: rgba(31, 58, 95, 0.05); color: var(--text-primary); }
 .sw-newmenu {
   position: absolute;
   top: 100%;
