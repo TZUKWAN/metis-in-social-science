@@ -25,6 +25,7 @@ import ScenarioWorkbench, { type WorkbenchTab } from './ScenarioWorkbench.js';
 import ScenarioAiCreateDialog from './ScenarioAiCreateDialog.js';
 import { Upload, X } from 'lucide-react';
 import './PersonalizationCenter.css';
+import CategoryTreePanel from './CategoryTreePanel.js';
 
 type Kind = PersonalizationDefinition['kind'];
 
@@ -1742,6 +1743,21 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
   const filtered = useMemo(() => userDefinitions.filter((item) => item.kind === kind), [userDefinitions, kind]);
   const selected = userDefinitions.find((item) => item.id === selectedId) ?? null;
 
+  // 非场景类：分类过滤（由 CategoryTreePanel 控制）
+  const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
+  const categoryFiltered = useMemo(() => {
+    if (kind === 'scenario' || !categoryFilter) return filtered;
+    const map = (() => {
+      try {
+        const raw = localStorage.getItem(`metis-${kind}-category-map:v1`);
+        return raw ? JSON.parse(raw) : {};
+      } catch {
+        return {};
+      }
+    })();
+    return filtered.filter((definition) => map[definition.id] === categoryFilter);
+  }, [filtered, kind, categoryFilter]);
+
   const handleDraftStateChange = useCallback((definitionId: string, retained: boolean) => {
     setDraftIds((current) => {
       if (current.has(definitionId) === retained) return current;
@@ -2126,9 +2142,14 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
           </div>
           {loading && <p>{zh ? '正在加载…' : 'Loading…'}</p>}
           {!loading && loadError && <div className="personalization-load-error" role="alert"><span>{loadError}</span><button type="button" onClick={() => void load()}>{zh ? '重试' : 'Retry'}</button></div>}
-          {!loading && !loadError && filtered.length === 0 && <p className="personalization-empty">{zh ? '还没有自定义内容。' : 'No custom definitions yet.'}</p>}
+          <CategoryTreePanel kind={kind} definitions={userDefinitions} filtered={filtered} onFilterChange={setCategoryFilter} onArchive={archive} zh={zh} />
+          {!loading && !loadError && categoryFiltered.length === 0 && (
+            <p className="personalization-empty">{categoryFilter
+              ? (zh ? '该分组还没有内容。' : 'No items in this category yet.')
+              : (zh ? '还没有自定义内容。' : 'No custom definitions yet.')}</p>
+          )}
           <div className="personalization-cards">
-            {filtered.map((definition, index) => {
+            {categoryFiltered.map((definition, index) => {
               const missingScenarioAgent = definition.kind === 'scenario'
                 && definition.enabled
                 && definition.capability !== 'presentation_reserved'
