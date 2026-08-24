@@ -1,0 +1,59 @@
+/* Comparison Matrix Page — table and selector styles.
+ * Reuses graph-page/graph-toolbar/btn-toggle from the host page. */
+
+.comparison-matrix-page {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-secondary);
+}
+
+.comparison-selector {
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-card);
+}
+
+.comparison-table-wrap {
+  flex: 1;
+  overflow: auto;
+  padding: 16px;
+}
+
+.comparison-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  background: var(--bg-card);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.comparison-table th,
+.comparison-table td {
+  border: 1px solid var(--border);
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+  color: var(--text-primary);
+}
+
+.comparison-table th {
+  background: var(--bg-secondary);
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.comparison-table tbody tr:nth-child(even) {
+  background: var(--bg-secondary);
+}
+
+.comparison-markdown {
+  flex: 1;
+  overflow: auto;
+  padding: 16px;
+  background: var(--bg-card);
+}

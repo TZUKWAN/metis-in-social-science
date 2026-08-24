@@ -1,0 +1,59 @@
+.settings-image-generation__state {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 8px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.settings-image-generation__state--configured {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  color: var(--accent);
+}
+
+.settings-image-generation__state--saving,
+.settings-image-generation__state--loading {
+  color: var(--text-secondary);
+}
+
+.settings-image-generation__state--unavailable {
+  border-color: color-mix(in srgb, var(--danger) 48%, var(--border));
+  color: var(--danger);
+}
+
+.settings-image-generation__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.settings-image-generation__endpoint {
+  grid-column: 1 / -1;
+}
+
+.settings-image-generation__secret {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 0.9fr);
+  align-items: end;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+}
+
+.settings-image-generation__secret strong { font-size: 13px; }
+.settings-image-generation__secret p { margin: 4px 0 0; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
+.settings-image-generation__secret .settings-input { margin: 0; }
+.settings-image-generation__notice { margin: 12px 0 0; font-size: 12px; line-height: 1.5; }
+.settings-image-generation__notice--success { color: var(--status-completed); }
+.settings-image-generation__notice--error { color: var(--danger); }
+.settings-image-generation__notice--info { color: var(--text-secondary); }
+
+@media (max-width: 640px) {
+  .settings-image-generation__grid,
+  .settings-image-generation__secret { grid-template-columns: 1fr; }
+}

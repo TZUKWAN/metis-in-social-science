@@ -1,0 +1,82 @@
+/**
+ * @vitest-environment jsdom
+ */
+
+import { describe, it, expect, beforeEach } from 'vitest';
+import {
+  clearPendingChatIntent,
+  consumePendingChatIntent,
+  peekPendingChatIntent,
+  setPendingChatIntent,
+} from '../../src/lib/chatIntent.js';
+
+const KEY = 'metis:pendingChatIntent';
+
+describe('chatIntent', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('stores and consumes a pending chat intent', () => {
+    setPendingChatIntent({ skillId: 'paper-review', message: 'Review this paper' });
+    const intent = consumePendingChatIntent();
+    expect(intent).toEqual({ skillId: 'paper-review', message: 'Review this paper' });
+    expect(localStorage.getItem(KEY)).toBeNull();
+  });
+
+  it('preserves exact scenario, project, and session ownership fields', () => {
+    setPendingChatIntent({
+      scenarioId: 'user:scenarios/exact-runtime',
+      projectId: 'project-a',
+      sessionId: 'session-a',
+      message: 'Run the exact scenario',
+      autoSend: true,
+    });
+
+    expect(consumePendingChatIntent()).toEqual({
+      scenarioId: 'user:scenarios/exact-runtime',
+      projectId: 'project-a',
+      sessionId: 'session-a',
+      message: 'Run the exact scenario',
+      autoSend: true,
+    });
+    expect(localStorage.getItem(KEY)).toBeNull();
+  });
+
+  it('can inspect a scenario handoff without consuming it until the catalog is authoritative', () => {
+    const intent = {
+      scenarioId: 'user:scenarios/catalog-dependent',
+      projectId: 'project-a',
+      message: 'Wait for the authoritative catalog',
+      autoSend: true,
+    };
+    setPendingChatIntent(intent);
+
+    expect(peekPendingChatIntent()).toEqual(intent);
+    expect(peekPendingChatIntent()).toEqual(intent);
+    expect(localStorage.getItem(KEY)).not.toBeNull();
+
+    clearPendingChatIntent();
+    expect(peekPendingChatIntent()).toBeNull();
+    expect(localStorage.getItem(KEY)).toBeNull();
+  });
+
+  it('returns null when there is no intent', () => {
+    expect(consumePendingChatIntent()).toBeNull();
+  });
+
+  it('returns null and clears invalid stored data', () => {
+    localStorage.setItem(KEY, 'not-json');
+    expect(consumePendingChatIntent()).toBeNull();
+    expect(localStorage.getItem(KEY)).toBeNull();
+  });
+
+  it.each([
+    { message: 'bad project', projectId: 42 },
+    { message: 'bad session', sessionId: false },
+  ])('rejects malformed ownership data: $message', (payload) => {
+    localStorage.setItem(KEY, JSON.stringify(payload));
+    expect(consumePendingChatIntent()).toBeNull();
+    expect(localStorage.getItem(KEY)).toBeNull();
+  });
+});

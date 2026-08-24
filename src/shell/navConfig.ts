@@ -1,0 +1,96 @@
+/**
+ * Navigation visibility config (METIS-506).
+ *
+ * Builds the user-facing nav list from the diagnostic-mode gate (METIS-209). In normal mode
+ * only research actions appear; technical entries (Skill/MCP/Sandbox/Eval/Terminal/Runtime)
+ * are hidden and reachable only under 设置 > 高级 > 开发者诊断.
+ */
+
+import { isNavVisible } from '../../engine/capabilities/DiagnosticMode.js';
+
+export interface NavEntry {
+  id: string;
+  /** User-facing label key (METIS-107 dictionary — no technical jargon). */
+  labelKey: string;
+  /** The three top-level entries (METIS-103). */
+  isTopLevel: boolean;
+  /**
+   * Optional one-line "what is this workspace for" tooltip key (O11). When
+   * present the top bar renders it as the hover title so new users can tell
+   * the workspaces apart without trial-and-error. Falls back to labelKey.
+   */
+  descriptionKey?: string;
+}
+
+/**
+ * The canonical normal-mode nav. Three top-level entries + research sub-entries that live
+ * inside a project. Every entry here is user-facing-research terminology; nothing technical.
+ */
+/**
+ * The canonical normal-mode nav. Two top-level entries + research sub-entries that live
+ * inside a project. Every entry here is user-facing-research terminology; nothing technical.
+ */
+const NORMAL_NAV: NavEntry[] = [
+  { id: 'projects', labelKey: 'nav.projects', descriptionKey: 'nav.projectsDesc', isTopLevel: true },
+  { id: 'settings', labelKey: 'nav.settings', descriptionKey: 'nav.settingsDesc', isTopLevel: true },
+  // project-internal modes (METIS-104)
+  { id: 'converse', labelKey: 'nav.converse', descriptionKey: 'nav.converseDesc', isTopLevel: false },
+];
+
+/**
+ * Technical entries that ONLY appear in diagnostic mode. Their label keys intentionally
+ * use technical terms — they are developer-facing, never shown to a researcher.
+ */
+const DIAGNOSTIC_NAV: NavEntry[] = [
+  { id: 'evals', labelKey: 'nav.evals', isTopLevel: false },
+  { id: 'mcp_admin', labelKey: 'nav.mcpAdmin', isTopLevel: false },
+  { id: 'skill_admin', labelKey: 'nav.skillAdmin', isTopLevel: false },
+  { id: 'terminal', labelKey: 'nav.terminal', isTopLevel: false },
+  { id: 'runtime', labelKey: 'nav.runtime', isTopLevel: false },
+  { id: 'logs', labelKey: 'nav.logs', isTopLevel: false },
+];
+
+/** The full nav list for the current mode (filters technical entries when normal). */
+export function getVisibleNav(): NavEntry[] {
+  return [...NORMAL_NAV, ...DIAGNOSTIC_NAV].filter((e) => isNavVisible(e.id));
+}
+
+/** Only the three legacy top-level entries (kept for session compatibility). */
+export function getTopLevelNav(): NavEntry[] {
+  return NORMAL_NAV.filter((e) => e.isTopLevel);
+}
+
+/**
+ * Primary top-bar modes. These are deliberately separate from TopLevelEntry:
+ * the persisted app entry remains projects/library/settings while researchers
+ * navigate directly between the four workspaces.
+ */
+export function getPrimaryWorkspaceNav(): NavEntry[] {
+  // 固定顺序：对话在前、科研项目在后（与 NORMAL_NAV 的声明顺序无关）。
+  const byId = new Map(NORMAL_NAV.map((entry) => [entry.id, entry]));
+  return ['converse', 'projects']
+    .map((id) => byId.get(id))
+    .filter((entry): entry is NavEntry => entry !== undefined);
+}
+
+/** Standalone research destinations promoted into the visible top bar. */
+export function getPrimaryResearchNav(): NavEntry[] {
+  return [
+    { id: 'outcomes', labelKey: 'nav.outcomes', descriptionKey: 'nav.outcomesDesc', isTopLevel: true },
+  ];
+}
+
+/**
+ * Preference destinations shown beside the top-level entries. Scenarios is a
+ * toggle entry (opens the scenario center) rather than a persisted app entry,
+ * so App owns its click behavior while the label/ID live here with the rest
+ * of the navigation configuration.
+ */
+export function getPreferenceNav(): NavEntry[] {
+  return [{ id: 'personalization', labelKey: 'personalization.title', descriptionKey: 'nav.personalizationDesc', isTopLevel: true }];
+}
+
+/** Whether a given nav id is a technical (hidden-by-default) entry. */
+export function isTechnicalNavEntry(id: string): boolean {
+  return DIAGNOSTIC_NAV.some((e) => e.id === id);
+}

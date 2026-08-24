@@ -1,0 +1,347 @@
+/**
+ * Academic Research Cockpit — global design tokens (DESIGN-METIS-403).
+ *
+ * Visual direction: rational, restrained research instrument.
+ * Light mode: cool paper white / graphite ink / deep ink navy accent.
+ * Dark mode: obsidian + low-saturation steel blue.
+ * Typography: 宋体 (Song) carries academic content; neutral sans for chrome.
+ *
+ * This file is the single source of truth for theme variables. Component
+ * styles should reference these custom properties; hardcoded accent colors
+ * and blue fallbacks are not allowed.
+ */
+
+/* ─── Light Theme ───────────────────────────────────── */
+
+:root {
+  /* Layout */
+  --sidebar-width: 220px;
+  --chat-sidebar-width: 240px;
+  --right-panel-width: 260px;
+
+  /* Radii — small and precise, no large decorative rounding */
+  --radius: 3px;
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 4px;
+
+  /* Typography */
+  /* Academic UI baseline: Atkinson Hyperlegible for chrome, Crimson Pro for scholarly text. */
+  --font-sans: "Source Han Sans SC", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", "Atkinson Hyperlegible", system-ui, sans-serif;
+  --font-serif: "STSong", "SimSun", "Songti SC", "Source Han Serif SC", "Noto Serif CJK SC", "Crimson Pro", Georgia, serif;
+  --font-mono: "JetBrains Mono", "Source Code Pro", Consolas, monospace;
+  --font-size-xs: 11px;
+  --font-size-sm: 12px;
+  --font-size-base: 14px;
+  --font-size-lg: 17px;
+  --line-height: 1.6;
+  --line-height-tight: 1.35;
+  --line-height-relaxed: 1.72;
+
+  /* Spacing */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-xs: var(--space-1);
+  --space-sm: var(--space-2);
+  --space-md: var(--space-3);
+  --space-lg: var(--space-5);
+
+  /* Surfaces — warm paper (anthropic-inspired evolution of DESIGN-METIS-403) */
+  --bg-main: #faf9f5;                 /* warm paper */
+  --bg-body: var(--bg-main);
+  --bg-card: #fffefa;
+  --bg-sidebar: #f4f2ec;
+  --bg-inspector: #fffefa;
+  --bg-hover: #f1efe7;
+  --bg-active: #eae7dc;               /* ink 6%, warmed */
+  --bg-input: #fffefc;
+  --bg-input-disabled: #f3f1ea;
+  --bg-code-header: #f3f1ea;
+  --bg-code-block: #201e19;
+  --bg-modal-overlay: rgba(23, 21, 16, 0.45);
+  --bg-modal: #fffefa;
+  --bg-danger-hover: #faf0ec;
+  --bg-secondary: #f4f2eb;
+  --search-highlight-bg: #ede4d2;
+
+  /* Accent — deep ink navy (single source of emphasis) */
+  --accent: #263a59;
+  --accent-hover: #1c2c45;
+  --accent-soft: color-mix(in srgb, var(--accent) 10%, transparent);
+  --accent-warm: #b0562f;             /* restrained clay */
+  --accent-warm-soft: color-mix(in srgb, var(--accent-warm) 12%, transparent);
+
+  /* Legacy primary alias for old App.css classes */
+  --primary: var(--accent);
+  --primary-hover: var(--accent-hover);
+  --primary-soft: var(--accent-soft);
+
+  /* Text — graphite hierarchy */
+  --text-heading: #171512;
+  --text-primary: var(--text-heading);
+  --text-body: #2e2c26;
+  --text-secondary: #514d43;
+  --text-muted: #6b6659;
+  --text-on-accent: #ffffff;
+  --text-on-primary: var(--text-on-accent);
+  --text-on-sidebar: var(--text-secondary);
+  --text-on-sidebar-muted: var(--text-muted);
+  --text-on-sidebar-hover: var(--text-heading);
+  --text-link: var(--accent);
+
+  /* Borders — warm hairline */
+  --border: #e5e1d6;
+  --border-light: #eae6dc;
+  --border-danger: #e53e3e;
+
+  /* Shadows — nearly absent; hairline borders carry structure */
+  --shadow-card: none;
+  --shadow-raised: 0 3px 12px rgba(23, 21, 16, 0.08);
+  --shadow-modal: 0 12px 40px rgba(23, 21, 16, 0.16);
+  --transition-fast: 150ms ease;
+  --transition-standard: 220ms ease;
+
+  /* Status — semantic colors only */
+  --status-read-bg: #e8f5ee;
+  --status-read-text: #276749;
+  --status-reading-bg: #eef4fb;
+  --status-reading-text: #2b6cb0;
+  --status-skimmed-bg: #faf6ed;
+  --status-skimmed-text: #744210;
+  --status-unread-bg: #f7f8fa;
+  --status-unread-text: #4a5568;
+  --status-running: var(--accent);
+  --status-running-bg: var(--accent-soft);
+  --status-completed: #2f855a;
+  --status-completed-bg: #e8f5ee;
+  --status-failed: #c53030;
+  --status-failed-bg: #fff5f5;
+  --status-danger: #c53030;
+  --danger: var(--status-failed);
+  --success: var(--status-completed);
+
+  /* Evidence status */
+  --evidence-verified: #2f855a;
+  --evidence-pending: #b7791f;
+  --evidence-contested: #b7791f;
+  --evidence-stale: #718096;
+  --evidence-refuted: #c53030;
+
+  /* Chart palette — low-saturation, colorblind-aware */
+  --chart-1: #263a59;
+  --chart-2: #2f855a;
+  --chart-3: #718096;
+  --chart-4: #4d7a9e;
+  --chart-5: #c53030;
+  --chart-6: #b8922e;
+  --chart-7: #6b7280;
+  --chart-8: #8c7b70;
+
+  /* Focus ring (a11y): color is valid in outline; shadow is valid in box-shadow. */
+  --focus-ring-color: rgba(30, 58, 95, 0.78);
+  --focus-ring-shadow: 0 0 0 2px rgba(38, 58, 89, 0.4);
+  --focus-ring: 0 0 0 2px rgba(38, 58, 89, 0.72);
+
+  /* Tag / legacy accents retain semantic roles. */
+  --tag-bg: var(--accent-soft);
+  --tag-text: var(--accent);
+  --accent-cool: var(--text-muted);
+  --accent-purple: var(--text-muted);
+}
+
+/* ─── Dark Theme ────────────────────────────────────── */
+
+[data-theme="dark"] {
+  --bg-main: #131211;                 /* warm charcoal */
+  --bg-body: var(--bg-main);
+  --bg-card: #1b1a16;
+  --bg-sidebar: #100f0d;
+  --bg-inspector: #1b1a16;
+  --bg-hover: #26231d;
+  --bg-active: #22201a;
+  --bg-input: #1b1a16;
+  --bg-input-disabled: #131211;
+  --bg-code-header: #1b1a16;
+  --bg-code-block: #171613;
+  --bg-modal-overlay: rgba(0, 0, 0, 0.65);
+  --bg-modal: #1b1a16;
+  --bg-danger-hover: rgba(197, 48, 48, 0.1);
+  --bg-secondary: #1b1a16;
+  --search-highlight-bg: #3a352a;
+
+  --accent: #d3c6a6;                  /* aged parchment — low-saturation warm */
+  --accent-hover: #e2d8bf;
+  --accent-soft: rgb(211 198 166 / 13%);
+  --accent-warm: #d99a71;
+  --accent-warm-soft: rgb(217 154 113 / 15%);
+
+  --primary: var(--accent);
+  --primary-hover: var(--accent-hover);
+  --primary-soft: var(--accent-soft);
+
+  --text-heading: #e8e4da;
+  --text-primary: var(--text-heading);
+  --text-body: #d1ccc0;
+  --text-secondary: #a39e90;
+  --text-muted: #99937f;
+  --text-on-accent: #0a0d12;
+  --text-on-sidebar: var(--text-secondary);
+  --text-on-sidebar-muted: var(--text-muted);
+  --text-on-sidebar-hover: var(--text-heading);
+  --text-link: var(--accent);
+
+  --border: #34302a;
+  --border-light: #34302a;
+  --border-danger: #fc8181;
+
+  --shadow-card: none;
+  --shadow-modal: 0 12px 40px rgba(0, 0, 0, 0.5);
+
+  --status-read-bg: rgba(56, 161, 105, 0.12);
+  --status-read-text: #68d391;
+  --status-reading-bg: rgba(49, 130, 206, 0.12);
+  --status-reading-text: #63b3ed;
+  --status-skimmed-bg: rgba(183, 121, 31, 0.12);
+  --status-skimmed-text: #ecc94b;
+  --status-unread-bg: rgba(113, 128, 150, 0.12);
+  --status-unread-text: #a0aec0;
+  --status-running: var(--accent);
+  --status-running-bg: var(--accent-soft);
+  --status-completed: #68d391;
+  --status-completed-bg: rgba(56, 161, 105, 0.12);
+  --status-failed: #fc8181;
+  --status-failed-bg: rgba(252, 129, 129, 0.12);
+  --status-danger: #fc8181;
+  --danger: var(--status-failed);
+  --success: var(--status-completed);
+
+  --evidence-verified: #68d391;
+  --evidence-pending: #f0bd84;
+  --evidence-contested: #f0bd84;
+  --evidence-stale: #a0aec0;
+  --evidence-refuted: #fc8181;
+
+  --chart-1: #d3c6a6;
+  --chart-2: #68d391;
+  --chart-3: #a0aec0;
+  --chart-4: #7aa2d4;
+  --chart-5: #fc8181;
+  --chart-6: #ecc94b;
+  --chart-7: #94a3b8;
+  --chart-8: #a8a29e;
+
+  --focus-ring-color: rgba(211, 198, 166, 0.82);
+  --focus-ring-shadow: 0 0 0 2px rgba(211, 198, 166, 0.5);
+  --focus-ring: 0 0 0 2px rgba(211, 198, 166, 0.82);
+
+  --tag-bg: var(--accent-soft);
+  --tag-text: var(--accent);
+  --accent-cool: var(--text-muted);
+  --accent-purple: var(--text-muted);
+}
+
+/* ─── Focus-visible (a11y) ─────────────────────────────── */
+
+:focus-visible {
+  outline: 2px solid var(--focus-ring-color);
+  outline-offset: 3px;
+  box-shadow: var(--focus-ring-shadow);
+}
+
+button,
+[role="button"],
+a,
+input,
+select,
+textarea {
+  transition: border-color var(--transition-fast), background-color var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+button:not(:disabled),
+[role="button"]:not([aria-disabled="true"]),
+a {
+  cursor: pointer;
+}
+
+[data-theme="dark"] :focus-visible {
+  outline-color: rgba(211, 198, 166, 0.82);
+}
+
+/* ─── Reduced motion ───────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ─── Forced colors ────────────────────────────────────── */
+
+@media (forced-colors: active) {
+  :root {
+    --border: ButtonBorder;
+    --border-light: ButtonBorder;
+    --primary: Highlight;
+    --primary-hover: Highlight;
+    --text-secondary: CanvasText;
+    --text-muted: GrayText;
+    --text-on-accent: HighlightText;
+    --text-on-primary: HighlightText;
+    --bg-hover: Canvas;
+    --focus-ring-color: Highlight;
+    --status-read-bg: Canvas;
+    --status-read-text: CanvasText;
+    --status-unread-bg: Canvas;
+    --status-unread-text: GrayText;
+    --accent: Highlight;
+    --accent-hover: Highlight;
+    --text-heading: CanvasText;
+    --text-body: CanvasText;
+    --text-primary: CanvasText;
+    --bg-main: Canvas;
+    --bg-card: Canvas;
+    --bg-sidebar: Canvas;
+    --bg-inspector: Canvas;
+    --bg-input: Canvas;
+  }
+  [data-theme="dark"] {
+    --border: ButtonBorder;
+    --accent: Highlight;
+    --accent-hover: Highlight;
+    --text-heading: CanvasText;
+    --text-body: CanvasText;
+    --bg-main: Canvas;
+    --bg-card: Canvas;
+  }
+  :focus-visible {
+    outline: 3px solid Highlight;
+    outline-offset: 2px;
+  }
+}
+
+/* ─── 统一浮层层级（L2）：所有 z-index 必须引用这里，禁止散落硬编码 ───
+ * 数值必须随档位递增：sticky < sidebar < inpage < dropdown < overlay
+ *   < overlay-top < modal < modal-top < approval < toast。
+ * toast(1500) 高于 approval(1200)：语义为“全局通知永远在最上层”，
+ * 不能被审批弹窗或任何模态盖住。 */
+:root {
+  --z-sticky: 3;         /* 页内吸顶元素（运行时间线横幅等） */
+  --z-sidebar: 30;       /* 顶栏/侧栏等常驻框架层及其内部下拉 */
+  --z-inpage: 40;        /* 页内局部浮层（页内弹出菜单、页内面板、局部控件） */
+  --z-dropdown: 80;      /* 全局下拉/指示面板（JobsIndicator 等） */
+  --z-overlay: 89;       /* 常规模态浮层（方法库/投稿/引导 tour 遮罩等） */
+  --z-overlay-top: 90;   /* 需要浮在常规浮层之上（内嵌浏览原文/tour 聚光目标） */
+  --z-modal: 100;        /* 全局模态（命令面板/导入对话框/工作区大模态） */
+  --z-modal-top: 1000;   /* 浮在模态之上（审批弹窗/选中询问按钮/SCAI 对话框） */
+  --z-approval: 1200;    /* 主进程审批 Hook 推送的场景步骤审批，压过普通模态 */
+  --z-toast: 1500;       /* 全局通知，永远最上（高于 approval） */
+}
