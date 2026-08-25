@@ -110,9 +110,7 @@ definition forms (01 basics → 02 deliverable → 03 workflow → 04 Scenario M
 → 05 output plan), and the **scenario configuration assistant** that compiles
 natural language into definitions.
 
-![Scenario Library](docs/screenshots/scenario-library.png)
-
-![Scenario Editor](docs/screenshots/scenario-editor.png)
+![Scenario Library & Editor](docs/screenshots/scenario-editor.png)
 
 ### 📚 Project Materials
 

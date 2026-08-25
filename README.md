@@ -142,12 +142,7 @@ Metis 是一个**本地优先**的桌面科研工作台：主存储是你自己�
 （01 基本信息 → 02 交付物 → 03 Workflow → 04 Scenario Metis.md → 05 输出计划），
 右栏**场景配置助手**——用自然语言驱动 AI 编译器，右侧定义同步成型。
 
-![场景库](docs/screenshots/scenario-library.png)
-
-打开场景后的编辑态：每个阶段都是结构化表单，AI 与手动编辑作用于同一份草稿，
-**保存后才成为可运行版本**：
-
-![场景编辑器](docs/screenshots/scenario-editor.png)
+![场景库与场景编辑器](docs/screenshots/scenario-editor.png)
 
 ### 📚 项目资料页——文献检索与语料管理
 
