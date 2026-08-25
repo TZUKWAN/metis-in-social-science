@@ -1,4 +1,4 @@
-# Contributing to Metis in Social Science
+﻿# Contributing to Metis in Social Science
 
 Thank you for improving Metis. The project is in early alpha, so focused changes with
 clear evidence are easier to review than broad rewrites.
@@ -49,4 +49,5 @@ real boundary can be exercised.
 - Preserve renderer isolation and validate all IPC input and output.
 - Update README or release documentation when commands or user-facing behavior change.
 
-By contributing, you agree that your contribution is licensed under Apache-2.0.
+By contributing, you agree that your contribution is licensed under the MIT License.
+

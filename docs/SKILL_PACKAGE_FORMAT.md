@@ -1,4 +1,4 @@
-# Metis Skill Package Format
+﻿# Metis Skill Package Format
 
 Metis Skill packages are versioned ZIP archives (or local development directories) with one strict `metis-skill.json` manifest. Packages may carry Markdown documentation, schemas, assets, and scripts. Installation never executes package scripts; execution is a separate capability boundary.
 
@@ -25,7 +25,7 @@ GitHub-generated ZIP files may wrap this layout in one repository directory. A p
   "description": "Synthesize a bounded evidence set.",
   "version": "1.0.0",
   "author": "Example author",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "entry": "SKILL.md",
   "systemPromptFile": "SKILL.md",
   "files": [
@@ -61,3 +61,4 @@ Repository URLs such as `https://github.com/owner/repository` are resolved throu
 ## Limits
 
 The current contract permits at most 512 declared files, 32 MiB per file/archive download, and 96 MiB extracted total. ZIP64, multi-disk ZIP, encrypted ZIP, and non-UTF-8 file names are rejected.
+
