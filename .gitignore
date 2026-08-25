@@ -31,12 +31,7 @@ coverage
 test_screenshots
 screenshots
 !docs/screenshots/
-docs/screenshots/*
-!docs/screenshots/provider-setup.png
-!docs/screenshots/research-notes-dark.png
-!docs/screenshots/personalization-center.png
-!docs/screenshots/scenario-builder.png
-!docs/screenshots/paper-library.png
+# README 截图全部入库（docs/screenshots/ 含 ui-journey 子目录）
 /test-results/
 /run-logs/
 /artifacts/
