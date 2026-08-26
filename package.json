@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "metis-workbench",
   "private": true,
   "version": "0.1.0-alpha.2",
@@ -60,7 +60,7 @@
     "prismjs": "^1.30.0",
     "qrcode.react": "^4.2.0",
     "react": "^19.2.6",
-    "react-dom": "^19.2.6",
+    "react-dom": "^19.2.8",
     "react-is": "^19.2.7",
     "react-markdown": "^10.1.0",
     "react-window": "^2.3.0",
@@ -173,7 +173,7 @@
     "@types/node": "^24.12.3",
     "@types/prismjs": "^1.26.6",
     "@types/react": "^19.2.14",
-    "@types/react-dom": "^19.2.3",
+    "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^6.0.1",
     "@vitest/coverage-v8": "^4.1.8",
     "concurrently": "^10.0.3",
