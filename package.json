@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "metis-workbench",
   "private": true,
   "version": "0.1.0-alpha.2",
@@ -65,7 +65,7 @@
     "react-markdown": "^10.1.0",
     "react-window": "^2.3.0",
     "reactflow": "^11.11.4",
-    "recharts": "^3.8.1",
+    "recharts": "^3.10.1",
     "remark-gfm": "^4.0.1",
     "zod": "^4.4.3",
     "zustand": "^5.0.14"
