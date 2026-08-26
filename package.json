@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "metis-workbench",
   "private": true,
   "version": "0.1.0-alpha.2",
@@ -187,7 +187,7 @@
     "qrcode": "^1.5.4",
     "tailwindcss": "^4.3.0",
     "typescript": "~6.0.2",
-    "typescript-eslint": "^8.59.2",
+    "typescript-eslint": "^8.67.0",
     "vite": "^8.0.12",
     "vitest": "^4.1.8",
     "wait-on": "^9.0.10"
