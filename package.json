@@ -1,7 +1,7 @@
 {
   "name": "metis-workbench",
   "private": true,
-  "version": "0.1.0-alpha.2",
+  "version": "0.1.0-alpha.3",
   "description": "AI-powered research workbench for literature, notes, analysis, writing, and reproducible research workflows.",
   "author": "Metis",
   "license": "MIT",
