@@ -14,6 +14,7 @@ import { researchWorkspaceStore, useResearchWorkspaceStore } from '../research/r
 import { Button, Input, Select } from '../components/ui';
 import TaskBoardPage from './TaskBoardPage';
 import LibraryPage from './LibraryPage';
+import { ProjectMaterialsPanel } from './ProjectMaterialsPanel';
 import ProjectHomeBanner from '../components/ProjectHomeBanner';
 import SplitHandle from '../components/SplitHandle';
 
@@ -495,10 +496,13 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
             />
           )}
           {mode === 'materials' && (
+            <div className="projects-page__materials">
+            <ProjectMaterialsPanel projectId={activeProjectId} />
             <LibraryPage
               key={activeProjectId ?? 'no-project'}
               projectId={activeProjectId}
             />
+            </div>
           )}
         </div>
       </div>

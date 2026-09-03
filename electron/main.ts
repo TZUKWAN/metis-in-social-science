@@ -10505,6 +10505,87 @@ function buildFundingTemplateDigest(pkg: { source?: { sourceFormat?: string; pag
     }
   });
 
+  // ── 项目参考材料库（2026-09-01 刘总要求）：上传 / 列表 / 删除 / 改大类 ──
+  const MATERIAL_CATEGORY_VALUES = ['references', 'data', 'code', 'notes', 'template_spec', 'other'];
+  ipcMain.handle('scenario:material:importDialog', async (event, rawRequest: unknown) => {
+    try {
+      const window = requireRendererMainFrame(event);
+      const parsedInput = z.object({
+        projectId: z.string().min(1),
+        category: z.enum(['references', 'data', 'code', 'notes', 'template_spec', 'other']).optional(),
+      }).safeParse(rawRequest);
+      if (!parsedInput.success) return { ok: false as const, error: '请求无效。' };
+      const selected = await dialog.showOpenDialog(window, {
+        title: '上传参考材料（txt/md/csv/json/docx/pdf/pptx/xlsx/py/R/do/sav/dta…）',
+        filters: [
+          { name: '参考材料', extensions: ['txt', 'md', 'markdown', 'csv', 'json', 'docx', 'pdf', 'pptx', 'xlsx', 'xlsm', 'py', 'r', 'do', 'sav', 'dta', 'rds'] },
+          { name: '全部文件', extensions: ['*'] },
+        ],
+        properties: ['openFile', 'multiSelections'],
+      });
+      if (selected.canceled || selected.filePaths.length === 0) return { ok: false as const, error: 'cancelled' };
+      const { getPdfReader } = await import('../engine/research/PdfReader.js');
+      const reader = getPdfReader();
+      const imported: Array<{ id: string; name: string; category: string; charCount: number; binaryArchive?: string }> = [];
+      const errors: Array<{ name: string; error: string }> = [];
+      for (const filePath of selected.filePaths.slice(0, 12)) {
+        const fileName = filePath.split(/[\/]/).pop() ?? filePath;
+        try {
+          const material = await scenarioMaterials.importMaterial(filePath, {
+            category: parsedInput.data.category,
+            projectId: parsedInput.data.projectId,
+            extractPdf: (target) => reader.extractText(target),
+          });
+          imported.push({ id: material.id, name: material.name, category: parsedInput.data.category ?? 'other', charCount: material.charCount });
+        } catch (err) {
+          const rawMessage = String((err as Error).message ?? err);
+          const friendly = rawMessage.startsWith('ppt_legacy_unsupported')
+            ? '旧版 .ppt 请先转存为 .pptx'
+            : rawMessage === 'material_too_short'
+              ? '文件内容过短'
+              : rawMessage === 'unsupported_material_type'
+                ? '不支持的文件类型'
+                : rawMessage.slice(0, 120);
+          errors.push({ name: fileName, error: friendly });
+        }
+      }
+      return { ok: true as const, imported, errors };
+    } catch (error) {
+      return { ok: false as const, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+  ipcMain.handle('scenario:material:list', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsedInput = z.object({ projectId: z.string().min(1).optional() }).safeParse(rawRequest);
+      if (!parsedInput.success) return { ok: false as const, error: '请求无效。' };
+      return { ok: true as const, materials: scenarioMaterials.listMaterials(parsedInput.data.projectId) };
+    } catch (error) {
+      return { ok: false as const, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+  ipcMain.handle('scenario:material:delete', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsedInput = z.object({ id: z.string().min(1).max(120) }).safeParse(rawRequest);
+      if (!parsedInput.success) return { ok: false as const, error: '请求无效。' };
+      const deleted = scenarioMaterials.deleteMaterial(parsedInput.data.id);
+      return { ok: true as const, deleted };
+    } catch (error) {
+      return { ok: false as const, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+  ipcMain.handle('scenario:material:setCategory', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsedInput = z.object({ id: z.string().min(1).max(120), category: z.enum(['references', 'data', 'code', 'notes', 'template_spec', 'other']) }).safeParse(rawRequest);
+      if (!parsedInput.success) return { ok: false as const, error: '请求无效。' };
+      const updated = scenarioMaterials.setMaterialCategory(parsedInput.data.id, parsedInput.data.category);
+      return updated ? { ok: true as const } : { ok: false as const, error: '材料不存在。' };
+    } catch (error) {
+      return { ok: false as const, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
   // ── 场景参考材料与 AI 场景生成（场景重构 P1）──
   const scenarioMaterials = new ScenarioMaterialService(DATA_DIR);
   ipcMain.handle('scenario:importMaterials', async (event, rawRequest: unknown) => {

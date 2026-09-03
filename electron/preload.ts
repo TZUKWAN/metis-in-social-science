@@ -1537,6 +1537,19 @@ const api = {
     ipcRenderer.invoke('fundingTemplate:analyzeForAssistant', { projectId }) as Promise<{
       ok: boolean; message?: string; templateId?: string; summary?: string;
     }>,
+  // 项目参考材料库（2026-09-01 刘总要求）：上传/列表/删除/改大类。
+  projectMaterialImportDialog: async (request: { projectId: string; category?: string }) =>
+    ipcRenderer.invoke('scenario:material:importDialog', request) as Promise<{
+      ok: boolean; error?: string; imported?: Array<{ id: string; name: string; category: string; charCount: number }>; errors?: Array<{ name: string; error: string }>;
+    }>,
+  projectMaterialList: async (projectId: string) =>
+    ipcRenderer.invoke('scenario:material:list', { projectId }) as Promise<{
+      ok: boolean; error?: string; materials?: Array<{ id: string; name: string; category: string; charCount: number; addedAt: number; binaryArchive?: string }>;
+    }>,
+  projectMaterialDelete: async (id: string) =>
+    ipcRenderer.invoke('scenario:material:delete', { id }) as Promise<{ ok: boolean; error?: string }>,
+  projectMaterialSetCategory: async (request: { id: string; category: string }) =>
+    ipcRenderer.invoke('scenario:material:setCategory', request) as Promise<{ ok: boolean; error?: string }>,
   // 投稿参谋（2026-09-01 刘总规格）：共享浏览器+成果上下文的编排对话。
   submissionAssistantChat: async (request: { projectId: string; outcomeId: string; instruction: string; thinkingLevel?: string; intent?: Record<string, unknown>; shortlist?: Array<{ name: string; source?: string }> }) =>
     ipcRenderer.invoke('submission:assistant:chat', request) as Promise<{ ok: boolean; answer?: string; error?: string }>,

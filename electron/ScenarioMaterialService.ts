@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { readDocxText } from '../engine/io/DocxTextReader.js';
+import { extractPptxText, extractXlsxText } from './MaterialExtractors.js';
 
 export const MATERIAL_TEXT_CAP_PER_FILE = 60_000;
 export const MATERIAL_TEXT_CAP_TOTAL = 240_000;
@@ -24,6 +25,57 @@ const MATERIAL_KINDS = [
 ] as const;
 export type MaterialKind = typeof MATERIAL_KINDS[number];
 
+/**
+ * 材料大类（2026-09-01 刘总要求）：用途维度的顶层分类，与 MATERIAL_KINDS 的
+ * 场景分析细分并存——category 面向项目资料库管理，kind 面向场景分析语义。
+ */
+export const MATERIAL_CATEGORIES = [
+  'references',     // 文献（论文/书籍/报告）
+  'data',           // 数据（问卷/统计/表格，含 csv/json/xlsx 与 sav/dta/rds 原始存档）
+  'code',           // 代码（SPSS/Stata/R/Python 分析脚本）
+  'notes',          // 研究笔记（访谈记录/田野笔记/备忘）
+  'template_spec',  // 模板与规范（申报书模板/格式要求/范文）
+  'other',
+] as const;
+export type MaterialCategory = typeof MATERIAL_CATEGORIES[number];
+export const MATERIAL_CATEGORY_LABELS: Record<MaterialCategory, string> = {
+  references: '文献',
+  data: '数据',
+  code: '代码',
+  notes: '研究笔记',
+  template_spec: '模板与规范',
+  other: '其他',
+};
+
+/** 按扩展名推断材料大类（上传时的默认值，用户可改）。 */
+export function inferMaterialCategory(extension: string): MaterialCategory {
+  const ext = extension.toLowerCase();
+  if (['.py', '.r', '.do', '.sas', '.m', '.ipynb', '.sql', '.stata'].includes(ext)) return 'code';
+  if (['.csv', '.json', '.xlsx', '.xlsm', '.dta', '.sav', '.rds', '.rdata'].includes(ext)) return 'data';
+  if (['.pdf', '.docx', '.doc'].includes(ext)) return 'references';
+  if (['.md', '.markdown', '.txt', '.text'].includes(ext)) return 'notes';
+  return 'other';
+}
+
+/** 统计软件数据二进制：原样存档（不抽文本），AI 不可读但保留资产并提示导出路径。 */
+const BINARY_ARCHIVE_EXTENSIONS = new Set(['.dta', '.sav', '.rds', '.rdata']);
+/** 代码脚本扩展名：按文本读取。 */
+const CODE_TEXT_EXTENSIONS = new Set(['.py', '.r', '.do', '.sas', '.m']);
+
+export interface MaterialMeta {
+  category: MaterialCategory;
+  projectIds: string[];
+  addedAt: number;
+  /** 二进制数据存档文件名（sav/dta/rds 等）：存在时该材料不参与 AI 文本读取。 */
+  binaryArchive?: string;
+}
+
+export interface MaterialListEntry extends MaterialMeta {
+  id: string;
+  name: string;
+  charCount: number;
+}
+
 const DELIVERABLE_TYPES = [
   'theory_paper', 'empirical_paper', 'computational_paper', 'case_study', 'review_paper',
   'grant_nssfc', 'grant_nsfc', 'grant_postdoc', 'grant_other',
@@ -34,6 +86,7 @@ export type DraftDeliverableType = typeof DELIVERABLE_TYPES[number];
 
 const SECTION_KINDS = ['title', 'abstract', 'keywords', 'chapter', 'section', 'grant_column', 'attachment', 'references', 'other'] as const;
 const SECTION_STATUSES = ['locked', 'required', 'optional', 'conditional'] as const;
+
 
 export interface ImportedMaterial {
   id: string;
@@ -143,13 +196,40 @@ export class ScenarioMaterialService {
   /** 导入一份参考材料：按扩展名提取文本并落盘，返回材料元数据。 */
   async importMaterial(
     filePath: string,
-    options: { name?: string; extractPdf?: (filePath: string) => Promise<string> } = {},
+    options: { name?: string; category?: MaterialCategory; projectId?: string; extractPdf?: (filePath: string) => Promise<string> } = {},
   ): Promise<ImportedMaterial> {
     const resolved = path.resolve(filePath);
     const extension = path.extname(resolved).toLowerCase();
     const name = (options.name ?? path.basename(resolved)).slice(0, 200);
+    const id = `mat-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
     let text: string;
-    if (TEXT_EXTENSIONS.has(extension)) {
+    if (extension === '.ppt') {
+      // 旧版二进制 PPT 没有可靠的零依赖文本抽取——如实要求转存。
+      throw new Error('ppt_legacy_unsupported: 请将 .ppt 转存为 .pptx 后再上传');
+    } else if (extension === '.pptx') {
+      text = await extractPptxText(resolved);
+    } else if (extension === '.xlsx' || extension === '.xlsm') {
+      text = await extractXlsxText(resolved);
+    } else if (BINARY_ARCHIVE_EXTENSIONS.has(extension)) {
+      // SPSS(.sav)/Stata(.dta)/R(.rds/.rdata) 数据文件：零依赖无法解析内部结构，
+      // 原样存档保留资产；文本置为导出指引，AI 不可读但列表可见可下载。
+      const archived = path.join(this.#materialsDir, `${id}.archive${extension}`);
+      fs.copyFileSync(resolved, archived);
+      text = `[二进制数据文件存档：${name}。请在 ${extension.slice(1).toUpperCase()} 软件中导出为 CSV 后重新上传，AI 才能读取数据内容。]`;
+      const clippedArchive = text;
+      const archiveId = id;
+      const archiveStorageRef = `${archiveId}.txt`;
+      fs.writeFileSync(path.join(this.#materialsDir, archiveStorageRef), clippedArchive, 'utf8');
+      this.writeMaterialMeta(archiveId, {
+        category: options.category ?? 'data',
+        projectIds: options.projectId ? [options.projectId] : [],
+        addedAt: Date.now(),
+        name,
+        charCount: 0,
+        binaryArchive: `app.archive${extension}`,
+      });
+      return { id: archiveId, name, kind: 'other', storageRef: archiveStorageRef, charCount: 0 };
+    } else if (CODE_TEXT_EXTENSIONS.has(extension) || TEXT_EXTENSIONS.has(extension)) {
       text = fs.readFileSync(resolved, 'utf8');
     } else if (extension === '.docx') {
       text = readDocxText(resolved);
@@ -164,10 +244,83 @@ export class ScenarioMaterialService {
     }
     const clipped = text.replace(/\r\n/gu, '\n').trim().slice(0, 500_000);
     if (clipped.length < 20) throw new Error('material_too_short');
-    const id = `mat-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
     const storageRef = `${id}.txt`;
     fs.writeFileSync(path.join(this.#materialsDir, storageRef), clipped, 'utf8');
+    this.writeMaterialMeta(id, {
+      category: options.category ?? inferMaterialCategory(extension),
+      projectIds: options.projectId ? [options.projectId] : [],
+      addedAt: Date.now(),
+      name,
+      charCount: clipped.length,
+    });
     return { id, name, kind: 'other', storageRef, charCount: clipped.length };
+  }
+
+  // ─── 材料元数据索引与大类管理（2026-09-01 刘总要求） ───────────────────────
+
+  #metaPath(): string {
+    return path.join(this.#materialsDir, 'material-index.json');
+  }
+
+  #readMetaIndex(): Record<string, MaterialMeta & { name?: string; charCount?: number }> {
+    try {
+      const raw = fs.readFileSync(this.#metaPath(), 'utf8');
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  #writeMetaIndex(index: Record<string, unknown>): void {
+    fs.writeFileSync(this.#metaPath(), `${JSON.stringify(index, null, 1)}\n`, 'utf8');
+  }
+
+  writeMaterialMeta(id: string, meta: MaterialMeta & { name?: string; charCount?: number }): void {
+    const index = this.#readMetaIndex();
+    index[id] = meta;
+    this.#writeMetaIndex(index);
+  }
+
+  listMaterials(projectId?: string): MaterialListEntry[] {
+    const index = this.#readMetaIndex();
+    const entries: MaterialListEntry[] = [];
+    for (const [id, meta] of Object.entries(index)) {
+      if (projectId && !(meta.projectIds ?? []).includes(projectId)) continue;
+      const storageRef = `${id}.txt`;
+      const target = path.join(this.#materialsDir, storageRef);
+      let charCount = meta.charCount ?? 0;
+      try {
+        charCount = Math.max(charCount, fs.readFileSync(target, 'utf8').length);
+      } catch { continue; }
+      entries.push({
+        id, name: meta.name ?? id, charCount,
+        category: MATERIAL_CATEGORIES.includes(meta.category) ? meta.category : 'other',
+        projectIds: meta.projectIds ?? [],
+        addedAt: meta.addedAt ?? 0,
+      });
+    }
+    return entries.sort((left, right) => right.addedAt - left.addedAt);
+  }
+
+  deleteMaterial(id: string): boolean {
+    if (!/^[a-z0-9-]+$/u.test(id)) return false;
+    const target = path.join(this.#materialsDir, `${id}.txt`);
+    let deleted = false;
+    try {
+      if (fs.existsSync(target)) { fs.unlinkSync(target); deleted = true; }
+    } catch { return false; }
+    const index = this.#readMetaIndex();
+    if (index[id]) { delete index[id]; this.#writeMetaIndex(index); }
+    return deleted || index[id] === undefined;
+  }
+
+  setMaterialCategory(id: string, category: MaterialCategory): boolean {
+    const index = this.#readMetaIndex();
+    if (!index[id]) return false;
+    index[id]!.category = category;
+    this.#writeMetaIndex(index);
+    return true;
   }
 
   /** 读取已导入材料的文本（用于再次分析或追加学习）。 */

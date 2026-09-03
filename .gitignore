@@ -91,3 +91,6 @@ NUL
 diag-record.mjs
 diff-snap.mjs
 metis-app*.log
+
+# 本地打包输出（2026-09-01）：安装包与解包目录不入库
+release2/
