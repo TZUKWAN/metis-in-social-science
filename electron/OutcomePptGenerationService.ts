@@ -7,6 +7,7 @@
  * committed as an immutable AI version through OutcomeRepository.
  */
 import { randomUUID } from 'node:crypto';
+import { OutlineDocumentSchema, outlineContractPrompt, getPptThemeProfile, renderZoneOutline, auditZonePages } from '../engine/pptx/ZoneLayoutEngine.js';
 import type { ChatMessage } from '../engine/core/types.js';
 import type { AgentLoop } from '../engine/core/AgentLoop.js';
 import {
@@ -232,6 +233,25 @@ export class OutcomePptGenerationService {
     ];
     const history = this.options.repository.listConversation({ projectId: request.projectId, scope: 'outcome', outcomeId: request.outcomeId, scenarioId: null });
     const userMessage = this.options.repository.appendConversation({ projectId: request.projectId, scope: 'outcome', outcomeId: request.outcomeId, scenarioId: null, role: 'user', content: request.instruction, sources });
+    // zone 版式引擎协议（2026-09-01 融入 wut-ppt 方法论）：模型只产出大纲 JSON，
+    // 版式由 ZoneLayoutEngine 确定性渲染并机器自检——版式质量不再是模型运气。
+    const zoneEngine = this.options.skill.layoutEngine === 'zone';
+    const themeProfile = getPptThemeProfile(this.options.skill.themeProfileId);
+    const systemPrompt = zoneEngine
+      ? [
+          '你是 METIS PPT 大纲设计师（zone 版式体系）。把源文档的要点组织为大纲 JSON；版式由引擎渲染，你不需要描述颜色与坐标。',
+          '不能使用未给出的资料、图片、数据、模板资产或外部来源；不要调用工具。',
+          `当前成果：${detail.outcome.title}；当前不可覆盖版本：v${detail.version.version}。`,
+          `生成技能：${JSON.stringify(this.options.skill)}。`,
+          `主题风格：${themeProfile.name}（主色 ${themeProfile.colors.primary}、点缀 ${themeProfile.colors.accent}、强调 ${themeProfile.colors.emphasis}）。`,
+          `用户生成要求：${request.instruction}`,
+          '必须只输出一个 JSON 对象，不能使用 Markdown 代码围栏：',
+          '{"answer":"给用户的中文生成说明","outline":{"title":"封面主标题","speaker":"汇报人","chapters":[{"name":"章节名","pages":[{"title":"页面标题","zones":[zone 列表]}]}],"closing":{"line1":"以上汇报，敬请批评指正","line2":"汇报人：xxx"}}}',
+          outlineContractPrompt(themeProfile),
+          `当前 PPT 文档 JSON（现状）：\n${serializeDocument(detail.version.content)}`,
+          projectContext.prompt,
+        ].filter(Boolean).join('\n')
+      : prompt({ title: detail.outcome.title, version: detail.version.version, document: detail.version.content, skill: this.options.skill, template: this.options.template, instruction: request.instruction, historyTruncated: history.length > MAX_HISTORY_MESSAGES, projectContext });
     const response = await runEphemeralChatTurn({
       agentLoop: this.options.agentLoop,
       sessionId: `outcome-ppt-generation-${randomUUID()}`,
@@ -242,12 +262,44 @@ export class OutcomePptGenerationService {
       ...(this.options.providerProfileBinding ? { providerProfileBinding: this.options.providerProfileBinding } : {}),
       ...(this.options.signal ? { signal: this.options.signal } : {}),
       messages: [...asPromptMessages(history), { role: 'user', content: request.instruction }],
-      skillPrompt: prompt({ title: detail.outcome.title, version: detail.version.version, document: detail.version.content, skill: this.options.skill, template: this.options.template, instruction: request.instruction, historyTruncated: history.length > MAX_HISTORY_MESSAGES, projectContext }),
+      skillPrompt: systemPrompt,
     });
     if (response.status === 'cancelled') return this.result({ status: 'cancelled', code: 'agent_cancelled', message: 'PPT Generation Skill 已取消；你的要求已保存在成果协同历史中。', answer: '', sources, diagnostics: [diagnostic('agent_cancelled', '模型运行在生成 PPT patch 前被取消。')], userMessage });
     if (response.status !== 'completed') return this.result({ status: 'error', code: 'agent_error', message: 'PPT Generation Skill 未能完成模型调用；请检查模型配置后重试。', answer: '', sources, diagnostics: [diagnostic('agent_error', `模型运行状态：${response.status}。`)], userMessage });
     if (!response.answer.trim()) return this.result({ status: 'error', code: 'model_response_empty', message: '模型没有返回可用的 PPT 生成结果；请重试。', answer: '', sources, diagnostics: [diagnostic('model_response_empty', '模型运行完成但没有返回内容。')], userMessage });
     if (this.options.isRuntimeCurrent && !this.options.isRuntimeCurrent()) return this.result({ status: 'error', code: 'generation_runtime_reconfigured', message: '模型配置已切换，本次 PPT 生成没有写入成果版本；请重新请求。', answer: '', sources, diagnostics: [diagnostic('generation_runtime_reconfigured', 'Provider runtime changed before the generation response could be committed.')], userMessage });
+    if (zoneEngine) {
+      // zone 协议：解析大纲 JSON → 引擎渲染 → 机器自检 → 组装 patch（复用既有保存链）。
+      let outlineJson = response.answer.trim();
+      const fenceStart = outlineJson.indexOf('{');
+      const fenceEnd = outlineJson.lastIndexOf('}');
+      if (fenceStart >= 0 && fenceEnd > fenceStart) outlineJson = outlineJson.slice(fenceStart, fenceEnd + 1);
+      let answerText = '已按 zone 版式体系生成演示文稿。';
+      let parsedOutline: unknown;
+      try {
+        const value = JSON.parse(outlineJson) as { answer?: string; outline?: unknown };
+        answerText = typeof value.answer === 'string' && value.answer.trim() ? value.answer : answerText;
+        parsedOutline = value.outline;
+      } catch { parsedOutline = undefined; }
+      const outlineParsed = parsedOutline ? OutlineDocumentSchema.safeParse(parsedOutline) : null;
+      if (!outlineParsed?.success) return this.result({ status: 'error', code: 'model_response_contract_error', message: '模型大纲未通过 zone 契约校验，成果版本未变更；请重试。', answer: '', sources, diagnostics: [...projectContextDiagnostics(projectContext), diagnostic('model_response_contract_error', '大纲 JSON 不符合 zone 契约。')], userMessage });
+      const themeProfileId = themeProfile.id;
+      const rendered = renderZoneOutline({ outline: outlineParsed.data, themeId: themeProfileId });
+      if (!rendered.ok || !rendered.document) return this.result({ status: 'error', code: 'model_response_contract_error', message: 'zone 版式渲染失败；请调整大纲后重试。', answer: '', sources, diagnostics: [...projectContextDiagnostics(projectContext), diagnostic('model_response_contract_error', '版式引擎渲染失败。')], userMessage });
+      const audit = auditZonePages(rendered.document.pages);
+      const auditIssues = audit.pages.flatMap((page) => page.issues.map((issue) => `第 ${page.pageIndex + 1} 页：${issue}`));
+      const newPages = rendered.document.pages.map((page) => ({
+        id: `ppt-page-${randomUUID().slice(0, 8)}`,
+        title: page.title,
+        pageType: page.pageType,
+        humanModified: false,
+        status: 'complete' as const,
+        elements: page.elements,
+      }));
+      const saved = this.options.repository.save({ projectId: request.projectId, outcomeId: request.outcomeId, baseVersion: detail.outcome.currentVersion, content: { ...detail.version.content, theme: { ...detail.version.content.theme, primary: themeProfile.colors.primary, accent: themeProfile.colors.accent }, templateId: null, generationSkillId: this.options.skill.id, pages: [...detail.version.content.pages, ...newPages] }, note: 'zone 版式引擎生成', actor: 'ai', sources });
+      const assistantMessage = this.options.repository.appendConversation({ projectId: request.projectId, scope: 'outcome', outcomeId: request.outcomeId, scenarioId: null, role: 'assistant', content: answerText, sources });
+      return this.result({ status: 'completed', model: this.options.modelName, answer: answerText + (auditIssues.length > 0 ? `（自检提示：${auditIssues.slice(0, 3).join('；')}）` : '（机器自检通过）'), userMessage, assistantMessage, sources, diagnostics: projectContextDiagnostics(projectContext), applied: { outcome: saved.outcome, version: saved.version, patch: { replacePages: [], appendPages: newPages, theme: { primary: themeProfile.colors.primary, accent: themeProfile.colors.accent }, note: 'zone 版式引擎生成' }, skill: this.options.skill, template: null } });
+    }
     const model = parseModelResponse(response.answer);
     if (!model.value) return this.result({ status: 'error', code: 'model_response_contract_error', message: '模型没有返回可应用的 PPT patch，成果版本未变更。', answer: '', sources, diagnostics: [model.error ?? diagnostic('model_response_contract_error', 'PPT patch 解析失败。')], userMessage });
     const candidate = applyPatch(detail.version.content, model.value.patch, this.options.skill, this.options.template);

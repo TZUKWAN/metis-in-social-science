@@ -373,7 +373,7 @@ export type OutcomeTemplateListRequest = z.infer<typeof OutcomeTemplateListReque
 export const OutcomeDefaultTemplateSetRequestSchema = z.strictObject({ kind: OutcomeTemplateKindSchema, templateId: OutcomeIdSchema.nullable() });
 export type OutcomeDefaultTemplateSetRequest = z.infer<typeof OutcomeDefaultTemplateSetRequestSchema>;
 /** Design policy is deliberately independent from a visual PPT template. */
-export const PptGenerationSkillSchema = z.strictObject({ id: OutcomeIdSchema, name: text(OUTCOME_LIMITS.titleChars), narrative: z.enum(['problem_solution','argument_evidence','timeline','comparison','minimal_report']), contentDensity: z.enum(['sparse','balanced','dense']), audience: text(OUTCOME_LIMITS.titleChars).default(''), instructions: text(OUTCOME_LIMITS.noteChars).default('') });
+export const PptGenerationSkillSchema = z.strictObject({ id: OutcomeIdSchema, name: text(OUTCOME_LIMITS.titleChars), narrative: z.enum(['problem_solution','argument_evidence','timeline','comparison','minimal_report']), contentDensity: z.enum(['sparse','balanced','dense']), audience: text(OUTCOME_LIMITS.titleChars).default(''), instructions: text(OUTCOME_LIMITS.noteChars).default(''), layoutEngine: z.enum(['legacy','zone']).optional(), themeProfileId: z.string().max(64).optional() });
 export type PptGenerationSkill = z.infer<typeof PptGenerationSkillSchema>;
 export const PptGenerationSkillSaveRequestSchema = PptGenerationSkillSchema.omit({ id: true });
 
