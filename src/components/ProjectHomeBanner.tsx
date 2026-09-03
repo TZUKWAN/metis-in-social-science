@@ -1,14 +1,6 @@
-/**
- * ProjectHomeBanner — 项目主页横幅（批3 改造）。
- *
- * 研究阶段由 AI 依据项目真实进展自动判定（StageDetector 规则引擎），
- * 用户不可手选；横幅展示判定结果与依据、上次进展摘要（研究日志）、
- * 概念图谱入口。
- */
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from '../i18n';
 import { useResearchWorkspaceStore } from '../research/researchWorkspaceStore';
-import ConceptGraphPanel from './ConceptGraphPanel';
 import { RESEARCH_STAGES, DEFAULT_STAGE, stageProgress, type ResearchStageId } from '../../engine/research/ResearchStages';
 import './ProjectHomeBanner.css';
 
@@ -17,15 +9,104 @@ interface BriefView {
   summaryText: string;
 }
 
+type ScenarioStepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'blocked' | 'skipped';
+
+interface ScenarioRunView {
+  runId: string;
+  scenarioId: string;
+  scenarioName?: string;
+  status: 'running' | 'completed' | 'failed' | 'interrupted' | 'paused' | 'cancelled';
+  steps: Array<{
+    stepId: string;
+    name: string;
+    status: ScenarioStepStatus;
+  }>;
+}
+
+const COMPLETED_STEP_STATUSES = new Set<ScenarioStepStatus>(['completed', 'skipped']);
+
+function scenarioRunStatusLabel(status: ScenarioRunView['status'], locale: string): string {
+  if (locale !== 'zh') {
+    return {
+      running: 'Running',
+      completed: 'Completed',
+      failed: 'Failed',
+      interrupted: 'Interrupted',
+      paused: 'Paused',
+      cancelled: 'Cancelled',
+    }[status];
+  }
+  return {
+    running: '正在执行',
+    completed: '已完成',
+    failed: '执行失败',
+    interrupted: '已中断',
+    paused: '已暂停',
+    cancelled: '已取消',
+  }[status];
+}
+
+function scenarioStepStatusLabel(status: ScenarioStepStatus, locale: string): string {
+  if (locale !== 'zh') {
+    return {
+      pending: 'Pending',
+      running: 'Running',
+      completed: 'Completed',
+      failed: 'Failed',
+      blocked: 'Blocked',
+      skipped: 'Skipped',
+    }[status];
+  }
+  return {
+    pending: '待执行',
+    running: '进行中',
+    completed: '已完成',
+    failed: '失败',
+    blocked: '受阻',
+    skipped: '已跳过',
+  }[status];
+}
+
 export default function ProjectHomeBanner() {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const activeProjectId = useResearchWorkspaceStore((s) => s.activeProjectId);
   const projects = useResearchWorkspaceStore((s) => s.projects);
   const project = projects.find((p) => p.id === activeProjectId) ?? null;
   const [stage, setStage] = useState<ResearchStageId>(DEFAULT_STAGE);
   const [rationale, setRationale] = useState<string[]>([]);
   const [brief, setBrief] = useState<BriefView | null>(null);
-  const [graphOpen, setGraphOpen] = useState(false);
+  const [scenarioRun, setScenarioRun] = useState<ScenarioRunView | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    if (!activeProjectId) {
+      setScenarioRun(null);
+      return () => { alive = false; };
+    }
+
+    const loadScenarioRun = async () => {
+      const result = await window.metis?.getScenarioRunForProject?.(activeProjectId);
+      if (!alive) return;
+      if (result?.ok && result.runId && result.scenarioId && result.status && result.steps?.length) {
+        setScenarioRun({
+          runId: result.runId,
+          scenarioId: result.scenarioId,
+          scenarioName: result.scenarioName,
+          status: result.status,
+          steps: result.steps,
+        });
+      } else {
+        setScenarioRun(null);
+      }
+    };
+
+    void loadScenarioRun();
+    const interval = window.setInterval(() => { void loadScenarioRun(); }, 2_000);
+    return () => {
+      alive = false;
+      window.clearInterval(interval);
+    };
+  }, [activeProjectId]);
 
   useEffect(() => {
     let alive = true;
@@ -38,11 +119,27 @@ export default function ProjectHomeBanner() {
         }
       });
       void window.metis?.getResumeBrief?.(activeProjectId).then((result) => {
-        if (alive && result && result.projectId === activeProjectId) setBrief({ projectId: result.projectId, summaryText: result.summaryText });
+        if (alive && result && result.projectId === activeProjectId) {
+          setBrief({ projectId: result.projectId, summaryText: result.summaryText });
+        }
       });
     }
     return () => { alive = false; };
   }, [activeProjectId, project?.updatedAt]);
+
+  const scenarioProgress = useMemo(() => {
+    if (!scenarioRun) return null;
+    const completed = scenarioRun.steps.filter((step) => COMPLETED_STEP_STATUSES.has(step.status)).length;
+    const runningIndex = scenarioRun.steps.findIndex((step) => step.status === 'running');
+    const pendingIndex = scenarioRun.steps.findIndex((step) => step.status === 'pending');
+    const currentIndex = runningIndex >= 0 ? runningIndex : pendingIndex;
+    return {
+      completed,
+      total: scenarioRun.steps.length,
+      currentIndex,
+      progress: scenarioRun.steps.length === 0 ? 0 : (completed / scenarioRun.steps.length) * 100,
+    };
+  }, [scenarioRun]);
 
   if (!project) return null;
 
@@ -52,32 +149,73 @@ export default function ProjectHomeBanner() {
   return (
     <div className="project-home" data-testid="project-home">
       <div className="project-home__main">
-        <div className="project-home__stage">
-          <span className="project-home__stage-label">{t('projects.aiStageLabel')}</span>
-          <span className="project-home__stage-value" data-testid="project-ai-stage">{t(`projects.stage_${stageDef.key}.label`)}</span>
-          <div className="project-home__stage-progress" role="progressbar" aria-valuenow={Math.round(progress * 100)} aria-valuemin={0} aria-valuemax={100}>
-            <span style={{ width: `${Math.round(progress * 100)}%` }} />
-          </div>
-          <span className="project-home__stage-count">{Math.round(progress * 100)}%</span>
-          <button type="button" className="btn-sm btn-secondary" onClick={() => setGraphOpen(true)} data-testid="project-graph-open" title={t('cgraph.hint')}>
-            {t('cgraph.entryButton')}
-          </button>
-        </div>
-        {rationale.length > 0 && (
-          <p className="project-home__rationale" data-testid="project-stage-rationale">
-            {rationale.map((reason, index) => (
-              <span key={index} className="project-home__rationale-chip">{reason}</span>
-            ))}
-          </p>
+        {scenarioRun && scenarioProgress ? (
+          <>
+            <div className="project-home__stage project-home__scenario-summary">
+              <span className="project-home__stage-label">{locale === 'zh' ? '场景工作流' : 'Scenario workflow'}</span>
+              <span className="project-home__stage-value" data-testid="project-scenario-name">
+                {scenarioRun.scenarioName || scenarioRun.scenarioId}
+              </span>
+              <span className={`project-home__scenario-status project-home__scenario-status--${scenarioRun.status}`}>
+                {scenarioRunStatusLabel(scenarioRun.status, locale)}
+              </span>
+              <div
+                className="project-home__stage-progress"
+                role="progressbar"
+                aria-label={locale === 'zh' ? '场景工作流进度' : 'Scenario workflow progress'}
+                aria-valuenow={Math.round(scenarioProgress.progress)}
+                aria-valuemin={0}
+                aria-valuemax={100}
+              >
+                <span style={{ width: `${Math.round(scenarioProgress.progress)}%` }} />
+              </div>
+              <span className="project-home__stage-count" data-testid="project-scenario-progress">
+                {locale === 'zh'
+                  ? `${scenarioProgress.completed}/${scenarioProgress.total} 步`
+                  : `${scenarioProgress.completed}/${scenarioProgress.total} steps`}
+              </span>
+            </div>
+            <ol className="project-home__scenario-steps" data-testid="project-scenario-steps">
+              {scenarioRun.steps.map((step, index) => {
+                const isCurrent = index === scenarioProgress.currentIndex;
+                return (
+                  <li
+                    key={step.stepId}
+                    className={`project-home__scenario-step project-home__scenario-step--${step.status}${isCurrent ? ' is-current' : ''}`}
+                    aria-current={isCurrent ? 'step' : undefined}
+                    title={`${index + 1}. ${step.name} · ${scenarioStepStatusLabel(step.status, locale)}`}
+                  >
+                    <span className="project-home__scenario-step-number">{index + 1}</span>
+                    <span className="project-home__scenario-step-name">{step.name}</span>
+                    <span className="project-home__scenario-step-status">{scenarioStepStatusLabel(step.status, locale)}</span>
+                  </li>
+                );
+              })}
+            </ol>
+          </>
+        ) : (
+          <>
+            <div className="project-home__stage">
+              <span className="project-home__stage-label">{t('projects.aiStageLabel')}</span>
+              <span className="project-home__stage-value" data-testid="project-ai-stage">{t(`projects.stage_${stageDef.key}.label`)}</span>
+              <div className="project-home__stage-progress" role="progressbar" aria-valuenow={Math.round(progress * 100)} aria-valuemin={0} aria-valuemax={100}>
+                <span style={{ width: `${Math.round(progress * 100)}%` }} />
+              </div>
+              <span className="project-home__stage-count">{Math.round(progress * 100)}%</span>
+            </div>
+            {rationale.length > 0 && (
+              <p className="project-home__rationale" data-testid="project-stage-rationale">
+                {rationale.map((reason, index) => (
+                  <span key={index} className="project-home__rationale-chip">{reason}</span>
+                ))}
+              </p>
+            )}
+          </>
         )}
         {brief && brief.projectId === project.id && (
           <p className="project-home__brief" data-testid="project-home-brief" title={brief.summaryText}>{brief.summaryText}</p>
         )}
       </div>
-
-      {graphOpen && (
-        <ConceptGraphPanel projectId={project.id} onClose={() => setGraphOpen(false)} />
-      )}
     </div>
   );
 }

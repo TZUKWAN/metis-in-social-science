@@ -44,22 +44,38 @@ describe('streamOpenAIResponse idle watchdog', () => {
     expect(chunks.join('')).toContain('世界');
   });
 
-  it('resets the idle window on every chunk so slow-but-active streams survive', async () => {
+  it('completes a stream that ends without [DONE] after a finished choice (Codex-style gateways)', async () => {
     const encoder = new TextEncoder();
-    const lines = [
-      'data: {"choices":[{"delta":{"content":"甲"},"finish_reason":null}]}\n\n',
-      'data: {"choices":[{"delta":{"content":"乙"},"finish_reason":null}]}\n\n',
-      'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
-      'data: [DONE]\n\n',
+    // 部分本地网关在 finish_reason:"stop" + usage 后直接关闭连接，不发 [DONE]。
+    const payload = [
+      'data: {"choices":[{"index":0,"delta":{"role":"assistant","content":"pong"},"finish_reason":null}]}\n\n',
+      'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":304,"completion_tokens":5,"total_tokens":309}}\n\n',
     ].map((line) => encoder.encode(line));
     let index = 0;
-    const response = fakeResponse(async () => {
-      // 每个分块间隔 80ms：低于 150ms 窗口但累计超过窗口，慢流不应被掐。
-      await new Promise((resolve) => setTimeout(resolve, 80));
-      return index < lines.length ? { done: false, value: lines[index++] } : { done: true };
-    });
-    const chunks: string[] = [];
-    for await (const chunk of streamOpenAIResponse(response, 150)) chunks.push(chunk.content ?? '');
-    expect(chunks.join('')).toContain('甲乙');
+    const response = fakeResponse(async () => (
+      index < payload.length
+        ? { done: false, value: payload[index++] }
+        : { done: true }
+    ));
+    const chunks: Array<{ content?: string; isFinished?: boolean }> = [];
+    for await (const chunk of streamOpenAIResponse(response, 1000)) chunks.push(chunk);
+    expect(chunks.map((chunk) => chunk.content ?? '').join('')).toContain('pong');
+    expect(chunks.some((chunk) => chunk.isFinished === true)).toBe(true);
+  });
+
+  it('still rejects a stream that dies mid-answer with no finished choice and no [DONE]', async () => {
+    const encoder = new TextEncoder();
+    const payload = [
+      'data: {"choices":[{"delta":{"content":"半截"},"finish_reason":null}]}\n\n',
+    ].map((line) => encoder.encode(line));
+    let index = 0;
+    const response = fakeResponse(async () => (
+      index < payload.length
+        ? { done: false, value: payload[index++] }
+        : { done: true }
+    ));
+    await expect(async () => {
+      for await (const chunk of streamOpenAIResponse(response, 1000)) void chunk;
+    }).rejects.toThrowError(/DONE/u);
   });
 });

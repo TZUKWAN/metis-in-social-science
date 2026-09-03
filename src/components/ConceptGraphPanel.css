@@ -3,7 +3,7 @@
 .cgraph-overlay {
   position: fixed;
   inset: 0;
-  background: color-mix(in srgb, var(--bg-page, #111) 50%, transparent);
+  background: var(--bg-modal-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -55,7 +55,7 @@
   height: auto;
   border: 1px solid var(--border-light);
   border-radius: 2px;
-  background: var(--bg-input, #fafafa);
+  background: var(--bg-input);
 }
 
 .cgraph-hover {

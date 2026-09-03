@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { X, Database, Cloud, BookMarked, KeyRound, Wrench } from 'lucide-react';
 import type { UIMode } from '../../engine/capabilities/DiagnosticMode';
 import SettingsBackupSection from './SettingsBackupSection';
 import CloudSyncSection from './CloudSyncSection';
@@ -20,7 +19,6 @@ export interface SettingsAdvancedDialogProps {
   open: boolean;
   onClose: () => void;
   uiMode: UIMode;
-  onUIModeChange: (mode: UIMode) => void;
   issnNotice: string;
   onIssnImport: () => void;
 }
@@ -29,7 +27,6 @@ export default function SettingsAdvancedDialog({
   open,
   onClose,
   uiMode,
-  onUIModeChange,
   issnNotice,
   onIssnImport,
 }: SettingsAdvancedDialogProps) {

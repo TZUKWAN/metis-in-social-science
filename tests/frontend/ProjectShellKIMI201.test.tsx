@@ -637,7 +637,7 @@ describe('KIMI-201 RecycleRestore — behavior', () => {
     const restoreButton = screen.getByRole('button', { name: '恢复' });
     fireEvent.click(restoreButton);
     await waitFor(() => expect(onRestore).toHaveBeenCalledWith(['r1']));
-    expect(screen.getByText(/已成功恢复 1 个项目/)).toBeDefined();
+    await waitFor(() => expect(screen.getByText(/已成功恢复 1 个项目/)).toBeDefined());
     expect(screen.queryByRole('toolbar', { name: '已选项操作' })).toBeNull();
   });
 

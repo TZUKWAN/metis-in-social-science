@@ -154,6 +154,43 @@ describe('OutcomeAssistantService', () => {
       .toMatchObject([{ role: 'user' }, { role: 'assistant', content: '这是模型的真实自然语言回答，不是编辑协议 JSON。' }]);
   });
 
+  it('extracts the edit protocol from a mixed reasoning-plus-JSON reply and applies it', async () => {
+    const created = createWord();
+    const protocol = JSON.stringify({
+      answer: '已完成改写。',
+      edit: { kind: 'word', replacements: [{ blockId: 'p-1', text: '改写后的段落。' }], note: '按用户要求改写' },
+    });
+    const mixed = `我先分析一下这段文字的问题：原句表达冗长，术语使用不准确。\n经过权衡，我决定保留术语但压缩修饰。\n${protocol}`;
+    const provider = new ControlledProvider(mixed);
+    const service = new OutcomeAssistantService({ repository, agentLoop: createLoop(provider), modelName: 'controlled' });
+
+    const result = await service.chat({
+      projectId: 'project-a', outcomeId: created.outcome.id, instruction: '改写所选段落。',
+      selection: { type: 'word_block', blockId: 'p-1', start: 0, end: 4 },
+    });
+
+    expect(result.status).toBe('completed');
+    expect(result).toMatchObject({ answer: '已完成改写。', applied: { version: { version: 2, createdBy: 'ai' } } });
+    expect(repository.get('project-a', created.outcome.id)?.version.content).toMatchObject({
+      blocks: [{ id: 'p-1', text: '改写后的段落。' }],
+    });
+  });
+
+  it('clips an overlong reasoning-only reply so the local popover stays readable', async () => {
+    const created = createWord();
+    const provider = new ControlledProvider(`这段选文的论证结构需要推敲。${'模型继续展开了很多没有结论的思考内容。'.repeat(80)}`);
+    const service = new OutcomeAssistantService({ repository, agentLoop: createLoop(provider), modelName: 'controlled' });
+
+    const result = await service.chat({ projectId: 'project-a', outcomeId: created.outcome.id, instruction: '改写所选段落。' });
+
+    expect(result.status).toBe('completed');
+    expect('applied' in result).toBe(false);
+    expect(result.answer.length).toBeLessThanOrEqual(640);
+    expect(result.answer).toContain('回答过长已截断');
+    expect(result.diagnostics?.some((item) => item.code === 'model_response_not_structured')).toBe(true);
+    expect(repository.get('project-a', created.outcome.id)?.outcome.currentVersion).toBe(1);
+  });
+
   it('does not overwrite a human version created while the real model call is in flight', async () => {
     const created = createWord();
     const provider = new ControlledProvider(JSON.stringify({

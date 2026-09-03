@@ -6,6 +6,8 @@ import {
   PersonalizationForkRequestSchema,
   PersonalizationGetRequestSchema,
   PersonalizationListRequestSchema,
+  PersonalizationIntegrityListRequestSchema,
+  PersonalizationIntegrityRecoverRequestSchema,
   PersonalizationTrashListRequestSchema,
   PersonalizationResolveRequestSchema,
   PersonalizationRestoreRequestSchema,
@@ -14,6 +16,7 @@ import {
   PersonalizationSaveRequestSchema,
   type PersonalizationGetResponse,
   type PersonalizationListResponse,
+  type PersonalizationIntegrityListResponse,
   type PersonalizationTrashListResponse,
   type PersonalizationMutationResult,
   type PersonalizationDefinition,
@@ -42,9 +45,13 @@ function hasValidManifestDigests(manifest: ResolvedRunManifest): boolean {
     const digest = createHash('sha256').update(layer.content, 'utf8').digest('hex');
     if (digest !== layer.contentDigest) return false;
   }
-  const { manifestDigest, ...withoutDigest } = manifest;
+  // 与 resolver/coordinator 同规：createdAt（每次 resolve 的当前时间戳）与
+  // manifestDigest（自引用）都不参与 digest 计算，否则冻结快照永远校验失败。
+  const { manifestDigest, createdAt: _createdAt, ...withoutDigest } = manifest;
+  void manifestDigest;
+  void _createdAt;
   const expected = createHash('sha256').update(canonicalJson(withoutDigest), 'utf8').digest('hex');
-  return expected === manifestDigest;
+  return expected === manifest.manifestDigest;
 }
 
 function manifestIntegrityTag(secret: Buffer, manifest: ResolvedRunManifest): string {
@@ -179,6 +186,22 @@ export class PersonalizationRuntimeService {
     return { ok: true, definition: this.#repository.get(request.data.id) ?? null };
   }
 
+  listIntegrityIssues(raw: unknown): PersonalizationIntegrityListResponse {
+    const request = PersonalizationIntegrityListRequestSchema.safeParse(raw);
+    if (!request.success) return { ok: false, code: 'invalid_request' };
+    return { ok: true, issues: this.#repository.listIntegrityIssues(request.data.kind) };
+  }
+
+  recoverIntegrityIssue(raw: unknown): PersonalizationMutationResult {
+    const request = PersonalizationIntegrityRecoverRequestSchema.safeParse(raw);
+    if (!request.success) return { ok: false, code: 'invalid_request' };
+    return this.#repository.recoverIntegrityIssue(
+      request.data.id,
+      request.data.sourceRevision,
+      request.data.expectedCurrentRevision,
+    );
+  }
+
   save(raw: unknown): PersonalizationMutationResult {
     const request = PersonalizationSaveRequestSchema.safeParse(raw);
     if (!request.success) return { ok: false, code: 'invalid_request' };
@@ -269,6 +292,9 @@ export class PersonalizationRuntimeService {
     if (!request.success) {
       return { ok: false, code: 'definition_corrupt', issues: ['Invalid resolve request'] };
     }
+    if (!this.#integritySecret) {
+      return { ok: false, code: 'definition_corrupt', issues: ['Scenario run integrity key is unavailable'] };
+    }
     const result = this.#resolver.resolve(request.data);
     // Renderer-facing resolve is a preview only. Persisting it would let a
     // renderer pre-warm the main Agent cache with authored global/project
@@ -281,7 +307,7 @@ export class PersonalizationRuntimeService {
 
   resolveForAgent(raw: unknown, projectRule?: MetisRulesDefinition) {
     const request = PersonalizationResolveRequestSchema.safeParse(raw);
-    if (!request.success) return undefined;
+    if (!request.success || !this.#integritySecret) return undefined;
     const parsedProjectRule = projectRule === undefined
       ? undefined
       : MetisRulesDefinitionSchema.safeParse(projectRule);
@@ -327,7 +353,12 @@ export class PersonalizationRuntimeService {
       ? { ...request.data, createdAt: Math.max(Date.now(), active.createdAt + 1) }
       : request.data;
     const result = resolver.resolve(resolutionRequest);
-    if (!result.ok) return undefined;
+    if (!result.ok) {
+      // 静默 undefined 会让上层只看到 personalization_resolution_failed，
+      // 无法区分场景本身的问题；这里输出解析失败的具体原因。
+      console.warn(`[PersonalizationRuntime] resolve failed for scenario=${request.data.scenarioId ?? 'null'}: ${JSON.stringify(result).slice(0, 400)}`);
+      return undefined;
+    }
     this.#saveRunManifest(result.manifest);
     return result;
   }

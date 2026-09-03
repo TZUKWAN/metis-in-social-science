@@ -1815,7 +1815,7 @@ describe('PersonalizationCenter', () => {
     fireEvent.change(await screen.findByTestId('sw-config-name'), { target: { value: 'Unchanged scenario' } });
     fireEvent.change(screen.getByTestId('sw-assistant-input'), { target: { value: 'Please design the complete continuous Workflow.' } });
     fireEvent.click(screen.getByTestId('sw-assistant-send'));
-    expect((await screen.findAllByText(/AI did not return a saveable scenario: model_failed/u)).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText(/AI did not return usable scenario content: model_failed/u)).length).toBeGreaterThan(0);
     expect((screen.getByTestId('sw-config-name') as HTMLInputElement).value).toBe('Unchanged scenario');
     expect(screen.queryByTestId('sw-compiler-diff')).toBeNull();
   });

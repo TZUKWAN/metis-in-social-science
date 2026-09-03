@@ -97,18 +97,18 @@
 }
 
 .kanban-column__add {
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   border: 1px dashed var(--border);
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   background: transparent;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-size: 14px;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: border-color 0.15s ease, color 0.15s ease;
+  transition: border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
 }
 
 .kanban-column__add:hover {
@@ -268,3 +268,7 @@
     width: calc(100% - 20px);
   }
 }
+
+/* 步骤提示词编辑器（2026-08-29 刘总要求） */
+.kanban-prompt-editor { align-items: flex-start; }
+.kanban-prompt-editor textarea { border: 1px solid var(--border-light); border-radius: var(--radius); background: var(--bg-input); color: var(--text-primary); }

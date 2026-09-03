@@ -21,10 +21,10 @@ interface TriangulationState {
 }
 
 const STATUS_COLOR: Record<TriangulationOverall, string> = {
-  VERIFIED: '#16a34a',
-  INCONSISTENT: '#f59e0b',
-  NOT_FOUND: '#ef4444',
-  PARTIAL: '#6b7280',
+  VERIFIED: 'var(--evidence-verified)',
+  INCONSISTENT: 'var(--evidence-pending)',
+  NOT_FOUND: 'var(--evidence-refuted)',
+  PARTIAL: 'var(--text-muted)',
 };
 
 // Module-level cache: re-checking the same DOI is free.
@@ -60,7 +60,7 @@ export function TriangulationStatus({ doi }: { doi: string }) {
         </button>
       )}
       {state.status === 'running' && (
-        <span className="badge" style={{ background: '#94a3b8', color: '#fff' }}>
+        <span className="badge" style={{ background: 'var(--evidence-stale)', color: 'var(--text-on-accent)' }}>
           {t('papers.triangulating')}
         </span>
       )}
@@ -68,7 +68,7 @@ export function TriangulationStatus({ doi }: { doi: string }) {
         <>
           <span
             className="badge"
-            style={{ background: STATUS_COLOR[state.overall], color: '#fff' }}
+            style={{ background: STATUS_COLOR[state.overall], color: 'var(--text-on-accent)' }}
             title={state.sources?.join(', ')}
             data-triangulation={state.overall}
           >
@@ -81,7 +81,7 @@ export function TriangulationStatus({ doi }: { doi: string }) {
       )}
       {state.status === 'error' && (
         <>
-          <span className="badge" style={{ background: '#6b7280', color: '#fff' }}>
+          <span className="badge" style={{ background: 'var(--text-muted)', color: 'var(--text-on-accent)' }}>
             {t('papers.triangulateError')}
           </span>
           <button className="btn-sm btn-secondary" onClick={() => void runTriangulation()}>

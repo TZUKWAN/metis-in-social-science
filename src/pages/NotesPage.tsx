@@ -454,11 +454,11 @@ export default function NotesPage({ onNavigate, uiMode = 'normal' }: NotesPagePr
                 <button
                   key={p.id}
                   className="paper-link-item"
-                  style={{ textAlign: 'left', padding: 8, borderRadius: 6, border: '1px solid var(--border-color, #e2e8f0)', background: 'var(--bg-card)' }}
+                  style={{ textAlign: 'left', padding: 8, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-card)' }}
                   onClick={() => handleInsertPaperLink(p.id, p.title)}
                 >
                   <div style={{ fontWeight: 600, fontSize: 13 }}>{p.title}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted, #718096)' }}>{p.authors[0] ?? t('papers.unknownAuthor')} · {p.year}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{p.authors[0] ?? t('papers.unknownAuthor')} · {p.year}</div>
                 </button>
               ))}
             </div>

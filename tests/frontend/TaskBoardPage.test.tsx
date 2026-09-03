@@ -232,4 +232,53 @@ describe('TaskBoardPage project filter', () => {
         .toHaveBeenCalledWith('绑定项目的任务', undefined, 'proj-a');
     });
   });
+
+  it('shows scenario workflow run steps on the board and blocks dragging them', async () => {
+    // 2026-08-28 刘总要求：任务看板必须显示场景工作流的真实步骤，
+    // 而不是在旧 Goal 引擎没有任务时呈现空板。
+    window.metis = {
+      listGoals: vi.fn().mockResolvedValue({ success: true, goals: [] }),
+      listProjects: vi.fn().mockResolvedValue({
+        success: true,
+        projects: [{ id: 'proj-a', title: '经济学SSCI论文写作验收', updatedAt: 1, archivedAt: null }],
+      }),
+      getScenarioRunForProject: vi.fn().mockImplementation(async (projectId: string) => {
+        if (projectId !== 'proj-a') return { ok: false };
+        return {
+          ok: true,
+          runId: 'run-1',
+          scenarioId: 'user:scenarios/custom-scenario-mtbr74r9',
+          scenarioName: '经济学SSCI实证论文与投稿信全流程写作',
+          status: 'running',
+          steps: [
+            { stepId: 'step-0', name: '选题与研究问题', status: 'completed' },
+            { stepId: 'step-1', name: '文献综述', status: 'running' },
+            { stepId: 'step-2', name: '理论与假设', status: 'pending' },
+          ],
+        };
+      }),
+      updateGoalStatus: vi.fn().mockResolvedValue({ ok: true }),
+      onGoalChanged: vi.fn(() => () => {}),
+    } as unknown as typeof window.metis;
+
+    const { default: TaskBoardPage } = await import('../../src/pages/TaskBoardPage');
+    const { container } = render(<TaskBoardPage />);
+
+    await waitFor(() => {
+      expect(container.querySelectorAll('[data-testid="kanban-card"]')).toHaveLength(3);
+    });
+    expect(container.querySelector('[data-testid="kanban-column-done"]')?.textContent).toContain('选题与研究问题');
+    expect(container.querySelector('[data-testid="kanban-column-inprogress"]')?.textContent).toContain('文献综述');
+    expect(container.querySelector('[data-testid="kanban-column-todo"]')?.textContent).toContain('理论与假设');
+
+    // Scenario steps are engine-owned: dragging them must NOT fake a status write.
+    const card = container.querySelectorAll('[data-testid="kanban-card"]')[0]!;
+    fireEvent.dragStart(card, { dataTransfer: { effectAllowed: 'move' } });
+    const doneCol = container.querySelector('[data-testid="kanban-column-done"]')!;
+    fireEvent.dragOver(doneCol, { preventDefault: () => {}, dataTransfer: { dropEffect: 'move' } });
+    await act(async () => {
+      fireEvent.drop(doneCol, { preventDefault: () => {}, dataTransfer: { dropEffect: 'move' } });
+    });
+    expect(window.metis?.updateGoalStatus).not.toHaveBeenCalled();
+  });
 });

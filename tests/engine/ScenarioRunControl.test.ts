@@ -176,7 +176,7 @@ describe('Scenario public pause/cancel contract', () => {
     expect(revived).toEqual({
       ok: false,
       code: 'invalid_record',
-      issues: ['Only interrupted, paused or running records can resume'],
+      issues: ['Only interrupted, paused, running or failed records can resume'],
     });
   });
 

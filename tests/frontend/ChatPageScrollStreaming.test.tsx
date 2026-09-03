@@ -163,7 +163,11 @@ describe('ChatPage scroll-follow and stream batching', () => {
     await act(async () => { raf.flushAll(); });
     expect(await screen.findByText('第一段第二段')).toBeDefined();
     expect(screen.getByText('先后')).toBeDefined();
-    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'end' });
+    // Streaming follow-scroll is an instant ledger-recorded pin, not a
+    // per-frame smooth scrollIntoView (which restarted its animation every
+    // frame and janked).
+    expect(container.scrollTop).toBe(1000);
+    expect(scrollIntoView).not.toHaveBeenCalled();
   });
 
   it('stops following after the user scrolls up and exposes return-to-latest', async () => {

@@ -111,29 +111,24 @@ describe('P0 Artifact 实时预览', () => {
     }
   });
 
-  it('任务与笔记标题在可见文本和 ARIA 中共享同一安全边界', () => {
+  it('任务标题在可见文本和 ARIA 中共享同一安全边界', () => {
     const rawTask = 'C:\\Users\\researcher\\private\\task Authorization: Bearer task-secret-marker';
-    const rawNote = '/home/researcher/private/note api_key=note-secret-marker';
     const { container } = render(
       <ControlledRightPanel
         initialTab="tasks"
         tasks={[{ id: 'task-1', title: rawTask, status: 'running', progress: 10 }]}
-        notes={[{ id: 'note-1', title: rawNote, preview: rawNote, updatedAt: 1 }]}
         onTaskClick={() => {}}
-        onNoteClick={() => {}}
       />,
     );
 
     const taskButton = screen.getByRole('button', { name: /本地路径已隐藏/ });
     expect(taskButton.getAttribute('aria-label')).toBeNull();
-    const taskObservable = container.outerHTML;
-    fireEvent.click(screen.getByRole('tab', { name: '笔记' }));
-    const observable = `${taskObservable}\n${container.outerHTML}`;
+    // 右面板现只有「任务/生成物」两个视图（笔记视图已迁移），任务标题的
+    // 路径与凭据必须在所有可观测文本中完成净化。
+    const observable = container.outerHTML;
     for (const marker of [
       'C:\\Users\\researcher',
-      '/home/researcher',
       'task-secret-marker',
-      'note-secret-marker',
     ]) {
       expect(observable).not.toContain(marker);
     }

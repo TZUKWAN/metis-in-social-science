@@ -65,12 +65,16 @@ function renderChat() {
 }
 
 describe('ChatPage control receipts (METIS-F11)', () => {
-  it('renders the Full Access policy badge in idle state by default', async () => {
+  it('no longer renders the redundant scenario/policy bar in the chat workspace', async () => {
+    // 2026-08-28 刘总要求：项目头部已有场景工作流，聊天区的场景行与
+    // Full Access 徽标属于重复展示，必须移除且不得回归。
     mockMetis();
     renderChat();
     await waitFor(() => {
-      expect(screen.getByTestId('chat-policy-status').textContent).toContain('Full Access 就绪');
+      expect(screen.getByPlaceholderText('提出一个研究问题...')).toBeDefined();
     });
+    expect(screen.queryByTestId('chat-scenario-controls')).toBeNull();
+    expect(screen.queryByTestId('chat-policy-status')).toBeNull();
   });
 
   it('shows an interrupt receipt instead of an error when the run is interrupted', async () => {
@@ -89,7 +93,7 @@ describe('ChatPage control receipts (METIS-F11)', () => {
     expect(screen.queryByText(/失败|错误/u)).toBeNull();
   });
 
-  it('confirms an interrupt request and marks the policy badge as interrupting', async () => {
+  it('confirms an interrupt request with a receipt', async () => {
     const pending = deferred<AgentResponse>();
     mockMetis({
       agentChat: vi.fn(() => pending.promise),
@@ -106,14 +110,12 @@ describe('ChatPage control receipts (METIS-F11)', () => {
     fireEvent.click(screen.getByLabelText('打断当前任务'));
     await waitFor(() => {
       expect(screen.getByText(/已发送中断请求/)).toBeDefined();
-      expect(screen.getByTestId('chat-policy-status').textContent).toContain('正在中断');
     });
 
-    // The run settles as interrupted: receipt persists, badge returns to idle.
+    // The run settles as interrupted: the receipt persists.
     pending.resolve(makeAgentResponse('interrupted'));
     await waitFor(() => {
       expect(screen.getByText(/任务已中断/)).toBeDefined();
-      expect(screen.getByTestId('chat-policy-status').textContent).toContain('Full Access 就绪');
     });
   });
 
@@ -139,19 +141,19 @@ describe('ChatPage control receipts (METIS-F11)', () => {
     await waitFor(() => expect(screen.getByText('已完成检索。')).toBeDefined());
   });
 
-  it('keeps the badge in running state while the run is active', async () => {
+  it('keeps the redundant scenario bar absent while a run is active', async () => {
     const pending = deferred<AgentResponse>();
-    mockMetis({ agentChat: vi.fn(() => pending.promise) });
+    const agentChat = vi.fn(() => pending.promise);
+    mockMetis({ agentChat });
     renderChat();
     // Question-form content routes to chat flow (isTaskLike returns false for '？').
     fireEvent.change(screen.getByPlaceholderText('提出一个研究问题...'), { target: { value: '当前方案有什么问题？' } });
     fireEvent.click(screen.getByText('发送'));
-    await waitFor(() => {
-      expect(screen.getByTestId('chat-policy-status').textContent).toContain('Full Access 运行中');
-    });
+    await waitFor(() => expect(agentChat).toHaveBeenCalled());
+    expect(screen.queryByTestId('chat-scenario-controls')).toBeNull();
+    expect(screen.queryByTestId('chat-policy-status')).toBeNull();
     pending.resolve(makeAgentResponse('completed', '分析完成。'));
-    await waitFor(() => {
-      expect(screen.getByTestId('chat-policy-status').textContent).toContain('Full Access 就绪');
-    });
+    await waitFor(() => expect(screen.getByText('分析完成。')).toBeDefined());
+    expect(screen.queryByTestId('chat-scenario-controls')).toBeNull();
   });
 });

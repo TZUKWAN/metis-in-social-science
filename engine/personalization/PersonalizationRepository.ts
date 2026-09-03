@@ -1,18 +1,21 @@
-import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import {
   PERSONALIZATION_CONTRACT_VERSION,
   McpDefinitionSchema,
   PersonalizationDefinitionSchema,
+  parsePersonalizationDefinitionLenient,
   ResolvedRunManifestSchema,
   type PersonalizationDefinition,
   type McpDefinition,
+  type PersonalizationIntegrityIssue,
   type PersonalizationMutationResult,
   type PersonalizationSaveRequest,
   type ResolvedRunManifest,
 } from '../runtime/PersonalizationRuntimeContract.js';
 import {
   ScenarioRunRecordSchema,
+  digestResolvedManifestSnapshot,
   type ScenarioRunRecord,
 } from './ScenarioRunCoordinator.js';
 import {
@@ -55,6 +58,8 @@ export interface ArchivedPersonalizationDefinition {
   archivedAt: number;
   expiresAt: number;
 }
+
+type DefinitionIntegrityIssue = PersonalizationIntegrityIssue;
 
 /** Soft-deleted scenarios remain recoverable for one full seven-day window. */
 /** Fixed recovery window for every soft-deleted definition (scenario, skill, MCP, rules). */
@@ -150,6 +155,16 @@ CREATE TABLE IF NOT EXISTS personalization_evidence_envelopes (
 
 CREATE INDEX IF NOT EXISTS idx_personalization_evidence_session
   ON personalization_evidence_envelopes(session_id, observed_at DESC);
+
+CREATE TABLE IF NOT EXISTS personalization_definition_quarantine (
+  id TEXT NOT NULL,
+  quarantined_revision INTEGER NOT NULL,
+  current_json TEXT NOT NULL,
+  issue_code TEXT NOT NULL,
+  quarantined_at INTEGER NOT NULL,
+  PRIMARY KEY (id, quarantined_revision),
+  FOREIGN KEY (id) REFERENCES personalization_definitions(id) ON DELETE CASCADE
+);
 `;
 
 function canonicalJson(value: unknown): string {
@@ -279,8 +294,8 @@ function scenarioRunIntegrityTag(secret: Buffer, record: ScenarioRunRecord): str
     .digest('hex');
 }
 
-function verifiesScenarioRun(secret: Buffer, record: ScenarioRunRecord, tag: string | null): boolean {
-  if (!tag || !/^[a-f0-9]{64}$/u.test(tag)) return false;
+function verifiesScenarioRun(secret: Buffer | null, record: ScenarioRunRecord, tag: string | null): boolean {
+  if (!secret || !tag || !/^[a-f0-9]{64}$/u.test(tag)) return false;
   const expected = Buffer.from(scenarioRunIntegrityTag(secret, record), 'hex');
   const actual = Buffer.from(tag, 'hex');
   return expected.length === actual.length && timingSafeEqual(expected, actual);
@@ -320,9 +335,12 @@ function assertRunProgression(previous: ScenarioRunRecord, next: ScenarioRunReco
   if (next.startedAt !== previous.startedAt || next.updatedAt < previous.updatedAt) {
     throw new Error('Scenario run timestamps cannot move backwards');
   }
-  // `cancelled` is terminal exactly like completed/failed: no late write may
-  // mutate a cancelled run or revive it into recoverable state.
-  const previousTerminal = ['completed', 'failed', 'cancelled'].includes(previous.status);
+  // `cancelled`/`completed` are terminal: no late write may mutate them or
+  // revive them into recoverable state. `failed` is deliberately NOT terminal
+  // (2026-08-30 刘总报告：31 步跑到 30 步最后一步失败，「继续」必须能只重跑
+  // 失败步骤)——失败记录允许复活为 running 并重置失败步骤，其余步骤仍不可变。
+  const previousTerminal = ['completed', 'cancelled'].includes(previous.status);
+  const failedRevived = previous.status === 'failed' && next.status === 'running';
   if (previousTerminal) {
     if (canonicalJson(previous) !== canonicalJson(next)) {
       throw new Error('Terminal scenario run records are immutable');
@@ -342,6 +360,10 @@ function assertRunProgression(previous: ScenarioRunRecord, next: ScenarioRunReco
       // Backtrack / Workflow Loop re-entry deliberately resets downstream steps for
       // a fresh pass. Any other mutation of a terminal-ish step record is forgery.
       if (loopAdvanced && nextStep.status === 'pending') continue;
+      // 步骤卡「跳过」（2026-09-01 刘总方案二期）：回退授权下允许把终态步骤
+      // 置为 skipped（不产出、下游重跑）——与 pending 重置同一合法信号。
+      if (loopAdvanced && nextStep.status === 'skipped') continue;
+      if (failedRevived && previousStep.status === 'failed' && nextStep.status === 'pending') continue;
       throw new Error('Terminal scenario step records are immutable');
     }
     const stepLoopAdvanced = nextStep.errorCode !== null
@@ -373,13 +395,13 @@ function assertRunProgression(previous: ScenarioRunRecord, next: ScenarioRunReco
 
 export class PersonalizationRepository {
   readonly #db: Database.Database;
-  readonly #scenarioRunIntegritySecret: Buffer;
+  readonly #scenarioRunIntegritySecret: Buffer | null;
 
   constructor(db: Database.Database, scenarioRunIntegritySecret?: Buffer) {
     this.#db = db;
     this.#scenarioRunIntegritySecret = scenarioRunIntegritySecret && scenarioRunIntegritySecret.length >= 32
       ? Buffer.from(scenarioRunIntegritySecret)
-      : randomBytes(32);
+      : null;
     this.#db.exec(PERSONALIZATION_SCHEMA_SQL);
     const definitionColumns = this.#db.prepare('PRAGMA table_info(personalization_definitions)').all() as Array<{ name: string }>;
     if (!definitionColumns.some((column) => column.name === 'archived_at')) {
@@ -474,6 +496,24 @@ export class PersonalizationRepository {
       .filter((definition) => includeDisabled || definition.enabled);
   }
 
+  /**
+   * Reports quarantined rows without exposing their unverified JSON to the
+   * renderer. They remain excluded from all execution and normal catalog APIs.
+   */
+  listIntegrityIssues(kind?: PersonalizationDefinition['kind']): DefinitionIntegrityIssue[] {
+    const rows = (kind
+      ? this.#db.prepare(`
+          SELECT * FROM personalization_definitions WHERE kind = ? ORDER BY updated_at DESC, id ASC
+        `).all(kind)
+      : this.#db.prepare(`
+          SELECT * FROM personalization_definitions ORDER BY kind ASC, updated_at DESC, id ASC
+        `).all()) as DefinitionRow[];
+    return rows.flatMap((row) => {
+      const issue = this.#integrityIssueForRow(row);
+      return issue ? [issue] : [];
+    });
+  }
+
   /** Lists soft-deleted definitions together with their fixed recovery window. */
   listArchived(kind?: PersonalizationDefinition['kind']): ArchivedPersonalizationDefinition[] {
     const rows = (kind
@@ -533,7 +573,11 @@ export class PersonalizationRepository {
   get(id: string, includeArchived = false): PersonalizationDefinition | undefined {
     const row = this.#selectRow(id);
     if (!row || (!includeArchived && row.archived === 1)) return undefined;
-    return this.#parseVerifiedRow(row);
+    try {
+      return this.#parseVerifiedRow(row);
+    } catch {
+      return undefined;
+    }
   }
 
   getFactory(id: string): PersonalizationDefinition | undefined {
@@ -557,7 +601,16 @@ export class PersonalizationRepository {
         INSERT INTO personalization_run_manifests
           (manifest_digest, session_id, project_id, scenario_id, manifest_json, integrity_tag, active, created_at)
         VALUES (?, ?, ?, ?, ?, ?, 1, ?)
-        ON CONFLICT(manifest_digest) DO UPDATE SET active = 1, integrity_tag = excluded.integrity_tag
+        ON CONFLICT(manifest_digest) DO UPDATE SET
+          -- Self-heal a tampered row: manifest_json must always match its own
+          -- manifest_digest. Re-saving a re-resolved manifest with the same
+          -- digest proves the stored JSON diverged (e.g. forged prompt with the
+          -- original digest column untouched) -- rewriting the canonical JSON
+          -- plus a fresh valid HMAC restores the row instead of laundering the
+          -- tampered content under a new valid tag.
+          manifest_json = excluded.manifest_json,
+          active = 1,
+          integrity_tag = excluded.integrity_tag
       `).run(
         manifest.manifestDigest,
         manifest.sessionId,
@@ -606,7 +659,22 @@ export class PersonalizationRepository {
     });
   }
 
+  /** 项目工作台进度条数据源：该项目最近一次场景运行的记录（任意状态）。 */
+  latestScenarioRunForProject(projectId: string): ScenarioRunRecord | null {
+    const row = this.#db.prepare(
+      'SELECT record_json, integrity_tag FROM personalization_scenario_runs WHERE project_id = ? ORDER BY updated_at DESC LIMIT 1',
+    ).get(projectId) as { record_json: string; integrity_tag: string | null } | undefined;
+    if (!row) return null;
+    try {
+      const record = ScenarioRunRecordSchema.parse(JSON.parse(row.record_json) as unknown);
+      return verifiesScenarioRun(this.#scenarioRunIntegritySecret, record, row.integrity_tag) ? record : null;
+    } catch {
+      return null;
+    }
+  }
+
   saveScenarioRunRecord(candidate: ScenarioRunRecord): ScenarioRunRecord {
+    if (!this.#scenarioRunIntegritySecret) throw new Error('Scenario run integrity key is unavailable');
     const record = ScenarioRunRecordSchema.parse(candidate);
     const raw = canonicalJson(record);
     const integrityTag = scenarioRunIntegrityTag(this.#scenarioRunIntegritySecret, record);
@@ -665,18 +733,124 @@ export class PersonalizationRepository {
   getRecoverableScenarioRun(sessionId: string): ScenarioRunRecord | undefined {
     // `paused` is part of the public recoverable surface: a paused run must be
     // resumable after restart, while `cancelled` stays terminal and excluded.
-    const row = this.#db.prepare(`
+    // 同一会话可能堆积多条 non-terminal 记录（2026-08-30 刘总报告「继续后
+    // 从头重跑」：digest 缺陷时期误开的新轮 0 步完成、updated_at 却更新，
+    // 按"最新"挑选会 resume 一条空断点）。恢复必须选**进度最深**的记录
+    //（完成步数最多；平局取最新）。
+    const rows = this.#db.prepare(`
       SELECT record_json, integrity_tag FROM personalization_scenario_runs
-      WHERE session_id = ? AND status IN ('running', 'interrupted', 'paused')
-      ORDER BY updated_at DESC LIMIT 1
-    `).get(sessionId) as { record_json: string; integrity_tag: string | null } | undefined;
-    if (!row) return undefined;
-    try {
-      const record = ScenarioRunRecordSchema.parse(JSON.parse(row.record_json) as unknown);
-      return verifiesScenarioRun(this.#scenarioRunIntegritySecret, record, row.integrity_tag) ? record : undefined;
-    } catch {
-      return undefined;
+      WHERE session_id = ? AND status IN ('running', 'interrupted', 'paused', 'failed')
+      ORDER BY updated_at DESC
+    `).all(sessionId) as Array<{ record_json: string; integrity_tag: string | null }>;
+    let best: ScenarioRunRecord | undefined;
+    let bestCompleted = -1;
+    for (const row of rows) {
+      try {
+        const record = ScenarioRunRecordSchema.parse(JSON.parse(row.record_json) as unknown);
+        if (!verifiesScenarioRun(this.#scenarioRunIntegritySecret, record, row.integrity_tag)) continue;
+        const completed = record.steps.filter((step) => step.status === 'completed').length;
+        if (completed > bestCompleted) {
+          best = record;
+          bestCompleted = completed;
+        }
+      } catch {
+        continue;
+      }
     }
+    return bestCompleted >= 0 ? best : undefined;
+  }
+
+  /**
+   * 同一会话只保留一条活跃 run（2026-08-30 刘总报告）：resume/start 时把
+   * 其他 non-terminal 记录终止为 cancelled，防止多条断点竞争「继续」的
+   * 恢复目标。被取代的记录保留历史可查，但不再作为恢复点。
+   */
+  supersedeOtherScenarioRuns(sessionId: string, keepRunId: string, scenarioId: string): number {
+    const rows = this.#db.prepare(`
+      SELECT run_id, record_json FROM personalization_scenario_runs
+      WHERE session_id = ? AND status IN ('running', 'interrupted', 'paused', 'failed') AND run_id != ?
+        AND scenario_id = ?
+    `).all(sessionId, keepRunId, scenarioId) as Array<{ run_id: string; record_json: string }>;
+    const update = this.#db.prepare(
+      'UPDATE personalization_scenario_runs SET status = ?, record_json = ?, integrity_tag = ? WHERE run_id = ?',
+    );
+    let superseded = 0;
+    for (const row of rows) {
+      try {
+        const record = ScenarioRunRecordSchema.parse(JSON.parse(row.record_json) as unknown);
+        const terminated: ScenarioRunRecord = {
+          ...record,
+          status: 'cancelled',
+          completedAt: record.completedAt ?? Date.now(),
+        };
+        update.run(
+          'cancelled',
+          canonicalJson(terminated),
+          this.#scenarioRunIntegritySecret ? scenarioRunIntegrityTag(this.#scenarioRunIntegritySecret, terminated) : null,
+          record.runId,
+        );
+        superseded += 1;
+      } catch {
+        // 单条取代失败不影响其余；该条最多作为无效断点被恢复选择忽略。
+      }
+    }
+    return superseded;
+  }
+
+  /**
+   * 一次性 digest 重签（2026-08-30 刘总报告「继续后从头重跑」）：旧算法把
+   * 每次 resolve 的当前时间戳 createdAt 算进 manifestDigest，导致同一场景
+   * 每次启动 digest 都不同、resume 判定永远失败。此方法用新算法（剔除
+   * createdAt）重签所有非终态 run 记录并保持 integrity tag 一致，让历史
+   * checkpoint 仍可恢复。幂等：digest 已是新值的记录原样跳过。
+   */
+  remintScenarioRunManifestDigests(): number {
+    if (!this.#scenarioRunIntegritySecret) return 0;
+    const rows = this.#db.prepare(`
+      SELECT run_id, record_json, integrity_tag FROM personalization_scenario_runs
+      WHERE status IN ('running', 'interrupted', 'paused')
+    `).all() as Array<{ run_id: string; record_json: string; integrity_tag: string | null }>;
+    const update = this.#db.prepare(
+      'UPDATE personalization_scenario_runs SET manifest_digest = ?, record_json = ?, integrity_tag = ? WHERE run_id = ?',
+    );
+    let reminted = 0;
+    for (const row of rows) {
+      try {
+        const record = ScenarioRunRecordSchema.parse(JSON.parse(row.record_json) as unknown);
+        if (!verifiesScenarioRun(this.#scenarioRunIntegritySecret, record, row.integrity_tag)) continue;
+        const newDigest = digestResolvedManifestSnapshot(record.manifestSnapshot);
+        // 每个步骤的 executionKey = sha256(runId:manifestDigest:stepSnapshotDigest)，
+        // 绑定的是记录级 manifestDigest——重签 digest 后必须同步重算，否则
+        // 恢复校验「Step execution key mismatch」全部失配（2026-08-30 修复）。
+        const executionKeysAligned = record.steps.every((step) => {
+          const stepDigest = createHash('sha256').update(canonicalJson(step.stepSnapshot), 'utf8').digest('hex');
+          return step.executionKey === createHash('sha256')
+            .update(`${record.runId}:${newDigest}:${stepDigest}`, 'utf8')
+            .digest('hex');
+        });
+        if (newDigest === record.manifestDigest && executionKeysAligned) continue;
+        const remintedSteps = record.steps.map((step) => {
+          const stepDigest = createHash('sha256').update(canonicalJson(step.stepSnapshot), 'utf8').digest('hex');
+          return {
+            ...step,
+            executionKey: createHash('sha256')
+              .update(`${record.runId}:${newDigest}:${stepDigest}`, 'utf8')
+              .digest('hex'),
+          };
+        });
+        const updated: ScenarioRunRecord = {
+          ...record,
+          manifestDigest: newDigest,
+          manifestSnapshot: { ...record.manifestSnapshot, manifestDigest: newDigest },
+          steps: remintedSteps,
+        };
+        update.run(newDigest, canonicalJson(updated), scenarioRunIntegrityTag(this.#scenarioRunIntegritySecret, updated), record.runId);
+        reminted += 1;
+      } catch {
+        // 单条记录重签失败不影响其余记录；该条保持旧值（大不了重跑）。
+      }
+    }
+    return reminted;
   }
 
   listScenarioRunRecords(sessionId: string): ScenarioRunRecord[] {
@@ -988,11 +1162,14 @@ export class PersonalizationRepository {
   }
 
   save(request: PersonalizationSaveRequest): PersonalizationMutationResult {
-    const parsed = PersonalizationDefinitionSchema.safeParse(request.definition);
-    if (!parsed.success || request.contractVersion !== PERSONALIZATION_CONTRACT_VERSION) {
-      return { ok: false, code: 'invalid_request' };
+    // 宽松净化写入（2026-08-29 刘总要求）：校验只用来净化、不用来拒绝。
+    // 未知字段剔除后照常保存；只有运行必需字段出现真实类型错误才拒绝，
+    // 并把具体字段带回给界面。
+    const lenient = parsePersonalizationDefinitionLenient(request.definition as PersonalizationDefinition);
+    if (!lenient.ok || request.contractVersion !== PERSONALIZATION_CONTRACT_VERSION) {
+      return { ok: false, code: 'invalid_request', issues: lenient.ok ? undefined : lenient.issues };
     }
-    const definition = parsed.data;
+    const definition = lenient.definition;
     if (definition.provenance.origin === 'builtin' || definition.id.startsWith('builtin:')) {
       return { ok: false, code: 'factory_protected' };
     }
@@ -1189,6 +1366,74 @@ export class PersonalizationRepository {
     });
   }
 
+  /**
+   * Recovers a quarantined row only by publishing a new revision from an
+   * already verified immutable version. The unverified current snapshot is
+   * retained in a local quarantine table for forensic review; it is never
+   * re-signed, parsed into the renderer, or made executable.
+   */
+  recoverIntegrityIssue(
+    id: string,
+    sourceRevision: number,
+    expectedCurrentRevision: number,
+    now = Date.now(),
+  ): PersonalizationMutationResult {
+    const current = this.#selectRow(id);
+    if (!current || current.current_revision !== expectedCurrentRevision) {
+      return { ok: false, code: 'revision_conflict', currentRevision: current?.current_revision ?? 1 };
+    }
+    const issue = this.#integrityIssueForRow(current);
+    if (!issue) return { ok: false, code: 'invalid_request' };
+    if (current.origin === 'builtin') return { ok: false, code: 'factory_protected' };
+    const source = this.listVersions(id).find((version) => version.revision === sourceRevision);
+    if (!source || source.definition.kind !== current.kind || source.definition.provenance.origin !== current.origin) {
+      return { ok: false, code: 'not_found' };
+    }
+    const next = PersonalizationDefinitionSchema.parse({
+      ...source.definition,
+      revision: expectedCurrentRevision + 1,
+      provenance: {
+        ...source.definition.provenance,
+        locallyModified: true,
+        updatedAt: now,
+      },
+    });
+    const raw = canonicalJson(next);
+    try {
+      return this.#db.transaction((): PersonalizationMutationResult => {
+        const latest = this.#selectRow(id);
+        if (!latest || latest.current_revision !== expectedCurrentRevision || !this.#integrityIssueForRow(latest)) {
+          return { ok: false, code: 'revision_conflict', currentRevision: latest?.current_revision ?? 1 };
+        }
+        this.#db.prepare(`
+          INSERT INTO personalization_definition_quarantine
+            (id, quarantined_revision, current_json, issue_code, quarantined_at)
+          VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(id, quarantined_revision) DO NOTHING
+        `).run(id, latest.current_revision, latest.current_json, issue.code, now);
+        const updated = this.#db.prepare(`
+          UPDATE personalization_definitions
+          SET kind = ?, origin = ?, current_revision = ?, current_json = ?, updated_at = ?
+          WHERE id = ? AND current_revision = ? AND current_json = ? AND origin <> 'builtin'
+        `).run(
+          next.kind,
+          next.provenance.origin,
+          next.revision,
+          raw,
+          next.provenance.updatedAt,
+          id,
+          latest.current_revision,
+          latest.current_json,
+        );
+        if (updated.changes !== 1) throw new Error('integrity_recovery_cas_failed');
+        this.#insertVersion(next, digestDefinition(next));
+        return { ok: true, code: 'saved', definition: next };
+      })();
+    } catch {
+      return { ok: false, code: 'io_error' };
+    }
+  }
+
   archive(id: string, expectedRevision: number, now = Date.now()): PersonalizationMutationResult {
     const row = this.#selectRow(id);
     if (!row) return { ok: false, code: 'not_found' };
@@ -1289,20 +1534,93 @@ export class PersonalizationRepository {
     return this.#db.prepare('SELECT * FROM personalization_definitions WHERE id = ?').get(id) as DefinitionRow | undefined;
   }
 
-  #parseVerifiedRow(row: DefinitionRow): PersonalizationDefinition {
-    const definition = parseDefinition(row.current_json);
-    const version = this.#db.prepare(`
-      SELECT content_digest FROM personalization_versions WHERE id = ? AND revision = ?
-    `).get(row.id, row.current_revision) as { content_digest: string } | undefined;
-    if (!version
-      || definition.id !== row.id
+  #integrityIssueForRow(row: DefinitionRow): DefinitionIntegrityIssue | undefined {
+    let definition: PersonalizationDefinition;
+    try {
+      definition = parseDefinition(row.current_json);
+    } catch {
+      return {
+        id: row.id,
+        kind: row.kind,
+        archived: row.archived === 1,
+        currentRevision: row.current_revision,
+        latestVerifiedRevision: this.#latestVerifiedRevision(row.id),
+        code: 'current_definition_invalid',
+      };
+    }
+    if (definition.id !== row.id
       || definition.kind !== row.kind
       || definition.provenance.origin !== row.origin
-      || definition.revision !== row.current_revision
-      || digestDefinition(definition) !== version.content_digest) {
-      throw new Error('Personalization definition integrity verification failed');
+      || definition.revision !== row.current_revision) {
+      return {
+        id: row.id,
+        kind: row.kind,
+        archived: row.archived === 1,
+        currentRevision: row.current_revision,
+        latestVerifiedRevision: this.#latestVerifiedRevision(row.id),
+        code: 'current_definition_identity_mismatch',
+      };
     }
-    return definition;
+    const version = this.#db.prepare(`
+      SELECT content_digest, definition_json FROM personalization_versions WHERE id = ? AND revision = ?
+    `).get(row.id, row.current_revision) as { content_digest: string; definition_json: string } | undefined;
+    if (!version) {
+      return {
+        id: row.id,
+        kind: row.kind,
+        archived: row.archived === 1,
+        currentRevision: row.current_revision,
+        latestVerifiedRevision: this.#latestVerifiedRevision(row.id),
+        code: 'current_version_missing',
+      };
+    }
+    let versionDefinition: PersonalizationDefinition;
+    try {
+      versionDefinition = parseDefinition(version.definition_json);
+    } catch {
+      return {
+        id: row.id,
+        kind: row.kind,
+        archived: row.archived === 1,
+        currentRevision: row.current_revision,
+        latestVerifiedRevision: this.#latestVerifiedRevision(row.id),
+        code: 'current_version_invalid',
+      };
+    }
+    if (versionDefinition.id !== row.id
+      || versionDefinition.revision !== row.current_revision
+      || digestDefinition(versionDefinition) !== version.content_digest) {
+      return {
+        id: row.id,
+        kind: row.kind,
+        archived: row.archived === 1,
+        currentRevision: row.current_revision,
+        latestVerifiedRevision: this.#latestVerifiedRevision(row.id),
+        code: 'current_version_content_mismatch',
+      };
+    }
+    if (digestDefinition(definition) !== version.content_digest) {
+      return {
+        id: row.id,
+        kind: row.kind,
+        archived: row.archived === 1,
+        currentRevision: row.current_revision,
+        latestVerifiedRevision: this.#latestVerifiedRevision(row.id),
+        code: 'current_digest_mismatch',
+      };
+    }
+    return undefined;
+  }
+
+  #latestVerifiedRevision(id: string): number | null {
+    const versions = this.listVersions(id);
+    return versions[0]?.revision ?? null;
+  }
+
+  #parseVerifiedRow(row: DefinitionRow): PersonalizationDefinition {
+    const issue = this.#integrityIssueForRow(row);
+    if (issue) throw new Error(`Personalization definition integrity verification failed: ${issue.code}`);
+    return parseDefinition(row.current_json);
   }
 
   #insertVersion(definition: PersonalizationDefinition, digest: string): void {

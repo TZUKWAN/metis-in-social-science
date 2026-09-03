@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 interface PackageScripts {
   scripts: Record<string, string>;
+  build: { extraResources?: Array<{ from?: string; to?: string }> };
 }
 
 const packageJson = JSON.parse(
@@ -25,5 +26,12 @@ describe('Electron lifecycle scripts', () => {
     expect(packageJson.scripts.typecheck).toContain('tsconfig.engine.json');
     expect(packageJson.scripts.typecheck).toContain('electron/tsconfig.json');
     expect(packageJson.scripts['build:electron']).toContain('npm run typecheck');
+  });
+
+  it('packages the self-contained GenOffice runtime as an extra resource', () => {
+    expect(packageJson.scripts['build:electron']).toContain('stage-genoffice-runtime.cjs');
+    expect(packageJson.build.extraResources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: 'dist-electron/genoffice', to: 'genoffice' }),
+    ]));
   });
 });

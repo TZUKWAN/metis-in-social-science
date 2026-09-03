@@ -104,11 +104,11 @@ function computeLayers(steps: WorkflowGraphStep[], dependencies: Record<string, 
 }
 
 const STATUS_COLORS: Record<WorkflowGraphStepStatus, string> = {
-  pending: 'var(--text-muted, #6e7781)',
-  running: 'var(--status-running, #2f81f7)',
-  completed: 'var(--status-completed, #2da44e)',
-  failed: 'var(--status-failed, #cf222e)',
-  skipped: 'var(--text-muted, #6e7781)',
+  pending: 'var(--text-muted)',
+  running: 'var(--status-running)',
+  completed: 'var(--status-completed)',
+  failed: 'var(--status-failed)',
+  skipped: 'var(--text-muted)',
 };
 
 export default function WorkflowGraph({ workflow, stepResults, goalId, onResolveDecision, onReorder }: WorkflowGraphProps) {
@@ -211,7 +211,7 @@ export default function WorkflowGraph({ workflow, stepResults, goalId, onResolve
                   data-to={edge.to}
                   d={`M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`}
                   fill="none"
-                  stroke="var(--text-muted, #6e7781)"
+                  stroke="var(--text-muted)"
                   strokeWidth={1.5}
                   markerEnd="url(#workflow-graph-arrow)"
                 />
@@ -227,7 +227,7 @@ export default function WorkflowGraph({ workflow, stepResults, goalId, onResolve
                 markerHeight="7"
                 orient="auto-start-reverse"
               >
-                <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--text-muted, #6e7781)" />
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--text-muted)" />
               </marker>
             </defs>
           </svg>
@@ -267,7 +267,7 @@ export default function WorkflowGraph({ workflow, stepResults, goalId, onResolve
                   height: NODE_HEIGHT,
                   textAlign: 'left',
                   padding: '6px 8px',
-                  border: `1px solid ${selected ? 'var(--accent, #2f81f7)' : 'var(--border)'}`,
+                  border: `1px solid ${selected ? 'var(--accent)' : 'var(--border)'}`,
                   borderRadius: 'var(--radius, 4px)',
                   background: 'var(--bg-card, var(--bg-primary))',
                   color: 'var(--text-primary)',

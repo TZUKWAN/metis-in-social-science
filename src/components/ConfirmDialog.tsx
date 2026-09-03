@@ -3,7 +3,7 @@
  */
 
 import { useTranslation } from '../i18n';
-import { useOverlayDialog } from '../hooks/useOverlayDialog';
+import { Dialog, Button } from './ui';
 
 interface ConfirmDialogProps {
   title: string;
@@ -23,22 +23,18 @@ export default function ConfirmDialog({
   onCancel,
 }: ConfirmDialogProps) {
   const { t } = useTranslation();
-  // Escape (via useOverlayDialog) cancels the confirmation.
-  const { containerRef } = useOverlayDialog({ onClose: onCancel });
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="confirm-title" ref={containerRef}>
-      <div className="modal-content">
-        <h3 id="confirm-title">{title}</h3>
-        <p style={{ fontSize: 14, color: 'var(--text-body)', marginBottom: 20 }}>{message}</p>
-        <div className="modal-actions">
-          <button type="button" className="btn-secondary" onClick={onCancel}>
-            {cancelLabel ?? t('common.cancel')}
-          </button>
-          <button type="button" className="btn-primary" data-testid="confirm-delete" onClick={onConfirm} style={{ background: 'var(--status-failed)', borderColor: 'var(--status-failed)' }}>
-            {confirmLabel ?? t('common.delete')}
-          </button>
-        </div>
-      </div>
-    </div>
+    <Dialog open onOpenChange={(open) => { if (!open) onCancel(); }} title={title} size="sm" footer={(
+      <>
+        <Button variant="secondary" onClick={onCancel}>
+          {cancelLabel ?? t('common.cancel')}
+        </Button>
+        <Button variant="danger" data-testid="confirm-delete" onClick={onConfirm}>
+          {confirmLabel ?? t('common.delete')}
+        </Button>
+      </>
+    )}>
+      <p style={{ fontSize: 14, color: 'var(--text-body)', margin: 0 }}>{message}</p>
+    </Dialog>
   );
 }

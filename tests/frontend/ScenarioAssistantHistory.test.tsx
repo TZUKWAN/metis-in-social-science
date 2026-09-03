@@ -167,7 +167,7 @@ describe('ScenarioConfigurationAssistant durable conversation history', () => {
 
     await waitFor(() => expect(metis.compileScenarioHarness).toHaveBeenCalled());
     // 失败不落库：数据库查询应返回空；本地保留指令并如实显示失败原因。
-    expect((await screen.findAllByText(/AI 未生成可保存的场景/u)).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText(/AI 未生成可用的场景内容/u)).length).toBeGreaterThan(0);
     expect(screen.getByText('这条会失败的要求')).toBeTruthy();
   });
 

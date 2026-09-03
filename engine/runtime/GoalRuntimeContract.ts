@@ -241,6 +241,7 @@ export const GoalExecutionCodeSchema = z.enum([
   'paused',
   'cancelled',
   'failed',
+  'goal_cancelled',
   'goal_not_found',
   'goal_not_ready',
   'goal_execution_unavailable',

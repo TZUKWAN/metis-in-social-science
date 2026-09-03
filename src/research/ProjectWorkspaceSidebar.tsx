@@ -233,6 +233,10 @@ export default function ProjectWorkspaceSidebar({
   const [title, setTitle] = useState('');
   const [intent, setIntent] = useState('');
   const [formError, setFormError] = useState('');
+  // 新建项目时选择场景（2026-08-29 刘总要求）：可选绑定一个已启用场景，
+  // 创建后自动作为该项目的对话场景。
+  const [createScenarioOptions, setCreateScenarioOptions] = useState<Array<{ id: string; name: string }>>([]);
+  const [createScenarioId, setCreateScenarioId] = useState('');
   const [imageImportOpen, setImageImportOpen] = useState(false);
   const [imageImportCapability, setImageImportCapability] = useState<FileCapabilityDescriptor | null>(null);
   const [imageImportCaption, setImageImportCaption] = useState('');
@@ -399,8 +403,27 @@ export default function ProjectWorkspaceSidebar({
     setFormError('');
   };
 
+  // 打开新建表单时加载可绑定场景清单（2026-08-29 刘总要求：新建项目可选择场景）。
+  const openCreateForm = () => {
+    setCreateOpen(true);
+    try {
+      void window.metis?.listPersonalization?.({ contractVersion: 1, kind: 'scenario', includeDisabled: false })
+        ?.then((response) => {
+          setCreateScenarioOptions(response.definitions
+            .filter((definition) => definition.kind === 'scenario'
+              && definition.enabled
+              && definition.provenance.origin !== 'builtin')
+            .map((definition) => ({ id: definition.id, name: definition.name })));
+        })
+        .catch(() => setCreateScenarioOptions([]));
+    } catch {
+      setCreateScenarioOptions([]);
+    }
+  };
+
   const closeCreateForm = () => {
     resetCreateForm();
+    setCreateScenarioId('');
     setCreateOpen(false);
   };
 
@@ -561,7 +584,16 @@ export default function ProjectWorkspaceSidebar({
       originalIntent: intent.trim(),
     });
     if (result.success) {
+      // 绑定场景（2026-08-29 刘总要求）：写入全局偏好与项目级偏好，
+      // 项目的对话会优先使用项目级场景。
+      if (createScenarioId) {
+        try {
+          window.localStorage.setItem('metis:active-scenario-id', createScenarioId);
+          window.localStorage.setItem(`metis:project-scenario:${projectId}`, createScenarioId);
+        } catch { /* preference persistence is best-effort */ }
+      }
       resetCreateForm();
+      setCreateScenarioId('');
       onProjectCreated?.(result.resourceId);
     }
   };
@@ -597,7 +629,7 @@ export default function ProjectWorkspaceSidebar({
         <button
           type="button"
           className="research-workspace-sidebar__create"
-          onClick={() => setCreateOpen(true)}
+          onClick={() => openCreateForm()}
           aria-expanded={createOpen}
           aria-controls={createPanelId}
         >
@@ -663,6 +695,18 @@ export default function ProjectWorkspaceSidebar({
               rows={3}
               placeholder={copy.originalIntentPlaceholder}
             />
+          </label>
+          <label>
+            <span>{locale === 'zh' ? '绑定场景（可选）' : 'Scenario (optional)'}</span>
+            <select
+              value={createScenarioId}
+              onChange={(event) => setCreateScenarioId(event.target.value)}
+            >
+              <option value="">{locale === 'zh' ? '不绑定场景' : 'No scenario'}</option>
+              {createScenarioOptions.map((scenario) => (
+                <option key={scenario.id} value={scenario.id}>{scenario.name}</option>
+              ))}
+            </select>
           </label>
           {formError && (
             <p id={createErrorId} className="research-workspace-form-error" role="alert">

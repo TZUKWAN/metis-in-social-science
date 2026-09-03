@@ -22,6 +22,9 @@ import {
 export type { PaperItem, ReadStatus } from '../engine/research/PaperItem';
 export type LocaleKey = 'en' | 'zh';
 export type ThemeMode = 'light' | 'dark' | 'system';
+export type AccentTheme = 'gold' | 'blue' | 'green' | 'gray';
+/** Preset id or a custom #RRGGBB hex picked from the settings palette. */
+export type AccentSetting = AccentTheme | `#${string}`;
 
 function resolveTheme(theme: ThemeMode): 'light' | 'dark' {
   if (theme === 'system') {
@@ -32,8 +35,65 @@ function resolveTheme(theme: ThemeMode): 'light' | 'dark' {
   }
   return theme;
 }
+
+// ─── Custom accent (free-form palette) ───────────────────────
+
+const CUSTOM_ACCENT_RE = /^#[0-9a-fA-F]{6}$/;
+
+export function isCustomAccent(value: string): boolean {
+  return CUSTOM_ACCENT_RE.test(value);
+}
+
+const clamp255 = (n: number) => Math.max(0, Math.min(255, Math.round(n)));
+/** Blend a channel toward `target` by `amt` (0–1). */
+const mixChannel = (c: number, target: number, amt: number) => clamp255(c + (target - c) * amt);
+
+/**
+ * Derive the full accent token set from a user-picked hex color and inline it
+ * on <html> (inline style beats the [data-accent] preset selectors, so the
+ * --primary aliases keep resolving through --accent automatically).
+ * Dark mode lightens the picked color so it stays visible on dark surfaces;
+ * light mode uses the exact picked color and darkens 12% for hover.
+ */
+export function applyCustomAccent(hex: string, resolvedTheme: 'light' | 'dark'): void {
+  if (typeof document === 'undefined' || !isCustomAccent(hex)) return;
+  const n = parseInt(hex.slice(1), 16);
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  const dark = resolvedTheme === 'dark';
+  const ar = dark ? mixChannel(r, 255, 0.35) : r;
+  const ag = dark ? mixChannel(g, 255, 0.35) : g;
+  const ab = dark ? mixChannel(b, 255, 0.35) : b;
+  const hr = dark ? mixChannel(r, 255, 0.55) : mixChannel(r, 0, 0.12);
+  const hg = dark ? mixChannel(g, 255, 0.55) : mixChannel(g, 0, 0.12);
+  const hb = dark ? mixChannel(b, 255, 0.55) : mixChannel(b, 0, 0.12);
+  const soft = dark ? `rgba(${r}, ${g}, ${b}, 0.16)` : `rgba(${r}, ${g}, ${b}, 0.10)`;
+  const ringColor = dark ? `rgba(${ar}, ${ag}, ${ab}, 0.82)` : `rgba(${r}, ${g}, ${b}, 0.78)`;
+  const ringShadow = `0 0 0 2px ${dark ? `rgba(${ar}, ${ag}, ${ab}, 0.35)` : `rgba(${r}, ${g}, ${b}, 0.28)`}`;
+  const ring = `0 0 0 2px ${dark ? `rgba(${ar}, ${ag}, ${ab}, 0.5)` : `rgba(${r}, ${g}, ${b}, 0.4)`}`;
+  // Pick readable text on the final accent from its relative luminance.
+  const luminance = (0.2126 * ar + 0.7152 * ag + 0.0722 * ab) / 255;
+  const style = document.documentElement.style;
+  style.setProperty('--accent', `rgb(${ar}, ${ag}, ${ab})`);
+  style.setProperty('--accent-hover', `rgb(${hr}, ${hg}, ${hb})`);
+  style.setProperty('--accent-soft', soft);
+  style.setProperty('--text-on-accent', luminance > 0.6 ? '#000000' : '#FFFFFF');
+  style.setProperty('--focus-ring-color', ringColor);
+  style.setProperty('--focus-ring-shadow', ringShadow);
+  style.setProperty('--focus-ring', ring);
+}
+
+/** Restore preset-driven accent tokens by dropping the inline overrides. */
+function clearCustomAccent(): void {
+  if (typeof document === 'undefined') return;
+  const style = document.documentElement.style;
+  for (const prop of ['--accent', '--accent-hover', '--accent-soft', '--text-on-accent', '--focus-ring-color', '--focus-ring-shadow', '--focus-ring']) {
+    style.removeProperty(prop);
+  }
+}
 export type TopLevelEntry = 'projects' | 'settings';
-export type Page = TopLevelEntry | 'dashboard' | 'chat' | 'goal' | 'graph' | 'timeline' | 'latex' | 'pdf' | 'notes' | 'experiments' | 'evals' | 'artifacts' | 'kanban' | 'autonomous' | 'outcomes';
+export type Page = TopLevelEntry | 'dashboard' | 'chat' | 'goal' | 'graph' | 'timeline' | 'latex' | 'pdf' | 'notes' | 'experiments' | 'evals' | 'artifacts' | 'kanban' | 'autonomous' | 'outcomes' | 'submissions';
 
 export interface NoteItem {
   id: string;
@@ -233,6 +293,10 @@ export interface MetisState {
   theme: ThemeMode;
   setTheme: (theme: ThemeMode) => void;
 
+  // Accent theme (preset id or custom #RRGGBB hex)
+  accent: AccentSetting;
+  setAccent: (accent: AccentSetting) => void;
+
   // Papers
   papers: PaperItem[];
   paperFilter: { query: string; semantic?: boolean; yearFrom?: number; yearTo?: number; readStatus?: ReadStatus; readWithinDays?: number; minRating?: number; minCitations?: number; venue?: string; collectionId?: string; starred?: boolean; tag?: string; archived?: boolean; priority?: 'high' | 'medium' | 'low'; deadlineStatus?: 'overdue' | 'today' | 'upcoming' };
@@ -320,6 +384,7 @@ export interface MetisState {
 // Monotonic counter for setTheme race prevention.
 // Stale IPC failures must not roll back a newer successful write.
 let themeOperationSeq = 0;
+let accentOperationSeq = 0;
 
 export const useMetisStore = create<MetisState>((set, get) => ({
   isHydrated: false,
@@ -341,6 +406,9 @@ export const useMetisStore = create<MetisState>((set, get) => ({
       try {
         localStorage.setItem('metis-theme', theme);
       } catch { /* ignore */ }
+      // A custom accent must be re-derived for the new resolved mode.
+      const accent = get().accent;
+      if (isCustomAccent(accent)) applyCustomAccent(accent, resolved);
     }
     // Transactional IPC: rollback on failure ONLY if still the latest operation
     const metis = getMetis();
@@ -390,6 +458,61 @@ export const useMetisStore = create<MetisState>((set, get) => ({
             try { localStorage.removeItem('metis-theme'); } catch { /* best-effort */ }
           }
         }
+      });
+    }
+  },
+
+
+  accent: 'blue',
+  setAccent: (accent) => {
+    const prevAccent = get().accent;
+    // Monotonic operation generation, mirroring setTheme: stale IPC
+    // failures must not roll back a newer successful write.
+    const operationId = ++accentOperationSeq;
+    // DOM application shared by optimistic update and rollback: presets go
+    // through [data-accent] CSS selectors; custom hex colors are derived and
+    // inlined (dataset.accent='custom' + inline tokens).
+    const applyToDom = (value: AccentSetting) => {
+      if (typeof document === 'undefined') return;
+      const el = document.documentElement;
+      if (isCustomAccent(value)) {
+        el.dataset.accent = 'custom';
+        applyCustomAccent(value, (el.dataset.theme as 'light' | 'dark') ?? 'light');
+      } else {
+        clearCustomAccent();
+        el.dataset.accent = value;
+      }
+      try {
+        localStorage.setItem('metis-accent', value);
+      } catch { /* ignore */ }
+    };
+    // Optimistic update: Zustand + DOM + localStorage
+    set({ accent });
+    applyToDom(accent);
+    // Transactional IPC: rollback on failure ONLY if still the latest operation
+    const metis = getMetis();
+    if (metis?.setSettings) {
+      void metis.setSettings({ accent }).then((result) => {
+        if (operationId !== accentOperationSeq) return;
+        if (!result?.success) {
+          // IPC failure — rollback to previous accent.
+          set({ accent: prevAccent });
+          applyToDom(prevAccent);
+        } else {
+          // IPC success — main already persisted; only re-sync localStorage.
+          if (typeof document !== 'undefined') {
+            try {
+              localStorage.setItem('metis-accent', accent);
+            } catch {
+              try { localStorage.removeItem('metis-accent'); } catch { /* best-effort */ }
+            }
+          }
+        }
+      }).catch(() => {
+        // IPC threw — rollback to previous accent.
+        if (operationId !== accentOperationSeq) return;
+        set({ accent: prevAccent });
+        applyToDom(prevAccent);
       });
     }
   },

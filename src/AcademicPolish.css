@@ -69,28 +69,27 @@
   margin-left: 2px;
 }
 
-/* 导航项：透明底 + 底部细线 active 指示（学术期刊目录感）。 */
+/* 导航项：圆角 pill 选中态（--accent-soft 底 + accent 文字，Apple 分段控件感）。 */
 .topbar-nav__item {
-  padding: 9px 10px 7px;
-  border-radius: 0;
-  border: none;
-  border-bottom: 2px solid transparent;
+  padding: 6px 11px;
+  border-radius: var(--radius-pill, 999px);
+  border: 1px solid transparent;
   color: var(--text-secondary);
   font-size: 12.5px;
   background: transparent;
 }
 
-.topbar-nav__item:hover {
-  color: var(--text-primary);
-  background: transparent;
-  border-bottom-color: color-mix(in srgb, var(--accent) 30%, transparent);
+@media (hover: hover) and (pointer: fine) {
+  .topbar-nav__item:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+  }
 }
 
 .topbar-nav__item.active {
   color: var(--accent);
-  background: transparent;
+  background: var(--accent-soft);
   border-color: transparent;
-  border-bottom-color: var(--accent);
   font-weight: 600;
 }
 
@@ -128,13 +127,13 @@
   letter-spacing: 0.02em;
   border: 1px solid color-mix(in srgb, var(--primary) 86%, var(--text-heading));
   box-shadow: none;
-  transition: background 120ms ease, transform 80ms ease;
+  transition: background var(--dur-fast, 160ms) var(--ease-out, ease), transform var(--dur-fast, 160ms) var(--ease-out, ease);
 }
 .btn-primary:hover {
   background: var(--primary-hover);
   box-shadow: none;
 }
-.btn-primary:active { transform: translateY(0.5px); }
+.btn-primary:active:not(:disabled) { transform: scale(0.97); }
 .btn-primary:disabled {
   background: var(--bg-hover);
   border-color: var(--border);
@@ -152,8 +151,9 @@
   color: var(--primary);
   border: 1px solid color-mix(in srgb, var(--primary) 45%, var(--border));
   background: var(--bg-card);
-  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+  transition: border-color var(--dur-fast, 160ms) var(--ease-out, ease), background var(--dur-fast, 160ms) var(--ease-out, ease), color var(--dur-fast, 160ms) var(--ease-out, ease), transform var(--dur-fast, 160ms) var(--ease-out, ease);
 }
+.btn-secondary:active:not(:disabled) { transform: scale(0.97); }
 .btn-secondary:hover {
   background: var(--primary-soft);
   border-color: color-mix(in srgb, var(--primary) 70%, var(--border));
@@ -656,18 +656,6 @@ select.settings-input:focus,
   box-shadow: 0 0 0 1px var(--accent);
 }
 
-/* ─── 布局修复：科研项目·聊天模式输入框贴底 ─────────────────── */
-/* .projects-page__chat-workspace 必须是 flex 容器，否则内部的
-   .chat-main(flex:1) 无法继承高度，输入框不贴底。 */
-.projects-page__chat-workspace {
-  display: flex;
-}
-.projects-page__chat-workspace > .chat-main {
-  width: 100%;
-  min-width: 0;
-  min-height: 0;
-}
-
 /* ─── 分栏拖拽分隔条（SplitHandle） ─────────────────────────── */
 .split-handle {
   flex: 0 0 7px;
@@ -695,4 +683,265 @@ select.settings-input:focus,
 .split-handle:focus-visible {
   outline: 2px solid var(--focus-ring-color);
   outline-offset: 0;
+}
+
+/* ─── PHASE-2 Apple-HIG 层：动效/海拔/圆角令牌 + 兼容别名 ──────────
+ * 动效遵循 ease-out 优先、UI 动画 <300ms、按压 scale(0.97)；
+ * 浅色用分层细阴影表达海拔，深色用描边分离（阴影归零）。
+ * prefers-reduced-motion 下 AcademicTheme 已把所有过渡压到 0.01ms，
+ * 这里再显式关掉按压位移，避免纯位移反馈。 */
+
+:root {
+  /* Motion — 强 ease-out 用于进入/反馈，ease-in-out 用于屏内移动 */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --dur-fast: 160ms;
+  --dur-base: 220ms;
+
+  /* Radius — Apple 分级：卡片 14px，浮层/模态 16px，胶囊选中态 999px */
+  --radius-card: 14px;
+  --radius-overlay: 16px;
+  --radius-pill: 999px;
+
+  /* Elevation — 浅色：苹果式柔和双层阴影；深色：靠描边分离 */
+  --shadow-1: 0 1px 2px rgb(0 0 0 / 4%), 0 8px 24px rgb(0 0 0 / 6%);
+  --shadow-2: 0 2px 6px rgb(0 0 0 / 6%), 0 12px 32px rgb(0 0 0 / 10%);
+  --shadow-card: var(--shadow-1);
+  --shadow-modal: 0 2px 6px rgb(0 0 0 / 6%), 0 24px 64px rgb(0 0 0 / 22%);
+
+  /* Compat aliases — 页面 CSS 引用但 AcademicTheme 未定义的语义名。
+     别名指向主题令牌，因此自动随 light/dark/accent 矩阵切换。 */
+  --bg-primary: var(--bg-main);
+  --bg-subtle: var(--bg-sidebar);
+  --bg-tertiary: var(--bg-hover);
+  --surface: var(--bg-card);
+  --surface-raised: var(--bg-card);
+  --text: var(--text-body);
+  --text-main: var(--text-primary);
+  --text-strong: var(--text-heading);
+  --text-tertiary: var(--text-muted);
+  --text-faint: var(--text-muted);
+  --accent-color: var(--accent);
+  --border-color: var(--border);
+  --border-subtle: var(--border-light);
+  --status-error: var(--status-failed);
+  --status-warning: var(--evidence-pending);
+  --status-warning-bg: var(--status-skimmed-bg);
+  --warning: var(--evidence-pending);
+  --warning-bg: var(--status-skimmed-bg);
+  --warning-text: var(--status-skimmed-text);
+  --warning-border: color-mix(in srgb, var(--evidence-pending) 45%, transparent);
+  --success-bg: var(--status-completed-bg);
+  --success-text: var(--status-completed);
+  --success-border: color-mix(in srgb, var(--status-completed) 45%, transparent);
+  --danger-bg: var(--status-failed-bg);
+  --danger-text: var(--status-failed);
+  --danger-border: color-mix(in srgb, var(--status-failed) 45%, transparent);
+}
+
+[data-theme="dark"] {
+  --shadow-1: none;
+  --shadow-2: none;
+  --shadow-card: none;
+  --shadow-modal: 0 24px 64px rgb(0 0 0 / 60%);
+}
+
+/* 顶栏：磨砂材质 — 半透明 + 背景模糊，内容从其下方滚过。 */
+.topbar {
+  background: var(--glass-surface);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  box-shadow: inset 0 1px 0 var(--glass-edge), inset 0 -1px 0 var(--border-light);
+  border-bottom-color: transparent;
+}
+
+/* 模态：大圆角 + 分层阴影 + scale(0.95)→1 的物质化入场（从不从 0 缩放）。 */
+.modal {
+  border-radius: var(--radius-overlay);
+  transition: opacity var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-out);
+}
+.modal-overlay {
+  transition: opacity var(--dur-base) var(--ease-out);
+}
+@starting-style {
+  .modal { opacity: 0; transform: scale(0.95); }
+  .modal-overlay { opacity: 0; }
+}
+
+/* 其它全局浮层窗口走同一套物质化入场。 */
+.free-api-window,
+.connection-mode-dialog,
+.settings-advanced-dialog,
+.scenario-approval-card {
+  transition: opacity var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-out);
+}
+.free-api-overlay,
+.connection-mode-overlay,
+.settings-advanced-overlay,
+.scenario-approval-overlay {
+  transition: opacity var(--dur-base) var(--ease-out);
+}
+@starting-style {
+  .free-api-window,
+  .connection-mode-dialog,
+  .settings-advanced-dialog,
+  .scenario-approval-card { opacity: 0; transform: scale(0.95); }
+  .free-api-overlay,
+  .connection-mode-overlay,
+  .settings-advanced-overlay,
+  .scenario-approval-overlay { opacity: 0; }
+}
+
+/* 统一按压反馈：pointer-down 即时 scale(0.97)，释放快速回弹。 */
+.btn-sm,
+.topbar-icon-button,
+.topbar-nav__item,
+.topbar-actions .theme-toggle,
+.chat-send,
+.chat-icon-button,
+.chat-sidebar-filter,
+.chat-session-item,
+.artifacts-center__filter,
+.projects-page__tab,
+.right-panel-tab {
+  transition: border-color var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+}
+.btn-sm:active:not(:disabled),
+.topbar-icon-button:active:not(:disabled),
+.topbar-nav__item:active:not(:disabled),
+.topbar-actions .theme-toggle:active:not(:disabled),
+.chat-send:active:not(:disabled),
+.chat-icon-button:active:not(:disabled),
+.chat-sidebar-filter:active:not(:disabled),
+.artifacts-center__filter:active:not(:disabled),
+.projects-page__tab:active:not(:disabled),
+.right-panel-tab:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn-primary:active:not(:disabled),
+  .btn-secondary:active:not(:disabled),
+  .btn-sm:active:not(:disabled),
+  .topbar-icon-button:active:not(:disabled),
+  .topbar-nav__item:active:not(:disabled),
+  .topbar-actions .theme-toggle:active:not(:disabled),
+  .chat-send:active:not(:disabled),
+  .chat-icon-button:active:not(:disabled),
+  .chat-sidebar-filter:active:not(:disabled),
+  .artifacts-center__filter:active:not(:disabled),
+  .projects-page__tab:active:not(:disabled),
+  .right-panel-tab:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+/* 大字距策略：大号无衬线拉丁标题略收紧；中文衬线标题保持 0（§1 已定）。 */
+.submissions-mail__subtitle,
+.artifacts-center__empty-title,
+.kanban-header h1,
+.kanban-header h2 {
+  letter-spacing: -0.01em;
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * Aurora Glass 表达层（2026-09-02）：渐变强调、辉光、光点。
+ * 克制高级版——渐变只出现在强调元素（主按钮/选中态/品牌字），
+ * 辉光只出现在交互反馈（hover/焦点/流式），不做大面积装饰。
+ * 全部颜色经 --accent-gradient / --glow-* / --title-gradient token
+ * 派生，随 8 套主题（亮/暗 × 金蓝绿灰）自动联动。
+ * ════════════════════════════════════════════════════════════════ */
+
+/* 主按钮：强调色渐变 + 常态微光，hover 抬升 + 辉光增强。 */
+.btn-primary {
+  background: var(--accent-gradient);
+  border-color: transparent;
+  box-shadow: var(--glow-accent-soft);
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-gradient);
+  box-shadow: var(--glow-accent);
+  transform: translateY(-1px);
+}
+
+/* 侧栏选中项：渐变 pill + 微光（Apple 高亮态的物质感版本）。 */
+.nav-item.active {
+  background: var(--accent-gradient);
+  box-shadow: var(--glow-accent-soft);
+}
+
+/* 顶栏活跃项：渐变浅底替换单色 soft，其余保持克制。 */
+.topbar-nav__item.active {
+  background: var(--accent-gradient-soft);
+}
+
+/* 品牌名：克制的标题渐变字（从石墨渐入强调色，始终可读）。 */
+.topbar-brand__name {
+  background: var(--title-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* 流式插入符：光点化——强调色 + 辉光 + 呼吸脉冲。 */
+.streaming-caret {
+  background: var(--accent-hover);
+  border-radius: 999px;
+  box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+@keyframes streaming-caret-pulse {
+  0%, 100% { opacity: 0.9; box-shadow: 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent); }
+  50% { opacity: 0.35; box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 60%, transparent); }
+}
+
+/* 强制配色下降级：渐变字还原实色，渐变/辉光落地为系统色。 */
+@media (forced-colors: active) {
+  .topbar-brand__name {
+    background: none;
+    -webkit-text-fill-color: CanvasText;
+    color: CanvasText;
+  }
+  .btn-primary,
+  .nav-item.active {
+    background: Highlight;
+    box-shadow: none;
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * Typographic discipline（2026-09-02）：全局排版纪律。
+ * 依据 apple-design §15 / redesign-existing-projects 审计清单：
+ * 层级=字重+字号+行高三件套；大字负 tracking；数字 tabular-nums；
+ * 数据密集 UI 行高收紧。 ══════════════════════════════════════════ */
+
+/* 标题：随字号收紧字距、加重字重——标题要有存在感。 */
+h1, h2 {
+  letter-spacing: var(--tracking-display);
+  line-height: var(--leading-display);
+  font-weight: var(--weight-heading);
+  text-wrap: balance;
+}
+h3, h4 {
+  letter-spacing: var(--tracking-heading);
+  line-height: 1.35;
+  font-weight: var(--weight-heading);
+  text-wrap: balance;
+}
+
+/* 数据与时间戳：等宽数字，竖向对齐。 */
+.submissions-timeline__time,
+time,
+kbd, code {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 表单：label 在上、helper 在下（taste-skill §4.6），label 是小标签语态。 */
+label > span,
+label > div:first-child {
+  letter-spacing: var(--tracking-label);
+}
+
+/* 按钮/输入：按压反馈（emil：buttons must feel responsive）。 */
+button:not(:disabled):active {
+  transform: scale(0.98);
 }

@@ -4,7 +4,7 @@
   min-width: 0;
   padding: 24px clamp(18px, 2.5vw, 34px) 36px;
   overflow-x: clip;
-  background: var(--bg-main);
+  background: transparent;
 }
 
 .personalization-eyebrow { color: var(--primary); font-size: 11px; font-weight: 700; letter-spacing: .12em; }
@@ -27,7 +27,7 @@
 .personalization-library { padding: 16px; }
 .personalization-library__header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; }
 .personalization-library__actions { display: flex; align-items: center; gap: 8px; }
-.personalization-ai-create { border: 1px solid var(--primary, #4f6ef7); border-radius: var(--radius, 6px); padding: 12px; margin-bottom: 14px; background: color-mix(in srgb, var(--primary, #4f6ef7) 6%, var(--bg-card, #fff)); }
+.personalization-ai-create { border: 1px solid var(--primary); border-radius: var(--radius, 6px); padding: 12px; margin-bottom: 14px; background: color-mix(in srgb, var(--primary) 6%, var(--bg-card)); }
 .personalization-ai-create > p { font-size: 12px; color: var(--text-secondary); margin-bottom: 10px; }
 .personalization-ai-create label span { display: block; font-size: 12px; font-weight: 500; margin-bottom: 6px; color: var(--text-secondary); }
 .personalization-ai-create textarea { width: 100%; resize: vertical; }
@@ -129,6 +129,16 @@
 .personalization-schema-field__required { display: inline-flex !important; grid-template-columns: none !important; flex-direction: row; align-items: center; }
 .personalization-schema-field > button { justify-self: start; }
 .personalization-schema-error { color: var(--danger) !important; }
+.personalization-integrity-notice { max-width: 1520px; margin: 12px auto; padding: 13px 15px; border: 1px solid color-mix(in srgb, var(--warning) 52%, var(--border-light)); border-radius: var(--radius); background: color-mix(in srgb, var(--warning) 8%, var(--bg-card)); }
+.personalization-integrity-notice > strong { display: block; font-size: 13px; }
+.personalization-integrity-notice > p { margin: 6px 0 10px; font-size: 12px; color: var(--text-secondary); }
+.personalization-integrity-notice > div { display: grid; gap: 8px; }
+.personalization-integrity-notice article { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid color-mix(in srgb, var(--border-light) 70%, transparent); }
+.personalization-integrity-notice article:first-child { border-top: 0; }
+.personalization-integrity-notice article span { min-width: 0; display: grid; gap: 3px; }
+.personalization-integrity-notice article strong { overflow-wrap: anywhere; font-size: 12px; }
+.personalization-integrity-notice article small, .personalization-integrity-notice article em { color: var(--text-secondary); font-size: 11px; font-style: normal; }
+.personalization-integrity-notice button { flex: 0 0 auto; }
 .personalization-load-error { display: grid; gap: 10px; padding: 12px; border: 1px solid color-mix(in srgb, var(--danger) 55%, var(--border-light)); border-radius: var(--radius); color: var(--danger); font-size: 12px; line-height: 1.5; }
 .personalization-load-error button { justify-self: start; border: 1px solid currentColor; border-radius: var(--radius); background: transparent; color: inherit; padding: 6px 10px; cursor: pointer; }
 .personalization-workflow { display: grid; gap: 12px; padding-top: 4px; }
@@ -201,7 +211,7 @@
 
 /* ─── 模板识别（论文结构） ───────────────────────────────────── */
 .personalization-template { margin-bottom: 14px; display: grid; gap: 8px; }
-.personalization-template__panel { border: 1px solid var(--border-light, var(--border-light)); border-radius: var(--radius, 6px); padding: 12px; background: var(--bg-card, #fff); }
+.personalization-template__panel { border: 1px solid var(--border-light, var(--border-light)); border-radius: var(--radius, 6px); padding: 12px; background: var(--bg-card); }
 .personalization-template__panel > p { font-size: 12px; color: var(--text-secondary); margin-bottom: 10px; }
 .personalization-template__panel label span { display: block; font-size: 12px; font-weight: 500; margin-bottom: 6px; color: var(--text-secondary); }
 .personalization-template__panel textarea { width: 100%; resize: vertical; }
@@ -218,7 +228,7 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  background: var(--bg-card, #fff);
+  background: var(--bg-card);
 }
 .personalization-rules-save-choice strong { font-size: 13px; }
 .personalization-rules-save-choice span { font-size: 12px; color: var(--text-secondary); }

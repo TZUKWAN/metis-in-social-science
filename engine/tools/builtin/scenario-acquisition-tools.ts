@@ -120,11 +120,19 @@ export function createScenarioMarketSearchRouter(searchFn: ScenarioMarketSearchF
   return { spec, handler };
 }
 
+export interface ScenarioInstallationNotification {
+  sessionId: string;
+  installedId: string;
+  installedName: string;
+  kind: 'skill' | 'mcp';
+  url: string;
+}
+
 /** Late-bound installer holder injected from main.ts once services exist. */
 export interface ScenarioInstallerBinding {
   apply: ScenarioExtensionApplyFn | null;
-  /** Pushed after each successful install for live progress display. */
-  notify?: (message: { sessionId: string; installedId: string; installedName: string; kind: 'skill' | 'mcp'; url: string }) => void;
+  /** Pushed after each successful install for live progress display, keyed by compile session. */
+  notifications: Map<string, (message: ScenarioInstallationNotification) => void>;
 }
 
 interface InstallCounters {
@@ -139,8 +147,8 @@ function slugifyUrl(url: URL, prefix: string): string {
 export interface ScenarioInstallRouter {
   spec: ToolSpec;
   handler: ToolHandler;
-  /** Clear per-session install counters; main.ts calls this between compiles. */
-  resetCounters(): void;
+  /** Clear one compile session's install counter without affecting concurrent sessions. */
+  clearSessionCounter(sessionId: string): void;
 }
 
 export function createScenarioInstallRouter(binding: ScenarioInstallerBinding): ScenarioInstallRouter {
@@ -228,7 +236,7 @@ export function createScenarioInstallRouter(binding: ScenarioInstallerBinding): 
       }
       counters.map.set(context.sessionId, used + 1);
       try {
-        binding.notify?.({
+        binding.notifications.get(context.sessionId)?.({
           sessionId: context.sessionId,
           installedId: definitionId,
           installedName: definitionName || definitionId,
@@ -250,6 +258,6 @@ export function createScenarioInstallRouter(binding: ScenarioInstallerBinding): 
   return {
     spec,
     handler,
-    resetCounters: () => counters.map.clear(),
+    clearSessionCounter: (sessionId: string) => { counters.map.delete(sessionId); },
   };
 }

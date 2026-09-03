@@ -77,6 +77,7 @@ export function getPrimaryWorkspaceNav(): NavEntry[] {
 export function getPrimaryResearchNav(): NavEntry[] {
   return [
     { id: 'outcomes', labelKey: 'nav.outcomes', descriptionKey: 'nav.outcomesDesc', isTopLevel: true },
+    { id: 'submissions', labelKey: 'nav.submissions', descriptionKey: 'nav.submissionsDesc', isTopLevel: true },
   ];
 }
 

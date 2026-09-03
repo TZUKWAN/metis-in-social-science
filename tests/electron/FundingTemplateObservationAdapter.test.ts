@@ -272,29 +272,31 @@ describe('FundingTemplateObservationAdapter PDF observations', () => {
   });
 });
 
-describe('FundingTemplateObservationAdapter DOCX safe inspection', () => {
-  it('safely unpacks a real DOCX and reports privacy-safe structure instead of inventing coordinates', async () => {
+describe('FundingTemplateObservationAdapter DOCX observation', () => {
+  it('observes a real DOCX into a contract-valid document with synthesized flow layout', async () => {
     const bytes = makeZip(docxEntries());
     const filePath = await writeFixture('funding.docx', bytes);
     const result = await observeFundingTemplateFile(request(filePath));
-    expect(result).toMatchObject({
-      ok: false,
-      code: 'docx_layout_unobservable',
-      docxStructure: {
-        sourceDigest: sha256(bytes),
-        paragraphCount: 4,
-        tableCount: 1,
-        styleCount: 1,
-        explicitPageBreakCount: 0,
-        pageSetupObserved: true,
-      },
-    });
-    expect(result.ok).toBe(false);
-    if (result.ok || !result.docxStructure) throw new Error('DOCX summary missing');
-    expect(result.docxStructure.structureDigest).toMatch(/^[a-f0-9]{64}$/u);
-    const serialized = JSON.stringify(result);
-    expect(serialized).not.toContain('课题论证');
-    expect(serialized).not.toContain('研究任务');
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('DOCX observation failed');
+    const document = result.document;
+    expect(document.sourceFormat).toBe('docx');
+    expect(document.pageCount).toBeGreaterThanOrEqual(1);
+    expect(document.pages.length).toBe(document.pageCount);
+    expect(document.blocks.length).toBe(3);
+    // 段落与表格都进了观察：顶层 2 段正文 + 1 张表格（表格内段落并入表格块）。
+    expect(document.blocks.some((block) => block.kind === 'paragraph' && block.text.includes('课题论证'))).toBe(true);
+    expect(document.blocks.some((block) => block.kind === 'table')).toBe(true);
+    // 合成坐标必须落在所在页内（契约 superRefine 同样校验，这里显式再验一次）。
+    for (const block of document.blocks) {
+      const page = document.pages[block.pageNumber - 1]!;
+      expect(block.bounds.x).toBeGreaterThanOrEqual(0);
+      expect(block.bounds.y).toBeGreaterThanOrEqual(0);
+      expect(block.bounds.x + block.bounds.width).toBeLessThanOrEqual(page.widthPt + 0.5);
+      expect(block.bounds.y + block.bounds.height).toBeLessThanOrEqual(page.heightPt + 0.5);
+    }
+    expect(document.styles.length).toBeGreaterThanOrEqual(1);
+    const serialized = JSON.stringify(document);
     expect(serialized).not.toContain(filePath);
   });
 

@@ -231,6 +231,57 @@ export class BrowserService {
   reload(): void { this.view?.webContents.reload(); }
   stop(): void { this.view?.webContents.stop(); }
 
+  /**
+   * 枚举当前页面可见表单字段（投稿门户字段级填单的 DOM 抽取层）。
+   * 返回结构化纯数据（可克隆），selectorHint 为尽力而为的选择器猜测；
+   * 页面无视图/脚本失败时结构化报错，绝不编造字段。
+   */
+  async enumerateFormFields(timeoutMs = 5_000): Promise<{
+    ok: boolean;
+    fields?: Array<{ key: string; label: string; kind: string; required: boolean; currentValue: string; selectorHint: string }>;
+    error?: string;
+  }> {
+    const script = `(() => {
+      const SKIP_TYPES = new Set(['hidden', 'submit', 'button', 'reset', 'image']);
+      const els = Array.from(document.querySelectorAll('input, select, textarea'));
+      const out = [];
+      let seq = 0;
+      for (const el of els) {
+        try {
+          if (el.disabled) continue;
+          const type = (el.getAttribute('type') || '').toLowerCase();
+          if (SKIP_TYPES.has(type)) continue;
+          seq += 1;
+          if (out.length >= 200) break;
+          let kind = 'text';
+          if (el.tagName === 'SELECT') kind = 'select';
+          else if (el.tagName === 'TEXTAREA') kind = 'textarea';
+          else if (type === 'file') kind = 'file';
+          else if (type === 'checkbox') kind = 'checkbox';
+          else if (type === 'radio') kind = 'radio';
+          // 标签：label[for] > aria-label > placeholder > name（尽力而为）。
+          let label = '';
+          if (el.id) {
+            const lab = document.querySelector('label[for=' + JSON.stringify(el.id) + ']');
+            if (lab) label = lab.textContent || '';
+          }
+          if (!label) label = el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.getAttribute('name') || '';
+          const currentValue = kind === 'checkbox' ? (el.checked ? 'true' : '') : String(el.value ?? '').slice(0, 200);
+          out.push({
+            key: el.id || el.getAttribute('name') || ('field_' + seq),
+            label: label.replace(/\\s+/gu, ' ').trim().slice(0, 300),
+            kind,
+            required: Boolean(el.required || el.getAttribute('aria-required') === 'true'),
+            currentValue,
+            selectorHint: el.id ? ('#' + CSS.escape(el.id)) : (el.getAttribute('name') ? ('[name="' + el.getAttribute('name') + '"]') : ''),
+          });
+        } catch { /* 单元素异常跳过，不影响其余 */ }
+      }
+      return { ok: true, fields: out };
+    })()`;
+    return await this.evaluateInView(script, timeoutMs);
+  }
+
   getState(): BrowserState {
     const wc = this.view?.webContents;
     return {
@@ -318,6 +369,32 @@ export class BrowserService {
       };
     } catch (error) {
       return { ok: false, error: String((error as Error).message ?? error) };
+    }
+  }
+
+  /**
+   * 在浏览器视图内执行一段 JS 源码（webContents.executeJavaScript 的薄封装）。
+   * 仅供 SubmissionPortalService 等受信调用方做选择器级填表——坐标级 click/type
+   * 无法按 CSS 选择器精确命中表单字段。带超时与错误捕获；返回值必须可结构化克隆。
+   * 安全边界：绝不用于绕过 CAPTCHA/2FA、支付、法律确认或最终提交——这些只允许
+   * 人类在视图中亲自操作。
+   */
+  async evaluateInView<T>(fn: string, timeoutMs = 5_000): Promise<{ ok: boolean; value?: T; error?: string }> {
+    const wc = this.view?.webContents;
+    if (!wc) return { ok: false, error: 'browser_unavailable' };
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      const value = await Promise.race([
+        wc.executeJavaScript(fn, true),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error('evaluate_timeout')), timeoutMs);
+        }),
+      ]);
+      return { ok: true, value: value as T };
+    } catch (error) {
+      return { ok: false, error: String((error as Error).message ?? error).slice(0, 300) };
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 

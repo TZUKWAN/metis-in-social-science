@@ -107,6 +107,7 @@ describe('App', () => {
       'converse',
       'projects',
       'outcomes',
+      'submissions',
       'settings',
       'personalization',
     ]);
@@ -114,6 +115,7 @@ describe('App', () => {
       '协同对话',
       '科研项目',
       '成果',
+      '投稿',
       '设置',
       '场景',
     ]);
@@ -121,6 +123,7 @@ describe('App', () => {
       '协同对话',
       '科研项目',
       '成果',
+      '投稿',
       '设置',
       '场景',
     ]);
@@ -131,6 +134,7 @@ describe('App', () => {
       '与其他 AI（豆包/Kimi/GLM/ChatGPT/Claude/DeepSeek）分屏协同：左边交流思路，右边让 Metis 干活。',
       '科研项目工作台：左侧项目列表，内含聊天、任务看板、资料与研究成果。',
       '管理当前项目的论文、PPT、报告与其他正式交付物。',
+      '从成果出发完成选刊、投稿、返修到录用的完整投稿生命周期。',
       '配置模型连接、外观、备份与偏好。',
       '场景中心、个性化偏好与外观定制。',
     ]);
@@ -145,6 +149,7 @@ describe('App', () => {
       'AI Collab',
       'Research Projects',
       'Outcomes',
+      'Submissions',
       'Settings',
       'Scenarios',
     ]);
@@ -445,9 +450,8 @@ describe('App', () => {
     await waitFor(() => {
       expect(researchWorkspaceStore.getState().activeSection).toBe('artifacts');
     });
-    // 「研究成果」作为科研项目工作台内的模式页签被激活。
-    const artifactsTab = await screen.findByTestId('projects-mode-artifacts');
-    expect(artifactsTab.getAttribute('aria-selected')).toBe('true');
+    // 研究成果页签已删除（2026-08-31 刘总要求）：open-project 事件只落到
+    // 研究写作工作台的 artifacts 分区，不再有科研项目页签激活。
   });
 
   it('opens a library paper detail from a project source (metis:open-paper)', async () => {

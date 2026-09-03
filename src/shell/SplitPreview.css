@@ -11,7 +11,7 @@
   --split-preview-accent: var(--accent);
   --split-preview-accent-strong: var(--accent-hover);
   --split-preview-accent-soft: color-mix(in srgb, var(--split-preview-accent) 11%, transparent);
-  --split-preview-bg: var(--bg-card, #fff);
+  --split-preview-bg: var(--bg-card);
   --split-preview-canvas: var(--bg-main, var(--bg-secondary));
   --split-preview-border: var(--border-light, var(--border-light));
   --split-preview-text: var(--text-body, var(--border));
@@ -33,12 +33,6 @@
   color: var(--split-preview-text);
   font-family: inherit;
   container-type: inline-size;
-}
-
-[data-theme='dark'] .split-preview {
-  --split-preview-accent: var(--accent);
-  --split-preview-accent-strong: var(--accent);
-  --split-preview-accent-soft: var(--accent-soft);
 }
 
 /* ── Error/recovery banner ── */

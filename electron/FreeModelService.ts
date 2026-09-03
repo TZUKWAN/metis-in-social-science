@@ -10,7 +10,7 @@
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { ImapFlow } from 'imapflow';
 import { ModelDiscoveryStore, type AttachedFreeModel } from './ModelDiscoveryStore.js';
 import { MailboxPoolStore } from './ModelDiscoveryStore.js';
@@ -33,7 +33,7 @@ import {
   omniRouteLogin,
   probeOmniRoute,
 } from '../engine/providers/discovery/OmniRouteGateway.js';
-import { decodeMimeText, extractVerification, fetchRecentMails, MAILBOX_PRESETS } from '../engine/mail/MailboxPool.js';
+import { decodeMimeText, extractVerification, MAILBOX_PRESETS } from '../engine/mail/MailboxPool.js';
 import type { ProviderProfileStore } from './ProviderProfileStore.js';
 
 export interface FreeModelIpcDeps {
@@ -454,8 +454,6 @@ export class FreeModelService {
 
   // ── OmniRoute 本地网关 ──
 
-  #omniRouteProcess: ChildProcess | null = null;
-
   async omniRouteStatus(): Promise<{ running: boolean; models: string[]; latencyMs: number | null; keyConfigured: boolean; error?: string }> {
     const probe = await probeOmniRoute((url, init) => fetch(url, init as never));
     const source = this.#discovery.read().sources.find((item) => item.kind === 'omniroute');
@@ -509,9 +507,7 @@ export class FreeModelService {
         detached: false,
         stdio: ['ignore', out, out],
       });
-      child.on('error', () => { this.#omniRouteProcess = null; });
       child.unref();
-      this.#omniRouteProcess = child;
     } catch (error) {
       return { running: false, models: [], latencyMs: null, started: false, keyConfigured: false, error: '启动失败：' + String(error instanceof Error ? error.message : error) };
     }
@@ -538,7 +534,6 @@ export class FreeModelService {
 
   addMailbox(input: { kind: string; label?: string; user: string; authorizationCode: string; host?: string; port?: number }): { ok: true; id: string } | { ok: false, code: string } {
     const host = input.host || MAILBOX_PRESETS[input.kind]?.host;
-    const port = input.port || MAILBOX_PRESETS[input.kind]?.port || 993;
     if (!host) return { ok: false, code: 'unsupported_mailbox_kind' };
     const user = input.user.trim().toLowerCase();
     if (!user.includes('@') || user.includes(' ') || user.length < 5) return { ok: false, code: 'invalid_email' };
@@ -580,7 +575,7 @@ export class FreeModelService {
     const accounts = this.#mailboxes.list();
     const account = accounts.find((item) => item.id === id);
     if (!account) return { ok: false, error: 'not_found' };
-    let secret = '';
+    let secret: string;
     try {
       secret = this.#deps.decryptSecret(account.encryptedSecret);
     } catch {

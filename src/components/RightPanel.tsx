@@ -1,4 +1,4 @@
-import { useId, useRef, type KeyboardEvent } from 'react';
+import { useId, useRef, useState, type KeyboardEvent } from 'react';
 import { useTranslation } from '../i18n';
 import { presentArtifactName } from '../presentation/executionPresentation';
 import {
@@ -13,6 +13,8 @@ interface TaskItem {
   title: string;
   status: 'pending' | 'running' | 'completed' | 'failed';
   progress?: number;
+  /** 步骤提示词/说明（2026-08-29 刘总要求：清单点击展开查看）。 */
+  detail?: string;
 }
 
 interface ArtifactItem {
@@ -23,25 +25,16 @@ interface ArtifactItem {
   contentAvailable: boolean;
 }
 
-interface NoteItem {
-  id: string;
-  title: string;
-  preview: string;
-  updatedAt: number;
-}
-
-export type RightPanelTab = 'tasks' | 'artifacts' | 'notes';
+export type RightPanelTab = 'tasks' | 'artifacts';
 
 export interface RightPanelProps {
   activeTab: RightPanelTab;
   onActiveTabChange: (tab: RightPanelTab) => void;
   tasks?: TaskItem[];
   artifacts?: ArtifactItem[];
-  notes?: NoteItem[];
   onUpload?: () => void;
   onTaskClick?: (id: string) => void;
   onArtifactClick?: (item: ArtifactItem) => void;
-  onNoteClick?: (id: string) => void;
   className?: string;
   /** Render without a nested complementary landmark when hosted by ProjectShell. */
   embedded?: boolean;
@@ -51,6 +44,8 @@ export interface RightPanelProps {
   previewTitle?: string;
   artifactError?: string;
   uiMode?: SafeMarkdownMode;
+  /** 预览内容改由独立预览栏呈现（projects 模式）时，抑制这里的内联小卡片。 */
+  suppressInlinePreview?: boolean;
 }
 
 const statusClass: Record<TaskItem['status'], string> = {
@@ -78,26 +73,25 @@ export default function RightPanel({
   onActiveTabChange,
   tasks = [],
   artifacts = [],
-  notes = [],
   onUpload,
   onTaskClick,
   onArtifactClick,
-  onNoteClick,
   className = '',
   embedded = false,
   previewContent,
   previewTitle,
   artifactError,
   uiMode = 'normal',
+  suppressInlinePreview = false,
 }: RightPanelProps) {
   const { t, locale } = useTranslation();
+  const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
   const instanceId = useId().replace(/:/g, '');
   const tabRefs = useRef<Partial<Record<RightPanelTab, HTMLButtonElement | null>>>({});
 
   const tabs: { id: RightPanelTab; label: string }[] = [
     { id: 'tasks', label: t('rightPanel.tasks') },
     { id: 'artifacts', label: t('rightPanel.artifacts') },
-    { id: 'notes', label: t('rightPanel.notes') },
   ];
 
   function handleTabKeyDown(event: KeyboardEvent, current: RightPanelTab) {
@@ -159,13 +153,17 @@ export default function RightPanel({
                     ? undefined
                     : Math.min(100, Math.max(0, Number.isFinite(task.progress) ? task.progress : 0));
                   const safeTitle = presentSafeMarkdownText(task.title, uiMode, locale);
+                  const expanded = expandedTaskId === task.id;
                   return (
                     <li key={task.id}>
                       <button
                         type="button"
                         className={`right-panel-item task-item ${statusClass[task.status]}`}
-                        onClick={() => onTaskClick?.(task.id)}
-                        disabled={!onTaskClick}
+                        onClick={() => {
+                          setExpandedTaskId(expanded ? null : task.id);
+                          onTaskClick?.(task.id);
+                        }}
+                        disabled={!onTaskClick && !task.detail}
                       >
                         <span className="task-status-icon"><StatusIcon status={task.status} /></span>
                         <div className="task-info">
@@ -185,6 +183,11 @@ export default function RightPanel({
                           )}
                         </div>
                       </button>
+                      {expanded && task.detail && (
+                        <div className="task-detail" data-testid="task-detail">
+                          <SafeMarkdown content={task.detail} uiMode={uiMode} locale={locale} />
+                        </div>
+                      )}
                     </li>
                   );
                 })}
@@ -195,8 +198,9 @@ export default function RightPanel({
 
         {activeTab === 'artifacts' && (
           <div className="right-panel-section">
-            {/* Live preview (Claude-Artifacts-style): renders Markdown in real time */}
-            {previewContent && (
+            {/* Live preview (Claude-Artifacts-style): renders Markdown in real time.
+                projects 模式下预览由最右侧整列 ArtifactPreviewPane 承担，这里抑制。 */}
+            {previewContent && !suppressInlinePreview && (
               <div className="artifact-live-preview">
                 {previewTitle && <div className="artifact-preview-title">{presentArtifactName(previewTitle, locale)}</div>}
                 <div className="artifact-preview-body">
@@ -245,37 +249,6 @@ export default function RightPanel({
           </div>
         )}
 
-        {activeTab === 'notes' && (
-          <div className="right-panel-section">
-            <div className="right-panel-header">
-              <h3>{t('rightPanel.notes')}</h3>
-            </div>
-            {notes.length === 0 ? (
-              <div className="right-panel-empty">{t('rightPanel.noNotes')}</div>
-            ) : (
-              <ul className="right-panel-list note-list">
-                {notes.map((note) => {
-                  const safeTitle = presentSafeMarkdownText(note.title, uiMode, locale);
-                  const safePreview = presentSafeMarkdownText(note.preview, uiMode, locale);
-                  return <li key={note.id}>
-                    <button
-                      type="button"
-                      className="right-panel-item note-item"
-                      onClick={() => onNoteClick?.(note.id)}
-                      disabled={!onNoteClick}
-                    >
-                      <span className="note-title">{safeTitle}</span>
-                      <span className="note-preview">{safePreview}</span>
-                      <span className="note-date">
-                        {new Date(note.updatedAt).toLocaleDateString()}
-                      </span>
-                    </button>
-                  </li>;
-                })}
-              </ul>
-            )}
-          </div>
-        )}
       </div>
     </Root>
   );

@@ -87,7 +87,10 @@ export const PersonalizationIdSchema = z.string()
 export const PersonalizationLocalIdSchema = z.string()
   .min(1)
   .max(PERSONALIZATION_LIMITS.idChars)
-  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u);
+  // 下划线合法（2026-08-28）：运行时会话 id 形如 session_17878…（含 _），
+  // 旧正则拒绝下划线导致绑定了场景的会话在 agent:chat 一律
+  // personalization_resolution_failed（0.0s 执行失败）。
+  .regex(/^[A-Za-z0-9_][A-Za-z0-9._-]*$/u);
 
 export const PersonalizationDigestSchema = z.string().regex(/^[a-f0-9]{64}$/u);
 export const PersonalizationSemverSchema = z.string()
@@ -658,7 +661,12 @@ export const ScenarioDefinitionSchema = DefinitionHeaderSchema.extend({
   }),
   /** User-authored operating rules for the complete workflow, separate from per-step prompts. */
   workflowPrompt: multiline(PERSONALIZATION_LIMITS.promptChars).optional(),
-  capability: z.enum(['research', 'writing', 'analysis', 'funding', 'presentation_reserved', 'custom']),
+  // capability 是自由语义标签（2026-08-29 刘总要求）：模型可能产出
+  // academic_literature_review_writing 之类的自造值。封闭枚举会让整个场景
+  // 无法通过 schema 校验、保存必然失败（invalid_request），是此前“场景
+  // 创建后重启丢失”的总根源。改为受控字符串；'presentation_reserved' 保留
+  // 其保留语义，其余值仅作展示与分类用途。
+  capability: singleLine(PERSONALIZATION_LIMITS.nameChars),
   deliverable: DeliverableSpecSchema.optional(),
   adaptivity: AdaptivityPolicySchema.optional(),
   /** 内容规范（写作规范类规则，场景级；区别于逐部分规则）。 */
@@ -981,6 +989,44 @@ export const PersonalizationVersionsRequestSchema = z.strictObject({
   id: PersonalizationIdSchema,
 });
 
+/**
+ * A non-executable definition row that failed repository verification. The
+ * payload intentionally contains only identifiers and recovery metadata; the
+ * unverified authored JSON remains quarantined in the main-process database.
+ */
+export const PersonalizationIntegrityIssueSchema = z.strictObject({
+  id: PersonalizationIdSchema,
+  kind: PersonalizationKindSchema,
+  archived: z.boolean(),
+  currentRevision: z.number().int().min(1).max(PERSONALIZATION_LIMITS.version),
+  latestVerifiedRevision: z.number().int().min(1).max(PERSONALIZATION_LIMITS.version).nullable(),
+  code: z.enum([
+    'current_version_missing',
+    'current_definition_invalid',
+    'current_definition_identity_mismatch',
+    'current_version_invalid',
+    'current_version_content_mismatch',
+    'current_digest_mismatch',
+  ]),
+});
+
+export const PersonalizationIntegrityListRequestSchema = z.strictObject({
+  contractVersion: z.literal(PERSONALIZATION_CONTRACT_VERSION),
+  kind: PersonalizationKindSchema.optional(),
+});
+
+/**
+ * Explicitly replaces an unverified current snapshot with a selected, already
+ * verified historical revision. The discarded snapshot is copied to the
+ * repository quarantine before the new immutable revision is published.
+ */
+export const PersonalizationIntegrityRecoverRequestSchema = z.strictObject({
+  contractVersion: z.literal(PERSONALIZATION_CONTRACT_VERSION),
+  id: PersonalizationIdSchema,
+  sourceRevision: z.number().int().min(1).max(PERSONALIZATION_LIMITS.version),
+  expectedCurrentRevision: z.number().int().min(1).max(PERSONALIZATION_LIMITS.version),
+});
+
 export const PersonalizationResolveRequestSchema = z.strictObject({
   contractVersion: z.literal(PERSONALIZATION_CONTRACT_VERSION),
   sessionId: PersonalizationLocalIdSchema,
@@ -1029,11 +1075,22 @@ export const PersonalizationVersionsResponseSchema = z.strictObject({
   versions: z.array(PersonalizationVersionViewSchema).max(PERSONALIZATION_LIMITS.version),
 });
 
+export const PersonalizationIntegrityListResponseSchema = z.discriminatedUnion('ok', [
+  z.strictObject({
+    ok: z.literal(true),
+    issues: z.array(PersonalizationIntegrityIssueSchema).max(PERSONALIZATION_LIMITS.definitionList),
+  }),
+  z.strictObject({
+    ok: z.literal(false),
+    code: z.enum(['invalid_request', 'unavailable', 'invalid_response']),
+  }),
+]);
+
 export const PersonalizationMutationResultSchema = z.discriminatedUnion('code', [
   z.strictObject({ ok: z.literal(true), code: z.literal('saved'), definition: PersonalizationDefinitionSchema }),
   z.strictObject({ ok: z.literal(true), code: z.literal('restored'), definition: PersonalizationDefinitionSchema }),
   z.strictObject({ ok: z.literal(true), code: z.literal('deleted'), id: PersonalizationIdSchema }),
-  z.strictObject({ ok: z.literal(false), code: z.literal('invalid_request') }),
+  z.strictObject({ ok: z.literal(false), code: z.literal('invalid_request'), issues: z.array(multiline(500)).max(64).optional() }),
   z.strictObject({ ok: z.literal(false), code: z.literal('not_found') }),
   z.strictObject({ ok: z.literal(false), code: z.literal('factory_protected') }),
   z.strictObject({ ok: z.literal(false), code: z.literal('revision_conflict'), currentRevision: z.number().int().min(1) }),
@@ -1108,12 +1165,16 @@ export type PersonalizationForkRequest = z.infer<typeof PersonalizationForkReque
 export type PersonalizationRestoreRequest = z.infer<typeof PersonalizationRestoreRequestSchema>;
 export type PersonalizationTrashRestoreRequest = z.infer<typeof PersonalizationTrashRestoreRequestSchema>;
 export type PersonalizationVersionsRequest = z.infer<typeof PersonalizationVersionsRequestSchema>;
+export type PersonalizationIntegrityIssue = z.infer<typeof PersonalizationIntegrityIssueSchema>;
+export type PersonalizationIntegrityListRequest = z.infer<typeof PersonalizationIntegrityListRequestSchema>;
+export type PersonalizationIntegrityRecoverRequest = z.infer<typeof PersonalizationIntegrityRecoverRequestSchema>;
 export type PersonalizationResolveRequest = z.infer<typeof PersonalizationResolveRequestSchema>;
 export type PersonalizationListResponse = z.infer<typeof PersonalizationListResponseSchema>;
 export type PersonalizationTrashListResponse = z.infer<typeof PersonalizationTrashListResponseSchema>;
 export type PersonalizationGetResponse = z.infer<typeof PersonalizationGetResponseSchema>;
 export type PersonalizationVersionView = z.infer<typeof PersonalizationVersionViewSchema>;
 export type PersonalizationVersionsResponse = z.infer<typeof PersonalizationVersionsResponseSchema>;
+export type PersonalizationIntegrityListResponse = z.infer<typeof PersonalizationIntegrityListResponseSchema>;
 export type PersonalizationMutationResult = z.infer<typeof PersonalizationMutationResultSchema>;
 export type ResolvedPromptLayer = z.infer<typeof ResolvedPromptLayerSchema>;
 export type ResolvedRunManifest = z.infer<typeof ResolvedRunManifestSchema>;
@@ -1122,6 +1183,101 @@ export type PersonalizationResolveResponse = z.infer<typeof PersonalizationResol
 export function decodePersonalizationDefinition(input: unknown): PersonalizationDefinition | undefined {
   const parsed = PersonalizationDefinitionSchema.safeParse(input);
   return parsed.success ? parsed.data : undefined;
+}
+
+/**
+ * 宽松净化解析（2026-08-29 刘总要求：校验只用来净化，不用来拒绝保存）。
+ * 严格 schema 逐轮剔除“未知字段”（如模型写在步骤上的 title/agentIds），
+ * 保住其余全部内容；只有引擎运行必需字段出现真实类型错误时才判定失败。
+ */
+/**
+ * 章节枚举同义归一（2026-08-29 刘总要求：校验只用来净化，不用来拒绝）。
+ * 模型常用"必要/必须/must"等同义词表达状态，用"章/小节/标题"等中文表达
+ * 类型；这些是合法意图，只是不在枚举字面里。写入前归一到合法枚举，
+ * 未知值回落到语义安全默认（状态→required；类型→按层级 chapter/section）。
+ */
+const DELIVERABLE_STATUS_SYNONYMS: Record<string, 'locked' | 'required' | 'optional' | 'conditional'> = {
+  locked: 'locked', lock: 'locked', '锁定': 'locked', '锁定项': 'locked',
+  required: 'required', must: 'required', mandatory: 'required', '必要': 'required', '必须': 'required', '必备': 'required', '必填': 'required', '核心': 'required',
+  optional: 'optional', '可选': 'optional', '选用': 'optional',
+  conditional: 'conditional', condition: 'conditional', '条件': 'conditional', '视情况': 'conditional',
+};
+
+const DELIVERABLE_KIND_SYNONYMS: Record<string, 'title' | 'abstract' | 'keywords' | 'chapter' | 'section' | 'grant_column' | 'attachment' | 'references' | 'other'> = {
+  title: 'title', '标题': 'title', '题目': 'title',
+  abstract: 'abstract', '摘要': 'abstract',
+  keywords: 'keywords', '关键词': 'keywords',
+  chapter: 'chapter', '章': 'chapter', '一级章节': 'chapter',
+  section: 'section', '节': 'section', '小节': 'section', '二级章节': 'section', '子章节': 'section',
+  grant_column: 'grant_column', '栏目': 'grant_column',
+  attachment: 'attachment', '附件': 'attachment',
+  references: 'references', '参考文献': 'references',
+  other: 'other', '其他': 'other',
+};
+
+function normalizeDeliverableSectionEnums(entries: unknown, topLevel: boolean): void {
+  if (!Array.isArray(entries)) return;
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const section = entry as Record<string, unknown>;
+    if (typeof section.status === 'string') {
+      section.status = DELIVERABLE_STATUS_SYNONYMS[section.status.trim().toLowerCase()] ?? 'required';
+    } else if (section.status === undefined || section.status === null) {
+      section.status = 'required';
+    }
+    if (typeof section.kind === 'string') {
+      section.kind = DELIVERABLE_KIND_SYNONYMS[section.kind.trim().toLowerCase()] ?? (topLevel ? 'chapter' : 'section');
+    } else if (section.kind === undefined || section.kind === null) {
+      section.kind = topLevel ? 'chapter' : 'section';
+    }
+    if (Array.isArray(section.children)) normalizeDeliverableSectionEnums(section.children, false);
+  }
+}
+
+export function parsePersonalizationDefinitionLenient(
+  definition: PersonalizationDefinition,
+): { ok: true; definition: PersonalizationDefinition; removed: string[] } | { ok: false; issues: string[] } {
+  let candidate: unknown = JSON.parse(JSON.stringify(definition)) as unknown;
+  const removed: string[] = [];
+  {
+    const deliverable = (candidate as { deliverable?: { sections?: unknown } }).deliverable;
+    if (deliverable && typeof deliverable === 'object' && Array.isArray(deliverable.sections)) {
+      normalizeDeliverableSectionEnums(deliverable.sections, true);
+    }
+  }
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const parsed = PersonalizationDefinitionSchema.safeParse(candidate);
+    if (parsed.success) return { ok: true, definition: parsed.data, removed };
+    const pruneTargets: Array<{ path: string; keys: string[] }> = [];
+    const otherIssues: string[] = [];
+    for (const issue of parsed.error.issues) {
+      const keys = (issue as { keys?: unknown }).keys;
+      if (issue.code === 'unrecognized_keys' && Array.isArray(keys)) {
+        pruneTargets.push({ path: issue.path.join('.'), keys: keys as string[] });
+      } else {
+        otherIssues.push(`${issue.path.join('.') || 'root'}: ${issue.message}`);
+      }
+    }
+    if (pruneTargets.length === 0) return { ok: false, issues: otherIssues.slice(0, 12) };
+    for (const target of pruneTargets) {
+      let node: Record<string, unknown> | null = candidate as Record<string, unknown>;
+      if (target.path) {
+        for (const key of target.path.split('.')) {
+          if (node === null || typeof node !== 'object') { node = null; break; }
+          node = node[key] as Record<string, unknown> | null;
+        }
+      }
+      if (node && typeof node === 'object') {
+        for (const key of target.keys) {
+          if (key in node) {
+            delete node[key];
+            removed.push(`${target.path ? target.path + '.' : ''}${key}`);
+          }
+        }
+      }
+    }
+  }
+  return { ok: false, issues: ['多次净化后仍未通过校验'] };
 }
 
 export function decodePersonalizationListResponse(input: unknown): PersonalizationListResponse {
@@ -1142,6 +1298,11 @@ export function decodePersonalizationGetResponse(input: unknown): Personalizatio
 export function decodePersonalizationVersionsResponse(input: unknown): PersonalizationVersionsResponse {
   const parsed = PersonalizationVersionsResponseSchema.safeParse(input);
   return parsed.success ? parsed.data : { ok: true, versions: [] };
+}
+
+export function decodePersonalizationIntegrityListResponse(input: unknown): PersonalizationIntegrityListResponse {
+  const parsed = PersonalizationIntegrityListResponseSchema.safeParse(input);
+  return parsed.success ? parsed.data : { ok: false, code: 'invalid_response' };
 }
 
 export function decodePersonalizationMutationResult(input: unknown): PersonalizationMutationResult {

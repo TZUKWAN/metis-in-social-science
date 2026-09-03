@@ -1,4 +1,4 @@
-/** Managed PDF/image files for project-scoped Outcomes. */
+﻿/** Managed PDF/image files for project-scoped Outcomes. */
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
@@ -14,8 +14,9 @@ export type OutcomeWordDocxManagedImageReference = { mediaId: string; mediaType?
 export type OutcomeWordDocxManagedImage = { mediaId: string; mediaType: 'image/png' | 'image/jpeg'; displayName: string; bytes: Buffer };
 type OutcomeWordDocxImageMediaType = OutcomeWordDocxManagedImage['mediaType'];
 const isWordDocxImageMediaType = (mediaType: OutcomeMedia['mediaType']): mediaType is OutcomeWordDocxImageMediaType => mediaType === 'image/png' || mediaType === 'image/jpeg';
-const types: Record<string, OutcomeMedia['mediaType']> = Object.freeze({ '.pdf':'application/pdf', '.png':'image/png', '.jpg':'image/jpeg', '.jpeg':'image/jpeg', '.svg':'image/svg+xml' });
-const signatureOk = (bytes: Buffer, type: OutcomeMedia['mediaType']) => type === 'application/pdf' ? bytes.subarray(0,5).equals(Buffer.from('%PDF-')) : type === 'image/png' ? bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])) : type === 'image/jpeg' ? bytes.subarray(0,3).equals(Buffer.from([255,216,255])) : type === 'image/svg+xml' ? (() => { try { return roundTripStandaloneSvg(exportStandaloneSvg(bytes)).equals(bytes); } catch { return false; } })() : false;
+const types: Record<string, OutcomeMedia['mediaType']> = Object.freeze({ '.pdf':'application/pdf', '.png':'image/png', '.jpg':'image/jpeg', '.jpeg':'image/jpeg', '.svg':'image/svg+xml', '.xlsx':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', '.xlsm':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+const OOXML_ZIP_SIGNATURE = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
+const signatureOk = (bytes: Buffer, type: OutcomeMedia['mediaType']) => type === 'application/pdf' ? bytes.subarray(0,5).equals(Buffer.from('%PDF-')) : type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || type === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' || type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ? bytes.subarray(0,4).equals(OOXML_ZIP_SIGNATURE) : type === 'image/png' ? bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])) : type === 'image/jpeg' ? bytes.subarray(0,3).equals(Buffer.from([255,216,255])) : type === 'image/svg+xml' ? (() => { try { return roundTripStandaloneSvg(exportStandaloneSvg(bytes)).equals(bytes); } catch { return false; } })() : false;
 const summary = (row: MediaRow): OutcomeMedia => ({ id:row.id, mediaType:row.media_type, displayName:row.display_name, byteLength:row.byte_length });
 const withoutControlCharacters = (value: string): string => Array.from(value)
   .filter((character) => {
@@ -93,6 +94,19 @@ export class OutcomeMediaService {
     const target = await this.existingManagedPath(projectId, row.stored_name); if (!target) return undefined;
     try { const bytes=await fs.promises.readFile(target); if(bytes.length!==row.byte_length || createHash('sha256').update(bytes).digest('hex')!==row.sha256 || !signatureOk(bytes,row.media_type)) return undefined; return 'data:'+row.media_type+';base64,'+bytes.toString('base64'); } catch { return undefined; }
   }
+  /** Read one project/outcome-owned document byte stream after integrity checks. */
+  async readBytes(projectId: string, outcomeId: string, mediaId: string): Promise<{ bytes: Buffer; mediaType: OutcomeMedia['mediaType']; displayName: string } | undefined> {
+    if (!this.owned(projectId, outcomeId) || !mediaId) return undefined;
+    const row = this.db.prepare('SELECT * FROM outcome_media WHERE id=? AND project_id=? AND outcome_id=?').get(mediaId, projectId, outcomeId) as MediaRow | undefined;
+    if (!row) return undefined;
+    const target = await this.existingManagedPath(projectId, row.stored_name);
+    if (!target) return undefined;
+    try {
+      const bytes = await fs.promises.readFile(target);
+      if (bytes.length !== row.byte_length || createHash('sha256').update(bytes).digest('hex') !== row.sha256 || !signatureOk(bytes, row.media_type)) return undefined;
+      return { bytes, mediaType: row.media_type, displayName: row.display_name };
+    } catch { return undefined; }
+  }
   /** Remove only freshly-created media handles after a failed import commit. */
   async removeGenerated(projectId:string,outcomeId:string,mediaIds:readonly string[]):Promise<void> {
     if (!this.owned(projectId,outcomeId) || mediaIds.length === 0) return;
@@ -149,6 +163,28 @@ export class OutcomeMediaService {
     } catch { return undefined; }
   }
   /** Reads one exact project/outcome-owned safe SVG for standalone file export. */
+  /** Persist an original Office package (byte-preserving export anchor) for one outcome version. */
+  async persistArchive(projectId: string, outcomeId: string, bytes: Buffer, kind: 'docx' | 'pptx', displayName: string): Promise<OutcomeMedia | undefined> {
+    const mediaType = kind === 'docx' ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' as const : 'application/vnd.openxmlformats-officedocument.presentationml.presentation' as const;
+    return this.persistBytes(projectId, outcomeId, bytes, mediaType, displayName, kind === 'docx' ? '.docx' : '.pptx');
+  }
+  /** Persist a saved XLSX/PDF copy produced by an external native editor. */
+  async persistExternalDocument(projectId: string, outcomeId: string, bytes: Buffer, kind: 'spreadsheet' | 'pdf', displayName: string): Promise<OutcomeMedia | undefined> {
+    const mediaType = kind === 'spreadsheet' ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' as const : 'application/pdf' as const;
+    return this.persistBytes(projectId, outcomeId, bytes, mediaType, displayName, kind === 'spreadsheet' ? '.xlsx' : '.pdf');
+  }
+  /** Read back a persisted original Office package by media id (ownership checked). */
+  async readArchive(projectId: string, outcomeId: string, mediaId: string): Promise<Buffer | undefined> {
+    if (!this.owned(projectId, outcomeId) || !mediaId) return undefined;
+    const row = this.db.prepare('SELECT * FROM outcome_media WHERE id=? AND project_id=? AND outcome_id=?').get(mediaId, projectId, outcomeId) as MediaRow | undefined;
+    if (!row || (row.media_type !== 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' && row.media_type !== 'application/vnd.openxmlformats-officedocument.presentationml.presentation')) return undefined;
+    const target = await this.existingManagedPath(projectId, row.stored_name); if (!target) return undefined;
+    try {
+      const bytes = await fs.promises.readFile(target);
+      if (bytes.length !== row.byte_length || createHash('sha256').update(bytes).digest('hex') !== row.sha256) return undefined;
+      return bytes;
+    } catch { return undefined; }
+  }
   async readStandaloneSvg(projectId:string,outcomeId:string, mediaId:string):Promise<Buffer|undefined> {
     if (!this.owned(projectId,outcomeId) || !mediaId) return undefined;
     const row=this.db.prepare('SELECT * FROM outcome_media WHERE id=? AND project_id=? AND outcome_id=?').get(mediaId,projectId,outcomeId) as MediaRow|undefined;

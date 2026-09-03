@@ -120,6 +120,48 @@ function validAbiReport(item) {
   );
 }
 
+const GENOFFICE_E2E_REQUIRED_STEPS = [
+  'word-edit-sync',
+  'cas-conflict-cleanup',
+  'word-reopen-reparse',
+  'word-dirty-archive-guard',
+  'word-docx-export-roundtrip',
+  'ppt-edit-sync',
+  'ppt-reopen-reparse',
+  'ppt-pptx-export-roundtrip',
+  'spreadsheet-edit-sync',
+  'spreadsheet-reopen-reparse',
+  'pdf-edit-sync',
+  'pdf-reopen-reparse',
+  'archive-delete-cleanup',
+];
+
+function validGenofficeE2eReport(item) {
+  const value = item?.value;
+  const stepNames = Array.isArray(value?.steps) ? value.steps.map((step) => step?.name) : [];
+  return Boolean(
+    value
+      && value.status === 'passed'
+      && value.childExited === true
+      && value.profileRemoved === true
+      && GENOFFICE_E2E_REQUIRED_STEPS.every((name) => stepNames.includes(name))
+      && Array.isArray(value.assertions)
+      && value.assertions.length > 0
+      && value.assertions.every((assertion) => assertion?.ok === true),
+  );
+}
+
+function validGenofficeHostsReport(item) {
+  const value = item?.value;
+  const hosts = Array.isArray(value?.results) ? value.results : [];
+  return Boolean(
+    value
+      && value.status === 'passed'
+      && hosts.length >= 4
+      && hosts.every((host) => host?.targetReady === true),
+  );
+}
+
 function allRecoveryAssertionsPassed(value) {
   if (!value || value.status !== 'passed') return false;
   const phases = Object.values(value.phases ?? {});
@@ -265,6 +307,8 @@ export function buildReport(root = DEFAULT_ROOT, now = new Date()) {
   const safeMarkdown = readJson(root, 'logs/electron-safe-markdown-acceptance.json');
   const pixelBaseline = readJson(root, 'logs/electron-pixel-baseline-latest.json');
   const officeAudit = readText(root, 'logs/officecli-removal-final-audit-20260821.md');
+  const genofficeE2e = readJson(root, 'test-results/outcome-genoffice-e2e.json');
+  const genofficeHosts = readJson(root, 'test-results/genoffice-hosts-final.json');
   const officeVisualCancelled = Boolean(
     officeAudit?.text.includes('Native Word/PowerPoint visual rendering acceptance remains unverified'),
   );
@@ -288,6 +332,8 @@ export function buildReport(root = DEFAULT_ROOT, now = new Date()) {
   // counters live on `.value`. Reading them off the wrapper directly was the
   // historical bug that kept genericSmokePassed false despite a 13/13 report.
   const smokePassed = smoke?.value?.failed === 0 && (smoke?.value?.passed ?? 0) > 0;
+  const genofficeE2ePassed = validGenofficeE2eReport(genofficeE2e);
+  const genofficeHostsPassed = validGenofficeHostsReport(genofficeHosts);
   const desktopAllGatesPassed = layoutPassed && nativeWindowPassed && responsiveMatrixPassed
     && safeMarkdownPassed && pixelBaselinePassed && smokePassed;
 
@@ -437,6 +483,32 @@ export function buildReport(root = DEFAULT_ROOT, now = new Date()) {
             ? 'The audit explicitly records native Word/PowerPoint visual rendering as unverified.'
             : 'No native Office renderer boundary was recorded.',
         }),
+      },
+    }),
+    GenOffice: record({
+      status: genofficeE2ePassed ? 'passed' : 'pending',
+      evidence: [genofficeE2e, genofficeHosts],
+      command: 'node scripts/electron-outcome-genoffice-e2e.cjs',
+      exitCode: null,
+      profile: genofficeE2ePassed
+        ? 'isolated temporary Electron profile and GenOffice child hosts; report records profileRemoved and childExited'
+        : 'not recorded in evidence',
+      providerBoundary: 'real GenOffice external-editor round-trip only; no external Provider quality claim and no native Microsoft Office visual claim',
+      reason: genofficeE2ePassed
+        ? `Fresh four-format E2E passed with ${genofficeE2e.value.assertions.length} assertions: create/open/edit/save/sync v2, reopen/reparse, dirty-archive guard, DOCX/PPTX export round-trip, CAS conflict, archive/delete cleanup, profile and child cleanup.`
+        : genofficeE2e?.value?.status === 'failed'
+          ? `The newest GenOffice four-format E2E report is explicitly failed: ${String(genofficeE2e.value.error ?? '').slice(0, 200)}`
+          : 'No fresh GenOffice four-format E2E report with all required steps was found.',
+      checks: {
+        fourFormatEditSyncV2: ['word-edit-sync', 'ppt-edit-sync', 'spreadsheet-edit-sync', 'pdf-edit-sync'].every((name) => (genofficeE2e?.value?.steps ?? []).some((step) => step?.name === name)),
+        reopenReparse: ['word-reopen-reparse', 'ppt-reopen-reparse', 'spreadsheet-reopen-reparse', 'pdf-reopen-reparse'].every((name) => (genofficeE2e?.value?.steps ?? []).some((step) => step?.name === name)),
+        dirtyArchiveGuard: (genofficeE2e?.value?.steps ?? []).some((step) => step?.name === 'word-dirty-archive-guard'),
+        exportRoundTrip: ['word-docx-export-roundtrip', 'ppt-pptx-export-roundtrip'].every((name) => (genofficeE2e?.value?.steps ?? []).some((step) => step?.name === name)),
+        casConflictCleanup: (genofficeE2e?.value?.steps ?? []).some((step) => step?.name === 'cas-conflict-cleanup'),
+        archiveDeleteCleanup: (genofficeE2e?.value?.steps ?? []).some((step) => step?.name === 'archive-delete-cleanup'),
+        childExited: genofficeE2e?.value?.childExited === true,
+        profileRemoved: genofficeE2e?.value?.profileRemoved === true,
+        standaloneHostSmoke: genofficeHostsPassed,
       },
     }),
     Desktop: record({

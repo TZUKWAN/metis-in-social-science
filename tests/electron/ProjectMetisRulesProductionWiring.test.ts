@@ -12,7 +12,10 @@ describe('project Metis.md production chat wiring', () => {
     expect(chatHandler).toContain('ensureWorkspaceManager(effectiveProjectId)');
     expect(chatHandler).toContain('projectMetisRulesFromWorkspace(');
     expect(chatHandler).toContain('{ ...workspaceManager.read(), projectId: effectiveProjectId }');
-    expect(chatHandler).toMatch(/projectRulesId,\s*\}, projectRule\)/u);
+    // projectRulesId 传参已演进为条件展开（strict schema 拒绝显式 null）：
+    // 存在时必须仍以第五个属性传入 resolveForAgent，且 projectRule 作为
+    // 第二参数紧随其后。
+    expect(chatHandler).toMatch(/\.\.\.\(projectRulesId \? \{ projectRulesId \} : \{\}\),\s*\}, projectRule\)/u);
   });
 
   it('fails closed when project authorization, file integrity, or personalization resolution fails', () => {

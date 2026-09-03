@@ -251,6 +251,28 @@ describe('execution presentation disclosure boundary', () => {
     });
   });
 
+  describe('CJK slash tokens are not paths — 2026-08-29 board regression', () => {
+    it('keeps workflow step names "父名 / 子名" fully intact', () => {
+      const input = '确定综述主题与研究边界 / 明确核心问题与综述目标';
+      expect(redactPath(input)).toBe(input);
+      expect(presentDiagnosticText(input)).toBe(input);
+    });
+
+    it('keeps plain CJK slash word pairs intact', () => {
+      const input = '论文写作 / 文献综述';
+      expect(redactPath(input)).toBe(input);
+    });
+
+    it('still redacts real filesystem paths inside CJK sentences', () => {
+      const win = redactPath('资料已保存到 D:\\论文资料\\综述.md 备查');
+      expect(win).toContain('[FILE]');
+      expect(win).not.toContain('论文资料');
+      const posix = redactPath('日志见 /var/log/metis/run.log');
+      expect(posix).toContain('[FILE]');
+      expect(posix).not.toContain('run.log');
+    });
+  });
+
   describe('REVIEW-METIS-427 integration samples', () => {
     it('preserves HTML closing tags without redacting </div>', () => {
       const input = 'Render step failed at </div> inside component tree';

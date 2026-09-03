@@ -1848,7 +1848,7 @@ describe('ChatPage', () => {
       render(<ChatPage renderLayout={renderChatProjectShell} />);
       await waitFor(() => expect(window.metis?.getMessages).toHaveBeenCalledWith('session-a'));
 
-      fireEvent.click(screen.getByText('会话 B'));
+      fireEvent.click(screen.getByText('会话 B', { selector: '.chat-session-title' }));
       await waitFor(() => expect(window.metis?.getMessages).toHaveBeenCalledWith('session-b'));
 
       messagesB.resolve([{ role: 'assistant', content: '会话 B 的回答' }]);
@@ -2010,7 +2010,7 @@ describe('ChatPage', () => {
       fireEvent.click(screen.getByRole('tab', { name: '生成物' }));
       fireEvent.click(await screen.findByRole('button', { name: 'session-a.md' }));
       await waitFor(() => expect(getArtifactContent).toHaveBeenCalledTimes(1));
-      fireEvent.click(screen.getByText('会话 B'));
+      fireEvent.click(screen.getByText('会话 B', { selector: '.chat-session-title' }));
 
       contentA.resolve({
         success: true,
@@ -2118,7 +2118,7 @@ describe('ChatPage', () => {
         container.querySelector('.chat-session-item.active')?.textContent,
       ).toContain('上传会话 A'));
       fireEvent.click(container.querySelector('.chat-tool-icon') as HTMLButtonElement);
-      fireEvent.click(await screen.findByText('上传会话 B'));
+      fireEvent.click(await screen.findByText('上传会话 B', { selector: '.chat-session-title' }));
       selection.resolve({
         success: true,
         capability: makePdfCapability({ displayName: 'late-picker.pdf' }),
@@ -2165,7 +2165,7 @@ describe('ChatPage', () => {
       fireEvent.drop(container.querySelector('.chat-input-area') as HTMLElement, {
         dataTransfer: { files: [file] },
       });
-      fireEvent.click(await screen.findByText('拖放会话 B'));
+      fireEvent.click(await screen.findByText('拖放会话 B', { selector: '.chat-session-title' }));
       imported.resolve({
         success: true,
         capability: makePdfCapability({ displayName: 'late-drop.pdf' }),
@@ -2210,7 +2210,7 @@ describe('ChatPage', () => {
       fireEvent.click(screen.getByText('发送'));
       await waitFor(() => expect(window.metis?.agentChat).toHaveBeenCalled());
 
-      fireEvent.click(screen.getByText('会话 B'));
+      fireEvent.click(screen.getByText('会话 B', { selector: '.chat-session-title' }));
       await screen.findByText('会话 B 已加载');
 
       responseA.resolve(completedAgentResponse(

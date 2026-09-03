@@ -155,30 +155,6 @@ export default function LibraryPage({ uiMode = 'normal', projectId = null }: Lib
     setWatchNotice(t('library.importedNotice', { count: result.imported, enriched: result.enriched }));
   }, [t]);
 
-  const transcribeAudio = useCallback(async () => {
-    const metis = window.metis;
-    if (!metis?.openAudioDialog || !metis.transcribeAudio) return;
-    const filePath = await metis.openAudioDialog();
-    if (!filePath) return;
-    setWatchNotice(t('library.transcribing'));
-    const result = await metis.transcribeAudio({ filePath, language: 'zh' });
-    if (!result.ok) {
-      setWatchNotice(t('library.transcribeFailed', { error: result.hint ?? result.error ?? '' }));
-      return;
-    }
-    // 转写稿落为项目类型化笔记（T23 + T28 衔接），供编码/脱敏流程使用。
-    await useMetisStore.getState().addNote({
-      id: `note-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-      title: `[${t('notesPanel.typeTranscript')}] ${filePath.split(/[\\/]/u).pop()}`,
-      content: result.text ?? '',
-      tags: ['type:transcript'],
-      linkedPaperIds: [],
-      linkedNoteIds: [],
-      updatedAt: Date.now(),
-    } as never);
-    setWatchNotice(t('library.transcribedNotice', { chars: (result.text ?? '').length }));
-  }, [t]);
-
   // 项目资料模式：只看关联到该项目的文献。
   const scopedPapers = useMemo(
     () => (projectId ? papers.filter((paper) => paper.projectId === projectId || (paper.projectIds ?? []).includes(projectId)) : papers),
@@ -541,15 +517,6 @@ export default function LibraryPage({ uiMode = 'normal', projectId = null }: Lib
             data-testid="library-import-pdf"
           >
             {t('library.importPdf')}
-          </button>
-          <button
-            type="button"
-            className="btn-sm btn-secondary"
-            title={t('library.transcribeHint')}
-            onClick={() => void transcribeAudio()}
-            data-testid="library-transcribe"
-          >
-            {t('library.transcribe')}
           </button>
           <button
             type="button"

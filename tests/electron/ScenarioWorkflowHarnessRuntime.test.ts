@@ -13,6 +13,7 @@ import { PersonalizationRepository } from '../../engine/personalization/Personal
 import { PersonalizationResolver } from '../../engine/personalization/PersonalizationResolver.js';
 import { digestResolvedManifestSnapshot } from '../../engine/personalization/ScenarioRunCoordinator.js';
 import { buildBuiltinPersonalizationDefinitions } from '../fixtures/personalization/legacyBuiltinDefinitions.js';
+const INTEGRITY_SECRET = Buffer.alloc(32, 21);
 import type { AgentRunResult } from '../../engine/core/types.js';
 import type { ResolvedRunManifest } from '../../engine/runtime/PersonalizationRuntimeContract.js';
 import { runPersistedScenarioWorkflow } from '../../electron/ScenarioWorkflowService.js';
@@ -79,7 +80,7 @@ beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'metis-harness-runtime-'));
   store = new PersistenceStore(path.join(root, 'workflow.db'));
   store.createSession('session-1');
-  repository = new PersonalizationRepository(store.raw);
+  repository = new PersonalizationRepository(store.raw, INTEGRITY_SECRET);
   repository.seedBuiltins(buildBuiltinPersonalizationDefinitions());
 });
 

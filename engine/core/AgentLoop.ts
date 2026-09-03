@@ -465,6 +465,10 @@ export class AgentLoop {
       ctx.allowedTools === undefined || ctx.allowedTools.includes(tool.name)
     ));
     const toolSchemas = this.registry.schemas(ctx.allowedTools);
+    // 工具静默失效必须可观测：调用方点名要工具但注册表解析为空时告警。
+    if (ctx.allowedTools && ctx.allowedTools.length > 0 && toolSchemas.length === 0) {
+      console.warn(`[AgentLoop] no tools resolved for request: allowed=${JSON.stringify(ctx.allowedTools)} registrySize=${this.registry.size}`);
+    }
     const contextResult = await this.contextEngine.build(
       ctx.messages,
       toolSchemas,

@@ -7,7 +7,7 @@
  */
 
 import { useEffect, useRef, useCallback, useState, useMemo } from 'react';
-import { Terminal } from '@xterm/xterm';
+import { Terminal, type ITheme } from '@xterm/xterm';
 import { TerminalIcon } from './Icons';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
@@ -24,6 +24,55 @@ import {
   type TerminalResizeRequest,
   type TerminalWriteRequest,
 } from '../../engine/runtime/TerminalRuntimeContract';
+
+// ─── Theme ────────────────────────────────────────────────
+
+/**
+ * The terminal sits on the app's warm dark code-block surface in both themes,
+ * so the ANSI palette is curated data (a terminal color scheme), while the
+ * surface/cursor colors follow the active AcademicTheme tokens. The palette
+ * is read once at terminal creation; a theme switch applies on next mount.
+ */
+function buildTerminalTheme(): ITheme {
+  const style = getComputedStyle(document.documentElement);
+  const dark = document.documentElement.dataset.theme === 'dark';
+  // Raw, non-throwing token reads: the terminal must still mount when the
+  // theme stylesheet is absent (tests, early boot).
+  const read = (name: string, fallback: string) => style.getPropertyValue(name).trim() || fallback;
+  const background = read('--bg-code-block', dark ? '#171613' : '#201e19');
+  // ANSI hues: in dark mode the status/chart tokens are already bright enough
+  // for the code-block surface; in light mode they are dark surface colors, so
+  // fall back to a curated warm-bright set (terminal scheme data, not UI chrome).
+  const red = dark ? read('--status-failed', '#fc8181') : '#f0939a';
+  const green = dark ? read('--status-completed', '#68d391') : '#a6d3a0';
+  const yellow = dark ? read('--evidence-pending', '#f0bd84') : '#ecd3a0';
+  const blue = dark ? read('--chart-4', '#7aa2d4') : '#8faed4';
+  const foreground = dark ? '#e8e4da' : '#ede8dd';
+  const magenta = dark ? '#cba6f7' : '#c4b5fd';
+  const cyan = dark ? '#94e2d5' : '#7fc8bd';
+  return {
+    background,
+    foreground,
+    cursor: read('--accent', dark ? '#d3c6a6' : '#263a59'),
+    selectionBackground: dark ? '#585b7066' : '#e8e4da44',
+    black: dark ? '#45475a' : '#3a382f',
+    red,
+    green,
+    yellow,
+    blue,
+    magenta,
+    cyan,
+    white: dark ? '#bac2de' : '#c9c2b2',
+    brightBlack: dark ? '#585b70' : '#57534a',
+    brightRed: red,
+    brightGreen: green,
+    brightYellow: yellow,
+    brightBlue: blue,
+    brightMagenta: magenta,
+    brightCyan: cyan,
+    brightWhite: read('--text-muted', dark ? '#99937f' : '#6b6659'),
+  };
+}
 
 // ─── Props ────────────────────────────────────────────────
 
@@ -118,28 +167,7 @@ export default function TerminalPanel({ visible, onToggle }: TerminalPanelProps)
       cursorBlink: true,
       fontSize: 13,
       fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", Consolas, monospace',
-      theme: {
-        background: '#1e1e2e',
-        foreground: '#cdd6f4',
-        cursor: '#f5e0dc',
-        selectionBackground: '#585b7066',
-        black: '#45475a',
-        red: '#f38ba8',
-        green: '#a6e3a1',
-        yellow: '#f9e2af',
-        blue: '#89b4fa',
-        magenta: '#cba6f7',
-        cyan: '#94e2d5',
-        white: '#bac2de',
-        brightBlack: '#585b70',
-        brightRed: '#f38ba8',
-        brightGreen: '#a6e3a1',
-        brightYellow: '#f9e2af',
-        brightBlue: '#89b4fa',
-        brightMagenta: '#cba6f7',
-        brightCyan: '#94e2d5',
-        brightWhite: '#a6adc8',
-      },
+      theme: buildTerminalTheme(),
       allowProposedApi: true,
       scrollback: 5000,
       convertEol: true,

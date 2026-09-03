@@ -1,5 +1,5 @@
 /**
- * FIX-METIS-408 theme and accessibility regression contracts.
+ * METIS theme and accessibility regression contracts.
  *
  * @vitest-environment jsdom
  */
@@ -7,7 +7,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import postcss from 'postcss';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   DESIGN_TOKEN_PROPERTIES,
   readComputedDesignTokens,
@@ -67,7 +67,7 @@ function contrastRatio(foreground: string, background: string): number {
   return (lighter! + 0.05) / (darker! + 0.05);
 }
 
-describe('FIX-METIS-408 single-source theme contract', () => {
+describe('METIS single-source theme contract', () => {
   beforeEach(() => {
     document.head.innerHTML = `<style>${THEME_CSS}</style>`;
     document.documentElement.removeAttribute('data-theme');
@@ -75,13 +75,13 @@ describe('FIX-METIS-408 single-source theme contract', () => {
 
   it('reads light and dark token values from computed CSS instead of a mirrored TS palette', () => {
     const light = readComputedDesignTokens(document.documentElement);
-    expect(light.accentPrimary).toBe('#263a59');
-    expect(light.chartPalette[3]).toBe('#4d7a9e');
+    expect(light.accentPrimary).toBe('#2563EB');
+    expect(light.chartPalette[3]).toBe('#4F7396');
 
     document.documentElement.dataset.theme = 'dark';
     const dark = readComputedDesignTokens(document.documentElement);
-    expect(dark.accentPrimary).toBe('#d3c6a6');
-    expect(dark.chartPalette[3]).toBe('#7aa2d4');
+    expect(dark.accentPrimary).toBe('#3B82F6');
+    expect(dark.chartPalette[3]).toBe('#7FAAD4');
   });
 
   it('keeps TS as a property-name adapter with no duplicated theme values', () => {
@@ -101,7 +101,7 @@ describe('FIX-METIS-408 single-source theme contract', () => {
   });
 });
 
-describe('FIX-METIS-408 focus and color contracts', () => {
+describe('METIS focus and color contracts', () => {
   it('separates focus color from focus shadow and defines the legacy primary text alias', () => {
     const light = declarationsForSelector(THEME_CSS, ':root');
     const dark = declarationsForSelector(THEME_CSS, '[data-theme="dark"]');
@@ -153,7 +153,65 @@ describe('FIX-METIS-408 focus and color contracts', () => {
   });
 });
 
-describe('FIX-METIS-408 visual-residue contracts', () => {
+describe('accent theme matrix (light/dark × gold/blue/green/gray)', () => {
+  const ACCENTS = ['gold', 'blue', 'green', 'gray'] as const;
+  const EXPECTED_ACCENT = {
+    light: { gold: '#A16207', blue: '#2563EB', green: '#15803D', gray: '#52525B' },
+    dark: { gold: '#D97706', blue: '#3B82F6', green: '#22C55E', gray: '#A1A1AA' },
+  } as const;
+
+  beforeEach(() => {
+    document.head.innerHTML = `<style>${THEME_CSS}</style>`;
+    document.documentElement.removeAttribute('data-theme');
+    document.documentElement.removeAttribute('data-accent');
+  });
+
+  afterAll(() => {
+    document.documentElement.removeAttribute('data-accent');
+  });
+
+  it('resolves the expected accent per mode and meets WCAG AA on surfaces and on-accent text', () => {
+    for (const mode of ['light', 'dark'] as const) {
+      for (const accent of ACCENTS) {
+        if (mode === 'dark') {
+          document.documentElement.dataset.theme = 'dark';
+        } else {
+          document.documentElement.removeAttribute('data-theme');
+        }
+        document.documentElement.dataset.accent = accent;
+        const tokens = readComputedDesignTokens(document.documentElement);
+        expect(tokens.accentPrimary, `${mode}/${accent} accent`).toBe(EXPECTED_ACCENT[mode][accent]);
+        expect(
+          contrastRatio(tokens.accentPrimary, tokens.bgMain),
+          `${mode}/${accent} accent on bg-main`,
+        ).toBeGreaterThanOrEqual(4.5);
+        expect(
+          contrastRatio(tokens.accentPrimary, tokens.bgCard),
+          `${mode}/${accent} accent on bg-card`,
+        ).toBeGreaterThanOrEqual(4.5);
+        expect(
+          contrastRatio(tokens.textOnAccent, tokens.accentPrimary),
+          `${mode}/${accent} text-on-accent`,
+        ).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+  });
+
+  it('keeps the no-accent fallback identical to the pre-accent defaults', () => {
+    expect(readComputedDesignTokens(document.documentElement).accentPrimary).toBe('#2563EB');
+    document.documentElement.dataset.theme = 'dark';
+    expect(readComputedDesignTokens(document.documentElement).accentPrimary).toBe('#3B82F6');
+  });
+
+  it('blue accent reproduces the default look exactly', () => {
+    document.documentElement.dataset.accent = 'blue';
+    expect(readComputedDesignTokens(document.documentElement).accentPrimary).toBe('#2563EB');
+    document.documentElement.dataset.theme = 'dark';
+    expect(readComputedDesignTokens(document.documentElement).accentPrimary).toBe('#3B82F6');
+  });
+});
+
+describe('METIS visual-residue contracts', () => {
   it('contains no obsolete blue accent fallback outside the semantic chart palette', () => {
     const forbidden = /#(?:89b4fa|3b82f6|2c5282|1a365d|1e5a9e|ebf4ff|90cdf4)|rgba?\(\s*(?:137\s*,\s*180\s*,\s*250|59\s*,\s*130\s*,\s*246)|rgb\(\s*99\s+179\s+237/iu;
     for (const path of CONSUMER_CSS_FILES) {
@@ -161,14 +219,62 @@ describe('FIX-METIS-408 visual-residue contracts', () => {
     }
   });
 
-  it('caps literal border radii at 6px and removes uppercase presentation', () => {
+  it('caps literal border radii at 16px and removes uppercase presentation', () => {
     for (const path of CONSUMER_CSS_FILES) {
       const css = readFileSync(path, 'utf8');
       const oversized = [...css.matchAll(/border-radius:\s*(\d+(?:\.\d+)?)px/giu)]
         .map((match) => Number(match[1]))
-        .filter((radius) => radius > 6);
+        .filter((radius) => radius > 16);
       expect(oversized, relative(REPO_ROOT, path)).toEqual([]);
       expect(css, relative(REPO_ROOT, path)).not.toMatch(/text-transform:\s*uppercase/iu);
     }
+  });
+});
+
+describe('aurora glass disabled in the rational design system', () => {
+  const AURORA_TOKENS = [
+    '--aurora-1',
+    '--aurora-2',
+    '--aurora-3',
+    '--aurora-opacity',
+    '--glass-surface',
+    '--glass-surface-strong',
+    '--glass-blur',
+    '--glass-blur-strong',
+    '--glass-saturate',
+    '--glass-edge',
+    '--bg-card-glass',
+    '--accent-gradient',
+    '--accent-gradient-soft',
+    '--glow-accent',
+    '--glow-accent-soft',
+    '--title-gradient',
+  ] as const;
+
+  it('declares every aurora/glass token in both light and dark bases for backwards compatibility', () => {
+    const light = declarationsForSelector(THEME_CSS, ':root');
+    const dark = declarationsForSelector(THEME_CSS, '[data-theme="dark"]');
+    for (const property of AURORA_TOKENS) {
+      expect(light.has(property), `light ${property}`).toBe(true);
+      expect(dark.has(property), `dark ${property}`).toBe(true);
+    }
+  });
+
+  it('keeps aurora backdrop opacity at zero so no decorative glow leaks through', () => {
+    const light = declarationsForSelector(THEME_CSS, ':root');
+    expect(light.get('--aurora-opacity')).toBe('0');
+  });
+
+  it('keeps aurora backdrop opacity switchable for forced colors and reduced transparency', () => {
+    const forcedBlock = THEME_CSS.slice(THEME_CSS.indexOf('@media (forced-colors: active)'));
+    expect(forcedBlock).toContain('--aurora-opacity: 0');
+  });
+
+  it('keeps gradient/glow tokens disabled in the new rational system', () => {
+    const light = declarationsForSelector(THEME_CSS, ':root');
+    expect(light.get('--accent-gradient')).toBe('none');
+    expect(light.get('--glow-accent')).toBe('none');
+    expect(light.get('--glow-accent-soft')).toBe('none');
+    expect(light.get('--title-gradient')).toBe('none');
   });
 });

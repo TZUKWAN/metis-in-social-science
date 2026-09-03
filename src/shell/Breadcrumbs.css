@@ -197,7 +197,7 @@
   max-width: min(280px, 90cqw);
   max-height: min(320px, 60vh);
   overflow: hidden auto;
-  background: var(--bg-card, #fff);
+  background: var(--bg-card);
   border: 1px solid var(--border-light, var(--border-light));
   border-radius: var(--radius-md);
   box-shadow: 0 8px 24px rgb(15 23 42 / 14%);
@@ -271,7 +271,7 @@
     linear-gradient(
       90deg,
       var(--border-light, var(--border-light)) 25%,
-      color-mix(in srgb, var(--border-light, var(--border-light)) 44%, var(--bg-card, #fff)) 50%,
+      color-mix(in srgb, var(--border-light, var(--border-light)) 44%, var(--bg-card)) 50%,
       var(--border-light, var(--border-light)) 75%
     );
   background-size: 200% 100%;

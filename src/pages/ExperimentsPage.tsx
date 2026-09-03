@@ -125,10 +125,9 @@ function formatScriptSize(sizeBytes: number): string {
 
 function MetricBar({ value, max = 1 }: { value: number; max?: number }) {
   const pct = Math.min(100, Math.max(0, (value / max) * 100));
-  const s = getComputedStyle(document.documentElement);
-  const green = s.getPropertyValue('--status-completed').trim() || '#22c55e';
-  const yellow = s.getPropertyValue('--accent-warm').trim() || '#eab308';
-  const blue = s.getPropertyValue('--chart-1').trim() || '#3b82f6';
+  const green = 'var(--status-completed)';
+  const yellow = 'var(--accent-warm)';
+  const blue = 'var(--chart-1)';
   const fillColor = pct > 80 ? green : pct > 50 ? yellow : blue;
   return (
     <div className="metric-bar">
@@ -731,12 +730,12 @@ export default function ExperimentsPage() {
             <div className="exp-parameters" style={{ marginBottom: 10 }}>
               <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, color: 'var(--text-primary)' }}>{t('experiments.parameters')}</div>
               {Object.keys(exp.parameters).length === 0 && (
-                <div style={{ fontSize: 12, color: 'var(--text-muted, #718096)', marginBottom: 4 }}>{t('experiments.noParameters')}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>{t('experiments.noParameters')}</div>
               )}
               {Object.entries(exp.parameters).map(([k, v]) => (
                 <div key={k} className="exp-parameter" style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, marginBottom: 4 }}>
                   <span style={{ flex: 1, fontWeight: 500 }}>{k}</span>
-                  <span style={{ color: 'var(--text-muted, #718096)' }}>{v}</span>
+                  <span style={{ color: 'var(--text-muted)' }}>{v}</span>
                   <button className="tag-remove" onClick={() => handleRemoveParameter(exp.id, k)} title={t('common.delete')}>×</button>
                 </div>
               ))}
@@ -765,7 +764,7 @@ export default function ExperimentsPage() {
             <div className="exp-metrics">
               <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, color: 'var(--text-primary)' }}>{t('experiments.metrics')}</div>
               {Object.keys(exp.metrics).length === 0 && (
-                <div style={{ fontSize: 12, color: 'var(--text-muted, #718096)', marginBottom: 4 }}>{t('experiments.noMetrics')}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>{t('experiments.noMetrics')}</div>
               )}
               {Object.entries(exp.metrics).map(([k, v]) => (
                 <div key={k} className="exp-metric" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -814,7 +813,7 @@ export default function ExperimentsPage() {
               <button className="btn-sm btn-secondary" disabled={isExperimentActionBlocked(exp)} onClick={() => { void handleDuplicate(exp.id); }}>{t('common.duplicate')}</button>
               <button className="btn-sm btn-danger" disabled={isExperimentActionBlocked(exp)} onClick={() => { if (!isExperimentActionBlocked(exp)) setDeletingExperimentId(exp.id); }}>{t('common.delete')}</button>
             </div>
-            <div className="exp-script" style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border-color, #e2e8f0)' }}>
+            <div className="exp-script" style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
               <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, color: 'var(--text-primary)' }}>{t('experiments.script')}</div>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6, flexWrap: 'wrap' }}>
                 <div style={{ flex: 1, minWidth: 180, fontSize: 12, color: 'var(--text-secondary)' }}>
@@ -862,16 +861,16 @@ export default function ExperimentsPage() {
                 </div>
               )}
             </div>
-            <div className="exp-links" style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border-color, #e2e8f0)' }}>
+            <div className="exp-links" style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
               <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, color: 'var(--text-primary)' }}>{t('experiments.linkedPapers')}</div>
               {papers.length === 0 ? (
-                <div style={{ fontSize: 12, color: 'var(--text-muted, #718096)' }}>{t('experiments.linkedPapersEmpty')}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{t('experiments.linkedPapersEmpty')}</div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                   {papers.map((p) => {
                     const linked = exp.linkedPaperIds.includes(p.id);
                     return (
-                      <label key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 6, borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border-color, #e2e8f0)' }}>
+                      <label key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 6, borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border)' }}>
                         <input type="checkbox" checked={linked} onChange={() => handleTogglePaperLink(exp.id, p.id)} />
                         <span style={{ fontSize: 12 }}>{p.title}</span>
                       </label>

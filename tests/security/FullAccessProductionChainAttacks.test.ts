@@ -169,6 +169,8 @@ function chatStore(sessionId: string) {
     createSession: vi.fn(),
     getSession: vi.fn(() => ({ id: sessionId })),
     truncateMessagesAfterLastUser: vi.fn(),
+    // 场景工作流把步骤/整轮产出登记为生成物（2026-08-29/30 整轮归档机制）。
+    createArtifacts: vi.fn(),
   } as unknown as Parameters<typeof runPersistedChatTurn>[0]['store'];
   return { store, messages };
 }
@@ -251,7 +253,7 @@ describe('Full Access production chain attacks', () => {
 
     expect(app).toContain('setPendingChatIntent({');
     expect(app).toContain('autoSend: false');
-    expect(chatPage).toContain('await handleLiveInstruction(raw)');
+    expect(chatPage).toContain('await handleLiveInstruction(raw');
     expect(chatPage).toContain("action: 'interrupt'");
     expect(preload).toContain("ipcRenderer.invoke('agent:chat'");
     expect(chatHandler).toContain('personalizationRuntime.resolveForAgent({');
@@ -369,6 +371,9 @@ describe('Full Access production chain attacks', () => {
       getRecoverableScenarioRun: vi.fn(() => undefined),
       saveScenarioRunRecord: vi.fn((record: unknown) => { checkpoints.push(record); return record; }),
       listCompletedScenarioRunRecords: vi.fn(() => []),
+      // 整轮归档用场景名命名最终成果生成物（2026-08-30 契约新增）。
+      get: vi.fn(() => undefined),
+      supersedeOtherScenarioRuns: vi.fn(() => 0),
     } as unknown as Parameters<typeof runPersistedScenarioWorkflow>[0]['repository'];
 
     const result = await within(runPersistedScenarioWorkflow({

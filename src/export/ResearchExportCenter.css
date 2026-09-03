@@ -1,13 +1,13 @@
 .research-export-center {
-  --export-surface: var(--bg-secondary, #ffffff);
-  --export-surface-muted: var(--bg-tertiary, #f5f7fa);
-  --export-border: var(--border-color, #d8dee8);
-  --export-text: var(--text-primary, #172033);
-  --export-muted: var(--text-secondary, #5d687a);
-  --export-accent: var(--accent-primary, #315efb);
-  --export-accent-text: #ffffff;
-  --export-danger: var(--danger-color, #b42318);
-  --export-success: var(--success-color, #087443);
+  --export-surface: var(--bg-secondary);
+  --export-surface-muted: var(--bg-tertiary);
+  --export-border: var(--border-color);
+  --export-text: var(--text-primary);
+  --export-muted: var(--text-secondary);
+  --export-accent: var(--accent-primary, var(--accent));
+  --export-accent-text: var(--bg-card);
+  --export-danger: var(--danger-color, var(--status-failed));
+  --export-success: var(--success-color, var(--status-completed));
   color: var(--export-text);
   container-type: inline-size;
   display: grid;

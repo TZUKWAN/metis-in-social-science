@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "metis-workbench",
   "private": true,
   "version": "0.1.0-alpha.2",
@@ -21,7 +21,7 @@
     "clean": "node scripts/clean-build.cjs",
     "typecheck": "tsc -p tsconfig.app.json --noEmit --incremental false && tsc -p tsconfig.engine.json --noEmit --incremental false && tsc -p tsconfig.node.json --noEmit --incremental false && tsc -p electron/tsconfig.json --noEmit --incremental false",
     "build": "npm run build:electron",
-    "build:electron": "npm run typecheck && npm run clean && tsc -p electron/tsconfig.json && vite build && npm run rebuild:electron",
+    "build:electron": "npm run typecheck && npm run clean && tsc -p electron/tsconfig.json && node scripts/copy-electron-assets.cjs && node scripts/stage-genoffice-sidecar.cjs && node scripts/stage-genoffice-runtime.cjs && vite build && npm run rebuild:electron",
     "build:native": "bash scripts/rebuild-native.sh",
     "rebuild:node": "npm rebuild better-sqlite3",
     "rebuild:electron": "electron-rebuild -f -o better-sqlite3",
@@ -51,11 +51,14 @@
     "better-sqlite3": "^12.10.0",
     "csv-parse": "^6.2.1",
     "electron-updater": "^6.8.9",
+    "fast-xml-parser": "^5.3.4",
     "imapflow": "^1.7.2",
     "jsonrepair": "^3.15.0",
+    "jszip": "^3.10.1",
     "katex": "^0.17.0",
     "lucide-react": "^1.17.0",
     "node-pty": "^1.1.0",
+    "nodemailer": "^9.0.5",
     "pdfjs-dist": "^4.9.155",
     "prismjs": "^1.30.0",
     "qrcode.react": "^4.2.0",
@@ -67,6 +70,7 @@
     "reactflow": "^11.11.4",
     "recharts": "^3.8.1",
     "remark-gfm": "^4.0.1",
+    "utif2": "^4.1.0",
     "zod": "^4.4.3",
     "zustand": "^5.0.14"
   },
@@ -74,6 +78,7 @@
     "appId": "com.metis.workbench",
     "productName": "Metis Research Workbench",
     "npmRebuild": false,
+ "afterPack": "scripts/after-pack-genoffice.cjs",
     "icon": "build/icon.png",
     "directories": {
       "output": "release"
@@ -82,6 +87,7 @@
       "LICENSE",
       "dist/**/*",
       "dist-electron/**/*",
+      "!dist-electron/genoffice/**/*",
       "node_modules/better-sqlite3/**/*",
       "node_modules/node-pty/**/*",
       "!**/*.map",
@@ -91,6 +97,17 @@
       "!node_modules/node-pty/src/**/*",
       "!**/*.test.*",
       "!**/*.spec.*"
+    ],
+    "extraResources": [
+      {
+        "from": "dist-electron/genoffice",
+        "to": "genoffice",
+        "filter": [
+          "**/*",
+          "node_modules/**/*",
+          "!**/*.map"
+        ]
+      }
     ],
     "mac": {
       "target": [
@@ -171,6 +188,7 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/csv-parse": "^1.1.12",
     "@types/node": "^24.12.3",
+    "@types/nodemailer": "^8.0.1",
     "@types/prismjs": "^1.26.6",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
@@ -197,4 +215,3 @@
     "brace-expansion@^2.0.0": "2.1.4"
   }
 }
-

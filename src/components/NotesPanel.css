@@ -3,7 +3,7 @@
 .notes-panel {
   position: fixed;
   inset: 0;
-  background: color-mix(in srgb, var(--bg-page, #111) 50%, transparent);
+  background: var(--bg-modal-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -99,8 +99,8 @@
 }
 
 .notes-panel__type--literature { color: var(--accent); border-color: var(--accent); }
-.notes-panel__type--theory { color: #7d8b5a; border-color: #7d8b5a; }
-.notes-panel__type--method { color: #5a7d8b; border-color: #5a7d8b; }
+.notes-panel__type--theory { color: var(--chart-6); border-color: var(--chart-6); }
+.notes-panel__type--method { color: var(--chart-4); border-color: var(--chart-4); }
 
 .notes-panel__title {
   flex: 1;

@@ -45,7 +45,7 @@ RULES:
 3. Each step must have clear input/output contracts.
 4. Use sequential dependencies (step N depends on step N-1) unless parallel is obvious.
 5. Max turns per step: 6 (small model limit).
-6. Tools allowed: read_file, write_file, search_web, summarize_text, compare_items.
+6. Tools allowed: read_file, write_file, web_search, compare_items.
 7. Every step MUST define objective acceptanceCriteria so completion is machine-verifiable, not just LLM self-assessment. A step is only "done" when all its criteria pass. Use these kinds:
    - { "kind": "minLength", "value": "50", "description": "回答不少于 50 字" }
    - { "kind": "contains", "value": "参考文献", "description": "必须列出参考文献" }

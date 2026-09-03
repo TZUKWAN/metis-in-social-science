@@ -9,9 +9,10 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { useTranslation } from '../i18n';
 import { researchWorkspaceStore } from '../research/researchWorkspaceStore';
+import { setPendingChatIntent } from '../lib/chatIntent';
 import './TaskBoardPage.css';
 
-type GoalStatus = 'draft' | 'planning' | 'ready' | 'running' | 'paused' | 'completed' | 'failed';
+type GoalStatus = 'draft' | 'planning' | 'ready' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
 type Priority = 'low' | 'medium' | 'high' | 'urgent';
 
 interface KanbanGoal {
@@ -21,6 +22,10 @@ interface KanbanGoal {
   priority?: Priority;
   createdAt: number;
   projectId?: string;
+  /** 场景步骤的专属提示词（2026-08-29 刘总要求：详情面板可查看/编辑）。 */
+  prompt?: string;
+  /** scenario-run 卡片所属场景定义 id，用于编辑后保存。 */
+  scenarioId?: string;
 }
 
 // Map Goal status to kanban column.
@@ -35,7 +40,7 @@ function statusToColumn(status: GoalStatus): ColumnId {
     // "waiting", rather than pretending a review column survives reload.
     case 'paused': return 'inreview';
     case 'completed': return 'done';
-    case 'failed': return 'cancelled';
+    case 'failed': case 'cancelled': return 'cancelled';
     default: return 'todo';
   }
 }
@@ -48,6 +53,17 @@ function columnToStatus(column: ColumnId): GoalStatus {
     case 'inreview': return 'paused';
     case 'done': return 'completed';
     case 'cancelled': return 'failed';
+    default: return 'ready';
+  }
+}
+
+/** 场景运行步骤状态 → 看板列状态（引擎所有，只读展示）。 */
+function scenarioStepStatusToGoalStatus(status: string): GoalStatus {
+  switch (status) {
+    case 'running': return 'running';
+    case 'completed': case 'skipped': return 'completed';
+    case 'failed': return 'failed';
+    case 'blocked': case 'paused': return 'paused';
     default: return 'ready';
   }
 }
@@ -106,20 +122,80 @@ export default function TaskBoardPage({ defaultProjectFilter = '' }: TaskBoardPa
     try {
       const result = await metis.listGoals();
       if (result.success) {
+        const projectIds = new Set<string>();
         if (metis.listProjects) {
           const projectResult = await metis.listProjects();
           if (projectResult.success) {
             setProjects(projectResult.projects.map((project) => ({ id: project.id, title: project.title || project.id })));
+            for (const project of projectResult.projects) projectIds.add(project.id);
           }
         }
-        setGoals((result.goals ?? []).map((g) => ({
-          id: g.goalId,
-          description: g.label,
-          status: g.status as GoalStatus,
-          priority: (g as unknown as { priority?: Priority }).priority,
-          createdAt: g.createdAt,
-          projectId: g.projectId,
-        })));
+        // ── 场景运行任务（2026-08-28 刘总要求）：看板必须显示场景工作流的
+        // 真实步骤；否则旧 Goal 引擎没有任务时看板永远是空的。
+        const activeProjectId = researchWorkspaceStore.getState().activeProjectId;
+        if (activeProjectId) projectIds.add(activeProjectId);
+        const scenarioGoals: KanbanGoal[] = [];
+        const seenScenarioCardIds = new Set<string>();
+        if (metis.getScenarioRunForProject) {
+          for (const projectId of projectIds) {
+            try {
+              const run = await metis.getScenarioRunForProject(projectId);
+              if (!run?.ok || !run.runId || !Array.isArray(run.steps)) continue;
+              for (const step of run.steps) {
+                // 去重（2026-08-29 刘总报告看板重复卡片）：同一 run 的同一步骤
+                // 若被多个项目解析到，只保留首张卡，避免 React key 冲突与
+                // 视觉重复。
+                const cardId = `scenario-run:${run.runId}:${step.stepId}`;
+                if (seenScenarioCardIds.has(cardId)) continue;
+                seenScenarioCardIds.add(cardId);
+                scenarioGoals.push({
+                  id: cardId,
+                  description: step.name,
+                  status: scenarioStepStatusToGoalStatus(String(step.status)),
+                  createdAt: Date.now(),
+                  projectId,
+                  prompt: (run as { stepsPromptById?: Record<string, string> }).stepsPromptById?.[step.stepId] || undefined,
+                  scenarioId: run.scenarioId,
+                });
+              }
+            } catch { /* 单个项目读取失败不影响看板其余内容 */ }
+          }
+        }
+        // AI 设计的任务步骤上板（2026-08-29 刘总要求）：进行中/暂停的研究
+        // 任务，其规划出的每个步骤作为独立卡片显示，而不是只显示任务本身。
+        const goalStepGoals: KanbanGoal[] = [];
+        for (const g of result.goals ?? []) {
+          // failed 也在板（2026-08-29 刘总要求：AI 生成的每个步骤都可见，
+          // 失败任务的步骤同样上板供查看/重试）。
+          if (!['running', 'paused', 'planning', 'ready', 'failed'].includes(g.status)) continue;
+          try {
+            const workflow = await metis.getGoalWorkflow?.(g.goalId);
+            if (!workflow?.success) continue;
+            for (const step of workflow.workflow.steps) {
+              goalStepGoals.push({
+                id: `goal-run:${g.goalId}:${step.id}`,
+                description: `${g.label} / ${step.name}`,
+                status: scenarioStepStatusToGoalStatus(
+                  workflow.stepResults[step.id]?.status ?? 'pending',
+                ),
+                createdAt: g.createdAt ?? Date.now(),
+                projectId: g.projectId,
+              });
+            }
+          } catch { /* 单个任务读取失败不影响看板 */ }
+        }
+        setGoals([
+          ...(result.goals ?? []).map((g) => ({
+            id: g.goalId,
+            description: g.label,
+            status: g.status as GoalStatus,
+            priority: (g as unknown as { priority?: Priority }).priority,
+            createdAt: g.createdAt,
+            projectId: g.projectId,
+          })),
+          ...goalStepGoals,
+          ...scenarioGoals,
+        ]);
       }
     } catch {
       setError(t('kanban.loadFailed'));
@@ -208,6 +284,8 @@ export default function TaskBoardPage({ defaultProjectFilter = '' }: TaskBoardPa
   // Keyboard equivalent of drag-and-drop: focus a card, then move it with
   // ArrowLeft / ArrowRight between adjacent columns.
   const moveGoalToColumn = useCallback(async (goalId: string, columnId: ColumnId) => {
+    // 场景运行步骤由引擎推进（真实性契约），拖拽改状态对它们是假操作，直接忽略。
+    if (goalId.startsWith('scenario-run:')) return;
     const goal = goals.find((g) => g.id === goalId);
     if (!goal) return;
     const newStatus = columnToStatus(columnId);
@@ -474,7 +552,36 @@ export default function TaskBoardPage({ defaultProjectFilter = '' }: TaskBoardPa
               <span className="kanban-detail__label">{t('kanban.detailCreated')}</span>
               <span className="kanban-detail__value">{new Date(selected.createdAt).toLocaleString(locale === 'zh' ? 'zh-CN' : 'en-US')}</span>
             </div>
+            {selected.id.startsWith('scenario-run:') && selected.scenarioId && (
+              <ScenarioStepPromptEditor
+                scenarioId={selected.scenarioId}
+                stepName={selected.description}
+                initialPrompt={selected.prompt ?? ''}
+                onSaved={() => void loadGoals()}
+              />
+            )}
             <div className="kanban-detail__actions">
+              {/* 场景工作流步骤卡支持看板直接执行（2026-08-29 刘总要求）：
+                  把步骤执行指令交接给当前项目的对话并自动发送。 */}
+              {selected.id.startsWith('scenario-run:') && (
+                <button
+                  className="btn-sm btn-primary"
+                  data-testid="kanban-execute-task"
+                  onClick={() => {
+                    setPendingChatIntent({
+                      message: locale === 'zh'
+                        ? `请继续执行场景工作流中的「${selected.description}」步骤：按该步骤的专属 Prompt 与完成标准完成本步骤，然后按工作流顺序继续推进后续步骤。`
+                        : `Continue the scenario workflow step "${selected.description}": complete it according to its dedicated prompt and completion criteria, then proceed with the following steps.`,
+                      ...(selected.projectId ? { projectId: selected.projectId } : {}),
+                      autoSend: true,
+                    });
+                    setSelectedId(null);
+                    window.dispatchEvent(new CustomEvent('metis:open-goal', { detail: { goalId: selected.id } }));
+                  }}
+                >
+                  {locale === 'zh' ? '执行此任务' : 'Execute'}
+                </button>
+              )}
               <button
                 className="btn-sm btn-primary"
                 data-testid="kanban-discuss-in-chat"
@@ -499,4 +606,90 @@ export default function TaskBoardPage({ defaultProjectFilter = '' }: TaskBoardPa
       )}
     </div>
   );
+}
+
+/**
+ * 场景步骤提示词查看/编辑（2026-08-29 刘总要求：看板点开步骤即可查看并
+ * 修改该步骤的专属提示词；保存写入场景定义的新修订，不影响运行中的快照）。
+ */
+function ScenarioStepPromptEditor({ scenarioId, stepName, initialPrompt, onSaved }: {
+  scenarioId: string;
+  stepName: string;
+  initialPrompt: string;
+  onSaved(): void;
+}) {
+  const { locale } = useTranslation();
+  const [prompt, setPrompt] = useState(initialPrompt);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState('');
+
+  const save = async () => {
+    if (busy) return;
+    setBusy(true);
+    setNotice('');
+    try {
+      const metis = window.metis;
+      if (!metis?.getPersonalization || !metis?.savePersonalization) {
+        setNotice(locale === 'zh' ? '场景服务不可用。' : 'Scenario service is unavailable.');
+        return;
+      }
+      const current = await metis.getPersonalization({ contractVersion: 1, id: scenarioId });
+      const definition = current?.definition;
+      if (!definition || definition.kind !== 'scenario') {
+        setNotice(locale === 'zh' ? '未找到所属场景定义。' : 'The scenario definition was not found.');
+        return;
+      }
+      const stepId = promptStepIdFromCardKey(stepName, definition);
+      const updated = {
+        ...definition,
+        revision: definition.revision + 1,
+        provenance: { ...definition.provenance, locallyModified: true, updatedAt: Date.now() },
+        workflow: definition.workflow.map((step) => (
+          step.id === stepId || step.name === stepName
+            ? { ...step, prompt }
+            : step
+        )),
+      };
+      const saved = await metis.savePersonalization({
+        contractVersion: 1,
+        definition: updated,
+        expectedRevision: definition.revision,
+      });
+      setNotice(saved?.ok
+        ? (locale === 'zh' ? '提示词已保存到场景（新版本）。' : 'Prompt saved to the scenario as a new revision.')
+        : (locale === 'zh' ? `保存未完成（${saved?.code ?? 'unknown'}）。` : `Save failed (${saved?.code ?? 'unknown'}).`));
+      if (saved?.ok) onSaved();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="kanban-detail__row kanban-prompt-editor" data-testid="kanban-prompt-editor">
+      <span className="kanban-detail__label">{locale === 'zh' ? '步骤提示词' : 'Step prompt'}</span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <textarea
+          value={prompt}
+          rows={6}
+          disabled={busy}
+          onChange={(event) => setPrompt(event.target.value)}
+          style={{ width: '100%', fontSize: 12, lineHeight: 1.5 }}
+        />
+        <div style={{ display: 'flex', gap: 8, marginTop: 6, alignItems: 'center' }}>
+          <button type="button" className="btn-sm btn-primary" disabled={busy} onClick={() => void save()}>
+            {busy ? (locale === 'zh' ? '保存中…' : 'Saving…') : (locale === 'zh' ? '保存提示词' : 'Save prompt')}
+          </button>
+          {notice && <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{notice}</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 从卡片描述（步骤名）推断场景 workflow 中的步骤 id。 */
+function promptStepIdFromCardKey(stepName: string, definition: { workflow: Array<{ id: string; name: string }> }): string | undefined {
+  const direct = definition.workflow.find((step) => step.name === stepName);
+  if (direct) return direct.id;
+  const suffix = stepName.includes('/') ? stepName.split('/').pop()?.trim() : stepName.trim();
+  return definition.workflow.find((step) => step.name === suffix)?.id;
 }

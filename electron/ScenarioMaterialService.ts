@@ -217,7 +217,7 @@ export class ScenarioMaterialService {
       '2. 每个正文章节写 purpose/requirements/lengthTarget，方法性章节写 method/evidence。',
       '3. adaptivity 是 AI 的自主边界：只允许在用户合理的范围内放开；锁定部分永不可删。',
       '4. 从材料中学习：模板→结构规则与硬性要求；范文→结构与写作方式；教材/专著→可复用写作原则与方法建议；指南/规范→硬性规范。区分“结构要求/写作经验/方法建议/硬性规范”，普通内容不要都变成规则。',
-      '5. agents 1-3 个；workflow 2-7 步按执行顺序；skillIds/mcpIds 只能从现有定义清单选。toolIds 可用：read_file、write_file、search_web、summarize_text、list_sources、extract_evidence、link_evidence、draft_claim、save_artifact。',
+      '5. agents 1-3 个；workflow 2-7 步按执行顺序；skillIds/mcpIds 只能从现有定义清单选。toolIds 只能使用已注册工具：read_file、write_file、web_search、list_sources、extract_evidence、link_evidence、draft_claim、save_artifact。',
       `现有定义清单：\n${catalog || '（暂无）'}`,
     ].join('\n');
     const user = [

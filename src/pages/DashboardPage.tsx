@@ -7,6 +7,7 @@
  */
 
 import { useMemo, useState, useEffect, useCallback } from 'react';
+import { FileText } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell,
@@ -17,10 +18,12 @@ import { useTranslation } from '../i18n';
 import type { Page } from '../store';
 import { useResearchWorkspaceStore } from '../research/researchWorkspaceStore';
 import { SafeMarkdown } from '../presentation/SafeMarkdown';
+import { Button } from '../components/ui';
 import './DashboardPage.css';
 
 const CHART_VAR_NAMES = ['--chart-1', '--chart-2', '--chart-3', '--chart-4', '--chart-5', '--chart-6', '--chart-7', '--chart-8'];
-const CHART_FALLBACKS = ['#2c5282', '#2f855a', '#b7791f', '#553c9a', '#0d7377', '#97266d', '#319795', '#718096'];
+// Initial/pre-read state references the tokens directly so no hex palette is duplicated here.
+const CHART_FALLBACKS = CHART_VAR_NAMES.map((name) => `var(${name})`);
 
 function useChartColors(): string[] {
   const [colors, setColors] = useState<string[]>(CHART_FALLBACKS);
@@ -215,10 +218,10 @@ export default function DashboardPage({ onNavigate }: { onNavigate?: (page: Page
   const statusColors = useMemo(() => {
     const s = getComputedStyle(document.documentElement);
     return {
-      unread: s.getPropertyValue('--text-muted').trim() || '#718096',
-      reading: s.getPropertyValue('--chart-1').trim() || '#2c5282',
-      read: s.getPropertyValue('--status-completed').trim() || '#38a169',
-      skimmed: s.getPropertyValue('--accent-warm').trim() || '#b7791f',
+      unread: s.getPropertyValue('--text-muted').trim() || 'var(--text-muted)',
+      reading: s.getPropertyValue('--chart-1').trim() || 'var(--chart-1)',
+      read: s.getPropertyValue('--status-completed').trim() || 'var(--status-completed)',
+      skimmed: s.getPropertyValue('--accent-warm').trim() || 'var(--accent-warm)',
     };
   }, []);
 
@@ -345,15 +348,16 @@ export default function DashboardPage({ onNavigate }: { onNavigate?: (page: Page
         <h2>{t('dashboard.pageTitle')}</h2>
         {!isEmpty && <p>{t('dashboard.statPapersNeedAttention').replace('{count}', String(stats.unreadPapers))} &middot; {stats.papersReadThisWeek} {t('dashboard.statReadThisWeek')}</p>}
         {stats.papersReadThisWeek > 0 && (
-          <button
-            className="btn-sm btn-secondary"
+          <Button
+            variant="secondary"
+            size="sm"
             data-testid="dashboard-reading-report"
             disabled={reportLoading}
             onClick={() => void runReadingReport()}
             style={{ marginTop: 4 }}
           >
             {reportLoading ? t('dashboard.readingReportLoading') : t('dashboard.readingReport')}
-          </button>
+          </Button>
         )}
       </div>
 
@@ -366,10 +370,10 @@ export default function DashboardPage({ onNavigate }: { onNavigate?: (page: Page
               <SafeMarkdown content={reportResult} uiMode="normal" locale={locale} />
             </div>
             <div className="modal-actions" style={{ marginTop: 16 }}>
-              <button className="btn-primary" data-testid="reading-report-save-note" onClick={() => void saveReportAsNote()}>
+              <Button variant="primary" data-testid="reading-report-save-note" onClick={() => void saveReportAsNote()}>
                 {t('dashboard.readingReportSaveNote')}
-              </button>
-              <button className="btn-secondary" onClick={() => setReportResult(null)}>{t('common.close')}</button>
+              </Button>
+              <Button variant="secondary" onClick={() => setReportResult(null)}>{t('common.close')}</Button>
             </div>
           </div>
         </div>
@@ -378,13 +382,13 @@ export default function DashboardPage({ onNavigate }: { onNavigate?: (page: Page
       {isEmpty && (
         <div className="dash-empty">
           <div className="dash-empty__icon">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+            <FileText size={22} strokeWidth={1.5} />
           </div>
           <h3>{t('dashboard.emptyTitle')}</h3>
           <p>{t('dashboard.emptyDescription')}</p>
           <div className="dash-actions" style={{ marginTop: 8 }}>
-            <button className="btn-primary" onClick={() => onNavigate?.('pdf')}>{t('dashboard.actionOpenPapers')}</button>
-            <button className="btn-secondary" onClick={() => onNavigate?.('notes')}>{t('dashboard.actionOpenNotes')}</button>
+            <Button variant="primary" onClick={() => onNavigate?.('pdf')}>{t('dashboard.actionOpenPapers')}</Button>
+            <Button variant="secondary" onClick={() => onNavigate?.('notes')}>{t('dashboard.actionOpenNotes')}</Button>
           </div>
         </div>
       )}
@@ -394,7 +398,7 @@ export default function DashboardPage({ onNavigate }: { onNavigate?: (page: Page
             <CoreMetric
               label={t('dashboard.statTotalPapers')} value={stats.totalPapers}
               sub={`${stats.readPapers} ${t('dashboard.statFullyRead', { count: stats.readPapers })} · ${stats.unreadPapers} ${t('dashboard.statPapersNeedAttention')}`}
-              accentColor={chartColors[0] ?? '#2c5282'} onClick={() => goPapers()} clickLabel={t('dashboard.actionOpenPapers')}
+              accentColor={chartColors[0]} onClick={() => goPapers()} clickLabel={t('dashboard.actionOpenPapers')}
             />
             <CoreMetric
               label={t('dashboard.statReadThisWeek')} value={String(stats.papersReadThisWeek)}
@@ -452,7 +456,7 @@ export default function DashboardPage({ onNavigate }: { onNavigate?: (page: Page
             <DashSection title={t('dashboard.sectionDeadlineAlerts')}>
               <ul className="dash-list">
                 {deadlineAlerts.map(({ paper, diff, status }) => {
-                  const color = status === 'overdue' ? 'var(--status-failed)' : status === 'today' ? 'var(--accent-warm)' : (chartColors[4] ?? '#0d7377');
+                  const color = status === 'overdue' ? 'var(--status-failed)' : status === 'today' ? 'var(--accent-warm)' : (chartColors[4] ?? 'var(--chart-5)');
                   const label = status === 'overdue' ? t('papers.deadlineOverdue') : status === 'today' ? t('papers.deadlineToday') : t('dashboard.deadlineInDays', { days: diff });
                   return <ListItem key={paper.id} markerColor={color} text={paper.title} meta={`${label} · ${paper.deadline ?? ''}`} onClick={() => openPaper(paper.id)} ariaLabel={`${label}: ${paper.title}`} />;
                 })}
@@ -493,8 +497,7 @@ export default function DashboardPage({ onNavigate }: { onNavigate?: (page: Page
             <div className="dash-calendar-grid">
               {readingCalendarDays.map((day) => {
                 const intensity = Math.min(1, day.count / 3);
-                const bg = day.count > 0 ? (() => { const s = getComputedStyle(document.documentElement); return s.getPropertyValue('--status-completed').trim() || '#38a169'; })() : undefined;
-                return <div key={day.date} className="dash-calendar-cell" title={t('dashboard.readingCalendarCount', { date: day.label, count: day.count })} style={{ background: day.count > 0 ? `${bg}${Math.round(15 + intensity * 85).toString(16).padStart(2, '0')}` : 'var(--bg-hover, #edf2f7)' }} />;
+                return <div key={day.date} className="dash-calendar-cell" title={t('dashboard.readingCalendarCount', { date: day.label, count: day.count })} style={{ background: day.count > 0 ? `color-mix(in srgb, var(--status-completed) ${Math.round(15 + intensity * 85)}%, transparent)` : 'var(--bg-hover)' }} />;
               })}
             </div>
           </DashSection>
@@ -551,11 +554,11 @@ export default function DashboardPage({ onNavigate }: { onNavigate?: (page: Page
             {unreadPapers.length > 0 ? (
               <div className="dash-random-pick">
                 <p>{t('dashboard.randomPickDescription', { count: unreadPapers.length })}</p>
-                <button className="btn-primary" type="button" onClick={() => {
+                <Button variant="primary" type="button" onClick={() => {
                   const idx = Math.floor(Math.random() * unreadPapers.length);
                   const p = unreadPapers[idx];
                   if (p) openPaper(p.id);
-                }}>{t('dashboard.randomPickButton')}</button>
+                }}>{t('dashboard.randomPickButton')}</Button>
               </div>
             ) : (
               <p className="dash-empty-text">{t('dashboard.noUnreadPapers')}</p>
@@ -585,9 +588,9 @@ export default function DashboardPage({ onNavigate }: { onNavigate?: (page: Page
 
           {/* ── Quick Actions ── */}
           <div className="dash-actions">
-            <button className="btn-primary" onClick={() => onNavigate?.('pdf')}>{t('dashboard.actionOpenPapers')}</button>
-            <button className="btn-secondary" onClick={() => onNavigate?.('notes')}>{t('dashboard.actionOpenNotes')}</button>
-            <button className="btn-secondary" onClick={() => onNavigate?.('timeline')}>{t('dashboard.actionOpenTimeline')}</button>
+            <Button variant="primary" onClick={() => onNavigate?.('pdf')}>{t('dashboard.actionOpenPapers')}</Button>
+            <Button variant="secondary" onClick={() => onNavigate?.('notes')}>{t('dashboard.actionOpenNotes')}</Button>
+            <Button variant="secondary" onClick={() => onNavigate?.('timeline')}>{t('dashboard.actionOpenTimeline')}</Button>
           </div>
     </div>
   );

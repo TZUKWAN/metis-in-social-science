@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef, Suspense, lazy } from 'react'
+import { LayoutGrid, Settings, Search, Command, HelpCircle, Monitor, Moon, Sun } from 'lucide-react'
 import './App.css'
-import './AcademicPolish.css'
 import ChatPage from './pages/ChatPage'
 import { useTranslation } from './i18n'
-import type { Page, TopLevelEntry, ThemeMode } from './store'
-import { useMetisStore } from './store'
+import type { Page, TopLevelEntry, ThemeMode, AccentSetting } from './store'
+import { useMetisStore, applyCustomAccent, isCustomAccent } from './store'
 import GlobalSearch from './components/GlobalSearch'
 import JobsIndicator from './components/JobsIndicator'
 import ToastHost from './components/ToastHost'
@@ -35,6 +35,7 @@ const ResearchTimelinePage = lazy(() => import('./pages/ResearchTimelinePage'));
 const LatexPreviewPage = lazy(() => import('./pages/LatexPreviewPage'));
 const TaskBoardPage = lazy(() => import('./pages/TaskBoardPage'));
 const OutcomesPage = lazy(() => import('./pages/OutcomesPage'));
+const SubmissionsPage = lazy(() => import('./pages/SubmissionWorkspacePage'));
 const ScenarioApprovalToast = lazy(() => import('./components/ScenarioApprovalToast'));
 
 /**
@@ -73,13 +74,11 @@ function ThemeToggle() {
   const nextTheme = THEME_CYCLE[(THEME_CYCLE.indexOf(theme || 'light') + 1) % THEME_CYCLE.length]!;
   const label = theme === 'system' ? t('common.themeSystem') : theme === 'dark' ? t('common.dark') : t('common.light');
   const icon = theme === 'system' ? (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="2" y="3" width="20" height="14" rx="2" /><line x1="8" y1="21" x2="16" y2="21" /><line x1="12" y1="17" x2="12" y2="21" />
-    </svg>
+    <Monitor size={14} aria-hidden="true" />
   ) : theme === 'dark' ? (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" /></svg>
+    <Moon size={14} aria-hidden="true" />
   ) : (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="5" /><line x1="12" y1="1" x2="12" y2="3" /><line x1="12" y1="21" x2="12" y2="23" /><line x1="4.22" y1="4.22" x2="5.64" y2="5.64" /><line x1="18.36" y1="18.36" x2="19.78" y2="19.78" /><line x1="1" y1="12" x2="3" y2="12" /><line x1="21" y1="12" x2="23" y2="12" /><line x1="4.22" y1="19.78" x2="5.64" y2="18.36" /><line x1="18.36" y1="5.64" x2="19.78" y2="4.22" /></svg>
+    <Sun size={14} aria-hidden="true" />
   );
 
   return (
@@ -98,8 +97,8 @@ function ThemeToggle() {
 
 interface NavItem { id: TopLevelEntry; labelKey: string; descriptionKey?: string; icon: React.ReactNode }
 
-const dashboardIcon = <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /></svg>
-const settingsIcon = <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
+const dashboardIcon = <LayoutGrid size={16} strokeWidth={1.5} />;
+const settingsIcon = <Settings size={16} strokeWidth={1.5} />;
 
 const TOP_LEVEL_ICONS: Record<TopLevelEntry, React.ReactNode> = {
   projects: dashboardIcon,
@@ -137,7 +136,7 @@ function legacyPageToEntry(page: Page): { entry: TopLevelEntry; mode: WorkspaceM
 
 // ─── Evals Page ───
 
-type StandalonePage = 'dashboard' | 'goal' | 'timeline' | 'latex' | 'experiments' | 'evals' | 'kanban' | 'outcomes';
+type StandalonePage = 'dashboard' | 'goal' | 'timeline' | 'latex' | 'experiments' | 'evals' | 'kanban' | 'outcomes' | 'submissions';
 
 function resolveStandalonePage(page: Page, diagnosticMode: boolean): StandalonePage | null {
   switch (page) {
@@ -154,6 +153,8 @@ function resolveStandalonePage(page: Page, diagnosticMode: boolean): StandaloneP
     case 'autonomous':
     case 'outcomes':
       return 'outcomes';
+    case 'submissions':
+      return 'submissions';
     case 'evals':
       return diagnosticMode ? page : null;
     default:
@@ -239,7 +240,7 @@ function EvalsPage() {
       </div>
 
       {error && (
-        <div style={{ marginTop: 16, padding: 12, borderRadius: 6, background: 'var(--status-failed-bg, #fef2f2)', color: 'var(--status-failed)', border: '1px solid var(--status-failed)' }}>
+        <div style={{ marginTop: 16, padding: 12, borderRadius: 6, background: 'var(--status-failed-bg)', color: 'var(--status-failed)', border: '1px solid var(--status-failed)' }}>
           {error}
         </div>
       )}
@@ -268,7 +269,7 @@ function EvalsPage() {
                 marginBottom: 16,
                 padding: 12,
                 borderRadius: 6,
-                background: suiteResult.gate.passed ? 'var(--status-completed-bg, #f0fdf4)' : 'var(--status-failed-bg, #fef2f2)',
+                background: suiteResult.gate.passed ? 'var(--status-completed-bg)' : 'var(--status-failed-bg)',
                 color: suiteResult.gate.passed ? 'var(--status-completed)' : 'var(--status-failed)',
                 border: `1px solid ${suiteResult.gate.passed ? 'var(--status-completed)' : 'var(--status-failed)'}`,
               }}
@@ -490,6 +491,9 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
             if (settings?.theme) {
               useMetisStore.getState().setTheme(settings.theme as ThemeMode)
             }
+            if (settings?.accent) {
+              useMetisStore.getState().setAccent(settings.accent as AccentSetting)
+            }
           }).catch(() => {})
         }
       }).catch((err: unknown) => {
@@ -501,7 +505,11 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
       if (mq) {
         const handler = () => {
           if (useMetisStore.getState().theme === 'system') {
-            document.documentElement.dataset.theme = mq.matches ? 'dark' : 'light';
+            const resolved = mq.matches ? 'dark' : 'light';
+            document.documentElement.dataset.theme = resolved;
+            // Re-derive a custom accent for the newly resolved mode.
+            const accent = useMetisStore.getState().accent;
+            if (isCustomAccent(accent)) applyCustomAccent(accent, resolved);
           }
         };
         mq.addEventListener('change', handler);
@@ -559,7 +567,19 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
       const goalId = (event as CustomEvent<{ goalId?: string }>).detail?.goalId;
       if (!goalId) return;
       try { window.sessionStorage.setItem('metis-pending-goal', goalId); } catch { /* session storage unavailable */ }
-      navigateWorkspaceModeRef.current('converse');
+      // 任务卡片的“在对话中继续”必须回到当前科研项目的对话（2026-08-29 刘总要求），
+      // 而不是跳到协同对话；仅在没有任何活动项目时才退回协同对话。
+      if (researchWorkspaceStore.getState().activeProjectId) {
+        leavePersonalizationGuard(() => {
+          setPersonalizationOpen(false);
+          setCurrentEntry('projects');
+          setStandalonePage(null);
+          setWorkspaceMode('projects');
+          setProjectViewMode('chat');
+        });
+      } else {
+        navigateWorkspaceModeRef.current('converse');
+      }
       // ChatPage may already be mounted (converse is the default workspace);
       // if not, its mount effect consumes the sessionStorage fallback.
       window.dispatchEvent(new CustomEvent('metis:goal-focus', { detail: { goalId } }));
@@ -590,9 +610,6 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
       // this event to the conversation workspace only updated hidden store state,
       // so links such as "open project research outputs" appeared to do nothing.
       navigateWorkspaceModeRef.current('projects');
-      if (detail?.section === 'artifacts') {
-        setProjectViewMode('artifacts');
-      }
     }
     function handleOpenPaper(event: Event) {
       const detail = (event as CustomEvent<{ paperId?: string; page?: number }>).detail;
@@ -610,7 +627,7 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
       setStandalonePage(null);
     }
     function handleNavigateProjects() {
-      navigateWorkspaceMode('projects');
+      navigateWorkspaceModeRef.current('projects');
     }
     window.addEventListener('metis:open-goal', handleOpenGoal);
     window.addEventListener('metis:open-kanban', handleOpenKanban);
@@ -753,7 +770,8 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
       case 'latex': return <LatexPreviewPage />;
       case 'experiments': return <ExperimentsPage />;
       case 'kanban': return <TaskBoardPage />;
-      case 'outcomes': return <OutcomesPage />;
+      case 'outcomes': return <OutcomesPage onNavigateToSubmissions={() => navigateLegacy('submissions')} />;
+      case 'submissions': return <SubmissionsPage />;
       case 'evals': return uiMode === 'diagnostic' ? <EvalsPage /> : null;
       default: return null;
     }
@@ -773,7 +791,8 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
       <ChatPage
         uiMode={uiMode}
         intentRevision={chatIntentRevision}
-        renderLayout={({ leftPanel, workspace, rightPanel }) => {
+        previewMode={workspaceMode === 'projects' ? 'pane' : 'inline'}
+        renderLayout={({ leftPanel, workspace, rightPanel, previewPanel }) => {
           // 科研项目工作台：左侧项目列表 + 聊天/任务看板/研究成果三模式。
           // ChatPage 保持常驻挂载，因此切换模式或导航不会丢失对话草稿。
           if (workspaceMode === 'projects') {
@@ -783,6 +802,7 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
                 onModeChange={setProjectViewMode}
                 chatContent={projectViewMode === 'chat' ? workspace : null}
                 chatRightPanel={projectViewMode === 'chat' ? rightPanel : null}
+                previewPanel={projectViewMode === 'chat' ? previewPanel : null}
               />
             );
           }
@@ -905,6 +925,7 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
     { id: 'goto-converse', label: t('nav.converse'), description: t('cmdbar.gotoWorkspace'), group: 'nav', onExecute: () => navigateWorkspaceMode('converse'), keywords: ['chat', '对话'] },
     { id: 'goto-projects', label: t('nav.projects'), description: t('cmdbar.gotoWorkspace'), group: 'nav', onExecute: () => navigateWorkspaceMode('projects'), keywords: ['project', '项目', '科研', '看板'] },
     { id: 'goto-outcomes', label: t('nav.outcomes'), description: t('nav.outcomesDesc'), group: 'nav', onExecute: () => navigateLegacy('outcomes'), keywords: ['成果', '论文', 'PPT', '报告'] },
+    { id: 'goto-submissions', label: t('nav.submissions'), description: t('nav.submissionsDesc'), group: 'nav', onExecute: () => navigateLegacy('submissions'), keywords: ['投稿', '期刊', '审稿', 'submission', 'journal'] },
     { id: 'goto-kanban', label: t('nav.kanban'), description: t('cmdbar.gotoResearch'), group: 'nav', onExecute: () => navigateLegacy('kanban'), keywords: ['board', '看板', '任务'] },
     { id: 'goto-materials', label: t('projects.modeMaterials'), description: t('nav.projectsDesc'), group: 'nav', onExecute: () => leavePersonalizationGuard(() => { setPersonalizationOpen(false); setStandalonePage(null); setCurrentEntry('projects'); setWorkspaceMode('projects'); setProjectViewMode('materials'); }), keywords: ['papers', '文献', '资料', 'library'] },
     { id: 'goto-settings', label: t('nav.settings'), description: t('cmdbar.gotoLibrary'), group: 'nav', onExecute: () => leavePersonalizationGuard(() => { setPersonalizationOpen(false); setStandalonePage(null); setCurrentEntry('settings'); }), keywords: ['config', '设置', '配置'] },
@@ -1007,9 +1028,7 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
             aria-label={t('globalSearch.placeholder')}
             title={t('globalSearch.placeholder')}
           >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
-            </svg>
+            <Search size={16} aria-hidden="true" />
             <kbd>{/Mac|iPod|iPhone|iPad/.test(navigator.platform) ? '⌘K' : 'Ctrl K'}</kbd>
           </button>
           <ThemeToggle />
@@ -1020,11 +1039,16 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
             title={`${t('cmdbar.placeholder')} (${/Mac|iPod|iPhone|iPad/.test(navigator.platform) ? '⌘⇧P' : 'Ctrl+Shift+P'})`}
             data-testid="topbar-command-palette"
           >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M4 6h16M4 12h16M4 18h10" /><path d="m9 16 3 3-3 3" />
-            </svg>
+            <Command size={16} aria-hidden="true" />
           </button>
-          <button className="topbar-icon-button" onClick={() => setShortcutsOpen(true)} aria-label={t('shortcuts.title')} title={t('shortcuts.title')}>?</button>
+          <button
+            className="topbar-icon-button"
+            onClick={() => setShortcutsOpen(true)}
+            aria-label={t('shortcuts.title')}
+            title={t('shortcuts.title')}
+          >
+            <HelpCircle size={16} aria-hidden="true" />
+          </button>
         </div>
       </header>
       <main className={`main-content ${currentEntry === 'projects' && standalonePage === null ? 'main-content--workspace' : ''}`}>

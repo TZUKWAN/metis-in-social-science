@@ -624,7 +624,7 @@ export default function LatexPreviewPage() {
             fontSize: 10,
             padding: '2px 8px',
             borderRadius: 4,
-            background: compileStatus === 'success' ? 'var(--status-completed-bg, #f0fdf4)' : compileStatus === 'error' || compileStatus === 'noCompiler' ? 'var(--status-failed-bg, #fef2f2)' : compileStatus === 'compiling' ? 'var(--status-running-bg, #eff6ff)' : 'var(--bg-card)',
+            background: compileStatus === 'success' ? 'var(--status-completed-bg)' : compileStatus === 'error' || compileStatus === 'noCompiler' ? 'var(--status-failed-bg)' : compileStatus === 'compiling' ? 'var(--status-running-bg)' : 'var(--bg-card)',
             color: compileStatus === 'success' ? 'var(--status-completed)' : compileStatus === 'error' || compileStatus === 'noCompiler' ? 'var(--status-failed)' : compileStatus === 'compiling' ? 'var(--status-running)' : 'var(--text-secondary)',
             border: '1px solid var(--border)',
           }}>
@@ -814,18 +814,18 @@ export default function LatexPreviewPage() {
             <button className="btn-sm" onClick={() => setShowCiteCheckPanel(false)}>{t('common.close')}</button>
           </div>
           {citeCheckResult.missing.length === 0 && citeCheckResult.unused.length === 0 ? (
-            <div style={{ fontSize: 12, color: 'var(--status-success, #38a169)' }}>{t('latex.citeCheckOk')}</div>
+            <div style={{ fontSize: 12, color: 'var(--success)' }}>{t('latex.citeCheckOk')}</div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {citeCheckResult.missing.length > 0 && (
                 <div>
-                  <div style={{ fontSize: 11, color: 'var(--status-failed, #e53e3e)', fontWeight: 600, marginBottom: 4 }}>{t('latex.citeCheckMissing')}</div>
+                  <div style={{ fontSize: 11, color: 'var(--status-failed)', fontWeight: 600, marginBottom: 4 }}>{t('latex.citeCheckMissing')}</div>
                   <div style={{ fontSize: 11, color: 'var(--text-primary)', fontFamily: 'monospace' }}>{citeCheckResult.missing.join(', ')}</div>
                 </div>
               )}
               {citeCheckResult.unused.length > 0 && (
                 <div>
-                  <div style={{ fontSize: 11, color: 'var(--status-warning, #d97706)', fontWeight: 600, marginBottom: 4 }}>{t('latex.citeCheckUnused')}</div>
+                  <div style={{ fontSize: 11, color: 'var(--status-warning)', fontWeight: 600, marginBottom: 4 }}>{t('latex.citeCheckUnused')}</div>
                   <div style={{ fontSize: 11, color: 'var(--text-primary)', fontFamily: 'monospace' }}>{citeCheckResult.unused.join(', ')}</div>
                 </div>
               )}
@@ -876,7 +876,7 @@ export default function LatexPreviewPage() {
               fontSize: 13,
               lineHeight: '20px',
               resize: 'none',
-              background: compileErrors.length > 0 ? 'var(--status-warning-bg, #fefce8)' : 'var(--bg-card)',
+              background: compileErrors.length > 0 ? 'var(--status-warning-bg)' : 'var(--bg-card)',
               color: 'var(--text-primary)',
               tabSize: 2,
             }}
@@ -893,7 +893,7 @@ export default function LatexPreviewPage() {
                   padding: '8px 12px',
                   marginBottom: 8,
                   borderRadius: 6,
-                  background: err.severity === 'error' ? 'var(--status-failed-bg, #fef2f2)' : 'var(--status-warning-bg, #fffbeb)',
+                  background: err.severity === 'error' ? 'var(--status-failed-bg)' : 'var(--status-warning-bg)',
                   border: `1px solid ${err.severity === 'error' ? 'var(--status-failed)' : 'var(--status-warning)'}`,
                 }}>
                   <div style={{ fontSize: 12, fontWeight: 600, color: err.severity === 'error' ? 'var(--status-failed)' : 'var(--status-warning)' }}>

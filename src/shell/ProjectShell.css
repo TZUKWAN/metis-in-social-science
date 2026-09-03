@@ -17,7 +17,7 @@
   min-height: 0;
   overflow: hidden;
   container-type: inline-size;
-  background: var(--bg-main, var(--bg-secondary));
+  background: transparent;
 }
 
 .shell-overlay-backdrop {
@@ -25,7 +25,7 @@
   inset: 0;
   z-index: 15;
   border: 0;
-  background: rgb(15 23 42 / 34%);
+  background: var(--bg-modal-overlay);
   cursor: default;
 }
 
@@ -42,7 +42,7 @@
 .project-shell.left-overlay-open .shell-left,
 .project-shell.right-overlay-open .shell-right {
   z-index: 20;
-  box-shadow: 0 8px 24px rgb(15 23 42 / 18%);
+  box-shadow: var(--shadow-2, var(--shadow-raised));
 }
 
 .project-shell.left-overlay-open .shell-left {
@@ -59,7 +59,7 @@
 .project-shell.left-overlay-open .shell-left-content,
 .project-shell.right-overlay-open .shell-right-content {
   width: 100%;
-  background: var(--bg-card, #fff);
+  background: var(--bg-card);
   overflow: hidden auto;
 }
 
@@ -69,10 +69,13 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
-  background: var(--bg-sidebar, #fff);
+  background: var(--bg-sidebar);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(20px) saturate(180%);
   border-inline-end: 1px solid var(--border-light, var(--border-light));
   overflow: hidden;
 }
+
 .shell-left-content {
   flex: 1;
   min-height: 0;
@@ -85,13 +88,13 @@
   flex-direction: column;
   min-width: 0; /* prevents grid blowout / horizontal overflow */
   min-height: 0;
-  background: var(--bg-main, var(--bg-secondary));
+  background: transparent;
 }
 .shell-mode-switcher {
   display: flex;
   gap: 0;
   border-bottom: 1px solid var(--border-light, var(--border-light));
-  background: var(--bg-card, #fff);
+  background: var(--bg-card);
   padding: 0 12px;
   flex-shrink: 0;
 }
@@ -105,7 +108,7 @@
   font-size: 12px;
   font-weight: 650;
   border-bottom: 2px solid transparent;
-  transition: color var(--transition-fast), border-color var(--transition-fast), background-color var(--transition-fast);
+  transition: color var(--dur-fast, 160ms) var(--ease-out, ease), border-color var(--dur-fast, 160ms) var(--ease-out, ease), background-color var(--dur-fast, 160ms) var(--ease-out, ease);
 }
 .shell-mode-btn:hover { color: var(--text-primary, var(--border)); background: var(--bg-hover); }
 .shell-mode-btn:focus-visible { outline: 2px solid var(--focus-ring-color); outline-offset: -2px; }
@@ -139,7 +142,7 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
-  background: var(--bg-card, #fff);
+  background: var(--bg-card);
   border-inline-start: 1px solid var(--border-light, var(--border-light));
   overflow: hidden;
 }
@@ -184,10 +187,10 @@
   width: 24px;
   height: 24px;
   border: 1px solid var(--border-light, var(--border-light));
-  background: var(--bg-card, #fff);
+  background: var(--bg-card);
   color: var(--text-muted, var(--text-muted));
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: var(--radius-sm, 6px);
   font-size: 12px;
   line-height: 1;
   display: flex;
@@ -233,7 +236,7 @@
   gap: 12px;
   min-height: 44px;
   padding: 6px 12px;
-  background: var(--bg-card, #fff);
+  background: var(--bg-card);
   border-bottom: 1px solid var(--border-light, var(--border-light));
   flex-shrink: 0;
 }
@@ -252,7 +255,7 @@
   color: var(--text-muted, var(--text-muted));
   background: var(--bg-main, var(--bg-secondary));
   border: 1px solid var(--border-light, var(--border-light));
-  border-radius: 6px;
+  border-radius: var(--radius, 10px);
   cursor: pointer;
   font-size: 12px;
   flex-shrink: 0;
@@ -264,9 +267,9 @@
 .shell-command-bar-trigger__shortcut {
   padding: 1px 4px;
   color: var(--text-muted, var(--text-muted));
-  background: var(--bg-card, #fff);
+  background: var(--bg-card);
   border: 1px solid var(--border-light, var(--border-light));
-  border-radius: 4px;
+  border-radius: var(--radius-sm, 6px);
   font-size: 10px;
 }
 
@@ -278,7 +281,7 @@
   color: var(--text-muted, var(--text-muted));
   background: var(--bg-main, var(--bg-secondary));
   border: 1px solid var(--border-light, var(--border-light));
-  border-radius: 6px;
+  border-radius: var(--radius, 10px);
   cursor: pointer;
   font-size: 12px;
   flex-shrink: 0;
@@ -314,16 +317,23 @@
   justify-content: center;
   padding: 24px;
   background: var(--bg-modal-overlay);
+  transition: opacity var(--dur-base, 220ms) var(--ease-out, ease);
 }
 .shell-workspace-overlay > .version-diff-reviewer,
 .shell-workspace-overlay > .recycle-restore {
   width: min(1100px, calc(100% - 48px));
   height: min(760px, calc(100% - 48px));
   max-height: 100%;
-  background: var(--bg-card, #fff);
-  border-radius: var(--radius-md);
-  box-shadow: 0 20px 48px rgb(15 23 42 / 22%);
+  background: var(--bg-card);
+  border-radius: var(--radius-overlay, 10px);
+  box-shadow: var(--shadow-modal);
   overflow: hidden;
+  transition: opacity var(--dur-base, 220ms) var(--ease-out, ease), transform var(--dur-base, 220ms) var(--ease-out, ease);
+}
+@starting-style {
+  .shell-workspace-overlay { opacity: 0; }
+  .shell-workspace-overlay > .version-diff-reviewer,
+  .shell-workspace-overlay > .recycle-restore { opacity: 0; transform: scale(0.95); }
 }
 
 @media (forced-colors: active) {

@@ -262,6 +262,44 @@ function applyEdit(
     : { diagnostic: diagnostic('model_response_contract_error', 'AI 修改未通过 PPT Grid 文档约束，未应用。') };
 }
 
+/**
+ * 从模型输出中提取顶层 JSON 对象候选：现实里推理型模型经常先输出一段思考、
+ * 再输出协议 JSON（或 JSON 前后带说明文字）。按花括号配平扫描（跳过字符串
+ * 字面量与转义）找出所有候选，调用方从后往前逐个尝试解析。
+ */
+const BS_VAL = String.fromCharCode(92);
+
+function extractJsonObjectCandidates(text: string): string[] {
+  const candidates: string[] = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === BS_VAL) escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') { inString = true; continue; }
+    if (char === '{') {
+      if (depth === 0) start = index;
+      depth += 1;
+    } else if (char === '}') {
+      if (depth > 0) {
+        depth -= 1;
+        if (depth === 0 && start >= 0) {
+          candidates.push(text.slice(start, index + 1));
+          start = -1;
+        }
+      }
+    }
+  }
+  return candidates;
+}
+
 function answerFromModel(raw: string): { answer: string; edit: OutcomeAssistantEdit | null; diagnostic?: OutcomeAssistantDiagnostic } {
   const trimmed = raw.trim();
   const withoutFence = trimmed
@@ -271,22 +309,41 @@ function answerFromModel(raw: string): { answer: string; edit: OutcomeAssistantE
   try {
     value = JSON.parse(withoutFence);
   } catch {
-    const rawAnswer = OutcomeAssistantModelResponseSchema.safeParse({ answer: raw, edit: null });
+    // 混合输出（思考过程 + 协议 JSON）：剥掉推理标签后按候选逐个尝试；
+    // 从最后一个候选往前，因为结论性 JSON 通常在思考之后。
+    const visible = raw
+      .replace(/<[\s\S]*?>/gu, '')
+      .trim();
+    const candidates = extractJsonObjectCandidates(visible);
+    for (let index = candidates.length - 1; index >= 0; index -= 1) {
+      try {
+        const candidate = JSON.parse(candidates[index]!);
+        const parsed = OutcomeAssistantModelResponseSchema.safeParse(candidate);
+        if (parsed.success && parsed.data.edit) {
+          const prose = visible.replace(candidates[index]!, ' ').replace(/\s+/gu, ' ').trim();
+          return { answer: parsed.data.answer || prose.slice(0, 400), edit: parsed.data.edit };
+        }
+      } catch { /* try next candidate */ }
+    }
+    // 真的没有可应用的编辑：回答截断到弹窗可读长度，避免把整段推理塞进局部编辑弹窗。
+    const clipped = visible.length > 600 ? `${visible.slice(0, 600)}…（回答过长已截断；本次没有产生可应用的修改）` : visible;
+    const rawAnswer = OutcomeAssistantModelResponseSchema.safeParse({ answer: clipped, edit: null });
     return {
-      answer: rawAnswer.success ? raw : '',
+      answer: rawAnswer.success ? clipped : '',
       edit: null,
       diagnostic: diagnostic(
         rawAnswer.success ? 'model_response_not_structured' : 'model_response_contract_error',
-        rawAnswer.success ? '模型返回了真实回答，但未使用可应用的编辑协议。' : '模型回答包含无法安全呈现的内容，未写入成果历史。',
+        rawAnswer.success ? '模型返回了回答，但没有按编辑协议提交修改，成果内容未变。' : '模型回答包含无法安全呈现的内容，未写入成果历史。',
       ),
     };
   }
   const parsed = OutcomeAssistantModelResponseSchema.safeParse(value);
   if (!parsed.success) {
+    const clipped = raw.length > 600 ? `${raw.slice(0, 600)}…（回答过长已截断；本次没有产生可应用的修改）` : raw;
     return {
-      answer: raw,
+      answer: clipped,
       edit: null,
-      diagnostic: diagnostic('model_response_contract_error', '模型返回了真实回答，但编辑内容未通过成果协议。'),
+      diagnostic: diagnostic('model_response_contract_error', '模型返回了真实回答，但编辑内容未通过成果协议，成果内容未变。'),
     };
   }
   return { answer: parsed.data.answer, edit: parsed.data.edit };

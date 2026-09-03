@@ -68,6 +68,13 @@ const MODEL_CAPS: Record<string, Partial<ProviderCapabilities>> = {
   'gpt-4o': { maxContextTokens: 128000, maxOutputTokens: 16384, nativeToolCalling: true, streaming: true, thinking: false },
   'gpt-4o-mini': { maxContextTokens: 128000, maxOutputTokens: 16384, nativeToolCalling: true, streaming: true, thinking: false },
   'gpt-4': { maxContextTokens: 8192, maxOutputTokens: 8192, nativeToolCalling: true, streaming: true, thinking: false },
+  // GPT-5 family (incl. codex-style relays serving gpt-5.x under custom names):
+  // these models only honour native function calling — the text tool protocol
+  // makes them report "no tools available" even when the prompt lists them.
+  'gpt-5.6': { maxContextTokens: 272_000, maxOutputTokens: 16_384, nativeToolCalling: true, streaming: true, thinking: false },
+  'gpt-5.5': { maxContextTokens: 272_000, maxOutputTokens: 16_384, nativeToolCalling: true, streaming: true, thinking: false },
+  'gpt-5': { maxContextTokens: 272_000, maxOutputTokens: 16_384, nativeToolCalling: true, streaming: true, thinking: false },
+  'gpt-4.1': { maxContextTokens: 1_000_000, maxOutputTokens: 32_768, nativeToolCalling: true, streaming: true, thinking: false },
   // GLM series — native priority support
   'glm-4': { maxContextTokens: 128000, maxOutputTokens: 4096, nativeToolCalling: true, streaming: true, thinking: false },
   'glm-4.5': { maxContextTokens: 128000, maxOutputTokens: 4096, nativeToolCalling: true, streaming: true, thinking: true },
@@ -235,7 +242,7 @@ export class OpenAICompatProvider extends BaseProvider {
     }
 
     if (!response.ok) {
-      let detail = '';
+      let detail: string;
       try {
         const bodyText = await response.text();
         const parsed = JSON.parse(bodyText) as { error?: { message?: string } | string; message?: string };
@@ -341,6 +348,7 @@ export class OpenAICompatProvider extends BaseProvider {
         body.tools = this.formatTools(tools);
       } else {
         // Fallback: inject tool instructions into system prompt for non-native models
+        console.log(`[ProviderToolProtocol] model=${this.model} native=false textInject=${tools.length}`);
         body.messages = this.injectToolPrompt(body.messages as OpenAIMessage[], tools);
       }
     }
@@ -584,7 +592,7 @@ export class OpenAICompatProvider extends BaseProvider {
     if (!response.ok) {
       // 把响应体里的真实错误原因带进异常消息：既让 UI 能显示根因
       // （如"No endpoints found for ox-alpha"），也让确定性错误可被识别。
-      let detail = '';
+      let detail: string;
       try {
         const bodyText = await response.text();
         const parsed = JSON.parse(bodyText) as { error?: { message?: string } | string; message?: string };

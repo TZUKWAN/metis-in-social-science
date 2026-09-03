@@ -98,7 +98,7 @@
 .funding-template-panel__actions label { width: 110px; }
 .funding-template-panel__diff { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 16px; border-left: 3px solid var(--primary); background: var(--bg-hover); padding: 12px; font-size: 11px; }
 .funding-template-panel__diff span { color: var(--text-secondary); }
-.funding-template-panel__alert { min-height: 20px; border-radius: var(--radius); background: color-mix(in srgb, var(--danger, #a33) 9%, var(--bg-card)); color: var(--danger, #a33); padding: 10px 12px; font-size: 12px; }
+.funding-template-panel__alert { min-height: 20px; border-radius: var(--radius); background: color-mix(in srgb, var(--danger) 9%, var(--bg-card)); color: var(--danger); padding: 10px 12px; font-size: 12px; }
 .funding-template-panel__alert.is-empty { min-height: 0; padding: 0; background: transparent; }
 .funding-template-panel__status { min-height: 18px; color: var(--text-secondary); font-size: 12px; }
 

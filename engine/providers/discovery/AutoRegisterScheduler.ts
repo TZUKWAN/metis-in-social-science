@@ -265,7 +265,7 @@ export class AutoRegisterScheduler {
     const triedCodes = new Set<string>();
     let registerError = '';
     while (this.#deps.now() < deadline) {
-      let candidates: VerificationCandidate[] = [];
+      let candidates: VerificationCandidate[];
       try {
         candidates = await this.#deps.mailboxReader.fetchVerificationCandidates(this.#deps.mailboxUser, stationStartedAt);
       } catch (error) {
@@ -373,7 +373,7 @@ export class AutoRegisterScheduler {
     state.balanceUsd = quota === null ? null : Math.round((quota / status.quotaPerUnit) * 10000) / 10000;
     emit();
 
-    let tokens: Awaited<ReturnType<NewApiClient['listTokens']>> = [];
+    let tokens: Awaited<ReturnType<NewApiClient['listTokens']>>;
     try { tokens = await this.#deps.client.listTokens(state.baseUrl, auth.cookie, auth.userId); } catch { tokens = []; }
     let tokenRow = tokens.find((token) => token.status !== 2 && token.status !== 4) ?? tokens[0] ?? null;
     if (!tokenRow) {
@@ -416,7 +416,7 @@ export class AutoRegisterScheduler {
     let judgeNote = '';
     if (!hasBalance && listed.models.length > 0) {
       // 刘总指正：先读定价表（/api/pricing 倍率/价格为 0 = 免费），表缺失的模型才逐个实证。
-      let pricing: Awaited<ReturnType<NewApiClient['getPricing']>> = null;
+      let pricing: Awaited<ReturnType<NewApiClient['getPricing']>>;
       try { pricing = await this.#deps.client.getPricing(state.baseUrl, auth); } catch { pricing = null; }
       const passed: string[] = [];
       const unknown: string[] = [];

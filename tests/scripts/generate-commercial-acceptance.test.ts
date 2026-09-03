@@ -22,19 +22,39 @@ describe('commercial acceptance report generator', () => {
     const report = buildReport(path.resolve(process.cwd()));
 
     expect(report.report).toBe('alpha2-commercial-acceptance');
-    expect(report.overallStatus).toBe('blocked');
+    // Current workspace reality: only the personalization node ABI summary is
+    // present under test-results/. The historical Electron/logs acceptance
+    // artifacts (recovery e2e, visual acceptance, layout/native-overlay/
+    // responsive/safe-markdown/pixel/smoke reports, office CLI audit) are no
+    // longer in this workspace, so every other domain is honestly pending and
+    // nothing may be inferred as passed.
+    expect(report.overallStatus).toBe('pending');
     expect(report.domains.P0.status).toBe('passed');
-    expect(report.domains.Agent.status).toBe('blocked');
-    expect(report.domains.Goal.status).toBe('passed');
-    expect(report.domains.Scenario.status).toBe('passed');
+    expect(report.domains.Agent.status).toBe('pending');
+    expect(report.domains.Goal.status).toBe('pending');
+    expect(report.domains.Scenario.status).toBe('pending');
     expect(report.domains.Outcomes.status).toBe('pending');
     expect(report.domains.Word.status).toBe('pending');
     expect(report.domains.PPT.status).toBe('pending');
-    expect(report.domains.Desktop.status).toBe('passed');
-    expect(report.domains.Word.subgates.nativeOfficeVisual.status).toBe('cancelled_gate');
-    expect(report.domains.PPT.subgates.nativeOfficeVisual.status).toBe('cancelled_gate');
-    expect(report.domains.Goal.providerBoundary).toContain('not external');
-    expect(report.domains.Agent.evidencePath.length).toBeGreaterThan(0);
+    expect(report.domains.Desktop.status).toBe('pending');
+    expect(report.domains.Word.subgates.nativeOfficeVisual.status).toBe('pending');
+    expect(report.domains.PPT.subgates.nativeOfficeVisual.status).toBe('pending');
+    // The GenOffice domain tracks the fresh four-format E2E report exactly; it
+    // must never infer a pass from the historical cancelled visual gate.
+    const freshE2e = JSON.parse(fs.readFileSync(path.resolve('test-results/outcome-genoffice-e2e.json'), 'utf8')) as { status?: string };
+    const e2ePassed = freshE2e?.status === 'passed'
+      && freshE2e['childExited'] === true
+      && freshE2e['profileRemoved'] === true;
+    expect(report.domains.GenOffice.status).toBe(e2ePassed ? 'passed' : 'pending');
+    expect(report.domains.GenOffice.providerBoundary).toContain('no native Microsoft Office visual claim');
+    expect(report.domains.Agent.providerBoundary).toContain('external Provider full-chain gate');
+    expect(report.domains.Goal.providerBoundary).toBe('not recorded in evidence');
+    expect(report.domains.P0.evidencePath.length).toBeGreaterThan(0);
+    for (const domain of Object.values(report.domains)) {
+      if (domain.status === 'passed') {
+        expect(domain.evidencePath.length).toBeGreaterThan(0);
+      }
+    }
     expect(report.domains.P0.checks.failedTests).toBe(0);
   });
 

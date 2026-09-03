@@ -24,11 +24,17 @@ function mockMetis(setSettingsResult: MockSettingsResult | Error) {
 
 beforeEach(() => {
   // Reset store state
-  useMetisStore.setState({ theme: 'light' });
+  useMetisStore.setState({ theme: 'light', accent: 'blue' });
   // Clear DOM
   document.documentElement.dataset.theme = '';
+  delete document.documentElement.dataset.accent;
+  // Clear inline custom-accent tokens so they don't leak between tests
+  for (const prop of ['--accent', '--accent-hover', '--accent-soft', '--text-on-accent', '--focus-ring-color', '--focus-ring-shadow', '--focus-ring']) {
+    document.documentElement.style.removeProperty(prop);
+  }
   // Clear localStorage
   try { localStorage.removeItem('metis-theme'); } catch { /* ignore */ }
+  try { localStorage.removeItem('metis-accent'); } catch { /* ignore */ }
 });
 
 describe('setTheme transactional rollback', () => {
@@ -68,6 +74,99 @@ describe('setTheme transactional rollback', () => {
     useMetisStore.getState().setTheme('dark');
     await vi.waitFor(() => expect(setSettings).toHaveBeenCalled());
     expect(setSettings).toHaveBeenCalledWith({ theme: 'dark' });
+  });
+});
+
+describe('setAccent transactional rollback', () => {
+  it('keeps new accent when IPC succeeds', async () => {
+    const setSettings = mockMetis({ success: true, code: 'settings_saved' });
+    useMetisStore.getState().setAccent('gold');
+    await vi.waitFor(() => expect(setSettings).toHaveBeenCalled());
+    expect(setSettings).toHaveBeenCalledWith({ accent: 'gold' });
+    expect(useMetisStore.getState().accent).toBe('gold');
+    expect(document.documentElement.dataset.accent).toBe('gold');
+    expect(localStorage.getItem('metis-accent')).toBe('gold');
+  });
+
+  it('rolls back to previous accent when IPC fails (success=false)', async () => {
+    mockMetis({ success: false, code: 'secure_setup_required' });
+    useMetisStore.getState().setAccent('green');
+    await vi.waitFor(() => {
+      expect(useMetisStore.getState().accent).toBe('blue');
+    });
+    expect(document.documentElement.dataset.accent).toBe('blue');
+  });
+
+  it('rolls back when IPC throws', async () => {
+    mockMetis(new Error('IPC crash'));
+    useMetisStore.getState().setAccent('gray');
+    await vi.waitFor(() => {
+      expect(useMetisStore.getState().accent).toBe('blue');
+    });
+    expect(document.documentElement.dataset.accent).toBe('blue');
+  });
+
+  it('applies accent immediately before IPC resolves', () => {
+    const setSettings = vi.fn().mockReturnValue(new Promise(() => {}));
+    Object.defineProperty(window, 'metis', {
+      value: { setSettings },
+      writable: true,
+      configurable: true,
+    });
+    useMetisStore.getState().setAccent('gold');
+    expect(useMetisStore.getState().accent).toBe('gold');
+    expect(document.documentElement.dataset.accent).toBe('gold');
+  });
+});
+
+describe('custom accent (palette hex)', () => {
+  it('applies custom hex via inline tokens + dataset custom', async () => {
+    const setSettings = mockMetis({ success: true, code: 'settings_saved' });
+    useMetisStore.getState().setAccent('#8B5CF6');
+    await vi.waitFor(() => expect(setSettings).toHaveBeenCalledWith({ accent: '#8B5CF6' }));
+    expect(useMetisStore.getState().accent).toBe('#8B5CF6');
+    expect(document.documentElement.dataset.accent).toBe('custom');
+    expect(document.documentElement.style.getPropertyValue('--accent')).toBe('rgb(139, 92, 246)');
+    expect(document.documentElement.style.getPropertyValue('--accent-soft')).toBe('rgba(139, 92, 246, 0.10)');
+    expect(localStorage.getItem('metis-accent')).toBe('#8B5CF6');
+  });
+
+  it('lightens the custom accent in dark mode', () => {
+    document.documentElement.dataset.theme = 'dark';
+    const setSettings = vi.fn().mockReturnValue(new Promise(() => {}));
+    Object.defineProperty(window, 'metis', { value: { setSettings }, writable: true, configurable: true });
+    useMetisStore.getState().setAccent('#8B5CF6');
+    // r/g/b mixed 35% toward white: 139→180, 92→149, 246→249
+    expect(document.documentElement.style.getPropertyValue('--accent')).toBe('rgb(180, 149, 249)');
+  });
+
+  it('re-derives the custom accent when the theme switches', async () => {
+    const setSettings = mockMetis({ success: true, code: 'settings_saved' });
+    useMetisStore.getState().setAccent('#8B5CF6');
+    await vi.waitFor(() => expect(setSettings).toHaveBeenCalled());
+    useMetisStore.getState().setTheme('dark');
+    await vi.waitFor(() => expect(setSettings).toHaveBeenCalledWith({ theme: 'dark' }));
+    expect(document.documentElement.style.getPropertyValue('--accent')).toBe('rgb(180, 149, 249)');
+  });
+
+  it('switching to a preset clears inline tokens and dataset', async () => {
+    const setSettings = mockMetis({ success: true, code: 'settings_saved' });
+    useMetisStore.getState().setAccent('#8B5CF6');
+    await vi.waitFor(() => expect(setSettings).toHaveBeenCalledWith({ accent: '#8B5CF6' }));
+    useMetisStore.getState().setAccent('gold');
+    await vi.waitFor(() => expect(setSettings).toHaveBeenCalledWith({ accent: 'gold' }));
+    expect(document.documentElement.dataset.accent).toBe('gold');
+    expect(document.documentElement.style.getPropertyValue('--accent')).toBe('');
+  });
+
+  it('rolls back to previous preset when custom IPC fails', async () => {
+    mockMetis({ success: false, code: 'settings_update_unavailable' });
+    useMetisStore.getState().setAccent('#8B5CF6');
+    await vi.waitFor(() => {
+      expect(useMetisStore.getState().accent).toBe('blue');
+    });
+    expect(document.documentElement.dataset.accent).toBe('blue');
+    expect(document.documentElement.style.getPropertyValue('--accent')).toBe('');
   });
 });
 

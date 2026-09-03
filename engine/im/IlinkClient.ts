@@ -68,7 +68,7 @@ export class IlinkClient {
     this.baseUrl = (options.baseUrl ?? ILINK_DEFAULT_BASE_URL).replace(/\/+$/, '');
     this.token = options.token;
     this.timeoutMs = options.timeoutMs ?? 15_000;
-    this.longPollTimeoutMs = options.longPollTimeoutMs ?? 35_000;
+    this.longPollTimeoutMs = options.longPollTimeoutMs ?? 45_000;
     this.botAgent = options.botAgent ?? 'MetisWorkbench/0.1';
     this.clientVersion = options.clientVersion ?? '1.0.0';
     this.appId = options.appId ?? 'metis-workbench';

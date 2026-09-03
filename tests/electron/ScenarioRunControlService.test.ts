@@ -14,6 +14,8 @@ import { buildBuiltinPersonalizationDefinitions } from '../fixtures/personalizat
 import type { AgentRunResult, ChatMessage } from '../../engine/core/types.js';
 import { runPersistedScenarioWorkflow } from '../../electron/ScenarioWorkflowService.js';
 
+const INTEGRITY_SECRET = Buffer.alloc(32, 21);
+
 let root: string;
 let store: PersistenceStore;
 let repository: PersonalizationRepository;
@@ -68,7 +70,7 @@ beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'metis-scenario-control-service-'));
   store = new PersistenceStore(path.join(root, 'service.db'));
   store.createSession('session-1');
-  repository = new PersonalizationRepository(store.raw);
+  repository = new PersonalizationRepository(store.raw, INTEGRITY_SECRET);
   repository.seedBuiltins(buildBuiltinPersonalizationDefinitions());
 });
 
@@ -96,7 +98,12 @@ describe('public Scenario pause/cancel over the persisted workflow', () => {
     expect(pausedResponse.diagnostics.some((item) => item.code === 'scenario_run_paused')).toBe(true);
     expect(run).not.toHaveBeenCalled();
     expect(repository.getRecoverableScenarioRun(manifest.sessionId)?.status).toBe('paused');
-    expect(store.getMessages('session-1')).toEqual([{ role: 'user', content: 'Turn pause-turn' }]);
+    // 暂停轮也必须落一条诚实状态摘要（2026-08-30 整轮归档机制），不能
+    // 让暂停在聊天里无痕消失。
+    const pausedMessages = store.getMessages('session-1');
+    expect(pausedMessages).toHaveLength(2);
+    expect(pausedMessages[0]).toEqual({ role: 'user', content: 'Turn pause-turn' });
+    expect(pausedMessages[1]?.content).toContain('场景工作流已暂停');
 
     const resumedResponse = await runTurn({ run, requestId: 'resume-turn', manifest });
 
@@ -105,11 +112,28 @@ describe('public Scenario pause/cancel over the persisted workflow', () => {
     expect(run).toHaveBeenCalledTimes(1);
     const record = repository.listScenarioRunRecords('session-1')[0];
     expect(record?.status).toBe('completed');
-    expect(store.getMessages('session-1')).toEqual([
-      { role: 'user', content: 'Turn pause-turn' },
-      { role: 'user', content: 'Turn resume-turn' },
-      { role: 'assistant', content: '# Resumed final deliverable' },
-    ]);
+    // 整轮归档后的消息契约（2026-08-30）：聊天只留摘要指引，全文在生成物
+    // 面板；完成摘要含「最终成果」生成物名，全文不进聊天流。
+    const messages = store.getMessages('session-1');
+    expect(messages[0]).toEqual({ role: 'user', content: 'Turn pause-turn' });
+    expect(messages[1]?.role).toBe('assistant');
+    expect(String(messages[1]?.content)).toContain('场景工作流已暂停');
+    expect(messages[2]).toEqual({ role: 'user', content: 'Turn resume-turn' });
+    // 恢复轮消息顺序：步骤摘要 → 完成摘要（最终成果）。
+    const stepSummary = messages.at(-2);
+    expect(stepSummary?.role).toBe('assistant');
+    expect(String(stepSummary?.content)).toContain('【步骤卡】');
+    const completion = messages.at(-1);
+    expect(completion?.role).toBe('assistant');
+    expect(String(completion?.content)).toContain('场景工作流已完成');
+    expect(String(completion?.content)).toContain('最终成果');
+    expect(String(completion?.content)).not.toContain('# Resumed final deliverable');
+    // 全文必须注册为会话生成物（过程产出 + 最终成果）。
+    const artifacts = store.listArtifacts('session-1');
+    expect(artifacts.some((item) => String(item.name).includes('过程产出'))).toBe(true);
+    expect(artifacts.some((item) => String(item.name).includes('最终成果'))).toBe(true);
+    const finalArtifact = artifacts.find((item) => String(item.name).includes('最终成果'));
+    expect(store.getArtifactContent(finalArtifact!.id, 'session-1')?.content).toBe('# Resumed final deliverable');
   });
 
   it('cancel persists a terminal cancelled run that later turns cannot revive', async () => {

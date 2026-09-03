@@ -10,7 +10,7 @@
   --vdr-accent: var(--accent);
   --vdr-accent-strong: var(--accent-hover);
   --vdr-accent-soft: color-mix(in srgb, var(--vdr-accent) 11%, transparent);
-  --vdr-bg: var(--bg-card, #fff);
+  --vdr-bg: var(--bg-card);
   --vdr-canvas: var(--bg-main, var(--bg-secondary));
   --vdr-border: var(--border-light, var(--border-light));
   --vdr-text: var(--text-body, var(--border));
@@ -40,20 +40,6 @@
   color: var(--vdr-text);
   font-family: inherit;
   container-type: inline-size;
-}
-
-[data-theme='dark'] .version-diff-reviewer {
-  --vdr-accent: var(--accent);
-  --vdr-accent-strong: var(--accent-hover);
-  --vdr-accent-soft: rgb(228 154 114 / 13%);
-  --vdr-bg: var(--bg-card, #1a1f2e);
-  --vdr-canvas: var(--bg-main, #0f1218);
-  --vdr-insert: var(--evidence-verified);
-  --vdr-insert-bg: color-mix(in srgb, var(--evidence-verified) 14%, transparent);
-  --vdr-delete: var(--evidence-refuted);
-  --vdr-delete-bg: color-mix(in srgb, var(--evidence-refuted) 14%, transparent);
-  --vdr-replace: var(--accent);
-  --vdr-replace-bg: var(--accent-soft);
 }
 
 /* ── Error/recovery banner ── */
@@ -225,22 +211,22 @@
 .version-diff-reviewer__workflow-btn--approve.is-active,
 .version-diff-reviewer__workflow-btn--approve:hover:not(:disabled) {
   color: var(--vdr-success);
-  background: #f0fff4;
-  border-color: #9ae6b4;
+  background: var(--status-completed-bg);
+  border-color: var(--status-completed);
 }
 
 .version-diff-reviewer__workflow-btn--reject.is-active,
 .version-diff-reviewer__workflow-btn--reject:hover:not(:disabled) {
   color: var(--vdr-danger);
   background: var(--bg-danger-hover);
-  border-color: #feb2b2;
+  border-color: color-mix(in srgb, var(--status-failed) 40%, transparent);
 }
 
 .version-diff-reviewer__workflow-btn--request.is-active,
 .version-diff-reviewer__workflow-btn--request:hover:not(:disabled) {
   color: var(--vdr-warning);
-  background: #fffbeb;
-  border-color: #fbd38d;
+  background: var(--status-skimmed-bg);
+  border-color: var(--evidence-pending);
 }
 
 /* ── Body / Columns ── */
@@ -394,7 +380,7 @@
   padding: 1px 5px;
   border-radius: 4px;
   background: var(--vdr-accent);
-  color: #fff;
+  color: var(--text-on-accent);
   font-size: 9px;
   font-weight: 700;
 }
@@ -430,7 +416,7 @@
 .version-diff-reviewer__version-chip.is-active {
   background: var(--vdr-accent);
   border-color: var(--vdr-accent);
-  color: #fff;
+  color: var(--text-on-accent);
 }
 
 .version-diff-reviewer__version-chip:hover:not(.is-active) {
@@ -669,7 +655,7 @@
 .version-diff-reviewer__review-form-submit {
   background: var(--vdr-accent);
   border-color: var(--vdr-accent);
-  color: #fff;
+  color: var(--text-on-accent);
 }
 
 .version-diff-reviewer__review-form-submit:hover:not(:disabled) {
@@ -794,7 +780,7 @@
 .version-diff-reviewer__review-resolve.is-resolved {
   background: var(--vdr-success);
   border-color: var(--vdr-success);
-  color: #fff;
+  color: var(--text-on-accent);
 }
 
 .version-diff-reviewer__review-resolve:hover:not(.is-resolved) {

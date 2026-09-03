@@ -26,7 +26,7 @@ describe('PersonalizationRuntimeService', () => {
   beforeEach(() => {
     db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
-    repository = new PersonalizationRepository(db);
+    repository = new PersonalizationRepository(db, RUNTIME_SECRET);
     repository.seedBuiltins(buildBuiltinPersonalizationDefinitions());
     service = new PersonalizationRuntimeService(repository, RUNTIME_SECRET);
   });
@@ -186,6 +186,26 @@ describe('PersonalizationRuntimeService', () => {
     }
   });
 
+  it('does not resolve a runnable scenario when its durable integrity key is unavailable', () => {
+    const unavailable = new PersonalizationRuntimeService(repository);
+    expect(unavailable.resolve({
+      contractVersion: 1,
+      sessionId: 'session-unavailable',
+      projectId: 'project-unavailable',
+      scenarioId: 'builtin:scenarios/general-research',
+    })).toEqual({
+      ok: false,
+      code: 'definition_corrupt',
+      issues: ['Scenario run integrity key is unavailable'],
+    });
+    expect(unavailable.resolveForAgent({
+      contractVersion: 1,
+      sessionId: 'session-unavailable',
+      projectId: 'project-unavailable',
+      scenarioId: 'builtin:scenarios/general-research',
+    })).toBeUndefined();
+  });
+
   it('forks a built-in skill and resolves the factory scenario', () => {
     const fork = service.fork({
       contractVersion: 1,
@@ -230,6 +250,53 @@ describe('PersonalizationRuntimeService', () => {
     expect(result.versions).toHaveLength(1);
     expect(result.versions[0]?.revision).toBe(1);
     expect(service.versions({ id: '../escape' })).toEqual({ ok: true, versions: [] });
+  });
+
+  it('reports quarantined definitions and recovers them only from verified history', () => {
+    const source = buildBuiltinPersonalizationDefinitions()
+      .find((definition) => definition.kind === 'scenario')!;
+    const scenario = {
+      ...structuredClone(source),
+      id: 'user:scenarios/quarantine-recovery',
+      revision: 1,
+      provenance: {
+        ...source.provenance,
+        origin: 'user' as const,
+        author: 'Researcher',
+        sourceUrl: null,
+        sourceRevision: null,
+        installedDigest: null,
+        parentId: null,
+        parentVersion: null,
+        locallyModified: true,
+      },
+    };
+    expect(service.save({ contractVersion: 1, definition: scenario, expectedRevision: 0 }).ok).toBe(true);
+    db.prepare('UPDATE personalization_definitions SET current_revision = 2 WHERE id = ?').run(scenario.id);
+
+    expect(service.list({ contractVersion: 1, kind: 'scenario', includeDisabled: true }))
+      .toEqual(expect.objectContaining({ ok: true, definitions: expect.not.arrayContaining([expect.objectContaining({ id: scenario.id })]) }));
+    expect(service.listIntegrityIssues({ contractVersion: 1, kind: 'scenario' })).toEqual({
+      ok: true,
+      issues: [expect.objectContaining({
+        id: scenario.id,
+        currentRevision: 2,
+        latestVerifiedRevision: 1,
+        code: 'current_definition_identity_mismatch',
+      })],
+    });
+    expect(service.recoverIntegrityIssue({
+      contractVersion: 1,
+      id: scenario.id,
+      sourceRevision: 1,
+      expectedCurrentRevision: 2,
+    })).toEqual(expect.objectContaining({
+      ok: true,
+      code: 'saved',
+      definition: expect.objectContaining({ id: scenario.id, revision: 3 }),
+    }));
+    expect(service.get({ contractVersion: 1, id: scenario.id }).definition)
+      .toEqual(expect.objectContaining({ id: scenario.id, revision: 3 }));
   });
 
   it('freezes and reuses the active run manifest across definition changes', () => {

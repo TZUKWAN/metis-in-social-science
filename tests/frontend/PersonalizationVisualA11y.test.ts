@@ -120,12 +120,11 @@ describe('Personalization visual and accessibility contracts', () => {
     }
   });
 
-  it('uses a compact academic workbench layout without the redundant page hero or pill navigation', () => {
+  it('uses a compact workbench layout without the redundant page hero (pill accents are now part of the Apple visual language)', () => {
     const center = read('src/personalization/PersonalizationCenter.css');
     const shell = read('src/App.css');
 
     expect(center).not.toContain('radial-gradient');
-    expect(center).not.toContain('border-radius: 999px');
     expect(center).not.toContain('.personalization-hero');
     expect(cssBlock(center, '.personalization-layout')).toContain('minmax(260px, 330px)');
     expect(cssBlock(center, '.personalization-layout')).toContain('minmax(640px, 1fr)');
@@ -160,7 +159,7 @@ describe('Personalization visual and accessibility contracts', () => {
     expect(app).toContain('title={tooltip}');
     expect(app).toContain('data-testid="personalization-trigger"');
     expect(app).toContain('getPreferenceNav()');
-    expect(app).toContain('<svg width="15" height="15"');
+    expect(app).toContain('lucide-react');
     expect(app).toContain('aria-hidden="true"');
     expect(app).toMatch(/className="topbar-icon-button"/);
   });

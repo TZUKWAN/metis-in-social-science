@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bot, Check, Copy, Download, FileText,
-  GripVertical, History, Image as ImageIcon, Layers, LoaderCircle, Maximize2,
+  FileSpreadsheet, GripVertical, History, Image as ImageIcon, LoaderCircle, Maximize2,
   Minus, MoreHorizontal, Move, Plus, Presentation, RotateCcw, Save, Send,
-  Sparkles, Table2, Trash2, Type, Underline, Upload, X,
+  SlidersHorizontal, Sparkles, Table2, Trash2, Type, Underline, Upload, X,
 } from 'lucide-react';
 import { useResearchWorkspaceStore } from '../research/researchWorkspaceStore';
 import {
-  OutcomeDetailSchema, PptDocumentSchema, type OutcomeAssistantAppliedEdit, type OutcomeAssistantChatResult,
+  OutcomeDetailSchema, decodePptTemplateDefinition, type OutcomeAssistantAppliedEdit, type OutcomeAssistantChatResult,
   type OutcomeAssistantSelection as OutcomeAssistantRequestSelection, type OutcomeCategory,
   type OutcomeDetail, type OutcomeDocument, type OutcomeKind, type OutcomeMedia,
   type OutcomeSource, type OutcomeSummary, type OutcomeTrashEntry, type OutcomeVersion, type PptDocument, type PptPage, type OutcomePptxWarning, type OutcomeWordDocxWarning,
@@ -17,7 +17,10 @@ import './OutcomesPage.css';
 import { autoResizeTextarea } from '../lib/textareaAutosize.js';
 import ModelThinkingSelector from '../components/ModelThinkingSelector';
 import { OutcomeWordFormattingPanel } from '../components/OutcomeWordFormattingPanel';
+import { OfficeWordRibbon } from '../components/OfficeWordRibbon';
+import { OfficePptRibbon } from '../components/OfficePptRibbon';
 import SplitHandle from '../components/SplitHandle';
+import { useTranslation } from '../i18n';
 
 const OUTCOMES_TREE_WIDTH_KEY = 'metis-outcomes-tree-width';
 const OUTCOMES_ASSISTANT_WIDTH_KEY = 'metis-outcomes-assistant-width';
@@ -36,7 +39,7 @@ function saveOutcomesWidth(key: string, value: number): void {
   try { window.localStorage.setItem(key, String(Math.round(value))); } catch { /* best-effort */ }
 }
 
-type AssistantSelection = { kind: 'word'; blockId: string; text: string; start?: number; end?: number; row?: number; column?: number } | { kind: 'ppt'; pageId: string; elementId?: string } | undefined;
+type AssistantSelection = { kind: 'word'; blockId: string; text: string; start?: number; end?: number; row?: number; column?: number; cross?: { endBlockId: string; endOffset: number } } | { kind: 'ppt'; pageId: string; elementId?: string } | undefined;
 type ScopedMessage = { id: string; role: 'user' | 'assistant' | 'system'; content: string; sources: OutcomeSource[]; createdAt: number };
 type ConversationUnit = { id: string; title: string; messageCount: number; createdAt: number; updatedAt: number };
 type AssistantApplied = OutcomeAssistantAppliedEdit;
@@ -51,8 +54,16 @@ type OutcomeAssistantBridge = {
 
 const newWord = (): WordDocument => ({ type: 'word', blocks: [{ id: 'p-1', kind: 'paragraph', text: '' }], page: { paper: 'A4', lineSpacing: 1.5 }, header: '', footer: '' });
 const newPpt = (): PptDocument => ({ type: 'ppt', ratio: '16:9', theme: {}, templateId: null, generationSkillId: null, pages: [{ id: 'slide-1', title: '封面', pageType: 'cover', humanModified: false, status: 'complete', elements: [] }] });
-const makeDocument = (kind: OutcomeKind): OutcomeDocument => kind === 'word' ? newWord() : kind === 'ppt' ? newPpt() : { type: 'other', text: '', media: null };
-const kindIcon = (kind: OutcomeKind) => kind === 'word' ? <FileText size={15} /> : kind === 'ppt' ? <Presentation size={15} /> : kind === 'image' ? <ImageIcon size={15} /> : <FileText size={15} />;
+const makeDocument = (kind: OutcomeKind): OutcomeDocument => kind === 'word'
+  ? newWord()
+  : kind === 'ppt'
+    ? newPpt()
+    : kind === 'spreadsheet'
+      ? { type: 'spreadsheet', media: null, originalArchiveMediaId: null, workbook: { sheetNames: [], activeSheet: null, activeCell: null, cells: {} } }
+      : kind === 'pdf'
+        ? { type: 'pdf', media: null, originalArchiveMediaId: null, pageCount: null, activePage: null }
+        : { type: 'other', text: '', media: null };
+const kindIcon = (kind: OutcomeKind) => kind === 'word' ? <FileText size={15} /> : kind === 'ppt' ? <Presentation size={15} /> : kind === 'spreadsheet' ? <FileSpreadsheet size={15} /> : kind === 'image' ? <ImageIcon size={15} /> : <FileText size={15} />;
 const superNumber = (value: number) => String(value).split('').map((item) => '⁰¹²³⁴⁵⁶⁷⁸⁹'[Number(item)]).join('');
 const asRecord = (value: unknown): Record<string, unknown> | null => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 const assistantBridge = (): OutcomeAssistantBridge | undefined => window.metis as unknown as OutcomeAssistantBridge | undefined;
@@ -62,28 +73,34 @@ const requestSelection = (selection: AssistantSelection): OutcomeAssistantReques
     ? selection.row !== undefined && selection.column !== undefined
       ? { type: 'word_table_cell', blockId: selection.blockId, row: selection.row, column: selection.column, ...(selection.start !== undefined ? { start: selection.start } : {}), ...(selection.end !== undefined ? { end: selection.end } : {}) }
       : { type: 'word_block', blockId: selection.blockId, ...(selection.start !== undefined ? { start: selection.start } : {}), ...(selection.end !== undefined ? { end: selection.end } : {}) }
-    : selection.elementId ? { type: 'ppt_element', pageId: selection.pageId, elementId: selection.elementId } : { type: 'ppt_page', pageId: selection.pageId };
+     : selection.elementId ? { type: 'ppt_element', pageId: selection.pageId, elementId: selection.elementId } : { type: 'ppt_page', pageId: selection.pageId };
+};
+const wordSelectionStillExists = (selection: Extract<AssistantSelection, { kind: 'word' }>, document: WordDocument): boolean => {
+  // Table cells are persisted as an unkeyed 2D string array, so row/column
+  // coordinates cannot prove that the same semantic cell survived a save.
+  if (selection.row !== undefined || selection.column !== undefined) return false;
+  const block = document.blocks.find((candidate) => candidate.id === selection.blockId);
+  if (!block) return false;
+  const sourceText = block.text ?? '';
+  if (selection.start === undefined && selection.end === undefined) return true;
+  if (selection.start === undefined || selection.end === undefined || !Number.isInteger(selection.start) || !Number.isInteger(selection.end) || selection.start < 0 || selection.end < selection.start || selection.end > sourceText.length) return false;
+  return sourceText.slice(selection.start, selection.end) === selection.text;
 };
 const docxWarningNotice = (warnings: OutcomeWordDocxWarning[]): string => warnings.length === 0 ? '' : `已完成可编辑导入，但有 ${warnings.length} 项未完全保真：${warnings.map((warning) => warning.message).join('；')}`;
 const pptxWarningNotice = (warnings: OutcomePptxWarning[]): string => warnings.length === 0 ? '' : `已完成 PPTX 处理，但有 ${warnings.length} 项未完全保真：${warnings.map((warning) => warning.message).join('；')}`;
 type ApplicablePptTemplate = { ratio?: PptDocument['ratio']; theme?: Record<string, unknown>; pages?: PptPage[] };
-const copyTemplatePages = (pages: PptPage[]): PptPage[] => pages.map((page) => ({ ...page, elements: page.elements.map((element) => ({ ...element, props: { ...element.props } })) }));
+const copyTemplatePages = (pages: PptPage[]): PptPage[] => pages.map((page) => ({ ...page, elements: page.elements.map((element) => ({ ...element, props: structuredClone(element.props) })) }));
+// The renderer-only placeholder injected for empty decks must never reach a
+// saved version or a template definition; a page counts as placeholder only
+// while the user has not touched it.
+const isPristineFallbackPage = (page: PptPage): boolean => page.id === 'slide-empty' && !page.humanModified && page.elements.length === 0;
+const withoutPristineFallbackPages = (document: PptDocument): PptDocument => ({ ...document, pages: document.pages.filter((page) => !isPristineFallbackPage(page)) });
 const applicablePptTemplate = (template: PptTemplate, fallbackRatio: PptDocument['ratio']): { value?: ApplicablePptTemplate; message?: string } => {
   const definition = asRecord(template.definition);
   if (!definition) return { message: `模板「${template.name}」的数据结构无效，当前成果没有被修改。` };
-  const ratio = definition.ratio;
-  if (ratio !== undefined && ratio !== '16:9' && ratio !== '4:3') return { message: `模板「${template.name}」的页面比例无效，当前成果没有被修改。` };
-  const theme = definition.theme === undefined ? undefined : asRecord(definition.theme);
-  if (definition.theme !== undefined && !theme) return { message: `模板「${template.name}」的主题数据无效，当前成果没有被修改。` };
-  if (definition.pages !== undefined && !Array.isArray(definition.pages)) return { message: `模板「${template.name}」的页面布局数据无效，当前成果没有被修改。` };
-  let pages: PptPage[] | undefined;
-  if (Array.isArray(definition.pages)) {
-    const parsed = PptDocumentSchema.safeParse({ type: 'ppt', ratio: ratio ?? fallbackRatio, theme: theme ?? {}, templateId: null, generationSkillId: null, pages: definition.pages });
-    if (!parsed.success) return { message: `模板「${template.name}」的页面布局不完整，当前成果没有被修改。` };
-    pages = copyTemplatePages(parsed.data.pages);
-  }
-  if (!ratio && !theme && !pages) return { message: `模板「${template.name}」不含可应用的比例、主题或页面布局。` };
-  return { value: { ...(ratio ? { ratio } : {}), ...(theme ? { theme } : {}), ...(pages ? { pages } : {}) } };
+  const decoded = decodePptTemplateDefinition(definition, fallbackRatio);
+  if (!decoded) return { message: `模板「${template.name}」的比例、主题或页面布局数据无效，当前成果没有被修改。` };
+  return { value: { ...decoded, ...(decoded.pages ? { pages: copyTemplatePages(decoded.pages) } : {}) } };
 };
 const imageGenerationFailureNotice = (code: string): string => ({
   invalid_request: '图片生成请求无效，当前成果没有被修改。',
@@ -126,16 +143,22 @@ function OutcomeSourceList({ sources, label, onOpenOutcomeVersion, onLocate }: {
   </section>;
 }
 
-export default function OutcomesPage() {
+export default function OutcomesPage({ onNavigateToSubmissions }: { onNavigateToSubmissions?: () => void } = {}) {
   const projectId = useResearchWorkspaceStore((state) => state.activeProjectId);
   const projects = useResearchWorkspaceStore((state) => state.projects);
   const project = projects.find((item) => item.id === projectId);
+  const [submissionOpen, setSubmissionOpen] = useState(false);
   const [categories, setCategories] = useState<OutcomeCategory[]>([]);
   const [items, setItems] = useState<OutcomeSummary[]>([]);
   const [selected, setSelected] = useState<OutcomeDetail | null>(null);
   const [versions, setVersions] = useState<OutcomeVersion[]>([]);
   const [editorDocument, setEditorDocument] = useState<OutcomeDocument | null>(null);
   const [assistantSelection, setAssistantSelection] = useState<AssistantSelection>();
+  const assistantSelectionRef = useRef<AssistantSelection>(undefined);
+  const updateAssistantSelection = useCallback((selection: AssistantSelection) => {
+    assistantSelectionRef.current = selection;
+    setAssistantSelection(selection);
+  }, []);
   const [assistantHistoryRevision, setAssistantHistoryRevision] = useState(0);
   const [isWordDocxImporting, setIsWordDocxImporting] = useState(false);
   const [isPptxImporting, setIsPptxImporting] = useState(false);
@@ -144,6 +167,13 @@ export default function OutcomesPage() {
   const pptxImportInFlight = useRef(false);
   const pptxExportInFlight = useRef(false);
   const [operationNotice, setOperationNotice] = useState('');
+  const [formattingOpenRequest, setFormattingOpenRequest] = useState(0);
+  const [externalEditorSession, setExternalEditorSession] = useState<{ token: string; outcomeId: string; kind: 'word' | 'ppt' | 'spreadsheet' | 'pdf'; fileName: string } | null>(null);
+  // 嵌入式视图（已停用）：保留状态供将来重启该方案；当前 Metis Office 走独立窗口。
+  const [embeddedViewId, setEmbeddedViewId] = useState<number | null>(null);
+  const embeddedStageRef = useRef<HTMLDivElement | null>(null);
+  const externalEditorSessionRef = useRef<typeof externalEditorSession>(null);
+  const [externalEditorBusy, setExternalEditorBusy] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [categoryPrompt, setCategoryPrompt] = useState<{ mode: 'create' } | { mode: 'rename'; categoryId: string; initialName: string } | null>(null);
@@ -153,7 +183,7 @@ export default function OutcomesPage() {
     const [nextCategories, nextItems] = await Promise.all([window.metis.listOutcomeCategories(), window.metis.listOutcomes({ projectId, query: '' })]);
     setCategories(nextCategories as OutcomeCategory[]);
     setItems(nextItems as OutcomeSummary[]);
-  }, [projectId]);
+   }, [projectId]);
 
   // ── 成果回收站（2026-08-24）：软删除进回收站，7 天到期由主进程惰性彻底删除 ──
   const [trashOpen, setTrashOpen] = useState(false);
@@ -168,12 +198,23 @@ export default function OutcomesPage() {
   const openTrash = useCallback(async () => { setTrashConfirmId(null); setTrashOpenedAt(Date.now()); setTrashOpen(true); await loadTrash(); }, [loadTrash]);
   const archiveOutcome = useCallback(async (item: OutcomeSummary) => {
     if (!projectId || !window.metis?.archiveOutcome) return;
+    if (externalEditorSession?.outcomeId === item.id) {
+      const state = window.metis.stateOutcomeGenofficeEditor
+        ? await window.metis.stateOutcomeGenofficeEditor({ projectId, outcomeId: item.id })
+        : { exists: true, changed: false, session: null };
+      if (state.changed) { setOperationNotice('外部文件有未同步修改，请先同步回 METIS 或明确放弃会话。'); return; }
+      const token = state.session?.token ?? externalEditorSession.token;
+      if (!await window.metis.closeOutcomeGenofficeEditor?.({ projectId, outcomeId: item.id, token })) {
+        setOperationNotice('Metis Office 会话未能关闭，成果仍未移入回收站。'); return;
+      }
+      setExternalEditorSession(null);
+    }
     const ok = await window.metis.archiveOutcome({ projectId, outcomeId: item.id });
     if (!ok) { setOperationNotice('移入回收站未完成，成果未被删除。'); return; }
-    if (selected?.outcome.id === item.id) { setSelected(null); setEditorDocument(null); setVersions([]); setAssistantSelection(undefined); }
+    if (selected?.outcome.id === item.id) { setSelected(null); setEditorDocument(null); setVersions([]); updateAssistantSelection(undefined); }
     setOperationNotice(`「${item.title}」已移入回收站，7 天后自动彻底删除；可在回收站恢复。`);
     await refresh();
-  }, [projectId, refresh, selected]);
+  }, [externalEditorSession, projectId, refresh, selected, updateAssistantSelection]);
   const restoreTrashOutcome = useCallback(async (outcomeId: string) => {
     if (!projectId || !window.metis?.restoreOutcomeFromTrash) return;
     const ok = await window.metis.restoreOutcomeFromTrash({ projectId, outcomeId });
@@ -183,12 +224,23 @@ export default function OutcomesPage() {
   }, [loadTrash, projectId, refresh]);
   const deleteTrashOutcomeForever = useCallback(async (outcomeId: string) => {
     if (!projectId || !window.metis?.deleteOutcomePermanent) return;
+    if (externalEditorSession?.outcomeId === outcomeId) {
+      const state = window.metis.stateOutcomeGenofficeEditor
+        ? await window.metis.stateOutcomeGenofficeEditor({ projectId, outcomeId })
+        : { exists: true, changed: false, session: null };
+      if (state.changed) { setOperationNotice('外部文件有未同步修改，请先同步回 METIS 或明确放弃会话。'); return; }
+      const token = state.session?.token ?? externalEditorSession.token;
+      if (!await window.metis.closeOutcomeGenofficeEditor?.({ projectId, outcomeId, token })) {
+        setOperationNotice('Metis Office 会话未能关闭，成果仍保留在回收站。'); return;
+      }
+      setExternalEditorSession(null);
+    }
     const ok = await window.metis.deleteOutcomePermanent({ projectId, outcomeId });
     if (!ok) { setOperationNotice('彻底删除未完成，成果仍保留在回收站。'); return; }
     setTrashConfirmId(null);
     setOperationNotice('成果及其源文件已彻底删除。');
     await loadTrash();
-  }, [loadTrash, projectId]);
+  }, [externalEditorSession, loadTrash, projectId]);
 
   useEffect(() => {
     let current = true;
@@ -204,25 +256,71 @@ export default function OutcomesPage() {
     })();
     return () => { current = false; };
   }, [projectId]);
+  useEffect(() => { externalEditorSessionRef.current = externalEditorSession; }, [externalEditorSession]);
+
+  // Metis Office 关闭自动同步（2026-09-01 刘总要求）：编辑器一关，主进程
+  // 已自动同步/收尾并推送结果——这里刷新列表与版本，并清掉本地会话状态。
+  const projectIdForAutoSyncRef = useRef(projectId);
+  projectIdForAutoSyncRef.current = projectId;
+  const refreshForAutoSyncRef = useRef<(() => Promise<void>) | undefined>(undefined);
+  refreshForAutoSyncRef.current = refresh;
+  useEffect(() => {
+    const unsubscribe = window.metis?.onOutcomeExternalEditorAutoSync?.((payload) => {
+      if (payload.projectId !== projectIdForAutoSyncRef.current) return;
+      setExternalEditorSession(null);
+      setEmbeddedViewId(null);
+      void refreshForAutoSyncRef.current?.();
+      if (payload.ok && payload.changed && payload.version !== undefined) {
+        setOperationNotice(payload.message || `检测到 Metis Office 已关闭，改动已自动同步为新版本 v${payload.version}。`);
+      } else if (payload.ok) {
+        setOperationNotice(payload.message || 'Metis Office 已关闭：内容没有修改，会话已自动结束。');
+      } else {
+        setOperationNotice(payload.message || 'Metis Office 已关闭，自动同步没有完成。');
+      }
+    });
+    return () => unsubscribe?.();
+  }, []);
 
   const open = useCallback(async (id: string, version?: number) => {
     if (!projectId || !window.metis) return;
+    if (externalEditorSession && externalEditorSession.outcomeId !== id) {
+      const state = window.metis.stateOutcomeGenofficeEditor
+        ? await window.metis.stateOutcomeGenofficeEditor({ projectId, outcomeId: externalEditorSession.outcomeId })
+        : { exists: true, changed: false, session: null };
+      if (state.changed) { setOperationNotice('外部文件有未同步修改，请先同步回 METIS 或明确放弃会话。'); return; }
+      const token = state.session?.token ?? externalEditorSession.token;
+      if (!await window.metis.closeOutcomeGenofficeEditor?.({ projectId, outcomeId: externalEditorSession.outcomeId, token })) {
+        setOperationNotice('Metis Office 会话未能关闭，当前成果未切换。'); return;
+      }
+      setExternalEditorSession(null);
+    }
     const detail = await window.metis.getOutcome({ projectId, outcomeId: id, ...(version ? { version } : {}) });
     if (!detail) return;
     const typed = detail as OutcomeDetail;
-    setSelected(typed); setEditorDocument(typed.version.content); setAssistantSelection(undefined); setOperationNotice('');
+    setSelected(typed); setEditorDocument(typed.version.content); updateAssistantSelection(undefined); setOperationNotice('');
     setVersions(await window.metis.listOutcomeVersions({ projectId, outcomeId: id }) as OutcomeVersion[]);
-  }, [projectId]);
+  }, [externalEditorSession, projectId, updateAssistantSelection]);
   const save = useCallback(async (content: OutcomeDocument, note = '保存编辑', actor: 'human' | 'ai' | 'import' | 'restore' = 'human', sources: OutcomeSource[] = [], importToken?: string) => {
     if (!projectId || !selected || !window.metis) return false;
+    if (externalEditorSession?.outcomeId === selected.outcome.id) {
+      setOperationNotice('当前成果正在 Metis Office 中编辑。请先同步回 METIS 或放弃外部编辑会话，再保存本地草稿。');
+      return false;
+    }
     setOperationNotice('');
     const saved = await window.metis.saveOutcome({ projectId, outcomeId: selected.outcome.id, baseVersion: selected.outcome.currentVersion, content, note, actor, sources, ...(importToken ? { importToken } : {}) });
     const parsed = OutcomeDetailSchema.safeParse(saved);
     if (!parsed.success) { setOperationNotice('保存未完成（可能是版本已更新或运行服务不可用）。当前未保存编辑仍保留在页面，请检查后重试。'); return false; }
-    setSelected(parsed.data); setEditorDocument(parsed.data.version.content); setAssistantSelection(undefined);
-    setVersions(await window.metis.listOutcomeVersions({ projectId, outcomeId: parsed.data.outcome.id }) as OutcomeVersion[]);
+     setSelected(parsed.data); setEditorDocument(parsed.data.version.content);
+      const selection = assistantSelectionRef.current;
+     const selectionStillExists = selection?.kind === 'word'
+       ? parsed.data.version.content.type === 'word' && wordSelectionStillExists(selection, parsed.data.version.content)
+       : selection?.kind === 'ppt'
+         ? parsed.data.version.content.type === 'ppt' && parsed.data.version.content.pages.some((page) => page.id === selection.pageId && (!selection.elementId || page.elements.some((element) => element.id === selection.elementId)))
+         : false;
+      updateAssistantSelection(selectionStillExists ? selection : undefined);
+     setVersions(await window.metis.listOutcomeVersions({ projectId, outcomeId: parsed.data.outcome.id }) as OutcomeVersion[]);
     await refresh(); return true;
-  }, [projectId, refresh, selected]);
+     }, [externalEditorSession, projectId, refresh, selected, updateAssistantSelection]);
   const create = useCallback(async (kind: OutcomeKind, title: string, categoryId: string | null) => {
     if (!projectId || !window.metis || !title.trim()) return;
     const created = await window.metis.createOutcome({ projectId, kind, title: title.trim(), categoryId, content: makeDocument(kind), note: '创建成果' });
@@ -249,25 +347,25 @@ export default function OutcomesPage() {
     const restored = await window.metis.restoreOutcome({ projectId, outcomeId: selected.outcome.id, version: version.version, note: `恢复到 v${version.version}` });
     const parsed = OutcomeDetailSchema.safeParse(restored);
     if (!parsed.success) { setOperationNotice('恢复未完成，当前编辑仍保留在页面；没有创建新的恢复版本。请刷新版本列表后重试。'); return; }
-    setSelected(parsed.data); setEditorDocument(parsed.data.version.content); setAssistantSelection(undefined);
+    setSelected(parsed.data); setEditorDocument(parsed.data.version.content); updateAssistantSelection(undefined);
     setVersions(await window.metis.listOutcomeVersions({ projectId, outcomeId: parsed.data.outcome.id }) as OutcomeVersion[]);
     await refresh();
-  }, [projectId, refresh, selected]);
+  }, [projectId, refresh, selected, updateAssistantSelection]);
   const moveOutcome = useCallback(async (outcomeId: string, categoryId: string | null) => { if (!projectId || !window.metis) return; if (await window.metis.moveOutcome({ projectId, outcomeId, categoryId })) await refresh(); }, [projectId, refresh]);
   const duplicateCurrent = useCallback(async () => {
     if (!selected || !projectId || !window.metis) return;
     const title = `${selected.outcome.title} 副本`;
-    const created = await window.metis.createOutcome({ projectId, kind: selected.outcome.kind, title, categoryId: selected.outcome.categoryId, content: editorDocument ?? selected.version.content, note: `从 ${selected.outcome.title} 复制` });
+    const created = await window.metis.createOutcome({ projectId, kind: selected.outcome.kind, title, categoryId: selected.outcome.categoryId, content: editorDocument ?? selected.version.content, note: `从 ${selected.outcome.title} 复制`, applyDefaultTemplate: false });
     if (created) { await refresh(); await open((created as OutcomeDetail).outcome.id); }
   }, [editorDocument, open, projectId, refresh, selected]);
   const applyAssistantVersion = useCallback(async (applied: AssistantApplied | undefined) => {
     const raw = asRecord(applied); if (!raw) return;
     const parsed = OutcomeDetailSchema.safeParse({ outcome: raw.outcome, version: raw.version });
     if (!parsed.success) return;
-    setSelected(parsed.data); setEditorDocument(parsed.data.version.content); setAssistantSelection(undefined);
+    setSelected(parsed.data); setEditorDocument(parsed.data.version.content); updateAssistantSelection(undefined);
     if (window.metis) setVersions(await window.metis.listOutcomeVersions({ projectId: parsed.data.outcome.projectId, outcomeId: parsed.data.outcome.id }) as OutcomeVersion[]);
     await refresh();
-  }, [refresh]);
+  }, [refresh, updateAssistantSelection]);
   const selectedForProject = selected?.outcome.projectId === projectId ? selected : null;
   const hasUnsavedChanges = Boolean(selectedForProject && editorDocument && JSON.stringify(editorDocument) !== JSON.stringify(selectedForProject.version.content));
   const openOutcomeSource = useCallback((source: OutcomeSource) => {
@@ -376,6 +474,118 @@ export default function OutcomesPage() {
       setOperationNotice('PPTX 导出请求没有完成，当前成果没有被修改。');
     } finally { pptxExportInFlight.current = false; setIsPptxExporting(false); }
   }, [hasUnsavedChanges, isPptxExporting, projectId, selected]);
+  const openInGenoffice = useCallback(async (options?: { embedded?: boolean }) => {
+    const embedded = options?.embedded === true;
+    if (!projectId || !selectedForProject || !window.metis?.openOutcomeInGenoffice) return;
+    if (hasUnsavedChanges) { setOperationNotice('当前成果有未保存的编辑。请先保存版本，再交给 Metis Office 编辑，避免覆盖本地草稿。'); return; }
+    setExternalEditorBusy(true);
+    try {
+      const result = await window.metis.openOutcomeInGenoffice({ projectId, outcomeId: selectedForProject.outcome.id, version: selectedForProject.version.version, ...(embedded ? { embedded: true } : {}) });
+      if (!result.ok) { setOperationNotice(result.message); return; }
+      setExternalEditorSession({ ...result.session, outcomeId: selectedForProject.outcome.id });
+      if (embedded && typeof result.webContentsId === 'number') {
+        setEmbeddedViewId(result.webContentsId);
+        setOperationNotice(`已在页面内打开「${result.session.fileName}」原生编辑器；保存并关闭后改动会自动同步回 METIS，也可随时手动同步。`);
+      } else {
+        setEmbeddedViewId(null);
+        setOperationNotice(`已在 Metis Office 中打开「${result.session.fileName}」。保存并关闭 Metis Office 后改动会自动同步回 METIS，也可随时手动同步。`);
+      }
+    } catch { setOperationNotice('Metis Office 编辑器没有成功打开当前成果，当前版本没有被修改。'); }
+    finally { setExternalEditorBusy(false); }
+  }, [hasUnsavedChanges, projectId, selectedForProject]);
+  const syncFromGenoffice = useCallback(async () => {
+    if (!projectId || !externalEditorSession || !window.metis?.syncOutcomeFromGenoffice || externalEditorBusy) return;
+    setExternalEditorBusy(true);
+    try {
+      const result = await window.metis.syncOutcomeFromGenoffice({ projectId, outcomeId: externalEditorSession.outcomeId, token: externalEditorSession.token });
+      if (!result.ok) { setOperationNotice(result.message); return; }
+      setSelected(result.detail);
+      setEditorDocument(result.detail.version.content);
+      setVersions(await window.metis.listOutcomeVersions({ projectId, outcomeId: result.detail.outcome.id }) as OutcomeVersion[]);
+      if (!result.warning) { setExternalEditorSession(null); setEmbeddedViewId(null); }
+      await refresh();
+       setOperationNotice(`已将 Metis Office 保存的「${externalEditorSession.fileName}」同步为 METIS v${result.detail.version.version}。${result.warning ? ` ${result.warning}` : ''}`);
+    } catch { setOperationNotice('Metis Office 文件同步没有完成，当前成果版本没有被修改。'); }
+    finally { setExternalEditorBusy(false); }
+  }, [externalEditorBusy, externalEditorSession, projectId, refresh]);
+  const closeGenofficeEditor = useCallback(async () => {
+    if (!projectId || !externalEditorSession || !window.metis?.closeOutcomeGenofficeEditor || externalEditorBusy) return;
+    setExternalEditorBusy(true);
+    try {
+      const closed = await window.metis.closeOutcomeGenofficeEditor({ projectId, outcomeId: externalEditorSession.outcomeId, token: externalEditorSession.token });
+      if (closed) { setExternalEditorSession(null); setEmbeddedViewId(null); setOperationNotice('已关闭 Metis Office 会话；未同步的外部文件没有写入 METIS。'); }
+      else setOperationNotice('Metis Office 会话未能关闭；未同步内容仍未写入 METIS。');
+    } catch { setOperationNotice('Metis Office 会话关闭失败；当前成果版本没有被修改。'); }
+    finally { setExternalEditorBusy(false); }
+  }, [externalEditorBusy, externalEditorSession, projectId]);
+  const selectedOutcomeId = selectedForProject?.outcome.id;
+  const nativeEmbeddedActive = Boolean(
+    embeddedViewId !== null
+    && externalEditorSession?.outcomeId === selectedOutcomeId
+    && selectedForProject
+    && ['word', 'ppt', 'spreadsheet', 'pdf'].includes(selectedForProject.outcome.kind),
+  );
+  // 内嵌 WebContentsView 方案已停用（黑屏未解）；Metis Office 以独立窗口为唯一入口。
+  // 几何上报：嵌入视图悬浮于 DOM 之上，矩形必须逐帧跟随占位节点。
+  useEffect(() => {
+    if (embeddedViewId === null) return undefined;
+    let observer: ResizeObserver | undefined;
+    let settle: ReturnType<typeof setTimeout> | undefined;
+    const report = () => {
+      const node = embeddedStageRef.current;
+      if (!node) return;
+      const rect = node.getBoundingClientRect();
+      if (rect.width < 8 || rect.height < 8) return;
+      void window.metis?.genofficeEmbeddedSetBounds?.({
+        webContentsId: embeddedViewId,
+        rect: { x: rect.left, y: rect.top, width: rect.width, height: rect.height },
+      });
+    };
+    const attach = () => {
+      if (!embeddedStageRef.current) return false;
+      report();
+      observer = new ResizeObserver(report);
+      observer.observe(embeddedStageRef.current);
+      window.addEventListener('scroll', report, true);
+      window.addEventListener('resize', report);
+      settle = setTimeout(report, 250);
+      return true;
+    };
+    // stage 节点与 viewId 分属两次渲染，首次拿不到就轮询补挂。
+    if (!attach()) {
+      const retry = setInterval(() => { if (attach()) clearInterval(retry); }, 100);
+      return () => { clearInterval(retry); observer?.disconnect(); };
+    }
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('scroll', report, true);
+      window.removeEventListener('resize', report);
+      if (settle) clearTimeout(settle);
+    };
+  }, [embeddedViewId, nativeEmbeddedActive]);
+  // METIS 弹层（排版面板/各对话框）出现时收起视图，避免原生画布盖住 DOM 弹层。
+  useEffect(() => {
+    if (embeddedViewId === null) return undefined;
+    const check = () => {
+      const blocked = Boolean(document.querySelector('.outcomes-modal-backdrop, .outcome-word-format-backdrop'));
+      void window.metis?.genofficeEmbeddedSetVisible?.({ webContentsId: embeddedViewId, visible: !blocked });
+    };
+    check();
+    const observer = new MutationObserver(check);
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => {
+      observer.disconnect();
+      void window.metis?.genofficeEmbeddedSetVisible?.({ webContentsId: embeddedViewId, visible: false });
+    };
+  }, [embeddedViewId]);
+  useEffect(() => {
+    if (!projectId || !selectedOutcomeId || externalEditorSession || !window.metis?.stateOutcomeGenofficeEditor) return undefined;
+    let active = true;
+    void window.metis.stateOutcomeGenofficeEditor({ projectId, outcomeId: selectedOutcomeId }).then((state) => {
+      if (active && state.session) setExternalEditorSession({ ...state.session, outcomeId: selectedOutcomeId });
+    });
+    return () => { active = false; };
+  }, [externalEditorSession, projectId, selectedOutcomeId]);
   const visible = useMemo(() => items.filter((item) => item.title.toLowerCase().includes(query.toLowerCase())), [items, query]);
 
   const outcomesPageRef = useRef<HTMLDivElement>(null);
@@ -417,10 +627,13 @@ export default function OutcomesPage() {
     <main className="outcomes-editor">
       {operationNotice && <p className="outcomes-operation-notice" role="status">{operationNotice}</p>}
       {!selectedForProject || !editorDocument ? <div className="outcomes-empty outcomes-empty--editor"><FileText size={34} /><h2>打开或创建成果</h2><p>成果是当前项目的正式交付物，不自动存放运行日志、缓存或工具中间结果。</p><button className="primary" type="button" onClick={() => setCreateOpen(true)}>新建成果</button></div> : <>
-        <header className="outcomes-editor-head"><div>{kindIcon(selectedForProject.outcome.kind)}<div><input defaultValue={selectedForProject.outcome.title} key={selectedForProject.outcome.id} aria-label="成果名称" onBlur={async (event) => { const title = event.currentTarget.value.trim(); if (title && title !== selectedForProject.outcome.title && window.metis) { await window.metis.renameOutcome({ projectId, outcomeId: selectedForProject.outcome.id, title }); await refresh(); } }} /><small>v{selectedForProject.version.version} · {selectedForProject.outcome.status === 'final' ? '最终版' : '草稿'}</small></div></div><div className="outcomes-editor-head__actions">{selectedForProject.outcome.kind === 'word' && <button type="button" onClick={() => void exportWordDocx()}><FileText size={14} />导出 DOCX</button>}{selectedForProject.outcome.kind === 'ppt' && <button type="button" onClick={() => void exportPptx()} disabled={isPptxExporting}>{isPptxExporting ? <LoaderCircle size={14} className="spin" /> : <Presentation size={14} />}导出 PPTX</button>}<button type="button" onClick={() => void duplicateCurrent()}><Copy size={14} />复制</button><button type="button" onClick={async () => { if (!window.metis) return; await window.metis.markOutcomeFinal({ projectId, outcomeId: selectedForProject.outcome.id, version: selectedForProject.outcome.currentVersion }); await refresh(); await open(selectedForProject.outcome.id); }}><Check size={14} />标记最终版</button><button className="primary" type="button" onClick={() => void save(editorDocument)}><Save size={15} />保存版本</button></div></header>
-        {editorDocument.type === 'word' && <WordEditor key={`${selectedForProject.outcome.id}-word-${selectedForProject.version.version}`} projectId={projectId} outcomeId={selectedForProject.outcome.id} hasUnsavedChanges={hasUnsavedChanges} document={editorDocument} onChange={setEditorDocument} onSave={(next, note) => void save(next, note)} onSelectionChange={setAssistantSelection} onAssistantApplied={applyAssistantVersion} onConversationChanged={() => setAssistantHistoryRevision((revision) => revision + 1)} />}
-        {editorDocument.type === 'ppt' && <PptStudioEditor key={`${selectedForProject.outcome.id}-ppt-${selectedForProject.version.version}`} projectId={projectId} outcomeId={selectedForProject.outcome.id} baseVersion={selectedForProject.version.version} hasUnsavedChanges={hasUnsavedChanges} document={editorDocument} onChange={setEditorDocument} onSave={(next) => void save(next, '保存 PPT Grid 布局')} onGenerationApplied={async (applied) => { await applyAssistantVersion(applied as unknown as AssistantApplied); setOperationNotice('PPT Generation Skill 已生成并保存为新版本；可在版本面板查看或恢复。'); }} onGenerationConflict={async () => { await open(selectedForProject.outcome.id); setOperationNotice('PPT 生成因版本已更新而未提交；已刷新到当前版本。'); }} onSelectionChange={setAssistantSelection} />}
-        {editorDocument.type === 'other' && <MediaEditor projectId={projectId} outcomeId={selectedForProject.outcome.id} kind={selectedForProject.outcome.kind} hasUnsavedChanges={hasUnsavedChanges} document={editorDocument} onChange={setEditorDocument} onSave={(next, note, actor = 'human') => void save(next, note, actor)} />}
+         <header className="outcomes-editor-head"><div>{kindIcon(selectedForProject.outcome.kind)}<div><input defaultValue={selectedForProject.outcome.title} key={selectedForProject.outcome.id} aria-label="成果名称" onBlur={async (event) => { const title = event.currentTarget.value.trim(); if (title && title !== selectedForProject.outcome.title && window.metis) { await window.metis.renameOutcome({ projectId, outcomeId: selectedForProject.outcome.id, title }); await refresh(); } }} /><small>v{selectedForProject.version.version} · {selectedForProject.outcome.status === 'final' ? '最终版' : '草稿'}</small></div></div><div className="outcomes-editor-head__actions"><button className="primary" type="button" onClick={() => void save(editorDocument.type === 'ppt' ? withoutPristineFallbackPages(editorDocument) : editorDocument)}><Save size={15} />保存版本</button>{selectedForProject.outcome.kind === 'word' && <button type="button" onClick={() => setFormattingOpenRequest((value) => value + 1)}><SlidersHorizontal size={14} />排版</button>}{selectedForProject.outcome.kind === 'word' && <button type="button" onClick={() => void exportWordDocx()}><FileText size={14} />导出 DOCX</button>}{selectedForProject.outcome.kind === 'ppt' && <button type="button" onClick={() => void exportPptx()} disabled={isPptxExporting}>{isPptxExporting ? <LoaderCircle size={14} className="spin" /> : <Presentation size={14} />}导出 PPTX</button>}<button type="button" onClick={() => setSubmissionOpen(true)} title="以当前版本创建投稿事务"><Send size={14} />投稿</button><button type="button" onClick={() => void duplicateCurrent()}><Copy size={14} />复制</button><button type="button" onClick={async () => { if (!window.metis) return; await window.metis.markOutcomeFinal({ projectId, outcomeId: selectedForProject.outcome.id, version: selectedForProject.outcome.currentVersion }); await refresh(); await open(selectedForProject.outcome.id); }}><Check size={14} />标记最终版</button></div></header>
+         {['word', 'ppt', 'spreadsheet', 'pdf'].includes(selectedForProject.outcome.kind) && <section className="outcomes-external-editor-actions" aria-label="Metis Office"><div><strong>Metis Office 原生编辑</strong><small>在 Metis Office 中使用原生 Ribbon 编辑；保存并关闭后自动同步回 METIS 创建新版本，也可手动立即同步。</small></div>{externalEditorSession?.outcomeId === selectedForProject.outcome.id ? <div><button type="button" onClick={() => void syncFromGenoffice()} disabled={externalEditorBusy}>同步回 METIS</button><button type="button" onClick={() => void closeGenofficeEditor()} disabled={externalEditorBusy}>放弃会话</button><span>当前文件：{externalEditorSession.fileName}</span></div> : <><button type="button" onClick={() => void openInGenoffice()} disabled={externalEditorBusy} title="在独立窗口中用原生 Ribbon 编辑当前文件"><FileSpreadsheet size={14} />Metis Office</button></>}</section>}
+           {nativeEmbeddedActive && <div ref={embeddedStageRef} className="genoffice-embedded-stage" aria-label="Metis Office 原生编辑区"><span>Metis Office 原生编辑器正在此区域运行；在该画布中直接编辑，保存后回到右侧“同步回 METIS”。</span></div>}
+           {!nativeEmbeddedActive && editorDocument.type === 'word' && <WordEditor key={`${selectedForProject.outcome.id}-word-${selectedForProject.version.version}`} projectId={projectId} outcomeId={selectedForProject.outcome.id} hasUnsavedChanges={hasUnsavedChanges} document={editorDocument} onChange={setEditorDocument} onSave={(next, note) => save(next, note)} onNotice={setOperationNotice} onSelectionChange={updateAssistantSelection} onAssistantApplied={applyAssistantVersion} onConversationChanged={() => setAssistantHistoryRevision((revision) => revision + 1)} />}
+           {editorDocument.type === 'word' && <OutcomeWordFormattingPanel document={editorDocument} openRequest={formattingOpenRequest} hideTrigger onApply={(next, note) => { setEditorDocument(next); setOperationNotice(note); }} />}
+          {!nativeEmbeddedActive && editorDocument.type === 'ppt' && <PptStudioEditor key={`${selectedForProject.outcome.id}-ppt-${selectedForProject.version.version}`} projectId={projectId} outcomeId={selectedForProject.outcome.id} baseVersion={selectedForProject.version.version} hasUnsavedChanges={hasUnsavedChanges} document={editorDocument} initialPageId={assistantSelection?.kind === 'ppt' ? assistantSelection.pageId : undefined} initialSelectedElementId={assistantSelection?.kind === 'ppt' ? assistantSelection.elementId : undefined} onChange={setEditorDocument} onSave={(next) => void save(next, '保存 PPT Grid 布局')} onNotice={setOperationNotice} onGenerationApplied={async (applied) => { await applyAssistantVersion(applied as unknown as AssistantApplied); setOperationNotice('PPT Generation Skill 已生成并保存为新版本；可在版本面板查看或恢复。'); }} onGenerationConflict={async () => { await open(selectedForProject.outcome.id); setOperationNotice('PPT 生成因版本已更新而未提交；已刷新到当前版本。'); }} onSelectionChange={updateAssistantSelection} />}
+         {(!nativeEmbeddedActive) && (editorDocument.type === 'other' || editorDocument.type === 'spreadsheet' || editorDocument.type === 'pdf') && <MediaEditor projectId={projectId} outcomeId={selectedForProject.outcome.id} kind={selectedForProject.outcome.kind} hasUnsavedChanges={hasUnsavedChanges} document={editorDocument} onChange={setEditorDocument} onSave={(next, note, actor = 'human') => void save(next, note, actor)} />}
         <VersionPanel versions={versions} activeVersion={selectedForProject.version.version} onOpen={(version) => void open(selectedForProject.outcome.id, version.version)} onRestore={(version) => void restoreVersion(version)} />
       </>}
     </main>
@@ -432,6 +645,14 @@ export default function OutcomesPage() {
     />
     <OutcomeAssistant key={`${projectId}-${selectedForProject?.outcome.id ?? 'none'}`} projectId={projectId} projectName={project?.title ?? projectId} detail={selectedForProject} selection={assistantSelection} hasUnsavedChanges={hasUnsavedChanges} historyRevision={assistantHistoryRevision} onOpenOutcomeVersion={openOutcomeSource} onLocate={locateSource} onApplied={(applied) => void applyAssistantVersion(applied)} onConversationChanged={() => setAssistantHistoryRevision((revision) => revision + 1)} />
     {createOpen && <CreateDialog categories={categories} close={() => setCreateOpen(false)} create={create} />}
+    {submissionOpen && selectedForProject && <SubmissionDialog
+      close={() => setSubmissionOpen(false)}
+      onCreated={() => { setSubmissionOpen(false); setOperationNotice('投稿事务已创建；已转到投稿页。'); onNavigateToSubmissions?.(); }}
+      projectId={projectId}
+      outcomeId={selectedForProject.outcome.id}
+      outcomeTitle={selectedForProject.outcome.title}
+      outcomeVersion={selectedForProject.version.version}
+    />}
     {trashOpen && <OutcomeTrashDialog items={trashItems} now={trashOpenedAt} confirmId={trashConfirmId} setConfirmId={setTrashConfirmId} close={() => setTrashOpen(false)} onRestore={(id) => void restoreTrashOutcome(id)} onDeleteForever={(id) => void deleteTrashOutcomeForever(id)} />}
     {categoryPrompt && <PromptDialog title={categoryPrompt.mode === 'rename' ? '重命名分类' : '新建分类'} fieldLabel="分类名称" confirmLabel={categoryPrompt.mode === 'rename' ? '重命名' : '创建'} initialValue={categoryPrompt.mode === 'rename' ? categoryPrompt.initialName : ''} close={() => setCategoryPrompt(null)} submit={(value) => void submitCategoryPrompt(value)} />}
   </div>;
@@ -450,15 +671,105 @@ function OutcomeTrashDialog({ items, now, confirmId, setConfirmId, close, onRest
 }
 function CreateDialog({ categories, close, create }: { categories: OutcomeCategory[]; close: () => void; create: (kind: OutcomeKind, title: string, categoryId: string | null) => void }) {
   const [kind, setKind] = useState<OutcomeKind>('word'); const [title, setTitle] = useState(''); const [categoryId, setCategoryId] = useState('');
-  return <div className="outcomes-modal-backdrop" role="presentation"><form className="outcomes-modal" onSubmit={(event) => { event.preventDefault(); create(kind, title, categoryId || null); }}><header><strong>新建成果</strong><button type="button" onClick={close} aria-label="关闭"><X size={16} /></button></header><label>成果名称<input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} /></label><label>成果类型<select value={kind} onChange={(event) => setKind(event.target.value as OutcomeKind)}><option value="word">Word 论文 / 报告</option><option value="ppt">PPT 演示文稿</option><option value="pdf">PDF</option><option value="image">图片</option><option value="chart">图表</option><option value="other">其他正式交付物</option></select></label><label>分类<select value={categoryId} onChange={(event) => setCategoryId(event.target.value)}><option value="">未分类</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label><footer><button type="button" onClick={close}>取消</button><button className="primary">创建</button></footer></form></div>;
+  return <div className="outcomes-modal-backdrop" role="presentation"><form className="outcomes-modal" onSubmit={(event) => { event.preventDefault(); create(kind, title, categoryId || null); }}><header><strong>新建成果</strong><button type="button" onClick={close} aria-label="关闭"><X size={16} /></button></header><label>成果名称<input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} /></label><label>成果类型<select value={kind} onChange={(event) => setKind(event.target.value as OutcomeKind)}><option value="word">Word 论文 / 报告</option><option value="ppt">PPT 演示文稿</option><option value="spreadsheet">Excel 工作簿</option><option value="pdf">PDF</option><option value="image">图片</option><option value="chart">图表</option><option value="other">其他正式交付物</option></select></label><label>分类<select value={categoryId} onChange={(event) => setCategoryId(event.target.value)}><option value="">未分类</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label><footer><button type="button" onClick={close}>取消</button><button className="primary">创建</button></footer></form></div>;
 }
-function PromptDialog({ title, fieldLabel, confirmLabel, initialValue = '', close, submit }: { title: string; fieldLabel: string; confirmLabel: string; initialValue?: string; close: () => void; submit: (value: string) => void }) {
-  const [value, setValue] = useState(initialValue);
+/** 准备投稿：以当前成果版本创建 Submission Case（匹配期刊 / 指定期刊）。 */
+function SubmissionDialog({ close, onCreated, projectId, outcomeId, outcomeTitle, outcomeVersion }: {
+  close: () => void; onCreated: () => void; projectId: string; outcomeId: string; outcomeTitle: string; outcomeVersion: number;
+}) {
+  const [mode, setMode] = useState<'specify' | 'match'>('specify');
+  const [journal, setJournal] = useState('');
+  const [articleType, setArticleType] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  return <div className="outcomes-modal-backdrop" role="presentation"><form className="outcomes-modal" role="dialog" aria-modal="true" aria-label="准备投稿" onSubmit={(event) => {
+    event.preventDefault();
+    if (!window.metis?.createSubmissionCase || busy) return;
+    if (mode === 'specify' && !journal.trim()) return;
+    setBusy(true);
+    void window.metis.createSubmissionCase({
+      projectId,
+      title: outcomeTitle,
+      sourceOutcomeId: outcomeId,
+      sourceOutcomeVersion: outcomeVersion,
+      targetJournalName: mode === 'specify' ? journal.trim() : '',
+      articleType: (articleType || null) as null | 'research_article' | 'review' | 'short_communication' | 'letter' | 'case_report' | 'conference_paper' | 'thesis_chapter' | 'other',
+      initialStatus: mode === 'specify' ? 'JOURNAL_SELECTED' : 'TARGETING',
+    }).then((result) => {
+      setBusy(false);
+      if (result && 'ok' in result && result.ok === false && result.code === 'duplicate_active') {
+        setError(`该成果已有进行中的投稿（${result.activeJournal || '待选刊'}）。同一篇稿件同时投多个期刊存在一稿多投风险；请先等拒稿/撤稿，或确认后再继续。`);
+        return;
+      }
+      // createCase resolves with { series, submissionCase } (no `ok` flag);
+      // null means the handler rejected the request.
+      if (result && 'submissionCase' in result) onCreated();
+      else setError('创建投稿事务失败，请稍后重试。');
+    });
+  }}><header><strong>准备投稿</strong><button type="button" onClick={close} aria-label="关闭"><X size={16} /></button></header>
+    <label>当前成果<input value={`${outcomeTitle}（v${outcomeVersion}）`} readOnly /></label>
+    <fieldset className="submissions-create-mode">
+      <label><input type="radio" name="outcome-submission-mode" checked={mode === 'specify'} onChange={() => setMode('specify')} />我已经有目标期刊</label>
+      {mode === 'specify' && <>
+        <input className="settings-input" value={journal} placeholder="输入目标期刊名称" aria-label="目标期刊名称" autoFocus onChange={(event) => setJournal(event.target.value)} />
+        <label>文章类型<select value={articleType} aria-label="文章类型" onChange={(event) => setArticleType(event.target.value)}>
+          <option value="">未指定</option>
+          <option value="research_article">研究论文</option><option value="review">综述</option>
+          <option value="short_communication">短文</option><option value="letter">快报</option>
+          <option value="case_report">案例报告</option><option value="conference_paper">会议论文</option>
+          <option value="thesis_chapter">学位论文章节</option><option value="other">其他</option>
+        </select></label>
+      </>}
+      <label><input type="radio" name="outcome-submission-mode" checked={mode === 'match'} onChange={() => setMode('match')} />帮我匹配期刊</label>
+      {mode === 'match' && <p style={{ margin: 0, fontSize: 12, color: 'var(--text-tertiary)' }}>创建后投稿状态为「选刊中」，期刊匹配将在投稿页继续。</p>}
+    </fieldset>
+    {error && <p role="alert" style={{ margin: '0 0 10px', fontSize: 12, color: 'var(--status-error)' }}>{error}</p>}
+    <footer><button type="button" onClick={close}>取消</button><button className="primary" disabled={busy || (mode === 'specify' && !journal.trim())}>创建投稿事务</button></footer>
+  </form></div>;
+}
+
+function PromptDialog({ title, fieldLabel, confirmLabel, initialValue = '', close, submit }: { title: string; fieldLabel: string; confirmLabel: string; initialValue?: string; close: () => void; submit: (value: string) => void }) {  const [value, setValue] = useState(initialValue);
   return <div className="outcomes-modal-backdrop" role="presentation"><form className="outcomes-modal" role="dialog" aria-modal="true" aria-label={title} onSubmit={(event) => { event.preventDefault(); if (!value.trim()) return; submit(value.trim()); }}><header><strong>{title}</strong><button type="button" onClick={close} aria-label="关闭"><X size={16} /></button></header><label>{fieldLabel}<input autoFocus value={value} onFocus={(event) => event.currentTarget.select()} onChange={(event) => setValue(event.target.value)} /></label><footer><button type="button" onClick={close}>取消</button><button className="primary" disabled={!value.trim()}>{confirmLabel}</button></footer></form></div>;
 }
 
-function WordEditor({ projectId, outcomeId, hasUnsavedChanges, document, onChange, onSave, onSelectionChange, onAssistantApplied, onConversationChanged }: { projectId: string; outcomeId: string; hasUnsavedChanges: boolean; document: WordDocument; onChange: (value: WordDocument) => void; onSave: (value: WordDocument, note: string) => void; onSelectionChange: (selection: AssistantSelection) => void; onAssistantApplied: (value: AssistantApplied | undefined) => Promise<void>; onConversationChanged: () => void }) {
+type WordEditorProps = { projectId: string; outcomeId: string; hasUnsavedChanges: boolean; document: WordDocument; onChange: (value: WordDocument) => void; onSave: (value: WordDocument, note: string) => Promise<boolean> | void; onSelectionChange: (selection: AssistantSelection) => void; onAssistantApplied: (value: AssistantApplied | undefined) => Promise<void>; onConversationChanged: () => void; onNotice?: (notice: string) => void };
+
+function WordEditor(props: WordEditorProps) {
+  const [activeBlockId, setActiveBlockId] = useState(props.document.blocks[0]?.id ?? '');
+  const [history, setHistory] = useState({ entries: [props.document], index: 0 });
+  const [citationRequest, setCitationRequest] = useState(0);
+  const resolvedActiveBlockId = props.document.blocks.some((block) => block.id === activeBlockId) ? activeBlockId : props.document.blocks[0]?.id ?? '';
+  const active = props.document.blocks.find((block) => block.id === resolvedActiveBlockId) ?? props.document.blocks[0];
+  const activeKind = active?.kind === 'heading' || active?.kind === 'paragraph' ? active.kind : undefined;
+  const update = (next: WordDocument) => {
+    if (JSON.stringify(next) === JSON.stringify(props.document)) return;
+    const entries = [...history.entries.slice(0, history.index + 1), next].slice(-80);
+    setHistory({ entries, index: entries.length - 1 });
+    props.onChange(next);
+  };
+  const restore = (direction: -1 | 1) => {
+    const index = Math.max(0, Math.min(history.entries.length - 1, history.index + direction));
+    if (index === history.index) return;
+    setHistory({ ...history, index });
+    props.onChange(history.entries[index]!);
+  };
+  return <>
+     <OfficeWordRibbon document={props.document} activeBlockId={active?.id ?? ''} activeStyle={active?.style ?? {}} activeKind={activeKind} activeLevel={active?.level} historyState={{ index: history.index, length: history.entries.length }} onChange={update} onSave={() => props.onSave(props.document, '保存编辑')} onHistory={restore} onCitation={() => setCitationRequest((value) => value + 1)} onNotice={(notice) => props.onNotice?.(notice)} />
+     <LegacyWordEditor {...props} onChange={update} citationRequest={citationRequest} onSelectionChange={(selection) => { if (selection?.kind === 'word') setActiveBlockId(selection.blockId); props.onSelectionChange(selection); }} />
+  </>;
+}
+
+function LegacyWordEditor({ projectId, outcomeId, hasUnsavedChanges, document, onChange, onSave, onSelectionChange, onAssistantApplied, onConversationChanged, onNotice, citationRequest }: WordEditorProps & { citationRequest: number }) {
   const doc = document;
+  useLayoutEffect(() => {
+    const toolbars = Array.from(window.document.querySelectorAll<HTMLElement>('.word-studio > .word-toolbar'));
+    toolbars.forEach((toolbar) => {
+      toolbar.hidden = true;
+      toolbar.setAttribute('aria-hidden', 'true');
+      toolbar.querySelectorAll<HTMLElement>('[aria-label]').forEach((control) => control.removeAttribute('aria-label'));
+      toolbar.querySelectorAll<HTMLElement>('[title]').forEach((control) => control.removeAttribute('title'));
+    });
+  }, []);
   const [activeBlockId, setActiveBlockId] = useState(document.blocks[0]?.id ?? '');
   const [caret, setCaret] = useState<{ id: string; offset: number } | null>(null);
   const [citation, setCitation] = useState('');
@@ -469,7 +780,17 @@ function WordEditor({ projectId, outcomeId, hasUnsavedChanges, document, onChang
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
   }, [citationOpen]);
+  useEffect(() => {
+    if (citationRequest <= 0) return undefined;
+    const timer = window.setTimeout(() => setCitationOpen(true), 0);
+    return () => window.clearTimeout(timer);
+  }, [citationRequest]);
   const [localSelection, setLocalSelection] = useState<Extract<AssistantSelection, { kind: 'word' }>>();
+  const [crossSelection, setCrossSelection] = useState<Extract<AssistantSelection, { kind: 'word' }>>();
+  const crossSelectionRef = useRef<Extract<AssistantSelection, { kind: 'word' }> | undefined>(undefined);
+  crossSelectionRef.current = crossSelection;
+  const localSelectionRef = useRef<Extract<AssistantSelection, { kind: 'word' }> | undefined>(undefined);
+  localSelectionRef.current = localSelection;
   const [localAnchor, setLocalAnchor] = useState<{ left: number; top: number; bottom?: number }>({ left: 16, top: 16 });
   const historyRef = useRef({ entries: [document], index: 0 });
   const [historyState, setHistoryState] = useState({ index: 0, length: 1 });
@@ -490,6 +811,26 @@ function WordEditor({ projectId, outcomeId, hasUnsavedChanges, document, onChang
     onChange(current.entries[index]!);
   };
   const updateText = (id: string, text: string) => update({ ...doc, blocks: doc.blocks.map((block) => block.id === id ? { ...block, text } : block) });
+  const splitParagraphAtCaret = (event: React.KeyboardEvent<HTMLElement>, block: WordBlock) => {
+    if (block.kind !== 'paragraph' && block.kind !== 'heading' && block.kind !== 'figure_caption' && block.kind !== 'table_caption') return;
+    const selection = window.getSelection();
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    if (!range || !event.currentTarget.contains(range.startContainer) || !event.currentTarget.contains(range.endContainer)) return;
+    const before = range.cloneRange();
+    before.selectNodeContents(event.currentTarget);
+    before.setEnd(range.startContainer, range.startOffset);
+    const start = Math.max(0, Math.min((block.text ?? '').length, before.toString().length));
+    const selectedLength = selection?.toString().length ?? 0;
+    const sourceText = block.text ?? '';
+    const left = sourceText.slice(0, start);
+    const right = sourceText.slice(Math.min(sourceText.length, start + selectedLength));
+    let index = doc.blocks.length + 1;
+    let id = `paragraph-${index}`;
+    while (doc.blocks.some((candidate) => candidate.id === id)) id = `paragraph-${++index}`;
+    const nextBlock: WordBlock = { ...block, id, text: right };
+    const blocks = doc.blocks.flatMap((candidate) => candidate.id === block.id ? [{ ...candidate, text: left }, nextBlock] : [candidate]);
+    update({ ...doc, blocks });
+  };
   const updateActive = (patch: Record<string, unknown>) => update({ ...doc, blocks: doc.blocks.map((block) => block.id === activeBlockId ? { ...block, style: { ...block.style, ...patch } } : block) });
   const setBlockKind = (kind: 'paragraph' | 'heading', level?: number) => update({ ...doc, blocks: doc.blocks.map((block) => block.id === activeBlockId ? { ...block, kind, ...(level ? { level } : {}) } : block) });
   const updateTableCell = (blockId: string, rowIndex: number, cellIndex: number, value: string) => update({ ...doc, blocks: doc.blocks.map((block) => {
@@ -497,7 +838,81 @@ function WordEditor({ projectId, outcomeId, hasUnsavedChanges, document, onChang
     return { ...block, rows: (block.rows ?? []).map((row, currentRow) => currentRow === rowIndex ? row.map((cell, currentCell) => currentCell === cellIndex ? value : cell) : row) };
   }) });
   const nextBlockId = (prefix: string) => { let index = doc.blocks.length + 1; let id = `${prefix}-${index}`; while (doc.blocks.some((block) => block.id === id)) { index += 1; id = `${prefix}-${index}`; } return id; };
-  const capture = (event: React.SyntheticEvent<HTMLElement>) => { const blockId = String(event.currentTarget.dataset.block ?? ''); setActiveBlockId(blockId); const block = doc.blocks.find((item) => item.id === blockId); const contentLength = (block?.text ?? '').length; const selection = window.getSelection(); const range = selection?.rangeCount ? selection.getRangeAt(0) : null; if (!range || !event.currentTarget.contains(range.startContainer) || !event.currentTarget.contains(range.endContainer)) { setLocalSelection(undefined); onSelectionChange({ kind: 'word', blockId, text: '' }); return; } const before = range.cloneRange(); before.selectNodeContents(event.currentTarget); before.setEnd(range.startContainer, range.startOffset); const selectedText = selection?.toString() ?? ''; const start = Math.min(contentLength, Math.max(0, before.toString().length)); const end = Math.min(contentLength, start + selectedText.length); const nextSelection = { kind: 'word' as const, blockId, text: selectedText, start, end }; setCaret({ id: blockId, offset: start }); onSelectionChange(nextSelection); if (!selectedText || end <= start) { setLocalSelection(undefined); return; } const rangeRect = typeof range.getBoundingClientRect === 'function' ? range.getBoundingClientRect() : event.currentTarget.getBoundingClientRect(); const blockRect = event.currentTarget.getBoundingClientRect(); const left = Math.min(Math.max(12, (rangeRect.left || blockRect.left) + 8), Math.max(12, window.innerWidth - 326)); const top = Math.max(12, (rangeRect.top || blockRect.top) - 10); setLocalAnchor({ left, top, bottom: rangeRect.bottom || blockRect.bottom }); setLocalSelection(nextSelection); };
+  const capture = (event: React.SyntheticEvent<HTMLElement>) => {
+    const targetBlockId = String(event.currentTarget.dataset.block ?? '');
+    if (targetBlockId) setActiveBlockId(targetBlockId);
+    const selection = window.getSelection();
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    if (!selection || !range) {
+      // 没有 DOM range（jsdom 点击、点击非文本区）时仍必须上报激活块，
+      // 否则局部 AI 请求会丢 blockId（2026-09-02 修复：回归点击即选中的契约）。
+      setLocalSelection(undefined); setCrossSelection(undefined);
+      if (targetBlockId) onSelectionChange({ kind: 'word', blockId: targetBlockId, text: '' });
+      return;
+    }
+    const nodeToBlock = (node: Node | null): HTMLElement | null => {
+      const element = node ? (node.nodeType === 1 ? node as Element : node.parentElement) : null;
+      return element?.closest<HTMLElement>('[data-block]') ?? null;
+    };
+    const startEl = nodeToBlock(range.startContainer);
+    const endEl = nodeToBlock(range.endContainer);
+    const blockOf = (element: HTMLElement | null) => doc.blocks.find((item) => item.id === element?.dataset.block);
+    if (!startEl || !endEl) return;
+    const anchorRect = typeof range.getBoundingClientRect === 'function' ? range.getBoundingClientRect() : startEl.getBoundingClientRect();
+    const showPopover = (next: Extract<AssistantSelection, { kind: 'word' }>) => {
+      const blockRect = startEl.getBoundingClientRect();
+      const left = Math.min(Math.max(12, (anchorRect.left || blockRect.left) + 8), Math.max(12, window.innerWidth - 326));
+      const top = Math.max(12, (anchorRect.top || blockRect.top) - 10);
+      setLocalAnchor({ left, top, bottom: anchorRect.bottom || blockRect.bottom });
+      setLocalSelection(next);
+    };
+    if (startEl === endEl) {
+      const block = blockOf(startEl);
+      if (!block) return;
+      const contentLength = (block.text ?? '').length;
+      if (!startEl.contains(range.startContainer) || !startEl.contains(range.endContainer)) {
+        setLocalSelection(undefined); setCrossSelection(undefined);
+        onSelectionChange({ kind: 'word', blockId: block.id, text: '' });
+        return;
+      }
+      const before = range.cloneRange();
+      before.selectNodeContents(startEl);
+      before.setEnd(range.startContainer, range.startOffset);
+      const selectedText = selection.toString() ?? '';
+      const start = Math.min(contentLength, Math.max(0, before.toString().length));
+      const end = Math.min(contentLength, start + selectedText.length);
+      setCaret({ id: block.id, offset: start });
+      const nextSelection: Extract<AssistantSelection, { kind: 'word' }> = { kind: 'word', blockId: block.id, text: selectedText, start, end };
+      onSelectionChange(nextSelection);
+      setCrossSelection(undefined);
+      if (!selectedText || end <= start) { setLocalSelection(undefined); return; }
+      showPopover(nextSelection);
+      return;
+    }
+    // 跨段/跨页选区（2026-09-01 刘总要求）：浮窗照常弹出；发送时自动把所选
+    // 段落合并为基线版本再交给局部 AI。AI 应用的锚定信息放在 cross 字段。
+    const startBlock = blockOf(startEl);
+    const endBlock = blockOf(endEl);
+    if (!startBlock || !endBlock) return;
+    const beforeStart = range.cloneRange();
+    beforeStart.selectNodeContents(startEl);
+    beforeStart.setEnd(range.startContainer, range.startOffset);
+    const afterEnd = range.cloneRange();
+    afterEnd.selectNodeContents(endEl);
+    afterEnd.setStart(range.endContainer, range.endOffset);
+    const startOffset = Math.min((startBlock.text ?? '').length, Math.max(0, beforeStart.toString().length));
+    const endOffset = Math.max(0, (endBlock.text ?? '').length - Math.min((endBlock.text ?? '').length, afterEnd.toString().length));
+    const selectedText = selection.toString() ?? '';
+    if (!selectedText.trim()) { setLocalSelection(undefined); setCrossSelection(undefined); return; }
+    const crossSelection: Extract<AssistantSelection, { kind: 'word' }> = {
+      kind: 'word', blockId: startBlock.id, text: selectedText,
+      start: startOffset, end: startOffset + selectedText.length,
+      cross: { endBlockId: endBlock.id, endOffset },
+    };
+    onSelectionChange(crossSelection);
+    setCrossSelection(crossSelection);
+    showPopover(crossSelection);
+  };
   const captureTableCell = (event: React.SyntheticEvent<HTMLElement>, blockId: string, rowIndex: number, cellIndex: number) => { setActiveBlockId(blockId); const block = doc.blocks.find((item) => item.id === blockId); const cellText = block?.rows?.[rowIndex]?.[cellIndex] ?? ''; const selection = window.getSelection(); const range = selection?.rangeCount ? selection.getRangeAt(0) : null; if (!range || !event.currentTarget.contains(range.startContainer) || !event.currentTarget.contains(range.endContainer)) { setLocalSelection(undefined); onSelectionChange({ kind: 'word', blockId, text: '' }); return; } const before = range.cloneRange(); before.selectNodeContents(event.currentTarget); before.setEnd(range.startContainer, range.startOffset); const selectedText = selection?.toString() ?? ''; const start = Math.min(cellText.length, Math.max(0, before.toString().length)); const end = Math.min(cellText.length, start + selectedText.length); const nextSelection = { kind: 'word' as const, blockId, text: selectedText, start, end, row: rowIndex, column: cellIndex }; onSelectionChange(nextSelection); if (!selectedText || end <= start) { setLocalSelection(undefined); return; } const rangeRect = typeof range.getBoundingClientRect === 'function' ? range.getBoundingClientRect() : event.currentTarget.getBoundingClientRect(); const cellRect = event.currentTarget.getBoundingClientRect(); const left = Math.min(Math.max(12, (rangeRect.left || cellRect.left) + 8), Math.max(12, window.innerWidth - 326)); const top = Math.max(12, (rangeRect.top || cellRect.top) - 10); setLocalAnchor({ left, top, bottom: rangeRect.bottom || cellRect.bottom }); setLocalSelection(nextSelection); };
   const insertCitation = () => { if (!caret || !citation.trim()) return; const refs = doc.blocks.filter((block) => block.id.startsWith('reference-')); const number = refs.length + 1; const blocks = doc.blocks.map((block) => block.id === caret.id ? { ...block, text: `${(block.text ?? '').slice(0, caret.offset)}${superNumber(number)}${(block.text ?? '').slice(caret.offset)}` } : block); if (!blocks.some((block) => block.id === 'references-heading')) blocks.push({ id: 'references-heading', kind: 'heading', level: 1, text: '参考文献' }); blocks.push({ id: nextBlockId('reference'), kind: 'paragraph', text: `[${number}] ${citation.trim()}`, style: { reference: true } }); update({ ...doc, blocks }); setCitation(''); setCitationOpen(false); };
   const active = doc.blocks.find((block) => block.id === activeBlockId); const activeStyle = active?.style ?? {};
@@ -567,18 +982,75 @@ function WordEditor({ projectId, outcomeId, hasUnsavedChanges, document, onChang
     observer.observe(measure);
     return () => observer.disconnect();
   }, []);
+  // 自由跨段编辑（2026-09-01 刘总要求）：正文区是单一编辑宿主，段落不再各自
+  // 为独立编辑器——原生选区可跨段选中/删除。输入后以 DOM 为准回写模型：
+  // 改写对应块文本，浏览器原生删并/删空段落时同步增删模型块。
+  const reconcileBodyInput = (event: React.FormEvent<HTMLElement>) => {
+    const body = event.currentTarget;
+    const nodes = Array.from(body.querySelectorAll<HTMLElement>('[data-block]'));
+    const domIds = new Set(nodes.map((node) => node.dataset.block ?? ''));
+    const textual = new Set(['paragraph', 'heading', 'figure_caption', 'table_caption']);
+    let changed = false;
+    const nextBlocks = doc.blocks.flatMap((block) => {
+      if (!textual.has(block.kind)) return [block];
+      if (!domIds.has(block.id)) { changed = true; return []; }
+      const node = nodes.find((candidate) => candidate.dataset.block === block.id);
+      const text = node?.textContent ?? '';
+      if (text === block.text) return [block];
+      changed = true;
+      return [{ ...block, text }];
+    });
+    if (!changed) return;
+    update({ ...doc, blocks: nextBlocks });
+  };
+  // 粘贴统一降为纯文本（多段落粘贴的自动分段下一版再补）；回车仍可分段。
+  const handleBodyPaste = (event: React.ClipboardEvent<HTMLElement>) => {
+    const text = event.clipboardData.getData('text/plain');
+    if (!text) return;
+    event.preventDefault();
+    const flattened = text.replace(/\r\n?/gu, '\n').replace(/\n+/gu, ' ').replace(/[^\r\n 	]{2,}/gu, ' ').trim();
+    window.document.execCommand('insertText', false, flattened);
+  };
+  // 跨段局部 AI 的发送前准备（2026-09-01 刘总要求）：把所选段落按选区边界
+  // 合并为一个基线版本保存（版本面板可恢复），AI 在该单段上做局部修改。
+  const prepareCrossSelection = async (): Promise<{ selection: Extract<AssistantSelection, { kind: 'word' }> } | { error: string }> => {
+    const cross = crossSelectionRef.current;
+    if (!cross?.cross) {
+      // 单块/表格选区：直接使用打开浮窗时的真实选区。此前这里返回空 blockId
+      // 的兜底对象，导致局部 AI 请求丢失选区（2026-09-02 修复）。
+      const current = localSelectionRef.current;
+      if (!current) return { error: '所选内容已变化，请重新选择后再发送。' };
+      return { selection: current };
+    }
+    const startIndex = doc.blocks.findIndex((block) => block.id === cross.blockId);
+    const crossTarget = cross.cross;
+    const endIndex = doc.blocks.findIndex((block) => block.id === crossTarget.endBlockId);
+    if (startIndex < 0 || endIndex < startIndex) return { error: '所选内容已变化，请重新选择后再发送。' };
+    const startBlock = doc.blocks[startIndex]!;
+    const endBlock = doc.blocks[endIndex]!;
+    const startOffset = cross.start ?? 0;
+    const endOffset = crossTarget.endOffset;
+    const mergedText = (startBlock.text ?? '').slice(0, startOffset) + cross.text + (endBlock.text ?? '').slice(endOffset);
+    const mergedBlock: WordBlock = { ...startBlock, text: mergedText };
+    const next: WordDocument = { ...doc, blocks: [...doc.blocks.slice(0, startIndex), mergedBlock, ...doc.blocks.slice(endIndex + 1)] };
+    onNotice?.('已合并所选段落并保存基线版本，正在发送局部 AI…');
+    const saved = await onSave(next, '跨段局部编辑基线（合并所选段落）');
+    if (saved === false) return { error: '基线版本保存未完成，AI 请求未发送；原文未被改动。' };
+    setCrossSelection(undefined);
+    return { selection: { kind: 'word', blockId: cross.blockId, text: cross.text, start: startOffset, end: startOffset + cross.text.length } };
+  };
   const renderBlock = (block: WordBlock, measure: boolean) => {
     if (block.kind === 'table') {
-      return <table key={`${measure ? 'm-' : ''}${block.id}`}><tbody>{block.rows?.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => measure
+      return <div key={`${measure ? 'm-' : ''}${block.id}`} contentEditable={false} style={{ display: 'flow-root' }}><table><tbody>{block.rows?.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => measure
         ? <td key={cellIndex}>{cell}</td>
-        : <td key={cellIndex} contentEditable suppressContentEditableWarning onInput={(event) => { updateTableCell(block.id, rowIndex, cellIndex, event.currentTarget.textContent ?? ''); captureTableCell(event, block.id, rowIndex, cellIndex); }} onClick={(event) => captureTableCell(event, block.id, rowIndex, cellIndex)} onKeyUp={(event) => captureTableCell(event, block.id, rowIndex, cellIndex)}>{cell}</td>)}</tr>)}</tbody></table>;
+        : <td key={cellIndex} contentEditable suppressContentEditableWarning onInput={(event) => { updateTableCell(block.id, rowIndex, cellIndex, event.currentTarget.textContent ?? ''); captureTableCell(event, block.id, rowIndex, cellIndex); }} onClick={(event) => captureTableCell(event, block.id, rowIndex, cellIndex)} onKeyUp={(event) => captureTableCell(event, block.id, rowIndex, cellIndex)}>{cell}</td>)}</tr>)}</tbody></table></div>;
     }
-    if (block.kind === 'image') return <WordManagedImagePreview key={`${measure ? 'm-' : ''}${block.id}`} projectId={projectId} outcomeId={outcomeId} blockId={block.id} mediaId={block.imageRef} mediaType={block.mediaType} displayName={block.displayName} />;
+    if (block.kind === 'image') return <div key={`${measure ? 'm-' : ''}${block.id}`} contentEditable={false}><WordManagedImagePreview projectId={projectId} outcomeId={outcomeId} blockId={block.id} mediaId={block.imageRef} mediaType={block.mediaType} displayName={block.displayName} /></div>;
     if (measure) return <div key={`m-${block.id}`} className={`word-block ${block.kind} ${block.style?.list ? `word-block--${block.style.list}` : ''}`} style={displayStyle(block.style)}>{block.text}</div>;
-    return <div key={block.id} data-block={block.id} className={`word-block ${block.kind} ${block.style?.list ? `word-block--${block.style.list}` : ''} ${block.id === activeBlockId ? 'is-active' : ''}`} style={displayStyle(block.style)} contentEditable suppressContentEditableWarning onInput={(event) => { updateText(block.id, event.currentTarget.textContent ?? ''); capture(event); }} onClick={capture} onKeyUp={capture}>{block.text}</div>;
+     return <div key={block.id} data-block={block.id} className={`word-block ${block.kind} ${block.style?.list ? `word-block--${block.style.list}` : ''} ${block.id === activeBlockId ? 'is-active' : ''}`} style={displayStyle(block.style)} onClick={capture} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) { event.preventDefault(); splitParagraphAtCaret(event, block); } }} onKeyUp={capture}>{block.text}</div>;
   };
   const pages = pageStarts.map((start, index) => doc.blocks.slice(start, pageStarts[index + 1] ?? doc.blocks.length));
-  return <div className="word-studio"><div className="word-toolbar" aria-label="Word 编辑工具栏"><select aria-label="段落样式" value={active?.kind === 'heading' ? `h${active.level ?? 1}` : 'p'} onChange={(event) => { const value = event.target.value; if (value === 'p') setBlockKind('paragraph'); else setBlockKind('heading', Number(value.slice(1))); }}><option value="p">正文</option><option value="h1">一级标题</option><option value="h2">二级标题</option><option value="h3">三级标题</option></select><input aria-label="字体" value={typeof activeStyle.fontFamily === 'string' ? activeStyle.fontFamily : ''} placeholder="字体" onChange={(event) => updateActive({ fontFamily: event.target.value })} /><input aria-label="字号" type="number" min="6" max="96" value={typeof activeStyle.fontSizePt === 'number' ? activeStyle.fontSizePt : typeof activeStyle.fontSize === 'number' ? activeStyle.fontSize : 12} onChange={(event) => updateActive({ fontSizePt: Number(event.target.value) || 12 })} /><input aria-label="文字颜色" type="color" value={typeof activeStyle.color === 'string' && /^#[0-9a-f]{6}$/iu.test(activeStyle.color) ? activeStyle.color : '#17243A'} onChange={(event) => updateActive({ color: event.target.value })} /><button type="button" className={activeStyle.bold === true ? 'active' : ''} onClick={() => updateActive({ bold: activeStyle.bold !== true })} title="加粗"><strong>B</strong></button><button type="button" className={activeStyle.italic === true ? 'active' : ''} onClick={() => updateActive({ italic: activeStyle.italic !== true })} title="斜体"><em>I</em></button><button type="button" className={activeStyle.underline === true ? 'active' : ''} onClick={() => updateActive({ underline: activeStyle.underline !== true })} title="下划线"><Underline size={15} /></button><select aria-label="段落对齐" value={typeof activeStyle.align === 'string' ? activeStyle.align : 'left'} onChange={(event) => updateActive({ align: event.target.value })}><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option><option value="justify">两端对齐</option></select><button type="button" onClick={() => updateActive({ list: activeStyle.list === 'bullet' ? undefined : 'bullet' })}>• 列表</button><button type="button" onClick={() => updateActive({ list: activeStyle.list === 'numbered' ? undefined : 'numbered' })}>1. 列表</button><button type="button" onClick={() => update({ ...doc, blocks: [...doc.blocks, { id: nextBlockId('table'), kind: 'table', rows: [['表头 1', '表头 2'], ['内容', '内容']] }] })} title="插入表格"><Table2 size={15} /></button><OutcomeWordFormattingPanel document={doc} onApply={(next) => update(next)} /><button type="button" onClick={() => restoreHistory(-1)} disabled={historyState.index === 0} title="撤销"><RotateCcw size={15} /></button><button type="button" onClick={() => restoreHistory(1)} disabled={historyState.index >= historyState.length - 1} title="重做"><RotateCcw size={15} className="word-toolbar__redo" /></button><span className="word-toolbar__spacer" /><button type="button" onClick={() => setCitationOpen(true)} disabled={!caret}>⁽¹⁾ 引文</button><button type="button" onClick={() => onSave(doc, '保存 Word 文档')}><Save size={15} />保存</button></div>{typeof ResizeObserver === 'undefined' ? null : <article ref={measureRef} className="word-page word-page--measure" style={wordPageStyle} aria-hidden="true"><div className="word-page__body">{doc.blocks.map((block) => renderBlock(block, true))}</div></article>}{pages.map((pageBlocks, pageIndex) => <article key={pageIndex} className="word-page" style={wordPageStyle} aria-label={pageIndex === 0 ? 'Word 页面预览' : `Word 页面预览 第 ${pageIndex + 1} 页`}>{doc.header && <div className="word-page__header" data-testid={pageIndex === 0 ? 'word-page-header' : undefined}>{doc.header}</div>}<div className="word-page__body">{pageBlocks.map((block) => renderBlock(block, false))}{pageIndex === pages.length - 1 && <button className="word-add-block" type="button" onClick={() => update({ ...doc, blocks: [...doc.blocks, { id: nextBlockId('p'), kind: 'paragraph', text: '' }] })}>+ 添加段落</button>}</div>{(doc.footer || pageNumber) && <div className="word-page__footer" data-testid={pageIndex === 0 ? 'word-page-footer' : undefined}>{doc.footer && <span>{doc.footer}</span>}{pageNumber && <span className="word-page__number" aria-label="页码">{pageIndex + 1}</span>}</div>}</article>)}{localSelection && <LocalWordAssistantPopover projectId={projectId} outcomeId={outcomeId} selection={localSelection} anchor={localAnchor} hasUnsavedChanges={hasUnsavedChanges} close={() => setLocalSelection(undefined)} onApplied={onAssistantApplied} onConversationChanged={onConversationChanged} />}{citationOpen && <div className="citation-panel" role="dialog" aria-modal="true"><header><strong>插入引文</strong><button type="button" onClick={() => setCitationOpen(false)} aria-label="关闭"><X size={15} /></button></header><p>在当前光标处插入上角标，并在文末建立“参考文献”一级标题与编号条目。</p><textarea value={citation} onChange={(event) => setCitation(event.target.value)} placeholder="直接输入标准参考文献格式" /><footer><button type="button" onClick={() => setCitationOpen(false)}>取消</button><button className="primary" type="button" onClick={insertCitation}>插入</button></footer></div>}</div>;
+  return <div className="word-studio"><div className="word-toolbar" aria-label="Word 编辑工具栏"><select aria-label="段落样式" value={active?.kind === 'heading' ? `h${active.level ?? 1}` : 'p'} onChange={(event) => { const value = event.target.value; if (value === 'p') setBlockKind('paragraph'); else setBlockKind('heading', Number(value.slice(1))); }}><option value="p">正文</option><option value="h1">一级标题</option><option value="h2">二级标题</option><option value="h3">三级标题</option></select><input aria-label="字体" value={typeof activeStyle.fontFamily === 'string' ? activeStyle.fontFamily : ''} placeholder="字体" onChange={(event) => updateActive({ fontFamily: event.target.value })} /><input aria-label="字号" type="number" min="6" max="96" value={typeof activeStyle.fontSizePt === 'number' ? activeStyle.fontSizePt : typeof activeStyle.fontSize === 'number' ? activeStyle.fontSize : 12} onChange={(event) => updateActive({ fontSizePt: Number(event.target.value) || 12 })} /><input aria-label="文字颜色" type="color" value={typeof activeStyle.color === 'string' && /^#[0-9a-f]{6}$/iu.test(activeStyle.color) ? activeStyle.color : '#17243A'} onChange={(event) => updateActive({ color: event.target.value })} /><button type="button" className={activeStyle.bold === true ? 'active' : ''} onClick={() => updateActive({ bold: activeStyle.bold !== true })} title="加粗"><strong>B</strong></button><button type="button" className={activeStyle.italic === true ? 'active' : ''} onClick={() => updateActive({ italic: activeStyle.italic !== true })} title="斜体"><em>I</em></button><button type="button" className={activeStyle.underline === true ? 'active' : ''} onClick={() => updateActive({ underline: activeStyle.underline !== true })} title="下划线"><Underline size={15} /></button><select aria-label="段落对齐" value={typeof activeStyle.align === 'string' ? activeStyle.align : 'left'} onChange={(event) => updateActive({ align: event.target.value })}><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option><option value="justify">两端对齐</option></select><button type="button" onClick={() => updateActive({ list: activeStyle.list === 'bullet' ? undefined : 'bullet' })}>• 列表</button><button type="button" onClick={() => updateActive({ list: activeStyle.list === 'numbered' ? undefined : 'numbered' })}>1. 列表</button><button type="button" onClick={() => update({ ...doc, blocks: [...doc.blocks, { id: nextBlockId('table'), kind: 'table', rows: [['表头 1', '表头 2'], ['内容', '内容']] }] })} title="插入表格"><Table2 size={15} /></button><OutcomeWordFormattingPanel document={doc} onApply={(next) => update(next)} /><button type="button" onClick={() => restoreHistory(-1)} disabled={historyState.index === 0} title="撤销"><RotateCcw size={15} /></button><button type="button" onClick={() => restoreHistory(1)} disabled={historyState.index >= historyState.length - 1} title="重做"><RotateCcw size={15} className="word-toolbar__redo" /></button><span className="word-toolbar__spacer" /><button type="button" onClick={() => setCitationOpen(true)} disabled={!caret}>⁽¹⁾ 引文</button><button type="button" onClick={() => onSave(doc, '保存 Word 文档')}><Save size={15} />保存</button></div>{typeof ResizeObserver === 'undefined' ? null : <article ref={measureRef} className="word-page word-page--measure" style={wordPageStyle} aria-hidden="true"><div className="word-page__body">{doc.blocks.map((block) => renderBlock(block, true))}</div></article>}{<div className="word-pages-host" contentEditable suppressContentEditableWarning onInput={reconcileBodyInput} onPaste={handleBodyPaste} onMouseUp={capture}>{pages.map((pageBlocks, pageIndex) => <article key={pageIndex} className="word-page" style={wordPageStyle} aria-label={pageIndex === 0 ? 'Word 页面预览' : `Word 页面预览 第 ${pageIndex + 1} 页`}>{doc.header && <div className="word-page__header" contentEditable={false} data-testid={pageIndex === 0 ? 'word-page-header' : undefined}>{doc.header}</div>}<div className="word-page__body">{pageBlocks.map((block) => renderBlock(block, false))}{pageIndex === pages.length - 1 && <button className="word-add-block" type="button" contentEditable={false} onClick={() => update({ ...doc, blocks: [...doc.blocks, { id: nextBlockId('p'), kind: 'paragraph', text: '' }] })}>+ 添加段落</button>}</div>{(doc.footer || pageNumber) && <div className="word-page__footer" contentEditable={false} data-testid={pageIndex === 0 ? 'word-page-footer' : undefined}>{doc.footer && <span>{doc.footer}</span>}{pageNumber && <span className="word-page__number" aria-label="页码">{pageIndex + 1}</span>}</div>}</article>)}</div>}{localSelection && <LocalWordAssistantPopover projectId={projectId} outcomeId={outcomeId} selection={localSelection} anchor={localAnchor} hasUnsavedChanges={hasUnsavedChanges} close={() => { setLocalSelection(undefined); setCrossSelection(undefined); }} onApplied={onAssistantApplied} onConversationChanged={onConversationChanged} prepareSend={prepareCrossSelection} onNotice={onNotice} />}{citationOpen && <div className="citation-panel" role="dialog" aria-modal="true"><header><strong>插入引文</strong><button type="button" onClick={() => setCitationOpen(false)} aria-label="关闭"><X size={15} /></button></header><p>在当前光标处插入上角标，并在文末建立“参考文献”一级标题与编号条目。</p><textarea value={citation} onChange={(event) => setCitation(event.target.value)} placeholder="直接输入标准参考文献格式" /><footer><button type="button" onClick={() => setCitationOpen(false)}>取消</button><button className="primary" type="button" onClick={insertCitation}>插入</button></footer></div>}</div>;
 }
 
 function WordManagedImagePreview({ projectId, outcomeId, blockId, mediaId, mediaType, displayName }: { projectId: string; outcomeId: string; blockId: string; mediaId?: string; mediaType?: 'image/png' | 'image/jpeg'; displayName?: string }) {
@@ -597,7 +1069,7 @@ function WordManagedImagePreview({ projectId, outcomeId, blockId, mediaId, media
   return <figure className="word-image-block" data-block={blockId}>{url ? <img src={url} alt={displayName} /> : <div className="word-image-block__placeholder">{safeMediaId ? `${displayName}（预览加载中或完整性校验未通过）` : `${displayName}（导入预览；保存时提交媒体）`}</div>}<figcaption>{displayName} · {mediaType}</figcaption></figure>;
 }
 
-function LocalWordAssistantPopover({ projectId, outcomeId, selection, anchor, hasUnsavedChanges, close, onApplied, onConversationChanged }: { projectId: string; outcomeId: string; selection: Extract<AssistantSelection, { kind: 'word' }>; anchor: { left: number; top: number; bottom?: number }; hasUnsavedChanges: boolean; close: () => void; onApplied: (value: AssistantApplied | undefined) => Promise<void>; onConversationChanged: () => void }) {
+function LocalWordAssistantPopover({ projectId, outcomeId, selection, anchor, hasUnsavedChanges, close, onApplied, onConversationChanged, prepareSend, onNotice }: { projectId: string; outcomeId: string; selection: Extract<AssistantSelection, { kind: 'word' }>; anchor: { left: number; top: number; bottom?: number }; hasUnsavedChanges: boolean; close: () => void; onApplied: (value: AssistantApplied | undefined) => Promise<void>; onConversationChanged: () => void; prepareSend?: () => Promise<{ selection: Extract<AssistantSelection, { kind: 'word' }> } | { error: string }>; onNotice?: (notice: string) => void }) {
   const [instruction, setInstruction] = useState(''); const [notice, setNotice] = useState(''); const [isSending, setIsSending] = useState(false);
   const popoverRef = useRef<HTMLElement>(null);
   const [placement, setPlacement] = useState({ left: anchor.left, top: anchor.top });
@@ -624,15 +1096,22 @@ function LocalWordAssistantPopover({ projectId, outcomeId, selection, anchor, ha
     const chat = assistantBridge()?.chatOutcomeAssistant;
     if (!chat) { setNotice('成果 AI 运行服务尚未就绪，未发送也未创建任何修改。'); return; }
     setIsSending(true); setNotice('');
+    let effective = selection;
+    if (prepareSend) {
+      const prepared = await prepareSend();
+      if ('error' in prepared) { setNotice(prepared.error); setIsSending(false); return; }
+      effective = prepared.selection;
+    }
     try {
-      const result: AssistantResult = await chat({ projectId, outcomeId, instruction: trimmed, selection: requestSelection(selection) });
+      const result: AssistantResult = await chat({ projectId, outcomeId, instruction: trimmed, selection: requestSelection(effective) });
       setInstruction(''); onConversationChanged();
       if (result.status === 'completed') {
         if (result.applied) { await onApplied(result.applied); setNotice('AI 已将局部修改保存为新版本；右侧协作历史已同步。'); return; }
         setNotice(result.answer || result.assistantMessage?.content || 'AI 已回复。本轮没有生成可安全应用的结构化修改，因此成果内容未被改动。'); return;
       }
       const failed = result as unknown as { status: 'error' | 'cancelled'; code?: string; message?: string };
-      setNotice(failed.message || `本次局部协同未完成：${failed.code || failed.status}`);
+      const failText = failed.message || `本次局部协同未完成：${failed.code || failed.status}`;
+      setNotice(failText);
     } catch {
       setNotice('局部 AI 请求没有完成，成果内容没有被修改。');
     } finally { setIsSending(false); }
@@ -646,22 +1125,40 @@ function LocalWordAssistantPopover({ projectId, outcomeId, selection, anchor, ha
   return <section ref={popoverRef} className="word-local-ai" role="dialog" aria-label="所选文本 AI 操作" style={{ left: placement.left, top: placement.top }}><header><div><strong>AI 局部编辑</strong><small>已选 {selection.text.length} 个字符</small></div><button type="button" onClick={close} aria-label="关闭局部 AI 操作" title="关闭（Esc）"><X size={14} /></button></header><div className="word-local-ai__actions">{actions.map(([label, prompt]) => <button key={label} type="button" onClick={() => void send(prompt)} disabled={hasUnsavedChanges || isSending}>{label}</button>)}</div><label className="word-local-ai__instruction">补充指令<textarea aria-label="局部 AI 指令" value={instruction} onChange={(event) => setInstruction(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void send(instruction); } }} placeholder="例如：保留术语，语气更严谨" disabled={hasUnsavedChanges || isSending} /></label>{hasUnsavedChanges && <p className="word-local-ai__notice" role="status">当前草稿未保存。请先保存版本，再使用局部 AI。</p>}{notice && <p className="word-local-ai__notice" role="status">{notice}</p>}<footer><span>Ctrl / ⌘ + Enter 发送</span><button className="primary" type="button" onClick={() => void send(instruction)} disabled={hasUnsavedChanges || isSending || !instruction.trim()}>{isSending ? <LoaderCircle size={14} className="spin" /> : <Send size={14} />}发送</button></footer></section>;
 }
 
-function PptEditor({ document, onChange, onSave, onSelectionChange }: { document: PptDocument; onChange: (value: PptDocument) => void; onSave: (value: PptDocument) => void; onSelectionChange: (selection: AssistantSelection) => void }) {
-  const doc = document; const [pageIndex, setPageIndex] = useState(0); const [selectedElementId, setSelectedElementId] = useState<string>();
-  const grid = doc.ratio === '16:9' ? { w: 32, h: 18 } : { w: 24, h: 18 }; const page = doc.pages[pageIndex];
-  const update = (next: PptDocument) => onChange(next);
-  const mutatePage = (mutator: (current: PptDocument['pages'][number]) => PptDocument['pages'][number]) => update({ ...doc, pages: doc.pages.map((candidate, index) => index === pageIndex ? mutator(candidate) : candidate) });
-  const selectElement = (elementId?: string) => { setSelectedElementId(elementId); if (page) onSelectionChange({ kind: 'ppt', pageId: page.id, ...(elementId ? { elementId } : {}) }); };
-  const addElement = (type: PptDocument['pages'][number]['elements'][number]['type']) => { const id = `${type}-${Date.now()}`; mutatePage((current) => ({ ...current, humanModified: true, elements: [...current.elements, { id, type, x: 3, y: 3, width: type === 'line' || type === 'arrow' ? 8 : 10, height: type === 'line' || type === 'arrow' ? 1 : 3, locked: false, props: { text: type === 'text' ? '文本' : '' } }] })); selectElement(id); };
-  const selectedElement = page?.elements.find((element) => element.id === selectedElementId);
-  const nudge = (x: number, y: number) => { if (!selectedElement) return; mutatePage((current) => ({ ...current, humanModified: true, elements: current.elements.map((element) => element.id === selectedElement.id ? { ...element, x: Math.max(0, Math.min(grid.w - element.width, element.x + x)), y: Math.max(0, Math.min(grid.h - element.height, element.y + y)) } : element) })); };
-  const resize = (width: number, height: number) => { if (!selectedElement) return; mutatePage((current) => ({ ...current, humanModified: true, elements: current.elements.map((element) => element.id === selectedElement.id ? { ...element, width: Math.max(1, Math.min(grid.w - element.x, element.width + width)), height: Math.max(1, Math.min(grid.h - element.y, element.height + height)) } : element) })); };
-  const deleteSelected = () => { if (selectedElementId) { mutatePage((current) => ({ ...current, humanModified: true, elements: current.elements.filter((element) => element.id !== selectedElementId) })); selectElement(); } };
-  const duplicateSelected = () => { if (!selectedElement) return; const copy = { ...selectedElement, id: `${selectedElement.type}-${Date.now()}`, x: Math.min(grid.w - selectedElement.width, selectedElement.x + 1), y: Math.min(grid.h - selectedElement.height, selectedElement.y + 1), props: { ...selectedElement.props } }; mutatePage((current) => ({ ...current, humanModified: true, elements: [...current.elements, copy] })); selectElement(copy.id); };
-  return <div className="ppt-studio"><div className="ppt-toolbar" aria-label="PPT 编辑工具栏"><span>{doc.ratio} · {grid.w} × {grid.h} Grid</span><button type="button" onClick={() => addElement('text')}><Type size={15} />文本</button><button type="button" onClick={() => addElement('rect')}><Plus size={15} />形状</button><button type="button" onClick={() => addElement('table')}><Table2 size={15} />表格</button><button type="button" onClick={() => onSave(doc)}><Save size={15} />保存</button></div><div className="ppt-editor-body"><nav className="ppt-slides" aria-label="幻灯片列表">{doc.pages.map((candidate, index) => <button key={candidate.id} type="button" className={index === pageIndex ? 'selected' : ''} onClick={() => { setPageIndex(index); selectElement(); }}><small>{String(index + 1).padStart(2, '0')}</small><strong>{candidate.title}</strong><span>{candidate.humanModified ? '人工修改' : candidate.status === 'draft' ? '草稿' : '完成'}</span></button>)}<button type="button" className="ppt-slides__add" onClick={() => { const id = `slide-${Date.now()}`; update({ ...doc, pages: [...doc.pages, { id, title: `第 ${doc.pages.length + 1} 页`, pageType: 'content', humanModified: false, status: 'draft', elements: [] }] }); setPageIndex(doc.pages.length); selectElement(); }}><Plus size={14} />新建页</button></nav><div className="ppt-canvas-wrap"><div className="ppt-stage" style={{ aspectRatio: doc.ratio.replace(':', ' / ') }} onClick={() => selectElement()}>{Array.from({ length: grid.w * grid.h }).map((_, index) => <i key={index} style={{ left: `${(index % grid.w) / grid.w * 100}%`, top: `${Math.floor(index / grid.w) / grid.h * 100}%` }} />)}{page?.elements.map((element) => <button key={element.id} type="button" className={`ppt-element ${selectedElementId === element.id ? 'selected' : ''}`} onClick={(event) => { event.stopPropagation(); selectElement(element.id); }} style={{ left: `${element.x / grid.w * 100}%`, top: `${element.y / grid.h * 100}%`, width: `${element.width / grid.w * 100}%`, height: `${element.height / grid.h * 100}%`, zIndex: Number(element.props.zIndex ?? 1) }}>{element.type === 'text' ? String(element.props.text ?? '文本') : element.type === 'table' ? '表格' : element.type === 'chart' ? '图表' : element.type === 'image' ? '图片' : <Layers size={16} />}</button>)}</div></div><aside className="ppt-properties" aria-label="形状属性">{selectedElement ? <><header><div><small>已选中</small><strong>{selectedElement.type}</strong></div><button type="button" onClick={deleteSelected} title="删除元素"><Trash2 size={15} /></button></header><section><span>位置（Grid）</span><div className="ppt-nudge"><button type="button" onClick={() => nudge(0, -1)}><ArrowUp size={14} /></button><button type="button" onClick={() => nudge(-1, 0)}><ArrowLeft size={14} /></button><button type="button" onClick={() => nudge(1, 0)}><ArrowRight size={14} /></button><button type="button" onClick={() => nudge(0, 1)}><ArrowDown size={14} /></button></div></section><section><span>尺寸（Grid）</span><div className="ppt-size"><button type="button" onClick={() => resize(-1, 0)}><Minus size={14} /></button><b>{selectedElement.width} × {selectedElement.height}</b><button type="button" onClick={() => resize(1, 0)}><Plus size={14} /></button><button type="button" onClick={() => resize(0, 1)}><Maximize2 size={14} /></button></div></section><section className="ppt-properties__actions"><button type="button" onClick={duplicateSelected}><Copy size={14} />复制</button><button type="button" onClick={() => mutatePage((current) => ({ ...current, humanModified: true, elements: current.elements.map((element) => element.id === selectedElement.id ? { ...element, locked: !element.locked } : element) }))}>{selectedElement.locked ? '解除锁定' : '锁定'}</button></section></> : <div className="ppt-properties__empty"><Move size={20} /><p>选择一个元素后，可按 Grid 精确移动、缩放、复制或锁定。</p></div>}</aside></div></div>;
+type PptEditorProps = { projectId: string; outcomeId: string; baseVersion: number; hasUnsavedChanges: boolean; document: PptDocument; initialPageId?: string; initialSelectedElementId?: string; onChange: (value: PptDocument) => void; onSave: (value: PptDocument) => void; onGenerationApplied: (value: PptGenerationApplied) => Promise<void>; onGenerationConflict: () => Promise<void>; onSelectionChange: (selection: AssistantSelection) => void; onNotice?: (notice: string) => void; controlledPageIndex?: number; controlledSelectedElementId?: string };
+
+function PptStudioEditor(props: PptEditorProps) {
+  const editorDocument: PptDocument = props.document.pages.length > 0 ? props.document : { ...props.document, pages: [{ id: 'slide-empty', title: '封面', pageType: 'cover', humanModified: false, status: 'draft', elements: [] }] };
+  const initialPageIndex = props.initialPageId ? Math.max(0, editorDocument.pages.findIndex((page) => page.id === props.initialPageId)) : 0;
+  const [pageIndex, setPageIndex] = useState(initialPageIndex);
+  const [selectedElementId, setSelectedElementId] = useState<string | undefined>(props.initialSelectedElementId);
+  const safePageIndex = Math.max(0, Math.min(pageIndex, Math.max(0, editorDocument.pages.length - 1)));
+  const selectPage = (index: number, pageId = editorDocument.pages[index]?.id) => {
+    setPageIndex(index);
+    setSelectedElementId(undefined);
+    if (pageId) props.onSelectionChange({ kind: 'ppt', pageId });
+  };
+  const selectElement = (elementId?: string) => {
+    setSelectedElementId(elementId);
+    const currentPage = editorDocument.pages[safePageIndex];
+    if (currentPage) props.onSelectionChange({ kind: 'ppt', pageId: currentPage.id, ...(elementId ? { elementId } : {}) });
+  };
+  const saveDocument = () => props.onSave(withoutPristineFallbackPages(props.document));
+  return <>
+    <OfficePptRibbon document={editorDocument} pageIndex={safePageIndex} selectedElementId={selectedElementId} onChange={props.onChange} onSave={saveDocument} onSelectPage={selectPage} onSelectElement={selectElement} onNotice={(notice) => props.onNotice?.(notice)} />
+    <LegacyPptStudioEditor {...props} document={editorDocument} controlledPageIndex={safePageIndex} controlledSelectedElementId={selectedElementId} onSelectionChange={(selection) => { if (selection?.kind === 'ppt') { const nextIndex = editorDocument.pages.findIndex((candidate) => candidate.id === selection.pageId); if (nextIndex >= 0) setPageIndex(nextIndex); setSelectedElementId(selection.elementId); } props.onSelectionChange(selection); }} />
+  </>;
 }
 
-function PptStudioEditor({ projectId, outcomeId, baseVersion, hasUnsavedChanges, document, onChange, onSave, onGenerationApplied, onGenerationConflict, onSelectionChange }: { projectId: string; outcomeId: string; baseVersion: number; hasUnsavedChanges: boolean; document: PptDocument; onChange: (value: PptDocument) => void; onSave: (value: PptDocument) => void; onGenerationApplied: (value: PptGenerationApplied) => Promise<void>; onGenerationConflict: () => Promise<void>; onSelectionChange: (selection: AssistantSelection) => void }) {
+function LegacyPptStudioEditor({ projectId, outcomeId, baseVersion, hasUnsavedChanges, document, onChange, onSave, onGenerationApplied, onGenerationConflict, onSelectionChange, controlledPageIndex, controlledSelectedElementId }: PptEditorProps) {
+  const { t } = useTranslation();
+  useLayoutEffect(() => {
+    const toolbar = window.document.querySelector<HTMLElement>('.ppt-studio > .ppt-toolbar');
+    if (!toolbar) return undefined;
+    toolbar.hidden = true;
+    toolbar.setAttribute('aria-hidden', 'true');
+    return () => { toolbar.hidden = false; toolbar.removeAttribute('aria-hidden'); };
+  }, []);
   type PptPage = PptDocument['pages'][number];
   type PptElement = PptPage['elements'][number];
   type PptElementType = PptElement['type'];
@@ -671,10 +1168,15 @@ function PptStudioEditor({ projectId, outcomeId, baseVersion, hasUnsavedChanges,
     { type: 'triangle', label: '三角', text: '三角' }, { type: 'line', label: '线', text: '线' }, { type: 'arrow', label: '箭头', text: '箭头' }, { type: 'table', label: '表格', text: '表格' },
     { type: 'chart', label: '图表', text: '图表占位' }, { type: 'image', label: '图片占位', text: '图片占位' },
   ];
-  const doc = document;
-  const [pageIndex, setPageIndex] = useState(0);
-  const [selectedElementId, setSelectedElementId] = useState<string>();
+  const emptyPage: PptPage = { id: 'slide-empty', title: '封面', pageType: 'cover', humanModified: false, status: 'draft', elements: [] };
+  const doc: PptDocument = document.pages.length > 0 ? document : { ...document, pages: [emptyPage] };
+  const [legacyPageIndex, setPageIndex] = useState(0);
+  const [legacySelectedElementId, setSelectedElementId] = useState<string>();
+  const pageIndex = controlledPageIndex ?? legacyPageIndex;
+  const selectedElementId = controlledSelectedElementId ?? legacySelectedElementId;
   const [templates, setTemplates] = useState<PptTemplate[]>([]);
+  const [defaultTemplateId, setDefaultTemplateId] = useState<string | null>(null);
+  const [pendingDeleteTemplateId, setPendingDeleteTemplateId] = useState<string | null>(null);
   const [generationSkills, setGenerationSkills] = useState<PptGenerationSkill[]>([]);
   const [studioNotice, setStudioNotice] = useState('');
   const [generationInstruction, setGenerationInstruction] = useState('');
@@ -684,6 +1186,7 @@ function PptStudioEditor({ projectId, outcomeId, baseVersion, hasUnsavedChanges,
   const [isImageGenerating, setIsImageGenerating] = useState(false);
   const [skillEditorOpen, setSkillEditorOpen] = useState(false);
   const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
+  const [templateNameDraft, setTemplateNameDraft] = useState('');
   const [skillDraft, setSkillDraft] = useState<Omit<PptGenerationSkill, 'id'>>({ name: '', narrative: 'argument_evidence', contentDensity: 'balanced', audience: '', instructions: '' });
   const [drag, setDrag] = useState<DragState>();
   const stageRef = useRef<HTMLDivElement>(null);
@@ -695,14 +1198,18 @@ function PptStudioEditor({ projectId, outcomeId, baseVersion, hasUnsavedChanges,
     let current = true;
     const bridge = window.metis;
     if (!bridge) return () => { current = false; };
-    void Promise.all([bridge.listPptTemplates(), bridge.listPptGenerationSkills()]).then(([templateRows, skillRows]) => {
+    void Promise.all([
+      bridge.listOutcomeTemplates ? bridge.listOutcomeTemplates({ kind: 'ppt' }) : bridge.listPptTemplates(),
+      bridge.listPptGenerationSkills(),
+      bridge.getDefaultOutcomeTemplate?.({ kind: 'ppt' }),
+    ]).then(([templateRows, skillRows, defaultRow]) => {
       if (!current) return;
       setTemplates((currentRows) => mergeRowsById(currentRows, Array.isArray(templateRows) ? templateRows as PptTemplate[] : []));
+      setDefaultTemplateId(defaultRow && typeof defaultRow === 'object' && 'id' in defaultRow ? String((defaultRow as { id: unknown }).id) : null);
       setGenerationSkills((currentRows) => mergeRowsById(currentRows, Array.isArray(skillRows) ? skillRows as PptGenerationSkill[] : []));
     }).catch(() => { if (current) setStudioNotice('模板或生成技能列表暂不可用；当前成果编辑不受影响。'); });
     return () => { current = false; };
   }, []);
-  if (doc.pages.length === 0) return <PptEditor document={document} onChange={onChange} onSave={onSave} onSelectionChange={onSelectionChange} />;
   const safePageIndex = Math.max(0, Math.min(pageIndex, doc.pages.length - 1));
   const page = doc.pages[safePageIndex]!;
   const grid = doc.ratio === '16:9' ? { w: 32, h: 18 } : { w: 24, h: 18 };
@@ -717,6 +1224,35 @@ function PptStudioEditor({ projectId, outcomeId, baseVersion, hasUnsavedChanges,
     return { ...element, x: boundedX, y: boundedY, width: boundedWidth, height: boundedHeight };
   };
   const markChanged = (mutator: (current: PptPage) => PptPage) => mutatePage((current) => ({ ...mutator(current), humanModified: true }));
+  useLayoutEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return undefined;
+    const textElements = page.elements.filter((element) => element.type === 'text');
+    const nodes = Array.from(stage.querySelectorAll<HTMLElement>('.ppt-element--text'));
+    const cleanups = nodes.map((node, index) => {
+      const target = textElements[index];
+      if (!target) return () => undefined;
+      node.contentEditable = target.locked ? 'false' : 'true';
+      node.setAttribute('contenteditable', target.locked ? 'false' : 'true');
+      if (target.locked) return () => undefined;
+      const onInput = () => {
+        const nextText = node.textContent ?? '';
+        markChanged((current) => ({
+          ...current,
+          elements: current.elements.map((element) => element.id === target.id
+            ? { ...element, props: { ...element.props, text: nextText } }
+            : element),
+        }));
+      };
+      node.addEventListener('input', onInput);
+      return () => node.removeEventListener('input', onInput);
+    });
+    return () => cleanups.forEach((cleanup) => cleanup());
+  // The DOM listener is intentionally attached after React commits the canvas;
+  // the editor model is re-read on every render so direct text edits cannot
+  // write against an outdated page snapshot.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc, page.elements, safePageIndex]);
   const createId = (prefix: string) => {
     let id = '';
     do { idRef.current += 1; id = `${prefix}-${idRef.current}`; }
@@ -814,7 +1350,7 @@ function PptStudioEditor({ projectId, outcomeId, baseVersion, hasUnsavedChanges,
   const beginDrag = (event: React.PointerEvent<HTMLElement>, element: PptElement, mode: 'move' | 'resize') => { if (element.locked) return; event.stopPropagation(); event.currentTarget.setPointerCapture?.(event.pointerId); selectElement(element.id); setDrag({ elementId: element.id, mode, startX: event.clientX, startY: event.clientY, originX: element.x, originY: element.y, originWidth: element.width, originHeight: element.height }); };
   const moveDrag = (event: React.PointerEvent<HTMLElement>, element: PptElement) => { if (!drag || drag.elementId !== element.id || element.locked) return; const bounds = stageRef.current?.getBoundingClientRect(); if (!bounds || !bounds.width || !bounds.height) return; const deltaX = Math.round((event.clientX - drag.startX) / bounds.width * grid.w); const deltaY = Math.round((event.clientY - drag.startY) / bounds.height * grid.h); if (drag.mode === 'move') updateSelected((current) => clampElement(current, drag.originX + deltaX, drag.originY + deltaY)); else updateSelected((current) => clampElement(current, drag.originX, drag.originY, drag.originWidth + deltaX, drag.originHeight + deltaY)); };
   const stopDrag = (event: React.PointerEvent<HTMLElement>) => { if (drag) event.currentTarget.releasePointerCapture?.(event.pointerId); setDrag(undefined); };
-  const setRatio = (ratio: PptDocument['ratio']) => { if (ratio === doc.ratio) return; const targetGrid = ratio === '16:9' ? { w: 32, h: 18 } : { w: 24, h: 18 }; update({ ...doc, ratio, pages: doc.pages.map((candidate) => ({ ...candidate, humanModified: true, elements: candidate.elements.map((element) => { const width = Math.max(1, Math.min(targetGrid.w, element.width)); const height = Math.max(1, Math.min(targetGrid.h, element.height)); return { ...element, x: Math.max(0, Math.min(targetGrid.w - width, element.x)), y: Math.max(0, Math.min(targetGrid.h - height, element.y)), width, height }; }) })) }); };
+  const setRatio = (ratio: PptDocument['ratio']) => { if (ratio === doc.ratio) return; const targetGrid = ratio === '16:9' ? { w: 32, h: 18 } : { w: 24, h: 18 }; update({ ...doc, ratio, pages: doc.pages.map((candidate) => ({ ...candidate, humanModified: candidate.humanModified || !isPristineFallbackPage(candidate), elements: candidate.elements.map((element) => { const width = Math.max(1, Math.min(targetGrid.w, element.width)); const height = Math.max(1, Math.min(targetGrid.h, element.height)); return { ...element, x: Math.max(0, Math.min(targetGrid.w - width, element.x)), y: Math.max(0, Math.min(targetGrid.h - height, element.y)), width, height }; }) })) }); };
   const changeTemplate = (id: string) => { const template = templates.find((item) => item.id === id); if (!template) { update({ ...doc, templateId: null }); setStudioNotice('已取消模板关联；当前页面与主题没有被改动。'); return; } update({ ...doc, templateId: template.id }); setStudioNotice(`已关联真实模板「${template.name}」，但尚未应用其比例、主题或页面布局。请先保存关联，再点击“应用模板内容”。`); };
   const applyTemplate = () => {
     if (hasUnsavedChanges) { setStudioNotice('当前 PPT 有未保存的编辑或模板关联。请先保存为新版本，再应用模板内容，避免覆盖本地草稿。'); return; }
@@ -822,13 +1358,72 @@ function PptStudioEditor({ projectId, outcomeId, baseVersion, hasUnsavedChanges,
     if (!template) { setStudioNotice(doc.templateId ? '当前关联的模板已不可用或尚未加载，当前成果没有被修改。' : '请先选择一个真实模板，再应用模板内容。'); return; }
     const parsed = applicablePptTemplate(template, doc.ratio);
     if (!parsed.value) { setStudioNotice(parsed.message ?? '模板无法应用，当前成果没有被修改。'); return; }
-    const next = { ...doc, templateId: template.id, ...(parsed.value.ratio ? { ratio: parsed.value.ratio } : {}), ...(parsed.value.theme ? { theme: { ...parsed.value.theme } } : {}), ...(parsed.value.pages ? { pages: copyTemplatePages(parsed.value.pages) } : {}) };
+    const next = { ...doc, templateId: template.id, ...(parsed.value.ratio ? { ratio: parsed.value.ratio } : {}), ...(parsed.value.theme ? { theme: structuredClone(parsed.value.theme) } : {}), ...(parsed.value.pages ? { pages: copyTemplatePages(parsed.value.pages) } : {}) };
     update(next); setPageIndex(0); setSelectedElementId(undefined); onSelectionChange({ kind: 'ppt', pageId: next.pages[0]?.id ?? page.id });
     const parts = [parsed.value.ratio ? '比例' : '', parsed.value.theme ? '主题' : '', parsed.value.pages ? '页面布局' : ''].filter(Boolean).join('、');
     setStudioNotice(`已将模板「${template.name}」的${parts}应用到当前草稿；现在可继续编辑。点击“保存”才会创建人工版本。`);
   };
-  const persistTemplate = async (name: string) => { if (!window.metis?.savePptTemplate) return; try { const saved = await window.metis.savePptTemplate({ name, definition: { ratio: doc.ratio, theme: doc.theme, pages: copyTemplatePages(doc.pages) } }); if (!saved) { setStudioNotice('模板未保存，当前成果内容没有被改变。'); return; } const template = saved as PptTemplate; setTemplates((rows) => [...rows.filter((item) => item.id !== template.id), template]); update({ ...doc, templateId: template.id }); setStudioNotice(`模板「${template.name}」已保存并关联当前成果；当前页面没有被模板覆盖。请保存成果版本以持久化关联。`); } catch { setStudioNotice('模板保存请求未完成，当前成果内容没有被改变。'); } };
+  const documentForSave = (): PptDocument => withoutPristineFallbackPages(doc);
+  const templateDefinitionFromDoc = (): { ratio: PptDocument['ratio']; theme: Record<string, unknown>; pages?: PptPage[] } => {
+    const pages = doc.pages.filter((candidate) => !isPristineFallbackPage(candidate));
+    return { ratio: doc.ratio, theme: doc.theme, ...(pages.length > 0 ? { pages: copyTemplatePages(pages) } : {}) };
+  };
+  const persistTemplate = async (name: string) => {
+    const bridge = window.metis;
+    if (!bridge) return;
+    try {
+      const definition = templateDefinitionFromDoc();
+      const saved = bridge.saveOutcomeTemplate
+        ? await bridge.saveOutcomeTemplate({ kind: 'ppt', name, definition })
+        : bridge.savePptTemplate ? await bridge.savePptTemplate({ name, definition }) : null;
+      if (!saved) { setStudioNotice('模板未保存，当前成果内容没有被改变。'); return; }
+      const template = saved as PptTemplate;
+      setTemplates((rows) => [...rows.filter((item) => item.id !== template.id), template]);
+      update({ ...doc, templateId: template.id });
+      setStudioNotice(`模板「${template.name}」已保存并关联当前成果；当前页面没有被模板覆盖。请保存成果版本以持久化关联。`);
+    } catch { setStudioNotice('模板保存请求未完成，当前成果内容没有被改变。'); }
+  };
   const saveTemplate = async (rawName: string) => { const name = rawName.trim(); if (!name) return; setSaveTemplateOpen(false); await persistTemplate(name); };
+  const renamePptTemplate = async () => {
+    const name = templateNameDraft.trim();
+    if (!doc.templateId || !name || !window.metis?.updateOutcomeTemplate) return;
+    try {
+      const saved = await window.metis.updateOutcomeTemplate({ id: doc.templateId, kind: 'ppt', name });
+      if (!saved) { setStudioNotice('PPT 模板重命名未完成。'); return; }
+      setTemplates((rows) => rows.map((item) => item.id === doc.templateId ? saved as PptTemplate : item)); setTemplateNameDraft(''); setStudioNotice(`PPT 模板已重命名为「${(saved as PptTemplate).name}」。`);
+    } catch { setStudioNotice('PPT 模板重命名请求未完成。'); }
+  };
+  const updatePptTemplate = async () => {
+    if (!doc.templateId || !window.metis?.updateOutcomeTemplate) return;
+    try {
+      const saved = await window.metis.updateOutcomeTemplate({ id: doc.templateId, kind: 'ppt', definition: templateDefinitionFromDoc() });
+      if (!saved) { setStudioNotice('PPT 模板更新未完成。'); return; }
+      setTemplates((rows) => rows.map((item) => item.id === doc.templateId ? saved as PptTemplate : item)); setStudioNotice(`PPT 模板「${(saved as PptTemplate).name}」已更新为当前样式。`);
+    } catch { setStudioNotice('PPT 模板更新请求未完成。'); }
+  };
+  const deletePptTemplate = async () => {
+    const id = pendingDeleteTemplateId;
+    if (!id || !window.metis?.deleteOutcomeTemplate) return;
+    try {
+      if (!await window.metis.deleteOutcomeTemplate({ id, kind: 'ppt' })) { setStudioNotice('PPT 模板删除未完成。'); return; }
+      setTemplates((rows) => rows.filter((item) => item.id !== id));
+      if (defaultTemplateId === id) setDefaultTemplateId(null);
+      if (doc.templateId === id) update({ ...doc, templateId: null });
+      setPendingDeleteTemplateId(null); setStudioNotice('PPT 模板已删除，当前成果内容未被修改。');
+    } catch { setStudioNotice('PPT 模板删除请求未完成。'); }
+  };
+  const setPptDefaultTemplate = async () => {
+    if (!doc.templateId || !window.metis?.setDefaultOutcomeTemplate) return;
+    try {
+      if (await window.metis.setDefaultOutcomeTemplate({ kind: 'ppt', templateId: doc.templateId })) { setDefaultTemplateId(doc.templateId); setStudioNotice('已设为 PPT 新建成果默认模板。'); } else setStudioNotice('PPT 默认模板设置未完成。');
+    } catch { setStudioNotice('PPT 默认模板设置请求未完成。'); }
+  };
+  const clearPptDefaultTemplate = async () => {
+    if (!defaultTemplateId || !window.metis?.setDefaultOutcomeTemplate) return;
+    try {
+      if (await window.metis.setDefaultOutcomeTemplate({ kind: 'ppt', templateId: null })) { setDefaultTemplateId(null); setStudioNotice('已取消 PPT 新建成果默认模板。'); } else setStudioNotice('PPT 默认模板取消未完成。');
+    } catch { setStudioNotice('PPT 默认模板取消请求未完成。'); }
+  };
   const saveGenerationSkill = async () => {
     if (!skillDraft.name.trim()) { setStudioNotice('请填写生成技能名称。'); return; }
     if (!window.metis?.savePptGenerationSkill) { setStudioNotice('PPT Generation Skill 保存服务尚未就绪，未创建技能。'); return; }
@@ -858,8 +1453,8 @@ function PptStudioEditor({ projectId, outcomeId, baseVersion, hasUnsavedChanges,
     finally { setIsGenerating(false); }
   };
   return <div className="ppt-studio">
-    <div className="ppt-toolbar" aria-label="PPT 编辑工具栏"><span>{doc.ratio} · {grid.w} × {grid.h} Grid</span><div className="ppt-toolbar__ratio" role="group" aria-label="页面比例"><button type="button" className={doc.ratio === '16:9' ? 'active' : ''} onClick={() => setRatio('16:9')}>16:9</button><button type="button" className={doc.ratio === '4:3' ? 'active' : ''} onClick={() => setRatio('4:3')}>4:3</button></div><select aria-label="添加 PPT 元素" defaultValue="" onChange={(event) => { if (event.target.value) { addElement(event.target.value as PptElementType); event.currentTarget.value = ''; } }}><option value="" disabled>添加元素</option>{elementOptions.map((option) => <option key={option.type} value={option.type}>{option.label}</option>)}</select><button type="button" onClick={() => addElement('text')}><Type size={15} />文本</button><button type="button" onClick={() => addElement('rect')}><Plus size={15} />矩形</button><button type="button" onClick={() => addElement('table')}><Table2 size={15} />表格</button><button type="button" onClick={openImageGeneration} disabled={isImageGenerating}><ImageIcon size={15} />AI 图片</button><button type="button" onClick={() => onSave(doc)}><Save size={15} />保存</button></div>
-    <div className="ppt-template-strip" aria-label="PPT 模板与生成技能"><label>模板（仅关联）<select aria-label="选择 PPT 模板" value={doc.templateId ?? ''} onChange={(event) => changeTemplate(event.target.value)}><option value="">不关联模板</option>{templates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}</select></label><button type="button" onClick={() => setSaveTemplateOpen(true)} disabled={!window.metis?.savePptTemplate}>保存为模板</button><button className="ppt-template-apply" type="button" onClick={applyTemplate} disabled={!doc.templateId} title="将所选模板的可用比例、主题和页面布局写入当前草稿">应用模板内容</button><small className="ppt-template-association" role="status">{hasUnsavedChanges ? '当前有未保存编辑或模板关联；先保存版本后才可应用，避免覆盖草稿。' : doc.templateId ? '当前仅关联模板，尚未覆盖页面；点击“应用模板内容”后仍需手动保存。' : '选择模板只建立关联，不会覆盖当前页面。'}</small><label>生成技能<select aria-label="选择 PPT 生成技能" value={doc.generationSkillId ?? ''} onChange={(event) => update({ ...doc, generationSkillId: event.target.value || null })}><option value="">不关联生成技能</option>{generationSkills.map((skill) => <option key={skill.id} value={skill.id}>{skill.name}</option>)}</select></label><button type="button" onClick={() => setSkillEditorOpen(true)} disabled={!window.metis?.savePptGenerationSkill}>新建技能</button><input className="ppt-generation-instruction" aria-label="PPT 生成指令" value={generationInstruction} onChange={(event) => setGenerationInstruction(event.target.value)} placeholder="例如：把本页扩展为答辩逻辑" disabled={isGenerating} /><button className="ppt-generation-action" type="button" onClick={() => void executeGeneration()} disabled={isGenerating || hasUnsavedChanges || !doc.generationSkillId || !generationInstruction.trim()}>{isGenerating ? <LoaderCircle size={14} className="spin" /> : <Sparkles size={14} />}运行生成</button><small>{hasUnsavedChanges ? '当前有未保存编辑；保存为新版本后才能运行。' : doc.generationSkillId ? '运行前会核验当前版本；仅服务端成功保存的新版本才会显示。' : '选择或新建生成技能并保存当前成果版本后，才能运行。'}</small></div>
+    <div className="ppt-toolbar" aria-label="PPT 编辑工具栏"><span>{doc.ratio} · {grid.w} × {grid.h} Grid</span><div className="ppt-toolbar__ratio" role="group" aria-label="页面比例"><button type="button" className={doc.ratio === '16:9' ? 'active' : ''} onClick={() => setRatio('16:9')}>16:9</button><button type="button" className={doc.ratio === '4:3' ? 'active' : ''} onClick={() => setRatio('4:3')}>4:3</button></div><select aria-label="添加 PPT 元素" defaultValue="" onChange={(event) => { if (event.target.value) { addElement(event.target.value as PptElementType); event.currentTarget.value = ''; } }}><option value="" disabled>添加元素</option>{elementOptions.map((option) => <option key={option.type} value={option.type}>{option.label}</option>)}</select><button type="button" onClick={() => addElement('text')}><Type size={15} />文本</button><button type="button" onClick={() => addElement('rect')}><Plus size={15} />矩形</button><button type="button" onClick={() => addElement('table')}><Table2 size={15} />表格</button><button type="button" onClick={openImageGeneration} disabled={isImageGenerating}><ImageIcon size={15} />AI 图片</button><button type="button" onClick={() => onSave(documentForSave())}><Save size={15} />保存</button></div>
+    <div className="ppt-template-strip" aria-label="PPT 模板与生成技能"><label>{t('outcomePptTemplates.fieldLabel')}<select aria-label="选择 PPT 模板" value={doc.templateId ?? ''} onChange={(event) => changeTemplate(event.target.value)}><option value="">{t('outcomePptTemplates.selectNone')}</option>{templates.map((template) => <option key={template.id} value={template.id}>{template.name}{template.id === defaultTemplateId ? t('outcomePptTemplates.defaultSuffix') : ''}</option>)}</select></label><button type="button" onClick={() => setSaveTemplateOpen(true)} disabled={!window.metis?.saveOutcomeTemplate && !window.metis?.savePptTemplate}>{t('outcomePptTemplates.saveAs')}</button><button className="ppt-template-apply" type="button" onClick={applyTemplate} disabled={!doc.templateId} title="将所选模板的可用比例、主题和页面布局写入当前草稿">{t('outcomePptTemplates.apply')}</button><input aria-label={t('outcomePptTemplates.nameLabel')} value={templateNameDraft} onChange={(event) => setTemplateNameDraft(event.target.value)} placeholder={t('outcomePptTemplates.namePlaceholder')} /><button type="button" onClick={() => void renamePptTemplate()} disabled={!doc.templateId || !templateNameDraft.trim()}>{t('outcomePptTemplates.rename')}</button><button type="button" onClick={() => void updatePptTemplate()} disabled={!doc.templateId}>{t('outcomePptTemplates.updateCurrent')}</button><button type="button" onClick={() => void setPptDefaultTemplate()} disabled={!doc.templateId}>{t('outcomePptTemplates.setDefault')}</button><button type="button" onClick={() => void clearPptDefaultTemplate()} disabled={!defaultTemplateId}>{t('outcomePptTemplates.clearDefault')}</button><button type="button" onClick={() => setPendingDeleteTemplateId(doc.templateId)} disabled={!doc.templateId}>{t('outcomePptTemplates.delete')}</button>{pendingDeleteTemplateId && <div className="ppt-template-confirm" role="alert"><span>{t('outcomePptTemplates.confirmDelete', { name: templates.find((item) => item.id === pendingDeleteTemplateId)?.name ?? pendingDeleteTemplateId })}</span><button type="button" onClick={() => void deletePptTemplate()}>{t('outcomePptTemplates.confirm')}</button><button type="button" onClick={() => setPendingDeleteTemplateId(null)}>{t('outcomePptTemplates.cancel')}</button></div>}<small className="ppt-template-association" role="status">{hasUnsavedChanges ? '当前有未保存编辑或模板关联；先保存版本后才可应用，避免覆盖草稿。' : doc.templateId ? '当前仅关联模板，尚未覆盖页面；点击“应用模板内容”后仍需手动保存。' : '选择模板只建立关联，不会覆盖当前页面。'}</small><label>生成技能<select aria-label="选择 PPT 生成技能" value={doc.generationSkillId ?? ''} onChange={(event) => update({ ...doc, generationSkillId: event.target.value || null })}><option value="">不关联生成技能</option>{generationSkills.map((skill) => <option key={skill.id} value={skill.id}>{skill.name}</option>)}</select></label><button type="button" onClick={() => setSkillEditorOpen(true)} disabled={!window.metis?.savePptGenerationSkill}>新建技能</button><input className="ppt-generation-instruction" aria-label="PPT 生成指令" value={generationInstruction} onChange={(event) => setGenerationInstruction(event.target.value)} placeholder="例如：把本页扩展为答辩逻辑" disabled={isGenerating} /><button className="ppt-generation-action" type="button" onClick={() => void executeGeneration()} disabled={isGenerating || hasUnsavedChanges || !doc.generationSkillId || !generationInstruction.trim()}>{isGenerating ? <LoaderCircle size={14} className="spin" /> : <Sparkles size={14} />}运行生成</button><small>{hasUnsavedChanges ? '当前有未保存编辑；保存为新版本后才能运行。' : doc.generationSkillId ? '运行前会核验当前版本；仅服务端成功保存的新版本才会显示。' : '选择或新建生成技能并保存当前成果版本后，才能运行。'}</small></div>
     {studioNotice && <p className="ppt-studio__notice" role="status">{studioNotice}</p>}
     {skillEditorOpen && <section className="ppt-skill-editor" role="dialog" aria-label="新建 PPT 生成技能"><header><div><strong>新建生成技能</strong><small>保存后会真实写入技能库，并自动选中。</small></div><button type="button" aria-label="关闭新建生成技能" onClick={() => setSkillEditorOpen(false)}><X size={15} /></button></header><label>名称<input aria-label="生成技能名称" value={skillDraft.name} onChange={(event) => setSkillDraft((current) => ({ ...current, name: event.target.value }))} autoFocus /></label><div className="ppt-skill-editor__row"><label>叙事<select aria-label="生成技能叙事" value={skillDraft.narrative} onChange={(event) => setSkillDraft((current) => ({ ...current, narrative: event.target.value as PptGenerationSkill['narrative'] }))}><option value="argument_evidence">论点与证据</option><option value="problem_solution">问题与方案</option><option value="timeline">时间线</option><option value="comparison">比较</option><option value="minimal_report">极简汇报</option></select></label><label>信息密度<select aria-label="生成技能信息密度" value={skillDraft.contentDensity} onChange={(event) => setSkillDraft((current) => ({ ...current, contentDensity: event.target.value as PptGenerationSkill['contentDensity'] }))}><option value="sparse">精简</option><option value="balanced">均衡</option><option value="dense">详实</option></select></label></div><label>受众<input aria-label="生成技能受众" value={skillDraft.audience} placeholder="例如：项目评审专家" onChange={(event) => setSkillDraft((current) => ({ ...current, audience: event.target.value }))} /></label><label>说明<textarea aria-label="生成技能说明" value={skillDraft.instructions} placeholder="说明所需结构、证据和表达约束" onChange={(event) => setSkillDraft((current) => ({ ...current, instructions: event.target.value }))} /></label><footer><button type="button" onClick={() => setSkillEditorOpen(false)}>取消</button><button className="primary" type="button" onClick={() => void saveGenerationSkill()}>保存技能</button></footer></section>}
     {saveTemplateOpen && <PromptDialog title="保存为 PPT 模板" fieldLabel="模板名称" confirmLabel="保存模板" close={() => setSaveTemplateOpen(false)} submit={(value) => void saveTemplate(value)} />}
@@ -880,7 +1475,7 @@ function PptManagedImagePreview({ projectId, outcomeId, mediaId, displayName, cr
   return url ? <img className="ppt-element__managed-image" style={imageStyle} src={url} alt={displayName} /> : <span>{displayName}（预览加载中）</span>;
 }
 
-function MediaEditor({ projectId, outcomeId, kind, hasUnsavedChanges, document, onChange, onSave }: { projectId: string; outcomeId: string; kind: OutcomeKind; hasUnsavedChanges: boolean; document: Extract<OutcomeDocument, { type: 'other' }>; onChange: (value: Extract<OutcomeDocument, { type: 'other' }>) => void; onSave: (value: Extract<OutcomeDocument, { type: 'other' }>, note: string, actor?: 'human' | 'import') => void }) {
+function MediaEditor({ projectId, outcomeId, kind, hasUnsavedChanges, document, onChange, onSave }: { projectId: string; outcomeId: string; kind: OutcomeKind; hasUnsavedChanges: boolean; document: Extract<OutcomeDocument, { type: 'other' | 'spreadsheet' | 'pdf' }>; onChange: (value: Extract<OutcomeDocument, { type: 'other' | 'spreadsheet' | 'pdf' }>) => void; onSave: (value: Extract<OutcomeDocument, { type: 'other' | 'spreadsheet' | 'pdf' }>, note: string, actor?: 'human' | 'import') => void }) {
   const [preview, setPreview] = useState<{ mediaId: string; url: string | null } | null>(null); const [prompt, setPrompt] = useState(''); const [quality, setQuality] = useState<'standard' | 'hd' | 'low' | 'medium' | 'high'>('standard'); const [notice, setNotice] = useState(''); const [isGenerating, setIsGenerating] = useState(false); const generationInFlight = useRef(false); const media = document.media; const url = media && preview?.mediaId === media.id ? preview.url : null;
   useEffect(() => { let current = true; if (!media || !window.metis?.readOutcomeMedia) return () => { current = false; }; void window.metis.readOutcomeMedia({ projectId, outcomeId, mediaId: media.id }).then((value) => { if (current) setPreview({ mediaId: media.id, url: typeof value === 'string' ? value : null }); }).catch(() => { if (current) setPreview({ mediaId: media.id, url: null }); }); return () => { current = false; }; }, [media, projectId, outcomeId]);
   const importFile = async () => { const value = await window.metis?.importOutcomeMedia({ projectId, outcomeId }) as OutcomeMedia | null; if (value) onSave({ ...document, media: value }, `导入 ${value.displayName}`, 'import'); };
@@ -902,13 +1497,14 @@ function MediaEditor({ projectId, outcomeId, kind, hasUnsavedChanges, document, 
     if (!generateImage) { setNotice('图片生成运行服务尚未就绪；本次没有生成图片。'); return; }
     generationInFlight.current = true; setIsGenerating(true); setNotice('正在请求图片生成服务；返回前不会修改当前成果版本。');
     try {
-      const result = await generateImage({ projectId, outcomeId, prompt: prompt.trim(), visualContext: `成果类型：图片。${document.text.trim() ? `成果说明：${document.text.trim()}` : '当前没有额外文字说明。'}${media ? ` 当前媒体：${media.displayName}。` : ''}`, quality });
+     const description = document.type === 'other' ? document.text.trim() : '';
+     const result = await generateImage({ projectId, outcomeId, prompt: prompt.trim(), visualContext: `成果类型：图片。${description ? `成果说明：${description}` : '当前没有额外文字说明。'}${media ? ` 当前媒体：${media.displayName}。` : ''}`, quality });
       if (!result.ok) { setNotice(imageGenerationFailureNotice(result.code)); return; }
       onChange({ ...document, media: result.media }); setPrompt(''); setNotice(`已收到并引用真实持久化图片「${result.media.displayName}」。预览加载后，请点击“保存图片版本”使其成为不可变版本。`);
     } catch { setNotice('图片生成请求没有完成，当前成果没有被修改。'); }
     finally { generationInFlight.current = false; setIsGenerating(false); }
   };
-  return <div className="outcome-media-preview"><header><strong>{media?.displayName ?? (kind === 'image' ? 'AI 图片成果' : 'PDF / 图片成果')}</strong><div><button type="button" onClick={() => void importFile()}><Upload size={15} />{media ? '替换文件' : '导入文件'}</button>{media?.mediaType === 'image/svg+xml' && <button type="button" onClick={() => void exportSvgFile()}><Download size={15} />导出 SVG</button>}{kind === 'image' && <button className="primary" type="button" onClick={() => onSave(document, '保存图片成果', 'human')} disabled={!media || !hasUnsavedChanges}><Save size={15} />保存图片版本</button>}</div></header>{kind === 'image' && <section className="outcome-image-generator" aria-label="AI 生成图片"><header><div><strong>AI 生成图片</strong><small>仅使用主进程已持久化到当前成果媒体区的图片；不会在前端伪造文件。</small></div></header><label>图片提示词<textarea aria-label="图片生成提示词" value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="例如：用于研究报告封面的克制蓝色数据可视化插图" disabled={isGenerating || hasUnsavedChanges} /></label><label>质量<select aria-label="图片生成质量" value={quality} onChange={(event) => setQuality(event.target.value as typeof quality)} disabled={isGenerating || hasUnsavedChanges}><option value="standard">标准</option><option value="hd">高清</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option></select></label><button className="primary" type="button" onClick={() => void generate()} disabled={isGenerating || hasUnsavedChanges || !prompt.trim()}>{isGenerating ? <LoaderCircle size={15} className="spin" /> : <Sparkles size={15} />}生成图片</button>{hasUnsavedChanges && <p role="status">当前有未保存图片草稿；先保存版本后才能生成，避免覆盖编辑。</p>}{isGenerating && <p role="status">生成中。当前桥接未提供取消请求能力，不能伪称已取消。</p>}{notice && <p role="status">{notice}</p>}</section>}{!media ? <div className="outcomes-empty"><ImageIcon size={32} /><p>{kind === 'image' ? '输入提示词即可请求真实图片生成，或导入 PNG、JPEG、SVG。生成结果需手动保存为成果版本。' : '支持 PDF、PNG、JPEG 和安全 SVG；文件仅存入当前项目的成果私有媒体区。'}</p></div> : media.mediaType === 'application/pdf' && url ? <iframe title={media.displayName} className="outcome-pdf-frame" sandbox="allow-same-origin" src={url} /> : url ? <figure className="outcome-image-frame"><img src={url} alt={media.displayName} /><figcaption>{media.displayName}</figcaption></figure> : <div className="outcomes-empty">预览加载中或完整性校验未通过。</div>}</div>;
+  return <div className="outcome-media-preview"><header><strong>{media?.displayName ?? (kind === 'image' ? 'AI 图片成果' : kind === 'spreadsheet' ? 'Excel 成果' : kind === 'pdf' ? 'PDF 成果' : '其他正式交付物')}</strong><div><button type="button" onClick={() => void importFile()}><Upload size={15} />{media ? '替换文件' : '导入文件'}</button>{media?.mediaType === 'image/svg+xml' && <button type="button" onClick={() => void exportSvgFile()}><Download size={15} />导出 SVG</button>}{(kind === 'image' || kind === 'spreadsheet' || kind === 'pdf') && <button className="primary" type="button" onClick={() => onSave(document, `保存${kind === 'image' ? '图片' : kind === 'spreadsheet' ? 'Excel' : 'PDF'}成果`, 'human')} disabled={!media || !hasUnsavedChanges}><Save size={15} />保存版本</button>}</div></header>{kind === 'image' && <section className="outcome-image-generator" aria-label="AI 生成图片"><header><div><strong>AI 生成图片</strong><small>仅使用主进程已持久化到当前成果媒体区的图片；不会在前端伪造文件。</small></div></header><label>图片提示词<textarea aria-label="图片生成提示词" value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="例如：用于研究报告封面的克制蓝色数据可视化插图" disabled={isGenerating || hasUnsavedChanges} /></label><label>质量<select aria-label="图片生成质量" value={quality} onChange={(event) => setQuality(event.target.value as typeof quality)} disabled={isGenerating || hasUnsavedChanges}><option value="standard">标准</option><option value="hd">高清</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option></select></label><button className="primary" type="button" onClick={() => void generate()} disabled={isGenerating || hasUnsavedChanges || !prompt.trim()}>{isGenerating ? <LoaderCircle size={15} className="spin" /> : <Sparkles size={15} />}生成图片</button>{hasUnsavedChanges && <p role="status">当前有未保存图片草稿；先保存版本后才能生成，避免覆盖编辑。</p>}{isGenerating && <p role="status">生成中。当前桥接未提供取消请求能力，不能伪称已取消。</p>}{notice && <p role="status">{notice}</p>}</section>}{!media ? <div className="outcomes-empty"><ImageIcon size={32} /><p>{kind === 'image' ? '输入提示词即可请求真实图片生成，或导入 PNG、JPEG、SVG。生成结果需手动保存为成果版本。' : kind === 'spreadsheet' ? '导入真实 XLSX 后，可在 Metis Office 中使用原生 Excel 网格编辑。' : kind === 'pdf' ? '导入真实 PDF 后，可在 Metis Office 中使用原生 PDF 页面编辑。' : '支持 PDF、PNG、JPEG 和安全 SVG；文件仅存入当前项目的成果私有媒体区。'}</p></div> : media.mediaType === 'application/pdf' && url ? <iframe title={media.displayName} className="outcome-pdf-frame" sandbox="allow-same-origin" src={url} /> : media.mediaType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ? <div className="outcome-document-file"><FileSpreadsheet size={36} /><strong>{media.displayName}</strong><span>真实 XLSX 文件已托管；点击“Metis Office”进入原生表格编辑。</span></div> : url ? <figure className="outcome-image-frame"><img src={url} alt={media.displayName} /><figcaption>{media.displayName}</figcaption></figure> : <div className="outcomes-empty">预览加载中或完整性校验未通过。</div>}</div>;
 }
 function VersionPanel({ versions, activeVersion, onOpen, onRestore }: { versions: OutcomeVersion[]; activeVersion: number; onOpen: (value: OutcomeVersion) => void; onRestore: (value: OutcomeVersion) => void }) {
   return <aside className="outcome-version-panel" aria-label="成果版本"><header><strong>版本</strong><span>{versions.length} 个</span></header><div>{versions.map((version) => <article key={version.version} className={version.version === activeVersion ? 'active' : ''}><button type="button" onClick={() => onOpen(version)}><b>v{version.version}</b><span>{version.note || '未填写说明'}</span><small>{version.createdBy === 'ai' ? 'AI 修改' : version.createdBy === 'restore' ? '恢复' : '人工修改'}</small></button>{version.version !== activeVersion && <button type="button" className="outcome-version-panel__restore" onClick={() => onRestore(version)} title={`恢复 v${version.version}`}><RotateCcw size={13} /></button>}</article>)}</div></aside>;

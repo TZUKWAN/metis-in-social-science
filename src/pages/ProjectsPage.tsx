@@ -2,7 +2,7 @@
  * ProjectsPage — 科研项目工作台。
  *
  * 科研项目（原「研究写作」）的新形态：左侧直接展示科研项目列表，
- * 主区域为三个模式页签：聊天 / 任务看板 / 研究成果。
+ * 主区域为三个模式页签：聊天 / 任务看板 / 资料。
  * 九分区（项目设计/资料来源/…）按产品决定暂不暴露。
  *
  * 聊天内容由 App 层常驻的 ChatPage 提供（renderLayout 注入），
@@ -11,13 +11,13 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from '../i18n';
 import { researchWorkspaceStore, useResearchWorkspaceStore } from '../research/researchWorkspaceStore';
+import { Button, Input, Select } from '../components/ui';
 import TaskBoardPage from './TaskBoardPage';
-import ArtifactsCenter from './ArtifactsCenter';
 import LibraryPage from './LibraryPage';
 import ProjectHomeBanner from '../components/ProjectHomeBanner';
 import SplitHandle from '../components/SplitHandle';
 
-export type ProjectViewMode = 'chat' | 'kanban' | 'materials' | 'artifacts';
+export type ProjectViewMode = 'chat' | 'kanban' | 'materials';
 
 export interface ProjectsPageProps {
   /** Active project-center mode (controlled by the app shell). */
@@ -27,13 +27,15 @@ export interface ProjectsPageProps {
   chatContent: ReactNode;
   /** Chat right panel — owned by the app-level ChatPage. */
   chatRightPanel: ReactNode;
+  /** 生成物预览栏（2026-08-31 刘总布局重构）：非空即在最右侧以整列呈现，
+   *  并联动：项目清单自动收缩、聊天区弹性让位（窗口缩放自适应）。 */
+  previewPanel?: ReactNode;
 }
 
 const MODES: Array<{ id: ProjectViewMode; labelKey: string; testId: string }> = [
   { id: 'chat', labelKey: 'projects.modeChat', testId: 'projects-mode-chat' },
   { id: 'kanban', labelKey: 'projects.modeKanban', testId: 'projects-mode-kanban' },
   { id: 'materials', labelKey: 'projects.modeMaterials', testId: 'projects-mode-materials' },
-  { id: 'artifacts', labelKey: 'projects.modeArtifacts', testId: 'projects-mode-artifacts' },
 ];
 
 function makeProjectId(): string {
@@ -49,6 +51,8 @@ function makeProjectId(): string {
 
 const SIDEBAR_KEY = 'metis-projects-sidebar-width';
 const CHAT_RIGHT_KEY = 'metis-projects-chat-right-width';
+const PREVIEW_KEY = 'metis-projects-preview-width';
+const SIDEBAR_COLLAPSED_KEY = 'metis-projects-sidebar-collapsed';
 
 function loadWidth(key: string, fallback: number, min: number, max: number): number {
   try {
@@ -64,6 +68,15 @@ function saveWidth(key: string, value: number): void {
   try { window.localStorage.setItem(key, String(Math.round(value))); } catch { /* best-effort */ }
 }
 
+function loadBool(key: string, fallback: boolean): boolean {
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw === null ? fallback : raw === '1';
+  } catch {
+    return fallback;
+  }
+}
+
 function formatUpdated(ts: number, locale: string): string {
   const date = new Date(ts);
   const now = Date.now();
@@ -76,7 +89,7 @@ function formatUpdated(ts: number, locale: string): string {
   return `${y}-${m}-${d}`;
 }
 
-export default function ProjectsPage({ mode, onModeChange, chatContent, chatRightPanel }: ProjectsPageProps) {
+export default function ProjectsPage({ mode, onModeChange, chatContent, chatRightPanel, previewPanel }: ProjectsPageProps) {
   const { t, locale } = useTranslation();
   const projects = useResearchWorkspaceStore((s) => s.projects);
   const activeProjectId = useResearchWorkspaceStore((s) => s.activeProjectId);
@@ -84,12 +97,25 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
   const [creating, setCreating] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [projectDir, setProjectDir] = useState('');
+  // 新建项目绑定场景（2026-08-29 刘总要求）：科研项目页的内联创建表单
+  // 同样提供场景下拉；创建后写入全局与项目级偏好。
+  const [createScenarioOptions, setCreateScenarioOptions] = useState<Array<{ id: string; name: string }>>([]);
+  const [createScenarioId, setCreateScenarioId] = useState('');
   const [createBusy, setCreateBusy] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(() => loadWidth(SIDEBAR_KEY, 248, 180, 420));
   const [chatRightWidth, setChatRightWidth] = useState(() => loadWidth(CHAT_RIGHT_KEY, 320, 240, 560));
+  // 预览栏与项目清单折叠（2026-08-31 刘总布局重构）：预览打开时清单自动
+  // 收缩，给预览留足空间；手动拖拽调宽全部保留。
+  const [previewWidth, setPreviewWidth] = useState(() => loadWidth(PREVIEW_KEY, 520, 360, 800));
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => loadBool(SIDEBAR_COLLAPSED_KEY, false));
   const [showArchived, setShowArchived] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const pageRef = useRef<HTMLDivElement>(null);
+  const collapsedBeforePreviewRef = useRef<boolean | null>(null);
+  const sidebarCollapsedRef = useRef(sidebarCollapsed);
+  sidebarCollapsedRef.current = sidebarCollapsed;
+
+  const previewOpen = Boolean(previewPanel);
 
   const handleArchive = useCallback(async (projectId: string) => {
     const result = await window.metis?.archiveProject?.(projectId);
@@ -130,13 +156,59 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
     setChatRightWidth(Math.min(560, Math.max(240, rect.right - clientX)));
   }, []);
 
+  const handlePreviewDrag = useCallback((clientX: number) => {
+    const rect = pageRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    setPreviewWidth(Math.min(800, Math.max(360, rect.right - clientX)));
+  }, []);
+
+  // 预览开合联动（2026-08-31 刘总要求，窗口缩放自适应修正）：打开时项目清单
+  // 自动收缩（记住打开前的折叠态，关闭时恢复）。聊天区保持 flex:1 弹性填充
+  // ——预览栏（固定像素、可拖宽）之外的剩余空间全部归聊天区，窗口放大/缩小
+  // 时 flex 自动重排，不再出现"打开预览后窗口变大留下大片空白"的问题。
+  // 此前实现是预览打开瞬间实测聊天宽度钉成固定像素（flex:none），窗口尺寸
+  // 变化后没有任何列跟随伸缩。
+  useEffect(() => {
+    if (previewOpen) {
+      if (collapsedBeforePreviewRef.current === null) {
+        collapsedBeforePreviewRef.current = sidebarCollapsedRef.current;
+        setSidebarCollapsed(true);
+      }
+      return;
+    }
+    if (collapsedBeforePreviewRef.current !== null) {
+      setSidebarCollapsed(collapsedBeforePreviewRef.current);
+      collapsedBeforePreviewRef.current = null;
+    }
+  }, [previewOpen]);
+
   // 宽度持久化放 effect：拖动结束时读到的是最新值。
   useEffect(() => { saveWidth(SIDEBAR_KEY, sidebarWidth); }, [sidebarWidth]);
   useEffect(() => { saveWidth(CHAT_RIGHT_KEY, chatRightWidth); }, [chatRightWidth]);
+  useEffect(() => { saveWidth(PREVIEW_KEY, previewWidth); }, [previewWidth]);
+  useEffect(() => {
+    try { window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, sidebarCollapsed ? '1' : '0'); } catch { /* best-effort */ }
+  }, [sidebarCollapsed]);
 
   useEffect(() => {
     void researchWorkspaceStore.getState().loadProjects();
   }, []);
+
+  // 展开创建表单时加载可选场景清单。
+  useEffect(() => {
+    if (!creating) return;
+    const metis = window.metis;
+    if (!metis?.listPersonalization) { setCreateScenarioOptions([]); return; }
+    void metis.listPersonalization({ contractVersion: 1, kind: 'scenario', includeDisabled: false })
+      .then((response) => {
+        setCreateScenarioOptions(response.definitions
+          .filter((definition) => definition.kind === 'scenario'
+            && definition.enabled
+            && definition.provenance.origin !== 'builtin')
+          .map((definition) => ({ id: definition.id, name: definition.name })));
+      })
+      .catch(() => setCreateScenarioOptions([]));
+  }, [creating]);
 
   const handleCreate = async () => {
     const title = newTitle.trim();
@@ -150,10 +222,18 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
     if (result.success && projectDir && result.resourceId) {
       await window.metis?.setProjectDir?.(result.resourceId, projectDir);
     }
+    const newProjectId = result.success ? result.resourceId : null;
+    if (result.success && createScenarioId && newProjectId) {
+      try {
+        window.localStorage.setItem('metis:active-scenario-id', createScenarioId);
+        window.localStorage.setItem(`metis:project-scenario:${newProjectId}`, createScenarioId);
+      } catch { /* preference persistence is best-effort */ }
+    }
     setCreateBusy(false);
     if (result.success) {
       setNewTitle('');
       setProjectDir('');
+      setCreateScenarioId('');
       setCreating(false);
     }
   };
@@ -165,6 +245,20 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
 
   return (
     <div className="projects-page" data-testid="projects-page" ref={pageRef}>
+      {sidebarCollapsed ? (
+        <div className="projects-page__sidebar-rail" data-testid="projects-sidebar-rail">
+          <button
+            type="button"
+            className="projects-page__rail-btn"
+            title={locale === 'zh' ? '展开项目清单' : 'Expand project list'}
+            aria-label={locale === 'zh' ? '展开项目清单' : 'Expand project list'}
+            data-testid="projects-sidebar-expand"
+            onClick={() => setSidebarCollapsed(false)}
+          >
+            »
+          </button>
+        </div>
+      ) : (
       <aside
         className="projects-page__sidebar"
         aria-label={t('projects.projectListTitle')}
@@ -174,25 +268,37 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
           <h2>{t('projects.projectListTitle')}</h2>
           <button
             type="button"
-            className="btn-secondary projects-page__new"
+            className="projects-page__collapse-btn"
+            title={locale === 'zh' ? '收起项目清单' : 'Collapse project list'}
+            aria-label={locale === 'zh' ? '收起项目清单' : 'Collapse project list'}
+            data-testid="projects-sidebar-collapse"
+            onClick={() => setSidebarCollapsed(true)}
+          >
+            «
+          </button>
+          <Button
+            variant="secondary"
+            size="sm"
+            className="projects-page__new"
             data-testid="projects-new-project"
             onClick={() => setCreating((value) => !value)}
           >
-            + {t('projects.newProject')}
-          </button>
-          <button
-            type="button"
-            className={`btn-secondary projects-page__new ${showArchived ? 'projects-page__new--active' : ''}`}
+            {t('projects.newProject')}
+          </Button>
+          <Button
+            variant={showArchived ? 'primary' : 'secondary'}
+            size="sm"
+            className="projects-page__new"
             title={t('projects.archivedTitle')}
             data-testid="projects-toggle-archived"
             onClick={() => setShowArchived((value) => !value)}
           >
             {showArchived ? t('projects.activeTitle') : t('projects.archivedButton')}
-          </button>
+          </Button>
         </header>
         {creating && (
           <div className="projects-page__create" data-testid="projects-create-form">
-            <input
+            <Input
               className="settings-input"
               data-testid="projects-new-project-input"
               value={newTitle}
@@ -203,40 +309,52 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
                 if (event.key === 'Escape') { setCreating(false); setNewTitle(''); }
               }}
             />
+            <Select
+              className="settings-input"
+              data-testid="projects-scenario-select"
+              value={createScenarioId}
+              onChange={(event) => setCreateScenarioId(event.target.value)}
+              aria-label={t('projects.scenarioBinding')}
+            >
+              <option value="">{t('projects.scenarioNone')}</option>
+              {createScenarioOptions.map((scenario) => (
+                <option key={scenario.id} value={scenario.id}>{scenario.name}</option>
+              ))}
+            </Select>
             <div className="projects-page__create-actions">
-              <button
-                type="button"
-                className="btn-primary"
+              <Button
+                variant="primary"
+                size="sm"
                 data-testid="projects-create-submit"
                 disabled={createBusy || !newTitle.trim()}
                 onClick={() => void handleCreate()}
               >
                 {t('projects.create')}
-              </button>
-              <button
-                type="button"
-                className="btn-secondary"
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
                 onClick={() => { setCreating(false); setNewTitle(''); setProjectDir(''); }}
               >
                 {t('projects.cancel')}
-              </button>
+              </Button>
             </div>
             <div className="projects-page__create-dir" data-testid="projects-create-dir">
-              <input
+              <Input
                 className="settings-input"
                 placeholder={t('projects.projectDirPlaceholder')}
                 value={projectDir}
                 onChange={(event) => setProjectDir(event.target.value)}
                 data-testid="projects-dir-input"
               />
-              <button
-                type="button"
-                className="btn-secondary btn-sm"
+              <Button
+                variant="secondary"
+                size="sm"
                 onClick={() => void pickProjectDir()}
                 data-testid="projects-dir-browse"
               >
                 {t('projects.browse')}
-              </button>
+              </Button>
             </div>
             <p className="projects-page__create-hint">{t('projects.projectDirHint')}</p>
           </div>
@@ -263,35 +381,35 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
                 </button>
                 <div className="projects-page__item-actions">
                   {showArchived ? (
-                    <button
-                      type="button"
-                      className="btn-sm btn-secondary"
+                    <Button
+                      variant="secondary"
+                      size="sm"
                       title={t('projects.restore')}
                       data-testid="projects-restore"
                       onClick={() => void handleRestore(project.id)}
                     >
                       {t('projects.restore')}
-                    </button>
+                    </Button>
                   ) : (
-                    <button
-                      type="button"
-                      className="btn-sm btn-secondary"
+                    <Button
+                      variant="secondary"
+                      size="sm"
                       title={t('projects.archive')}
                       data-testid="projects-archive"
                       onClick={() => void handleArchive(project.id)}
                     >
                       {t('projects.archive')}
-                    </button>
+                    </Button>
                   )}
-                  <button
-                    type="button"
-                    className={`btn-sm ${deleteConfirmId === project.id ? 'btn-primary' : 'btn-secondary'}`}
+                  <Button
+                    variant={deleteConfirmId === project.id ? 'danger' : 'secondary'}
+                    size="sm"
                     title={t('projects.delete')}
                     data-testid="projects-delete"
                     onClick={() => void handleDelete(project.id)}
                   >
                     {deleteConfirmId === project.id ? t('projects.confirmDelete') : t('projects.delete')}
-                  </button>
+                  </Button>
                 </div>
               </li>
             ))}
@@ -302,7 +420,9 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
           )}
         </ul>
       </aside>
+      )}
 
+      {!sidebarCollapsed && (
       <SplitHandle
         label={locale === 'zh' ? '拖动调整项目列表宽度' : 'Drag to resize the project list'}
         testId="projects-split-sidebar"
@@ -311,6 +431,7 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
           setSidebarWidth((current) => Math.min(420, Math.max(180, current + delta)));
         }}
       />
+      )}
 
       <div className="projects-page__main">
         {activeProjectId ? <ProjectHomeBanner /> : (
@@ -336,7 +457,10 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
         <div className="projects-page__content">
           {mode === 'chat' && (
             <div className="projects-page__chat">
-              <div className="projects-page__chat-workspace">{chatContent}</div>
+              <div
+                className="projects-page__chat-workspace"
+                style={previewOpen ? { minWidth: 360 } : undefined}
+              >{chatContent}</div>
               <SplitHandle
                 label={locale === 'zh' ? '拖动调整右侧面板宽度' : 'Drag to resize the side panel'}
                 testId="projects-split-chat-right"
@@ -346,6 +470,22 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
                 }}
               />
               <div className="projects-page__chat-right" style={{ width: chatRightWidth }}>{chatRightPanel}</div>
+              {previewOpen && (
+                <>
+                  <SplitHandle
+                    label={locale === 'zh' ? '拖动调整预览栏宽度' : 'Drag to resize the preview pane'}
+                    testId="projects-split-preview"
+                    onDrag={handlePreviewDrag}
+                    onKeyDelta={(delta) => {
+                      setPreviewWidth((current) => Math.min(800, Math.max(360, current - delta)));
+                    }}
+                  />
+                  <div
+                    className="projects-page__preview"
+                    style={{ width: previewWidth, maxWidth: 'calc(100% - 680px)' }}
+                  >{previewPanel}</div>
+                </>
+              )}
             </div>
           )}
           {mode === 'kanban' && (
@@ -356,12 +496,6 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
           )}
           {mode === 'materials' && (
             <LibraryPage
-              key={activeProjectId ?? 'no-project'}
-              projectId={activeProjectId}
-            />
-          )}
-          {mode === 'artifacts' && (
-            <ArtifactsCenter
               key={activeProjectId ?? 'no-project'}
               projectId={activeProjectId}
             />

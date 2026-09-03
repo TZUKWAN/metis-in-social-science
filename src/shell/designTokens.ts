@@ -9,10 +9,12 @@
 export interface DesignTokens {
   bgMain: string;
   bgCard: string;
+  bgSecondary: string;
   bgSidebar: string;
   bgInspector: string;
   textHeading: string;
   textBody: string;
+  textSecondary: string;
   textMuted: string;
   textOnAccent: string;
   accentPrimary: string;
@@ -37,6 +39,7 @@ export interface DesignTokens {
   borderLight: string;
   radiusSm: string;
   radiusMd: string;
+  radiusCard: string;
   focusRingColor: string;
   focusRingShadow: string;
 }
@@ -44,10 +47,12 @@ export interface DesignTokens {
 interface DesignTokenPropertyMap {
   bgMain: string;
   bgCard: string;
+  bgSecondary: string;
   bgSidebar: string;
   bgInspector: string;
   textHeading: string;
   textBody: string;
+  textSecondary: string;
   textMuted: string;
   textOnAccent: string;
   accentPrimary: string;
@@ -72,6 +77,7 @@ interface DesignTokenPropertyMap {
   borderLight: string;
   radiusSm: string;
   radiusMd: string;
+  radiusCard: string;
   focusRingColor: string;
   focusRingShadow: string;
 }
@@ -79,10 +85,12 @@ interface DesignTokenPropertyMap {
 export const DESIGN_TOKEN_PROPERTIES: DesignTokenPropertyMap = {
   bgMain: '--bg-main',
   bgCard: '--bg-card',
+  bgSecondary: '--bg-secondary',
   bgSidebar: '--bg-sidebar',
   bgInspector: '--bg-inspector',
   textHeading: '--text-heading',
   textBody: '--text-body',
+  textSecondary: '--text-secondary',
   textMuted: '--text-muted',
   textOnAccent: '--text-on-accent',
   accentPrimary: '--accent',
@@ -116,6 +124,7 @@ export const DESIGN_TOKEN_PROPERTIES: DesignTokenPropertyMap = {
   borderLight: '--border-light',
   radiusSm: '--radius-sm',
   radiusMd: '--radius-md',
+  radiusCard: '--radius-card',
   focusRingColor: '--focus-ring-color',
   focusRingShadow: '--focus-ring-shadow',
 };
@@ -140,10 +149,12 @@ export function readComputedDesignTokens(root: HTMLElement = document.documentEl
   return {
     bgMain: read(DESIGN_TOKEN_PROPERTIES.bgMain),
     bgCard: read(DESIGN_TOKEN_PROPERTIES.bgCard),
+    bgSecondary: read(DESIGN_TOKEN_PROPERTIES.bgSecondary),
     bgSidebar: read(DESIGN_TOKEN_PROPERTIES.bgSidebar),
     bgInspector: read(DESIGN_TOKEN_PROPERTIES.bgInspector),
     textHeading: read(DESIGN_TOKEN_PROPERTIES.textHeading),
     textBody: read(DESIGN_TOKEN_PROPERTIES.textBody),
+    textSecondary: read(DESIGN_TOKEN_PROPERTIES.textSecondary),
     textMuted: read(DESIGN_TOKEN_PROPERTIES.textMuted),
     textOnAccent: read(DESIGN_TOKEN_PROPERTIES.textOnAccent),
     accentPrimary: read(DESIGN_TOKEN_PROPERTIES.accentPrimary),
@@ -168,6 +179,7 @@ export function readComputedDesignTokens(root: HTMLElement = document.documentEl
     borderLight: read(DESIGN_TOKEN_PROPERTIES.borderLight),
     radiusSm: read(DESIGN_TOKEN_PROPERTIES.radiusSm),
     radiusMd: read(DESIGN_TOKEN_PROPERTIES.radiusMd),
+    radiusCard: read(DESIGN_TOKEN_PROPERTIES.radiusCard),
     focusRingColor: read(DESIGN_TOKEN_PROPERTIES.focusRingColor),
     focusRingShadow: read(DESIGN_TOKEN_PROPERTIES.focusRingShadow),
   };

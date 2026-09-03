@@ -180,6 +180,33 @@ describe('ScenarioPatchSession incremental authoring', () => {
     expect(closed.ok).toBe(false); // no cross-turn leakage after close
     expect(router.activeSession?.('session-b')).toBeTruthy();
   });
+
+  it('delivers draft updates to their owning concurrent compile and preserves a replacement listener', async () => {
+    const router = createScenarioPatchRouter();
+    router.open('session-a', baseScenario());
+    router.open('session-b', baseScenario());
+    const updatesA: string[] = [];
+    const updatesB: string[] = [];
+    const listenerA = (update: { sessionId: string; scenario: ScenarioDefinition }) => { updatesA.push(`${update.sessionId}:${update.scenario.name}`); };
+    const listenerB = (update: { sessionId: string; scenario: ScenarioDefinition }) => { updatesB.push(`${update.sessionId}:${update.scenario.name}`); };
+    router.setDraftUpdatedListener('session-a', listenerA);
+    router.setDraftUpdatedListener('session-b', listenerB);
+
+    await Promise.all([
+      router.handler({ fields: { name: '仅会话A' } }, { sessionId: 'session-a', workspace: '.', turnIndex: 0 }),
+      router.handler({ fields: { name: '仅会话B' } }, { sessionId: 'session-b', workspace: '.', turnIndex: 0 }),
+    ]);
+    expect(updatesA).toEqual(['session-a:仅会话A']);
+    expect(updatesB).toEqual(['session-b:仅会话B']);
+
+    // An older finally block must not remove a callback installed by a newer owner.
+    const replacementA = (update: { scenario: ScenarioDefinition }) => { updatesA.push(`replacement:${update.scenario.name}`); };
+    router.setDraftUpdatedListener('session-a', replacementA);
+    router.removeDraftUpdatedListener('session-a', listenerA);
+    await router.handler({ fields: { description: '仍属于会话A' } }, { sessionId: 'session-a', workspace: '.', turnIndex: 1 });
+    expect(updatesA).toEqual(['session-a:仅会话A', 'replacement:仅会话A']);
+    expect(updatesB).toEqual(['session-b:仅会话B']);
+  });
 });
 
 describe('ScenarioPatchSession minimal-unit enforcement (2026-08-24 刘总方案 C)', () => {
@@ -240,8 +267,44 @@ describe('ScenarioPatchSession minimal-unit enforcement (2026-08-24 刘总方案
     ]);
     expect(result.ok).toBe(true);
     expect(session.getPlannedWorkflow().map((item) => item.id)).toEqual(['step-a', 'step-b']);
+    expect(session.getPlannedWorkflow().every((item) => item.kind === 'step')).toBe(true);
     expect(session.getDraft()?.workflow.length).toBe(2);
     expect(names).toEqual(['调研', '调研|撰写']);
+  });
+
+  it('planWorkflow registers MANDATORY sub-steps under each parent in parent→subStep fill order', () => {
+    const session = new ScenarioPatchSession(baseScenario());
+    const result = session.planWorkflow([
+      {
+        id: 'step-1', name: '选题依据',
+        subSteps: [
+          { id: 'step-1-search', name: '查找文献' },
+          { id: 'step-1-logic', name: '构建行文逻辑' },
+          { id: 'step-1-draft', name: '撰写综述' },
+        ],
+      },
+      { id: 'step-2', name: '研究内容', subSteps: [{ id: 'step-2-a', name: '分析研究对象' }] },
+    ]);
+    expect(result.ok).toBe(true);
+    // 扁平化顺序：parent → 其子步骤 → 下一个 parent。
+    expect(session.getPlannedWorkflow().map((item) => `${item.kind}:${item.id}`)).toEqual([
+      'step:step-1', 'substep:step-1-search', 'substep:step-1-logic', 'substep:step-1-draft',
+      'step:step-2', 'substep:step-2-a',
+    ]);
+    const workflow = session.getDraft()?.workflow ?? [];
+    expect(workflow.length).toBe(6);
+    const search = workflow.find((item) => item.id === 'step-1-search');
+    expect(search?.parentStepId).toBe('step-1');
+    // 子步骤串行依赖：search → logic → draft。
+    expect(search?.dependsOn).toEqual(['step-1']);
+    expect(workflow.find((item) => item.id === 'step-1-logic')?.dependsOn).toEqual(['step-1-search']);
+    expect(workflow.find((item) => item.id === 'step-2')?.dependsOn).toEqual(['step-1-draft']);
+  });
+
+  it('planWorkflow rejects duplicate sub-step ids and empty sub-step names', () => {
+    const session = new ScenarioPatchSession(baseScenario());
+    expect(session.planWorkflow([{ id: 'a', name: 'A', subSteps: [{ id: 's1', name: 'x' }, { id: 's1', name: 'y' }] }]).ok).toBe(false);
+    expect(session.planWorkflow([{ id: 'a', name: 'A', subSteps: [{ id: 's1', name: '' }] }]).ok).toBe(false);
   });
 
   it('planWorkflow rejects duplicate ids and empty input', () => {
@@ -251,11 +314,20 @@ describe('ScenarioPatchSession minimal-unit enforcement (2026-08-24 刘总方案
     expect(session.planWorkflow([{ id: '', name: 'A' }]).ok).toBe(false);
   });
 
-  it('planSections registers section skeletons', () => {
+  it('planSections registers section skeletons and rejects childless chapters (2026-08-28 刘总要求)', () => {
     const session = new ScenarioPatchSession(baseScenario());
-    const result = session.planSections([{ id: 'sec-1', title: '选题依据' }, { id: 'sec-2', title: '研究内容' }]);
+    // 空壳章节（无 children）必须被拒收——这正是"20 个一级章节、0 个二级章节"的根源。
+    const childless = session.planSections([{ id: 'sec-0', title: '空壳章节' }]);
+    expect(childless.ok).toBe(false);
+
+    const result = session.planSections([
+      { id: 'sec-1', title: '选题依据', children: [{ id: 'sec-1-1', title: '研究背景' }, { id: 'sec-1-2', title: '研究意义' }] },
+      { id: 'sec-2', title: '研究内容', children: [{ id: 'sec-2-1', title: '研究对象' }, { id: 'sec-2-2', title: '拟解决的关键问题' }] },
+    ]);
     expect(result.ok).toBe(true);
     expect(session.getPlannedSections().length).toBe(2);
     expect(session.getDraft()?.deliverable?.sections.length).toBe(2);
+    const draftChildren = session.getDraft()?.deliverable?.sections.find((section) => section.id === 'sec-1')?.children ?? [];
+    expect(draftChildren.length).toBe(2);
   });
 });

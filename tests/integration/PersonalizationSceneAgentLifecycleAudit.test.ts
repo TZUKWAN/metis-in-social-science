@@ -588,11 +588,15 @@ describe('scene dependency selection attacks', () => {
         expectedRevision: 0,
       }).ok).toBe(true);
     }
-    expect(target.repository.save({
+    // save now returns a diagnostics `issues` array alongside the rejection
+    // (schema validation reports exactly which binding was smuggled).
+    const smuggleRejection = target.repository.save({
       contractVersion: 1,
       definition: attacked,
       expectedRevision: 0,
-    })).toEqual({ ok: false, code: 'invalid_request' });
+    });
+    expect(smuggleRejection).toMatchObject({ ok: false, code: 'invalid_request' });
+    expect(smuggleRejection.issues?.join('\n')).toContain('must be declared by scenario');
 
     const corruptReaderDefinitions: PersonalizationDefinition[] = [
       selected.mcp, selected.skill, selected.agent,
@@ -634,7 +638,11 @@ describe('scene dependency selection attacks', () => {
       rulesIds: [],
       workflow: [],
     };
-    const resolved = new PersonalizationResolver(rawReader([
+    // 2026-08-29 policy (healScenarioReferenceKinds): wrong-kind reference
+    // labels are healed against the library's real types instead of failing
+    // the run -- an MCP id mis-declared under agentIds is migrated into the
+    // mcp arrays, so resolution now succeeds with the binding intact.
+    const healed = new PersonalizationResolver(rawReader([
       selected.mcp,
       wrongKindScenario,
     ])).resolve({
@@ -643,7 +651,10 @@ describe('scene dependency selection attacks', () => {
       scenarioId: wrongKindScenario.id,
       createdAt: NOW,
     });
-    expect(resolved.ok).toBe(false);
-    if (!resolved.ok) expect(resolved.code).toBe('dependency_invalid');
+    expect(healed.ok).toBe(true);
+    if (healed.ok) {
+      expect(healed.manifest.mcpIds).toContain(selected.mcp.id);
+      expect(healed.manifest.agentIds).not.toContain(selected.mcp.id);
+    }
   });
 });

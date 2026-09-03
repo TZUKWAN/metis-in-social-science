@@ -107,7 +107,7 @@
   height: 18px;
   border-radius: 50%;
   background: var(--accent);
-  color: #fff;
+  color: var(--text-on-accent);
   font-size: 11px;
   display: inline-flex;
   align-items: center;

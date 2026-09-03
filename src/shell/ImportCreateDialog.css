@@ -10,7 +10,7 @@
   --icd-accent: var(--accent);
   --icd-accent-strong: var(--accent-hover);
   --icd-accent-soft: color-mix(in srgb, var(--icd-accent) 11%, transparent);
-  --icd-paper: var(--bg-card, #ffffff);
+  --icd-paper: var(--bg-card);
   --icd-canvas: var(--bg-main, var(--bg-secondary));
   --icd-ink: var(--text-heading, var(--bg-code-block));
   --icd-body: var(--text-body, var(--border));
@@ -18,7 +18,7 @@
   --icd-border: var(--border-light, var(--border-light));
   --icd-danger: var(--status-danger);
   --icd-danger-bg: var(--bg-danger-hover, var(--bg-danger-hover));
-  --icd-success: var(--evidence-verified, #2f855a);
+  --icd-success: var(--evidence-verified);
   --icd-radius: 10px;
   --icd-shadow: 0 18px 50px rgb(15 23 42 / 18%);
 
@@ -33,21 +33,10 @@
   font-family: inherit;
 }
 
-[data-theme='dark'] .import-create-dialog {
-  --icd-accent: var(--accent);
-  --icd-accent-strong: var(--accent-hover);
-  --icd-accent-soft: rgb(228 154 114 / 13%);
-  --icd-paper: var(--bg-card, #1b1a16);
-  --icd-canvas: var(--bg-main, #131211);
-  --icd-ink: var(--text-heading, #e8e4da);
-  --icd-body: var(--text-body, #d1ccc0);
-  --icd-border: var(--border-light, #34302a);
-}
-
 .import-create-dialog__overlay {
   position: absolute;
   inset: 0;
-  background: rgb(15 23 42 / 42%);
+  background: var(--bg-modal-overlay);
   cursor: default;
 }
 
@@ -499,7 +488,7 @@
 }
 
 .import-create-dialog__button--primary {
-  color: #fff;
+  color: var(--text-on-accent);
   background: var(--icd-accent);
   border-color: var(--icd-accent);
 }

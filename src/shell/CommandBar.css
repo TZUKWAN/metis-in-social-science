@@ -45,7 +45,7 @@
   flex-direction: column;
   min-width: 0;
   overflow: hidden;
-  background: var(--bg-card, #fff);
+  background: var(--bg-card);
   border: 1px solid var(--border-light, var(--border-light));
   border-radius: var(--radius-md);
   box-shadow:
@@ -173,7 +173,7 @@
 }
 
 .command-bar-item:hover {
-  background: color-mix(in srgb, var(--bg-main, var(--bg-secondary)) 60%, var(--bg-card, #fff));
+  background: color-mix(in srgb, var(--bg-main, var(--bg-secondary)) 60%, var(--bg-card));
 }
 
 .command-bar-item.is-active {
@@ -239,7 +239,7 @@
 
 .command-bar-item.is-active .command-bar-item__shortcut {
   color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 10%, #fff);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-card));
   border-color: color-mix(in srgb, var(--accent) 22%, var(--border-light, var(--border-light)));
 }
 
@@ -326,7 +326,7 @@
   gap: 6px;
   padding: 5px 12px;
   color: var(--text-main, var(--border));
-  background: var(--bg-card, #fff);
+  background: var(--bg-card);
   border: 1px solid var(--border-light, var(--border-light));
   border-radius: 6px;
   cursor: pointer;
@@ -372,7 +372,7 @@
   height: 18px;
   padding: 0 4px;
   color: var(--text-muted, var(--text-muted));
-  background: color-mix(in srgb, var(--bg-main, var(--bg-secondary)) 70%, var(--bg-card, #fff));
+  background: color-mix(in srgb, var(--bg-main, var(--bg-secondary)) 70%, var(--bg-card));
   border: 1px solid var(--border-light, var(--border-light));
   border-radius: 3px;
   font-family: inherit;

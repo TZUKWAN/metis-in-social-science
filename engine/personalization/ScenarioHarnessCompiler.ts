@@ -171,8 +171,10 @@ export function buildScenarioHarnessCompilerPrompt(input: {
       'STRICT TURN DISCIPLINE — every assistant reply must contain EXACTLY ONE scenario_apply_update call and nothing else. No prose, no plan text, no repeated content between calls.',
       'Each call must advance the build with NEW content. Recommended order: (1) basics — name, description, capability, deliverable type/length/structure; (2) workflow — add 1-2 steps per call (entries merge by id; give each step a stable unique id, a dedicated prompt and completionCriteria); (3) sections + scenarioMetis.markdown rules; (4) output.plan quality criteria.',
       'SKILL/MCP PLANNING IS MANDATORY (2026-08-23): for EVERY workflow step, review the installed resource catalog and bind the skills the step needs via skillIds and any required MCP servers via mcpIds. If a needed capability is missing from the catalog, say so explicitly in your final summary instead of inventing IDs. A step with no suitable binding must still justify why none is required in its prompt.',
+      BIBLIOGRAPHY_OUTPUT_CONTRACT,
       'BEFORE FINISHING you MUST have produced: a non-empty scenarioMetis.markdown (the scenario-wide Scenario Metis.md rules document) and a non-empty workflowPrompt (end-to-end operating rules). A build without both is incomplete — add them with scenario_apply_update before the final summary.',
       'HARD SCHEMA RULES: completionCriteria MUST be an array of short strings (one criterion per element, never a single string). deliverable.type MUST be exactly one of: theory_paper | empirical_paper | computational_paper | case_study | review_paper | grant_nssfc | grant_postdoc | grant_other | policy_report | survey_report | tech_report | industry_report | thesis | opening_report | completion_report | custom. Never invent deliverable keys like length or structure — use globalLength (a STRING such as "7500字", never a number) and sections. output.plan.primaryDeliverable must be a non-empty short title.',
+      'SECTION FIELD VOCABULARY (write ONLY these values): every section kind MUST be exactly one of: title | abstract | keywords | chapter | section | grant_column | attachment | references | other (top-level entries use chapter or front-matter kinds; children use section). Every section status MUST be exactly one of: locked | required | optional | conditional — NEVER Chinese words like 必要/可选 or words like must/mandatory. capability is a short ASCII identifier (e.g. research | writing | custom) — do not invent long labels.',
       'SECTION KIND HIERARCHY: top-level deliverable.sections entries are first-level chapters and MUST use kind "chapter"; only their children use kind "section" (front-matter like title/abstract may sit at top level with those kinds). Never rewrite chapter entries to "section".',
       'Each call is validated immediately. If it returns schema_validation_failed, fix exactly those issues in your next call before moving on.',
       'When every part is done, reply with ONLY: {"summary":"concise change summary"}.',
@@ -206,6 +208,19 @@ const RESEARCH_FIRST_POLICY = [
   'Analyze what you found first, then write the phase content informed by that research. Do not apply generic placeholder text.',
 ].join(' ');
 
+/**
+ * 题录输出契约（2026-08-30 刘总问题 B 修复）：文献检索类步骤必须绑定真实检索
+ * 工具，并把查到的题录以 JSON 数组落进产物——运行期的文献入库桥
+ * （ScenarioLiteratureBridge）只从该 JSON 结构解析入库，且有真实性闸
+ * （DOI 经 crossref 校验 / 仅 URL 直收 / 皆无拒收），凭记忆写的题录进不了文献库。
+ */
+const BIBLIOGRAPHY_OUTPUT_CONTRACT = [
+  'LITERATURE OUTPUT CONTRACT (MANDATORY for any step that gathers/searches literature or builds a bibliography):',
+  '(1) the step MUST bind at least one real retrieval capability via skillIds/mcpIds (e.g. openalex_lookup, crossref_lookup, search_papers, arxiv_search, or an equivalent search Skill/MCP from the catalog) — a literature step with no retrieval binding is invalid;',
+  '(2) the step prompt MUST require the collected bibliography to be emitted as a ```json fenced block containing ONE array, one object per work: {"title": string, "authors": [string], "year": number, "venue": string, "doi": string (optional), "url": string (optional)};',
+  '(3) only works actually returned by a tool call in this run may appear in that array — entries written from model memory are rejected by the ingestion gate and pollute nothing.',
+].join(' ');
+
 const TOOL_DISCIPLINE = [
   'FINE-GRAINED INCREMENTAL WRITING (2026-08-24, 刘总要求): confirm ONE small piece at a time and apply it IMMEDIATELY with its own scenario_apply_update call — e.g. name first, then description, then capability; one workflow step per call with its complete prompt/criteria/bindings.',
   'If the current draft already satisfies this phase\u2019s requirements, do NOT rewrite it — reply with ONLY {"summary":"本阶段现状已达标，无需修改"} and nothing else.',
@@ -214,16 +229,42 @@ const TOOL_DISCIPLINE = [
 
 const PLANNING_TURN_DISCIPLINE = [
   'PLANNING TURN: your ONLY job is to call the outline tool ONCE (scenario_plan_workflow or scenario_plan_sections) registering ids, names/titles and order.',
-  'Do NOT write prompts, completionCriteria, or any detailed content in this turn. Keep ids stable — later fill turns will reference them.',
+  'FINE-GRAINED OUTLINE (2026-08-25 刘总规格, MANDATORY): scenario_plan_workflow requires EVERY top-level step to carry subSteps — decompose each step into fine-grained sub-steps such as: gather/search literature & materials (the search sub-step is where MCP/skills get bound later) → build the writing logic/outline → draft the content → review the draft. Adapt the pattern to the step\u2019s nature; minimum 2 sub-steps per step, more when the user\u2019s deliverable breakdown implies them.',
+  'scenario_plan_sections (2026-08-28 刘总要求, MANDATORY): register each deliverable chapter WITH its children — EVERY chapter MUST carry 3-5 second-level sub-sections (follow the deliverable.secondarySections policy when present). A chapter without children is a rejected outline. Front-matter (title/abstract/keywords) must sit at top level with kind title/abstract/keywords, NOT as chapters.',
+  'Do NOT write prompts, completionCriteria, or any detailed content in this turn. Do NOT web_search/web_fetch in this turn — research happens in fill turns where needed.',
+  'Keep ids stable — later fill turns will reference them.',
 ].join(' ');
 
-function fillTurnDiscipline(kind: 'step' | 'section', id: string, name: string): string {
+function fillTurnDiscipline(kind: 'step' | 'substep' | 'section' | 'workflow_prompt', id: string, name: string): string {
+  const noResearch = 'Research was already done in earlier turns — do NOT web_search/web_fetch now; write immediately from what you know.';
+  if (kind === 'workflow_prompt') {
+    return [
+      `FILL TURN: write ONLY the ${name} (the scenario.workflowPrompt field) via ONE scenario_apply_update call.`,
+      'Content: the end-to-end operating rules connecting ALL planned steps and their sub-steps — handoff order, what each consumes/produces, artifact flow, quality gates, failure recovery posture.',
+      'Do NOT write any workflow steps, sections, or other fields in this turn.',
+      noResearch,
+    ].join(' ');
+  }
+  if (kind === 'substep') {
+    return [
+      `FILL TURN: write ONLY the workflow SUB-STEP “${name}” (id: ${id}) via ONE scenario_apply_update call.`,
+      'This is a fine-grained sub-step under its parent chapter step. Include: dedicated prompt (exactly what this sub-step does, with concrete quality requirements), completionCriteria (array of verifiable checks), and skillIds/mcpIds bindings — research/gathering sub-steps MUST bind the appropriate search MCP or skills from the catalog.',
+      BIBLIOGRAPHY_OUTPUT_CONTRACT,
+      'Do NOT modify any other steps or parts of the scenario.',
+      noResearch,
+    ].join(' ');
+  }
   return [
     `FILL TURN: write ONLY the ${kind === 'step' ? 'workflow step' : 'deliverable section'} “${name}” (id: ${id}) via ONE scenario_apply_update call.`,
+    'IMPORTANT: reuse the exact id given here — a skeleton with this id (or same title) already exists in the draft; your call MERGES into it.',
     kind === 'step'
-      ? 'Include: dedicated prompt (what the model should do in this step), completionCriteria (array of verifiable checks), and skillIds/mcpIds bindings from the catalog if needed.'
-      : 'Include: the section\u2019s writing prompt and any per-section guidance.',
+      ? 'This step already has sub-steps registered: write the step-level prompt (what this chapter-level step must achieve overall, coordinating its sub-steps), completionCriteria (array of verifiable checks), and skillIds/mcpIds bindings if needed at step level. Do NOT delete or rewrite the sub-steps.'
+      : [
+          'This is a CHAPTER: write it WITH its second-level children (2026-08-28 刘总要求). Every chapter must carry 3-5 titled children (follow deliverable.secondarySections policy when present) — each child needs a stable id, kind "section", and a non-empty title; keep the children already planned and complete the missing ones.',
+          'Also include the chapter\u2019s writing prompt covering its planned sub-sections.',
+        ].join(' '),
     'Do NOT modify any other steps/sections or other parts of the scenario.',
+    noResearch,
   ].join(' ');
 }
 
@@ -235,9 +276,21 @@ export interface ScenarioPhasePromptInput {
   materialContext?: readonly { name: string; text: string }[];
   /** 设计轮（2026-08-24 刘总方案 C）：只出大纲，不填内容。 */
   planMode?: 'workflow' | 'sections';
-  /** 填写轮：只填指定步骤/章节的详细内容。 */
-  fillTarget?: { kind: 'step' | 'section'; id: string; name: string };
+  /** 填写轮：只填指定步骤/子步骤/章节/工作流总 Prompt 的详细内容。 */
+  fillTarget?: { kind: 'step' | 'substep' | 'section' | 'workflow_prompt'; id: string; name: string };
+  /** 能力获取轮（2026-08-28 刘总要求）：联网检索并安装 Skill/MCP 后绑定到步骤。 */
+  capabilityPass?: boolean;
 }
+
+/** 能力获取轮（2026-08-28 刘总要求）：安装工具只在综合轮可用，而综合轮在
+ * 填写轮过门后被跳过，导致编译出的场景永远没有 Skill/MCP。此轮是确定性的
+ * 补位：逐步骤检索、安装并绑定。 */
+const CAPABILITY_PASS_DISCIPLINE = [
+  'CAPABILITY PASS: review EVERY workflow step (including sub-steps) and decide whether it needs external capability — literature/data search, web access, document processing, domain tools.',
+  'For each needed capability: first check the installed resource catalog; if missing, verify with scenario_market_search, then install with scenario_install_extension (user-authorized, at most the per-build install limit), then IMMEDIATELY bind the returned definition id into the owning step/sub-step via scenario_apply_update (skillIds/mcpIds, scenario-level arrays too).',
+  'Never invent ids. Never reinstall what the catalog already has. If no step genuinely needs external capability, bind nothing and reply {"summary":"各步骤无需外部 Skill/MCP"} — do not install for decoration.',
+  'Do NOT rewrite prompts/criteria/sections in this turn; only capability bindings may change.',
+].join(' ');
 
 /**
  * Per-phase compiler prompt（2026-08-23 刘总方案 v2）：每个阶段独立一轮对话，
@@ -255,11 +308,13 @@ export function buildScenarioPhasePrompt(input: ScenarioPhasePromptInput): { sys
     ],
     deliverable: [
       'PHASE GOAL — 交付物结构：write deliverable.type (allowed enum only), deliverable.globalLength (STRING like "7500字", never a number), and deliverable.sections with stable ids, non-empty titles and per-section prompts.',
+      'EVERY chapter (kind "chapter") MUST carry 3-5 second-level children with stable ids, kind "section" and non-empty titles (2026-08-28 刘总要求; follow deliverable.secondarySections policy when present). Front-matter (title/abstract/keywords) sits at top level with its own kind, never as an empty chapter. Also write deliverable.secondarySections {min,max}.',
       'Research the standard structure of this deliverable type (e.g. grant/postdoc application sections) and mirror it.',
     ],
     workflow: [
       'PHASE GOAL — 连续工作流：add workflow steps in SMALL BATCHES of 1-2 steps per call (entries merge by id). Every step needs: stable unique id, concise name, dedicated prompt, array completionCriteria, dependsOn chain, maxTurns.',
       'For each step decide which Skills/MCPs it needs: bind existing catalog ids directly; source missing ones via market search + automatic install.',
+      BIBLIOGRAPHY_OUTPUT_CONTRACT,
       'Keep steps strictly serial and ordered as they should execute.',
     ],
     rules: [
@@ -277,8 +332,10 @@ export function buildScenarioPhasePrompt(input: ScenarioPhasePromptInput): { sys
       ...(input.planMode === 'workflow' ? ['MODE: PLANNING TURN (workflow outline).', PLANNING_TURN_DISCIPLINE] : []),
       ...(input.planMode === 'sections' ? ['MODE: PLANNING TURN (deliverable section outline).', PLANNING_TURN_DISCIPLINE] : []),
       ...(input.fillTarget ? ['MODE: FILL TURN.', fillTurnDiscipline(input.fillTarget.kind, input.fillTarget.id, input.fillTarget.name)] : []),
-      ...(input.planMode || input.fillTarget ? [] : [ ...PHASE_GOALS[input.phase], RESEARCH_FIRST_POLICY, ACQUISITION_POLICY, TOOL_DISCIPLINE ]),
+      ...(input.capabilityPass ? ['MODE: CAPABILITY PASS.', CAPABILITY_PASS_DISCIPLINE] : []),
+      ...(input.planMode || input.fillTarget || input.capabilityPass ? [] : [ ...PHASE_GOALS[input.phase], RESEARCH_FIRST_POLICY, ACQUISITION_POLICY, TOOL_DISCIPLINE ]),
       'HARD SCHEMA RULES: completionCriteria MUST be an array of short strings. deliverable.globalLength MUST be a string. Never touch contractVersion/id/kind/revision/provenance. Only use IDs present in the resource catalog or returned by scenario_install_extension.',
+      'SECTION FIELD VOCABULARY (write ONLY these values): section kind MUST be exactly one of: title | abstract | keywords | chapter | section | grant_column | attachment | references | other. Section status MUST be exactly one of: locked | required | optional | conditional — NEVER 必要/可选 or must/mandatory. capability is a short ASCII identifier (research | writing | custom).',
       'Preserve previously written parts: your patches merge into the draft — do not delete or rewrite other phases\u2019 content.',
     ].join('\n'),
     user: [

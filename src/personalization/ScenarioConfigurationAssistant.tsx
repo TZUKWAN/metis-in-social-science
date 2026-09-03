@@ -2,7 +2,8 @@ import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from
 import { createPortal } from 'react-dom';
 import ModelThinkingSelector from '../components/ModelThinkingSelector';
 import { autoResizeTextarea } from '../lib/textareaAutosize.js';
-import { FilePlus2, History, MessageSquarePlus, RotateCcw, Send, Sparkles, Trash2, X } from 'lucide-react';
+import { isScenarioCompileActive, onScenarioCompileUpdate } from '../lib/scenarioCompileCoordinator.js';
+import { FilePlus2, FileUp, History, MessageSquarePlus, RotateCcw, Send, Sparkles, Trash2, X } from 'lucide-react';
 
 
 export interface ScenarioAssistantActionResult {
@@ -15,6 +16,12 @@ export interface ScenarioAssistantIdentity {
   projectId?: string | null;
   scenarioId?: string | null;
   conversationId?: string | null;
+  /** 思考强度（fast/standard/deep）：随编译请求传给主进程注入提示词。 */
+  thinkingLevel?: string;
+  /** 已上传申报书模板的模板 ID：存在时编译指令按申报书栏目组织交付物。 */
+  fundingTemplateId?: string | null;
+  /** 模板栏目结构摘要文本：编译时注入指令前缀。 */
+  fundingStructureText?: string | null;
 }
 
 type ConversationMessage = {
@@ -42,6 +49,10 @@ interface Props {
   scenarioId?: string | null;
   onSubmitInstruction(instruction: string, identity: ScenarioAssistantIdentity): Promise<ScenarioAssistantActionResult>;
   onUploadMaterials(): Promise<ScenarioAssistantActionResult>;
+  /** 上传申报书模板（2026-09-01 刘总要求）：分析后返回模板 ID 与栏目结构摘要。 */
+  onUploadFundingTemplate?(): Promise<{ ok: boolean; message: string; templateId?: string; structureSummary?: string }>;
+  /** 场景产出自动回填（2026-09-01 刘总要求）：按模板栏目生成逐栏填写草稿。 */
+  onGenerateFundingDraft?(request: { projectId: string; templateId: string; materialText?: string }): Promise<{ ok: boolean; message: string }>;
   onUndo(): void;
 }
 
@@ -99,10 +110,17 @@ export default function ScenarioConfigurationAssistant({
   scenarioId,
   onSubmitInstruction,
   onUploadMaterials,
+  onUploadFundingTemplate,
+  onGenerateFundingDraft,
   onUndo,
 }: Props) {
   const [draft, setDraft] = useState('');
   const [messages, setMessages] = useState<ConversationMessage[]>(() => [initialMessage(zh, scenarioName)]);
+  // 申报书模板上下文（2026-09-01 刘总要求）：上传后记录模板 ID 与结构摘要，
+  // 之后的每轮编译指令都会按模板栏目组织交付物；编译完成后自动生成逐栏填写草稿。
+  const [fundingTemplateId, setFundingTemplateId] = useState<string | null>(null);
+  const [fundingTemplateSummary, setFundingTemplateSummary] = useState<string | null>(null);
+  const [fundingBusy, setFundingBusy] = useState(false);
   const [sending, setSending] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const sequence = useRef(1);
@@ -152,6 +170,9 @@ export default function ScenarioConfigurationAssistant({
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   // token 级流式尾部：实时展示模型正在写出的推理/内容片段。
   const [streamTail, setStreamTail] = useState<{ reasoning: string; content: string }>({ reasoning: '', content: '' });
+  const append = (role: ConversationMessage['role'], content: string) => {
+    setMessages((current) => [...current, { id: `local-${sequence.current++}`, role, content }]);
+  };
   // 输入框随内容自动增高，最多约 10 行，超出后内部滚动。
   useEffect(() => {
     if (textareaRef.current) autoResizeTextarea(textareaRef.current);
@@ -186,6 +207,25 @@ export default function ScenarioConfigurationAssistant({
     const timer = window.setInterval(() => setElapsedSeconds((seconds) => seconds + 1), 1000);
     return () => window.clearInterval(timer);
   }, [busy, sending]);
+
+  // 后台编译重挂接（2026-08-25 刘总要求）：用户切页后编译在后台继续；
+  // 回到场景页时若该场景仍有在途编译，自动恢复「生成中」状态并在完成时
+  // 追加结果消息。历史（含未完成轮）由主进程落库，可随时从历史记录找回。
+  useEffect(() => {
+    if (!scenarioId) return;
+    if (!isScenarioCompileActive(scenarioId)) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- restore the visible pending state when reattaching to an external in-flight compile
+    setSending(true);
+    const off = onScenarioCompileUpdate(scenarioId, (state) => {
+      if (!state.done) return;
+      setSending(false);
+      append('assistant', state.ok
+        ? (state.summary || '后台编译已完成，场景已自动保存。') + (state.autosaved ? '（已自动保存。）' : '')
+        : `后台编译未完成：${state.summary ?? '未知原因'}。本轮指令已存入历史记录，可重新发起。`);
+    });
+    return off;
+    // 场景切换通过 key 重挂载完成；append 为稳定 setter。
+  }, [scenarioId]);
 
   const bridges = useCallback(() => {
     const metis = typeof window !== 'undefined' ? window.metis : undefined;
@@ -245,10 +285,6 @@ export default function ScenarioConfigurationAssistant({
     // 场景切换通过 key 重挂载完成；这里只在挂载时执行一次。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  const append = (role: ConversationMessage['role'], content: string) => {
-    setMessages((current) => [...current, { id: `local-${sequence.current++}`, role, content }]);
-  };
 
   const startNewConversation = async () => {
     const bridge = bridges();
@@ -310,11 +346,26 @@ export default function ScenarioConfigurationAssistant({
           activeConversationId = null;
         }
       }
+      let thinkingLevel: string | undefined;
+      try { thinkingLevel = localStorage.getItem('metis:thinking-level') ?? undefined; } catch { /* 隐私模式下不传 */ }
       const result = await onSubmitInstruction(instruction, {
         projectId: projectId ?? null,
         scenarioId: scenarioId ?? null,
         conversationId: activeConversationId,
+        thinkingLevel,
+        fundingTemplateId,
+        fundingStructureText: fundingTemplateSummary,
       });
+      // 申报书闭环（2026-09-01 刘总要求）：场景编译成功且绑定了申报书模板时，
+      // 自动按模板栏目生成逐栏填写草稿并作为助手消息插入对话。
+      if (result.ok && fundingTemplateId && projectId && onGenerateFundingDraft) {
+        try {
+          const draftResult = await onGenerateFundingDraft({ projectId, templateId: fundingTemplateId, materialText: fundingTemplateSummary ?? undefined });
+          append('assistant', draftResult.message);
+        } catch {
+          append('assistant', zh ? '填写草稿自动生成未完成；可稍后在申报书面板中手动生成。' : 'Automatic draft generation did not finish.');
+        }
+      }
       if (result.ok && activeConversationId && bridges()) {
         // 主进程在成功后已把本轮 user+assistant 落库；以数据库为准刷新视图。
         const synced = await loadConversationMessages(activeConversationId);
@@ -344,6 +395,30 @@ export default function ScenarioConfigurationAssistant({
       append('assistant', zh ? '材料导入未完成，当前草稿没有改变。' : 'Material import did not finish; the current draft was not changed.');
     } finally {
       setSending(false);
+    }
+  };
+
+  // 上传申报书模板：分析保存后把结构摘要注入助手上下文，并提示用户直接说需求。
+  const uploadFundingTemplate = async () => {
+    if (!onUploadFundingTemplate || sending || busy || fundingBusy) return;
+    setFundingBusy(true);
+    try {
+      const result = await onUploadFundingTemplate();
+      if (result.ok && result.templateId) {
+        setFundingTemplateId(result.templateId);
+        if (result.structureSummary) setFundingTemplateSummary(result.structureSummary);
+        append('assistant', `${result.message}${result.structureSummary ? `
+
+${result.structureSummary}` : ''}
+
+${zh ? '现在直接输入你的要求（例如：帮我生成这份申报书的完整填写场景），我会按模板栏目组织场景交付物；场景写完后自动生成逐栏填写草稿。' : 'Now describe what you need; I will organize deliverables around these sections and auto-draft the application after the run.'}`);
+      } else {
+        append('assistant', result.message);
+      }
+    } catch {
+      append('assistant', zh ? '申报书模板上传未完成。' : 'Template upload did not finish.');
+    } finally {
+      setFundingBusy(false);
     }
   };
 
@@ -434,8 +509,10 @@ export default function ScenarioConfigurationAssistant({
       />
       <footer className="scenario-assistant__composer-tools" data-testid="sw-assistant-toolbar">
         <button type="button" className="scenario-assistant__tool-icon" onClick={() => void upload()} disabled={isBusy} title={zh ? '添加材料' : 'Add material'} aria-label={zh ? '添加材料' : 'Add material'} data-testid="sw-assistant-upload"><FilePlus2 size={15} /></button>
+        {onUploadFundingTemplate && <button type="button" className="scenario-assistant__tool-icon" onClick={() => void uploadFundingTemplate()} disabled={isBusy || fundingBusy} title={zh ? '上传申报书模板（PDF/DOCX）：分析后按栏目组织场景，写完自动生成填写草稿' : 'Upload a funding application template (PDF/DOCX)'} aria-label={zh ? '上传申报书模板' : 'Upload funding template'} data-testid="sw-assistant-upload-funding"><FileUp size={15} /></button>}
+        {fundingTemplateId && <span className="scenario-assistant__funding-badge" title={fundingTemplateSummary ?? fundingTemplateId} style={{ fontSize: 11, color: 'var(--text-secondary)', alignSelf: 'center' }}>{zh ? '已绑定申报书模板' : 'Template bound'}</span>}
         <button type="button" className="scenario-assistant__tool-icon" onClick={onUndo} disabled={!canUndo || isBusy} title={zh ? '撤销 AI 修改' : 'Undo AI change'} aria-label={zh ? '撤销 AI 修改' : 'Undo AI change'} data-testid="sw-assistant-undo"><RotateCcw size={14} /></button>
-        <ModelThinkingSelector zh={zh} disabled={isBusy} />
+        <ModelThinkingSelector zh={zh} disabled={isBusy} labeled />
         <span className="scenario-assistant__composer-spacer" />
         <button type="button" className="scenario-assistant__send" onClick={() => void submit()} disabled={!draft.trim() || isBusy} aria-label={zh ? '发送场景要求' : 'Send scenario requirement'} data-testid="sw-assistant-send"><Send size={15} /></button>
       </footer>

@@ -258,6 +258,21 @@ export async function* streamOpenAIResponse(
     }
 
     if (!sawDone) {
+      // 部分本地网关（如 Codex 代理）在 finish_reason:"stop" + usage 后直接
+      // 关闭连接，不发 [DONE] 哨兵帧。只要已经收到过 finished choice，回答
+      // 就是完整的；只有真正半途而废的流才判为 interrupted。
+      if (sawFinishedChunk) {
+        const finalTools = accumulator.getComplete();
+        if (finalTools.length > 0) {
+          yield {
+            content: '',
+            toolCalls: finalTools,
+            isFinished: true,
+            usage: totalUsage,
+          };
+        }
+        return;
+      }
       throw new ProviderStreamError('Provider SSE stream ended before [DONE]', 'interrupted');
     }
   } catch (error) {

@@ -285,7 +285,7 @@ describe('Personalization persisted UI-to-runtime happy paths', () => {
       deliverable: { globalLength: '12000 words' },
     }));
     expect(initial.repository.get(CUSTOM_SCENARIO_ID)?.workflow.length).toBe(1);
-    const selector = await screen.findByRole('combobox', { name: 'Active scenario' }, { timeout: 5000 }) as HTMLSelectElement;
+    const selector = await screen.findByRole('combobox', { name: 'Select execution scenario' }, { timeout: 5000 }) as HTMLSelectElement;
     await waitFor(() => expect(selector.value).toBe(CUSTOM_SCENARIO_ID));
     fireEvent.change(screen.getByPlaceholderText('Ask a research question...'), {
       target: { value: '/chat Prove this saved scenario reaches the runtime.' },
@@ -328,7 +328,7 @@ describe('Personalization persisted UI-to-runtime happy paths', () => {
     installRuntimeBridge(restarted);
     const restartedApp = render(<App />);
     const restartedSelector = await screen.findByRole('combobox', {
-      name: 'Active scenario',
+      name: 'Select execution scenario',
     }) as HTMLSelectElement;
     await waitFor(() => expect(restartedSelector.value).toBe(CUSTOM_SCENARIO_ID));
     expect(restarted.repository.get(CUSTOM_SCENARIO_ID)).toMatchObject({

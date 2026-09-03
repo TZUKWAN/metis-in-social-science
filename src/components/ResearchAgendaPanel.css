@@ -125,7 +125,7 @@
   height: 20px;
   border-radius: 10px;
   background: var(--accent);
-  color: #fff;
+  color: var(--text-on-accent);
   font-size: 11px;
   margin-left: 8px;
 }
@@ -193,7 +193,7 @@
 
 .agenda-card__badge--head {
   background: var(--accent);
-  color: #fff;
+  color: var(--text-on-accent);
 }
 
 .agenda-card__title {
@@ -227,7 +227,7 @@
 .agenda-card__progress > span {
   display: block;
   height: 100%;
-  background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 60%, #6b8e5a));
+  background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 60%, var(--chart-2)));
   transition: width 300ms ease;
 }
 

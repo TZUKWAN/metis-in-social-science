@@ -189,13 +189,12 @@ describe('ScenarioRunCoordinator Step Loop', () => {
     expect(result.record.steps[0]?.errorMessage).toContain('completion assessment');
   });
 
-  it('keeps an ordinary completion-criteria failure inside automatic self-repair until it passes', async () => {
+  it('performs one targeted repair pass, then continues without requiring perfection', async () => {
     const manifest = mutatedManifest((m) => {
       const step = m.workflow[0];
       if (!step) throw new Error('missing step');
-      // A disabled Loop is still a complete schema object.  The public UI
-      // intentionally hides it, while runtime derives the repair loop from
-      // completion criteria.
+      // A disabled Loop is still a complete schema object. The runtime derives
+      // the bounded two-pass repair cycle from completion criteria.
       step.loop = {
         enabled: false,
         maxIterations: 5,
@@ -206,12 +205,12 @@ describe('ScenarioRunCoordinator Step Loop', () => {
       };
       step.completionCriteria = ['The draft has a verified evidence trail.'];
     });
-    let calls = 0;
+    const inputs: ScenarioStepExecutionInput[] = [];
     const coordinator = new ScenarioRunCoordinator({
       now: monotonicClock(),
       executor: async (input) => {
-        calls += 1;
-        return assessedResult(input, calls >= 6, calls >= 6 ? 'Evidence trail is complete' : 'Add the missing evidence');
+        inputs.push(input);
+        return assessedResult(input, false, '1. Add the missing evidence\n2. Clarify the source boundary');
       },
     });
 
@@ -220,9 +219,11 @@ describe('ScenarioRunCoordinator Step Loop', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.record.status).toBe('completed');
-    expect(calls).toBe(6);
-    expect(result.record.steps[0]?.validationHistory).toHaveLength(6);
-    expect(result.record.steps[0]?.validationHistory.at(-1)?.satisfied).toBe(true);
+    expect(inputs).toHaveLength(2);
+    expect(inputs[1]?.runtimeInstruction).toContain('逐项修正');
+    expect(inputs[1]?.runtimeInstruction).toContain('1. Add the missing evidence');
+    expect(result.record.steps[0]?.validationHistory).toHaveLength(2);
+    expect(result.record.steps[0]?.errorCode).toBe('loop_exhausted');
   });
 
   it('pauses a step loop via runtime directive and resumes it from the checkpoint', async () => {

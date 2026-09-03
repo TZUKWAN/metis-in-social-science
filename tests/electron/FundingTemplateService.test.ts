@@ -185,13 +185,14 @@ describe('FundingTemplateService real file pipeline', () => {
     expect(service.list('user-service', 'project-service')).toMatchObject({ ok: true, value: [{ latestVersion: 1 }] });
   });
 
-  it('fails a real DOCX honestly when final layout coordinates are unobservable', async () => {
+  it('imports a real DOCX template through the full observation and analysis pipeline', async () => {
     const { service } = setup();
     const filePath = await write('funding.docx', makeDocx());
-    expect(await service.importOrReanalyze(createRequest(filePath))).toMatchObject({
-      ok: false, code: 'docx_layout_unobservable',
-    });
-    expect(service.list('user-service', 'project-service')).toMatchObject({ ok: true, value: [] });
+    const imported = await service.importOrReanalyze(createRequest(filePath));
+    expect(imported.ok).toBe(true);
+    if (!imported.ok) throw new Error(imported.code);
+    expect(imported.value.templateRevision).toBe(1);
+    expect(service.list('user-service', 'project-service')).toMatchObject({ ok: true, value: [{ latestVersion: 1 }] });
   });
 
   it('checks CAS before reading an attacker-selected replacement file', async () => {

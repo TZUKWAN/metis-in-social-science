@@ -105,6 +105,8 @@ const AUTHORED_CONTENT_TOOLS = new Set([
   'fulltext_search',
   'crossref_lookup',
   'openalex_lookup',
+  'journal_directory_search',
+  'journal_directory_detail',
   'search_library',
   'find_library_duplicates',
   'recommend_papers',
@@ -1059,6 +1061,118 @@ const decodeJournalIntegrityStats = buildStructuredDecoder(
   formatJournalIntegrityStats,
 );
 
+// ─── Journal directory (LetPub / Wanwei Shukan) decoders ────────
+
+const CatalogFieldOptionSchema = z.strictObject({
+  id: z.string(),
+  name: z.string(),
+});
+
+const CatalogJournalSummarySchema = z.strictObject({
+  source: z.string(),
+  id: z.string(),
+  name: z.string(),
+  nameAbbr: z.string().optional(),
+  issn: z.string().optional(),
+  submissionLabel: z.string().optional(),
+  categoryTags: z.array(z.string()),
+  detailUrl: z.string(),
+});
+
+const CatalogSearchResultSchema = z.strictObject({
+  source: z.string(),
+  field: CatalogFieldOptionSchema.nullable().optional(),
+  keyword: z.string(),
+  page: z.number().int(),
+  totalHint: z.string().optional(),
+  journals: z.array(CatalogJournalSummarySchema),
+  fieldCandidates: z.array(CatalogFieldOptionSchema).optional(),
+  note: z.string().optional(),
+});
+
+type CatalogSearchResultData = z.infer<typeof CatalogSearchResultSchema>;
+
+function formatCatalogSearchResult(result: CatalogSearchResultData): string {
+  const lines = [`Journal directory search — source: ${result.source}`];
+  if (result.field) lines.push(`Field: ${result.field.name} (id ${result.field.id})`);
+  if (result.keyword) lines.push(`Keyword: ${result.keyword}`);
+  if (result.totalHint) lines.push(`Total: ${result.totalHint}`);
+  if (result.note) lines.push(`Note: ${result.note}`);
+  if (result.fieldCandidates?.length) {
+    lines.push(`Field candidates: ${result.fieldCandidates.map((option) => `${option.name}(id ${option.id})`).join('、')}`);
+  }
+  for (const [i, journal] of result.journals.entries()) {
+    const issn = journal.issn ? ` ISSN ${journal.issn}` : '';
+    const channel = journal.submissionLabel ? ` [${journal.submissionLabel}]` : '';
+    const tags = journal.categoryTags.length > 0 ? ` (${journal.categoryTags.join('/')})` : '';
+    lines.push(`${i + 1}. ${journal.name}${issn}${channel}${tags} — id ${journal.id}`);
+  }
+  if (result.journals.length === 0 && !result.note) lines.push('No journals on this page.');
+  return lines.join('\n');
+}
+
+const CatalogJournalDetailSchema = z.strictObject({
+  source: z.string(),
+  id: z.string(),
+  name: z.string().optional(),
+  detailUrl: z.string(),
+  issn: z.string().optional(),
+  eissn: z.string().optional(),
+  cn: z.string().optional(),
+  publisher: z.string().optional(),
+  supervisor: z.string().optional(),
+  hostInstitution: z.string().optional(),
+  language: z.string().optional(),
+  officialWebsite: z.string().optional(),
+  submissionUrl: z.string().optional(),
+  submissionEmails: z.array(z.string()),
+  phone: z.string().optional(),
+  reviewCycle: z.string().optional(),
+  acceptanceRatio: z.string().optional(),
+  articleProcessingCharge: z.string().optional(),
+  warningStatus: z.string().optional(),
+  indexingTags: z.array(z.string()),
+  submissionNotice: z.string().optional(),
+});
+
+type CatalogJournalDetailData = z.infer<typeof CatalogJournalDetailSchema>;
+
+function formatCatalogJournalDetail(detail: CatalogJournalDetailData): string {
+  const lines = [`Journal detail — source: ${detail.source}, id ${detail.id}`];
+  if (detail.name) lines.push(`Name: ${detail.name}`);
+  const identity = [detail.issn && `ISSN ${detail.issn}`, detail.eissn && `E-ISSN ${detail.eissn}`, detail.cn && `CN ${detail.cn}`]
+    .filter(Boolean).join(' · ');
+  if (identity) lines.push(identity);
+  if (detail.publisher) lines.push(`Publisher: ${detail.publisher}`);
+  if (detail.supervisor) lines.push(`Supervisor: ${detail.supervisor}`);
+  if (detail.hostInstitution) lines.push(`Host: ${detail.hostInstitution}`);
+  if (detail.language) lines.push(`Language: ${detail.language}`);
+  if (detail.officialWebsite) lines.push(`Official website: ${detail.officialWebsite}`);
+  if (detail.submissionUrl) lines.push(`Submission URL: ${detail.submissionUrl}`);
+  if (detail.submissionEmails.length > 0) lines.push(`Submission email: ${detail.submissionEmails.join('; ')}`);
+  if (detail.phone) lines.push(`Phone: ${detail.phone}`);
+  if (detail.reviewCycle) lines.push(`Review cycle (crowd-shared): ${detail.reviewCycle}`);
+  if (detail.acceptanceRatio) lines.push(`Acceptance ratio (crowd-shared): ${detail.acceptanceRatio}`);
+  if (detail.articleProcessingCharge) lines.push(`Article processing charge: ${detail.articleProcessingCharge}`);
+  if (detail.warningStatus) lines.push(`Warning list: ${detail.warningStatus}`);
+  if (detail.indexingTags.length > 0) lines.push(`Indexing: ${detail.indexingTags.join('、')}`);
+  if (detail.submissionNotice) lines.push(`Submission notice: ${detail.submissionNotice.slice(0, 800)}`);
+  return lines.join('\n');
+}
+
+const decodeJournalDirectorySearch = buildStructuredDecoder(
+  'journal_directory_search',
+  'Journal directory search results',
+  CatalogSearchResultSchema,
+  formatCatalogSearchResult,
+);
+const decodeJournalDirectoryDetail = buildStructuredDecoder(
+  'journal_directory_detail',
+  'Journal directory detail',
+  CatalogJournalDetailSchema,
+  formatCatalogJournalDetail,
+);
+
 /**
  * Return a map of built-in decoders. This is used by AgentLoop to seed its
  * immutable per-loop registry; it is never exposed as a mutable module state.
@@ -1082,6 +1196,8 @@ export function buildBuiltinDecoders(): Map<string, ToolDecoder> {
   map.set('fulltext_search', decodeFulltextSearch);
   map.set('crossref_lookup', decodeCrossrefLookup);
   map.set('openalex_lookup', decodeOpenAlexLookup);
+  map.set('journal_directory_search', decodeJournalDirectorySearch);
+  map.set('journal_directory_detail', decodeJournalDirectoryDetail);
   map.set('recommend_papers', decodeRecommendPapers);
   map.set('literature_review', decodeLiteratureReview);
   map.set('daily_papers', decodeDailyPapers);

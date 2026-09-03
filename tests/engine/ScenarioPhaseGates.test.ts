@@ -31,7 +31,10 @@ function scenario(overrides: Partial<ScenarioDefinition> = {}): ScenarioDefiniti
     deliverable: {
       type: 'empirical_paper', language: 'zh', globalLength: '7500字', secondarySections: { min: 2, max: 4 },
       structurePolicy: { defaultSections: 1, suggestedMin: 1, suggestedMax: 1 },
-      sections: [{ id: 'sec-1', title: '引言', kind: 'section', status: 'required', children: [] }],
+      sections: [{ id: 'sec-1', title: '引言', kind: 'chapter', status: 'required', children: [
+        { id: 'sec-1-1', title: '研究背景', kind: 'section', status: 'required', children: [] },
+        { id: 'sec-1-2', title: '研究问题', kind: 'section', status: 'required', children: [] },
+      ] }],
     },
     workflowPrompt: '先完成第一步，再把产出交给下一步；全程保证引用真实来源。',
     scenarioMetis: { purpose: '测试目的', roleBoundaries: '', researchRules: '', writingRules: '', toolRules: '', qualityGates: '', failureRecovery: '', markdown: '# 测试规则\n\n这是一段真实的规则文档内容，用于验证 rules 阶段的验收门可以通过。规则必须覆盖研究、写作、质量与失败恢复等关键方面，因此这段文字需要足够长才能通过验收门的长度检查。' },
@@ -63,6 +66,14 @@ describe('ScenarioPhaseGates', () => {
     expect(gate.ok).toBe(false);
     expect(gate.issues.some((issue) => issue.includes('globalLength'))).toBe(true);
     expect(gate.issues.some((issue) => issue.includes('sections'))).toBe(true);
+  });
+
+  it('deliverable gate rejects chapters without enough second-level children (2026-08-28 刘总要求)', () => {
+    const base = scenario();
+    base.deliverable!.sections = [{ id: 'sec-1', title: '引言', kind: 'chapter', status: 'required', children: [] }];
+    const gate = checkPhaseGate('deliverable', base);
+    expect(gate.ok).toBe(false);
+    expect(gate.issues.some((issue) => issue.includes('二级章节不足'))).toBe(true);
   });
 
   it('workflow gate rejects steps without prompt or criteria', () => {

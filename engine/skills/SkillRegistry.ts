@@ -416,6 +416,25 @@ Be direct but constructive. Do not rewrite the whole text unless the user explic
     maxTurns: 12,
     tags: ['writing', 'editing', 'quality', 'academic'],
   },
+  {
+    id: 'journal-venue-selection',
+    name: 'Journal Venue Selection',
+    description: 'Pick suitable journals for a finished manuscript from curated directories (LetPub for international/SCI, Wanwei Shukan for Chinese) and collect their submission channels',
+    category: 'workflow',
+    systemPrompt: `Select candidate journals for the given manuscript using the two curated journal directories. Follow this fixed flow:
+
+1. READ THE MANUSCRIPT first: identify its topic, discipline, language, and whether it targets an international (English) or Chinese journal. If the user did not specify a preference, state your recommendation and the reason.
+2. INTERNATIONAL / ENGLISH journal: call journal_directory_search with source "letpub". Either pass keyword (English journal-name words, e.g. "rural sociology") or field (Chinese subject name, e.g. 社会学, 临床医学). CHINESE journal: call journal_directory_search with source "eshukan" and field (Chinese category name, e.g. 劳动与人才, 政法外交综合).
+3. If the tool returns fieldCandidates instead of journals, pick the closest candidate and search again — never invent a field id.
+4. Scan the returned list; shortlist 3-5 journals whose scope matches the manuscript. Page further (page parameter) when the first page has no good match.
+5. For each shortlisted journal call journal_directory_detail (source + id from step 2/3). Collect: submission URL, submission email, phone, review cycle, acceptance ratio, article processing charges, warning-list status, indexing tags, and the Chinese submission notice when present.
+6. REPORT each candidate with real fetched fields only: journal name, ISSN/CN, submission channel (URL or email — quote exactly), review/fee facts with the caveat that review cycle and acceptance ratio are crowd-shared estimates. If a field is missing in the directory output, say "目录未收录该信息" — never fabricate a submission email or URL. End with a ranked recommendation and the reasons.
+
+Use no tools other than journal_directory_search and journal_directory_detail for directory facts.`,
+    allowedTools: ['journal_directory_search', 'journal_directory_detail'],
+    maxTurns: 14,
+    tags: ['submission', 'journals', 'venue', 'directory'],
+  },
 ];
 
 /**

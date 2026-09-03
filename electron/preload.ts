@@ -7,7 +7,8 @@
 
 import { contextBridge, ipcRenderer } from 'electron';
 import { inspectExternalNavigationUrl } from '../engine/security/ExternalNavigation.js';
-import { ImageGenerationSettingsUpdateSchema, OutcomeAssistantChatRequestSchema, OutcomeAssistantChatResultSchema, OutcomeCategoryCreateSchema, OutcomeCategoryDeleteSchema, OutcomeCategoryRenameSchema, OutcomeCreateRequestSchema, OutcomeFinalRequestSchema, OutcomeGetRequestSchema, OutcomeImageGenerateRequestSchema, OutcomeImageGenerateResultSchema, OutcomeImageSettingsGetResultSchema, OutcomeImageSettingsSaveResultSchema, OutcomeListRequestSchema, OutcomeMediaImportRequestSchema, OutcomeMediaReadRequestSchema, OutcomeMediaSvgExportResultSchema, OutcomeMoveRequestSchema, OutcomePptxExportRequestSchema, OutcomePptxExportResultSchema, OutcomePptxImportCommitRequestSchema, OutcomePptxImportCommitResultSchema, OutcomePptxImportRequestSchema, OutcomePptxImportResultSchema, OutcomeRenameRequestSchema, OutcomeRestoreRequestSchema, OutcomeSaveRequestSchema, OutcomeVersionsRequestSchema, OutcomeWordDocxExportRequestSchema, OutcomeWordDocxExportResultSchema, OutcomeWordDocxImportCommitRequestSchema, OutcomeWordDocxImportCommitResultSchema, OutcomeWordDocxImportRequestSchema, OutcomeWordDocxImportResultSchema, PptGenerationExecuteRequestSchema, PptGenerationResultSchema, PptGenerationSkillSaveRequestSchema, PptTemplateSaveRequestSchema, ScopedConversationMessageRequestSchema, ScopedConversationRequestSchema, OutcomeSourceLocateRequestSchema, OutcomeSourceLocateResultSchema, OutcomeTrashListRequestSchema, OutcomeTrashRequestSchema } from '../engine/runtime/OutcomeRuntimeContract.js';
+import { OutcomeExternalEditorStateRequestSchema, OutcomeExternalEditorStateSchema } from '../engine/runtime/OutcomeRuntimeContract.js';
+import { ImageGenerationSettingsUpdateSchema, OutcomeAssistantChatRequestSchema, OutcomeAssistantChatResultSchema, OutcomeCategoryCreateSchema, OutcomeCategoryDeleteSchema, OutcomeCategoryRenameSchema, OutcomeCreateRequestSchema, OutcomeExternalEditorCloseRequestSchema, OutcomeExternalEditorOpenRequestSchema, OutcomeExternalEditorOpenResultSchema, OutcomeExternalEditorSyncRequestSchema, OutcomeExternalEditorSyncResultSchema, OutcomeFinalRequestSchema, OutcomeGetRequestSchema, OutcomeImageGenerateRequestSchema, OutcomeImageGenerateResultSchema, OutcomeImageSettingsGetResultSchema, OutcomeImageSettingsSaveResultSchema, OutcomeListRequestSchema, OutcomeMediaImportRequestSchema, OutcomeMediaReadRequestSchema, OutcomeMediaSvgExportResultSchema, OutcomeMoveRequestSchema, OutcomePptxExportRequestSchema, OutcomePptxExportResultSchema, OutcomePptxImportCommitRequestSchema, OutcomePptxImportCommitResultSchema, OutcomePptxImportRequestSchema, OutcomePptxImportResultSchema, OutcomeRenameRequestSchema, OutcomeRestoreRequestSchema, OutcomeSaveRequestSchema, OutcomeVersionsRequestSchema, OutcomeWordDocxExportRequestSchema, OutcomeWordDocxExportResultSchema, OutcomeWordDocxImportCommitRequestSchema, OutcomeWordDocxImportCommitResultSchema, OutcomeWordDocxImportRequestSchema, OutcomeWordDocxImportResultSchema, PptGenerationExecuteRequestSchema, PptGenerationResultSchema, PptGenerationSkillSaveRequestSchema, PptTemplateSaveRequestSchema, OutcomeTemplateDefaultGetRequestSchema, OutcomeTemplateDeleteRequestSchema, OutcomeTemplateListRequestSchema, OutcomeTemplateSaveRequestSchema, OutcomeTemplateUpdateRequestSchema, OutcomeDefaultTemplateSetRequestSchema, ScopedConversationMessageRequestSchema, ScopedConversationRequestSchema, OutcomeSourceLocateRequestSchema, OutcomeSourceLocateResultSchema, OutcomeTrashListRequestSchema, OutcomeTrashRequestSchema } from '../engine/runtime/OutcomeRuntimeContract.js';
 import {
   AgentChatOptionsSchema,
   decodeChatStreamChunkEvent,
@@ -189,6 +190,8 @@ import {
   PersonalizationForkRequestSchema,
   PersonalizationGetRequestSchema,
   PersonalizationListRequestSchema,
+  PersonalizationIntegrityListRequestSchema,
+  PersonalizationIntegrityRecoverRequestSchema,
   PersonalizationTrashListRequestSchema,
   PersonalizationResolveRequestSchema,
   PersonalizationRestoreRequestSchema,
@@ -197,6 +200,7 @@ import {
   PersonalizationSaveRequestSchema,
   decodePersonalizationGetResponse,
   decodePersonalizationListResponse,
+  decodePersonalizationIntegrityListResponse,
   decodePersonalizationTrashListResponse,
   decodePersonalizationMutationResult,
   decodePersonalizationResolveResponse,
@@ -205,6 +209,8 @@ import {
   type PersonalizationForkRequest,
   type PersonalizationGetRequest,
   type PersonalizationListRequest,
+  type PersonalizationIntegrityListRequest,
+  type PersonalizationIntegrityRecoverRequest,
   type PersonalizationTrashListRequest,
   type PersonalizationResolveRequest,
   type PersonalizationRestoreRequest,
@@ -897,6 +903,164 @@ const api = {
     ipcRenderer.invoke('submissions:resolveComment', request) as Promise<{ id: string } | null>,
   deleteSubmission: async (id: string) => ipcRenderer.invoke('submissions:delete', id) as Promise<boolean>,
   buildResponseLetter: async (id: string) => ipcRenderer.invoke('submissions:responseLetter', id) as Promise<string | null>,
+  // ── Submission domain（投稿生命周期：Series / Case / Events / 状态机）──
+  listSubmissionSeries: async (projectId: string) =>
+    ipcRenderer.invoke('submission:listSeries', projectId) as Promise<import('../engine/submission/SubmissionRuntimeContract.js').SubmissionSeries[]>,
+  listSubmissionCases: async (request: { projectId: string; status?: string; query?: string; includeClosed?: boolean }) =>
+    ipcRenderer.invoke('submission:listCases', request) as Promise<import('../engine/submission/SubmissionRuntimeContract.js').SubmissionCase[]>,
+  getSubmissionCase: async (request: { projectId: string; caseId: string }) =>
+    ipcRenderer.invoke('submission:getCase', request) as Promise<import('../engine/submission/SubmissionRuntimeContract.js').SubmissionCase | null>,
+  createSubmissionCase: async (request: import('../engine/submission/SubmissionRuntimeContract.js').SubmissionCaseCreateInput & { seriesId?: string | null }) =>
+    // The main handler resolves with the repository shape { series, submissionCase };
+    // duplicate-active is reported as { ok: false, code: 'duplicate_active', ... }.
+    ipcRenderer.invoke('submission:createCase', request) as Promise<{ series: import('../engine/submission/SubmissionRuntimeContract.js').SubmissionSeries; submissionCase: import('../engine/submission/SubmissionRuntimeContract.js').SubmissionCase } | { ok: false; code: 'duplicate_active'; activeCaseId: string; activeJournal: string } | null>,
+  updateSubmissionCase: async (request: { projectId: string; patch: Record<string, unknown> }) =>
+    ipcRenderer.invoke('submission:updateCase', request) as Promise<import('../engine/submission/SubmissionRuntimeContract.js').SubmissionCase | null>,
+  changeSubmissionStatus: async (request: { projectId: string; change: { caseId: string; to: string; reason?: string; actor?: string; source?: string } }) =>
+    ipcRenderer.invoke('submission:changeStatus', request) as Promise<import('../engine/submission/SubmissionRuntimeContract.js').SubmissionCase | { ok: false; code: 'illegal_transition'; message: string } | null>,
+  listSubmissionEvents: async (request: { projectId: string; caseId: string }) =>
+    ipcRenderer.invoke('submission:listEvents', request) as Promise<import('../engine/submission/SubmissionRuntimeContract.js').SubmissionEvent[]>,
+  addSubmissionEvent: async (request: { projectId: string; caseId: string; type: string; source?: string; sourceId?: string | null; actor?: string; description?: string; metadata?: Record<string, unknown> }) =>
+    ipcRenderer.invoke('submission:addEvent', request) as Promise<import('../engine/submission/SubmissionRuntimeContract.js').SubmissionEvent | null>,
+  archiveSubmissionCase: async (request: { projectId: string; caseId: string }) =>
+    ipcRenderer.invoke('submission:archiveCase', request) as Promise<boolean>,
+  matchSubmissionJournals: async (request: { projectId: string; caseId?: string; query: string; outcomeId?: string; criteria: import('../engine/submission/SubmissionRuntimeContract.js').TargetingCriteria }) =>
+    ipcRenderer.invoke('submission:matchJournals', request) as Promise<{
+      ok: true; candidates: Array<{ name: string; issn: string | null; verifiedTiers: string[]; tierStatus: 'verified' | 'unknown'; recentPaperCount: number; latestYear: number; evidence: Array<{ title: string; year: number; doi?: string; source: string }>; meetsCriteria: boolean | null; criteriaNote: string; score: number }>; warnings: string[]; disclaimer: string;
+    } | { ok: false; code: string; candidates: never[]; warnings: never[] } | null>,
+  checkActiveSubmission: async (request: { projectId: string; sourceOutcomeId: string }) =>
+    ipcRenderer.invoke('submission:checkActive', request) as Promise<import('../engine/submission/SubmissionRuntimeContract.js').SubmissionCase | null>,
+  // ── Submission P1（期刊档案 / 投稿要求 / 语料 / 范式 / 差距诊断 / 优化方案）──
+  identifySubmissionJournal: async (request: { projectId: string; caseId?: string; name?: string; issn?: string }) =>
+    ipcRenderer.invoke('submission:journal:identify', request) as Promise<{ ok: true; profile: import('../engine/submission/JournalProfileContract.js').JournalProfile } | { ok: false; code: string; message: string } | null>,
+  fetchSubmissionJournalGuidelines: async (request: { projectId: string; caseId: string }) =>
+    ipcRenderer.invoke('submission:journal:fetchGuidelines', request) as Promise<{ ok: true; snapshot: import('../engine/submission/JournalProfileContract.js').JournalProfileSnapshot; requirements: import('../engine/submission/JournalProfileContract.js').JournalRequirement[]; sources: Array<{ url: string; title: string }>; extraction: 'llm' | 'deterministic' } | { ok: false; code: string; message: string } | null>,
+  getSubmissionJournalProfile: async (request: { projectId: string; caseId: string }) =>
+    ipcRenderer.invoke('submission:journal:profile', request) as Promise<{
+      profile: import('../engine/submission/JournalProfileContract.js').JournalProfile;
+      snapshot: import('../engine/submission/JournalProfileContract.js').JournalProfileSnapshot | null;
+      requirements: import('../engine/submission/JournalProfileContract.js').JournalRequirement[] | null;
+      observations: import('../engine/submission/JournalProfileContract.js').JournalPatternObservation[] | null;
+      corpus: import('../engine/submission/JournalProfileContract.js').JournalCorpusItem[];
+    } | null>,
+  buildSubmissionJournalCorpus: async (request: { projectId: string; caseId: string }) =>
+    ipcRenderer.invoke('submission:journal:buildCorpus', request) as Promise<{ ok: true; items: import('../engine/submission/JournalProfileContract.js').JournalCorpusItem[] } | { ok: false; code: string; message: string } | null>,
+  analyzeSubmissionJournalPatterns: async (request: { projectId: string; caseId: string }) =>
+    ipcRenderer.invoke('submission:journal:analyzePatterns', request) as Promise<{ ok: true; observations: import('../engine/submission/JournalProfileContract.js').JournalPatternObservation[]; corpusSize: number } | { ok: false; code: string; message: string } | null>,
+  diffSubmissionJournalSnapshots: async (request: { projectId: string; caseId: string }) =>
+    ipcRenderer.invoke('submission:journal:diffSnapshots', request) as Promise<{ added: import('../engine/submission/JournalProfileContract.js').JournalRequirement[]; removed: import('../engine/submission/JournalProfileContract.js').JournalRequirement[]; changed: Array<{ ruleKey: string; before: string; after: string }> } | null>,
+  diagnoseSubmissionCase: async (request: { projectId: string; caseId: string }) =>
+    ipcRenderer.invoke('submission:diagnose', request) as Promise<{ ok: true; items: import('../engine/submission/JournalProfileContract.js').SubmissionGapItem[] } | { ok: false; code: string } | null>,
+  createSubmissionOptimizationPlan: async (request: { projectId: string; caseId: string; gapItemIds?: string[] }) =>
+    ipcRenderer.invoke('submission:plan:create', request) as Promise<{ ok: true; plan: import('../engine/submission/JournalProfileContract.js').SubmissionOptimizationPlan; items: import('../engine/submission/JournalProfileContract.js').SubmissionOptimizationItem[] } | { ok: false; code: string } | null>,
+  getSubmissionOptimizationPlan: async (request: { projectId: string; caseId: string }) =>
+    ipcRenderer.invoke('submission:plan:latest', request) as Promise<{
+      plan: import('../engine/submission/JournalProfileContract.js').SubmissionOptimizationPlan;
+      items: import('../engine/submission/JournalProfileContract.js').SubmissionOptimizationItem[];
+    } | null>,
+  approveSubmissionOptimizationPlan: async (request: { projectId: string; planId: string; selectedItemIds?: string[] }) =>
+    ipcRenderer.invoke('submission:plan:approve', request) as Promise<{ ok: true; plan: import('../engine/submission/JournalProfileContract.js').SubmissionOptimizationPlan; items: import('../engine/submission/JournalProfileContract.js').SubmissionOptimizationItem[] } | { ok: false; code: string } | null>,
+  applySubmissionOptimizationPlan: async (request: { projectId: string; planId: string; caseId: string }) =>
+    ipcRenderer.invoke('submission:plan:apply', request) as Promise<{ ok: true; plan: import('../engine/submission/JournalProfileContract.js').SubmissionOptimizationPlan; results: Array<{ itemId: string; title: string; status: 'applied' | 'skipped' | 'failed'; outcomeVersion: number | null; note: string }> } | { ok: false; code: string } | null>,
+  verifySubmissionOptimizationPlan: async (request: { projectId: string; planId: string }) =>
+    ipcRenderer.invoke('submission:plan:verify', request) as Promise<{ ok: true; verified: boolean; residualMustFix: unknown[]; plan: import('../engine/submission/JournalProfileContract.js').SubmissionOptimizationPlan } | { ok: false; code: string } | null>,
+  updateSubmissionGapItem: async (request: { projectId: string; caseId: string; itemId: string; patch: { status: import('../engine/submission/JournalProfileContract.js').SubmissionGapStatus } }) =>
+    ipcRenderer.invoke('submission:gap:update', request) as Promise<import('../engine/submission/JournalProfileContract.js').SubmissionGapItem | null>,
+  // ── Submission P4（Decision Letter 拆解 / 返修 / Response Letter）──
+  createSubmissionReviewRound: async (request: { projectId: string; caseId: string; decisionLetterText: string; deadline?: number | null }) =>
+    ipcRenderer.invoke('submission:review:createRound', request) as Promise<{ ok: true; roundId: string; parsed: { decision: string; deadline: number | null; reviewerComments: unknown[]; editorComments: unknown[] } } | { ok: false; code: string } | null>,
+  listSubmissionReviewRounds: async (request: { projectId: string; caseId: string }) =>
+    ipcRenderer.invoke('submission:review:list', request) as Promise<Array<import('../engine/submission/SubmissionReviewContract.js').ReviewRound & { comments: import('../engine/submission/SubmissionReviewContract.js').ReviewerComment[] }>>,
+  updateSubmissionReviewComment: async (request: { projectId: string; commentId: string; patch: import('../engine/submission/SubmissionReviewContract.js').ReviewCommentPatch }) =>
+    ipcRenderer.invoke('submission:review:updateComment', request) as Promise<import('../engine/submission/SubmissionReviewContract.js').ReviewerComment | null>,
+  beginSubmissionRevision: async (request: { projectId: string; caseId: string }) =>
+    ipcRenderer.invoke('submission:review:beginRevision', request) as Promise<{ ok: true } | { ok: false; code: string } | null>,
+  generateSubmissionResponseLetter: async (request: { projectId: string; caseId: string }) =>
+    ipcRenderer.invoke('submission:review:generateResponse', request) as Promise<{ ok: true; outcomeId: string; version: number; unresolvedCount: number } | { ok: false; code: string } | null>,
+  // ── Submission P3（最终提交：Human Approval 门控 + 回执）──
+  confirmFinalSubmission: async (request: { projectId: string; caseId: string; submissionMethod: 'portal_web' | 'email' | 'offline_manual'; portalUrl?: string; remoteSubmissionId?: string; notes?: string; confirmed: true }) =>
+    ipcRenderer.invoke('submission:submit', request) as Promise<{ ok: true; submissionCase: import('../engine/submission/SubmissionRuntimeContract.js').SubmissionCase } | { ok: false; code: 'approval_required' | 'preflight_not_passed' | 'package_not_frozen' | 'case_not_found' | 'illegal_transition' | 'illegal_status' } | null>,
+  // ── Submission P2（投稿预检 / 投稿包 / Cover Letter）──
+  runSubmissionPreflight: async (request: { projectId: string; caseId: string }) =>
+    ipcRenderer.invoke('submission:preflight:run', request) as Promise<{ ok: true; run: import('../engine/submission/SubmissionPackageContract.js').SubmissionPreflightRun; checks: import('../engine/submission/SubmissionPackageContract.js').SubmissionPreflightCheck[] } | { ok: false; code: string } | null>,
+  getSubmissionPreflight: async (request: { projectId: string; caseId: string }) =>
+    ipcRenderer.invoke('submission:preflight:latest', request) as Promise<{
+      run: import('../engine/submission/SubmissionPackageContract.js').SubmissionPreflightRun;
+      checks: import('../engine/submission/SubmissionPackageContract.js').SubmissionPreflightCheck[];
+    } | null>,
+  assembleSubmissionPackage: async (request: { projectId: string; caseId: string }) =>
+    ipcRenderer.invoke('submission:package:assemble', request) as Promise<{ ok: true; package: import('../engine/submission/SubmissionPackageContract.js').SubmissionPackage; files: import('../engine/submission/SubmissionPackageContract.js').SubmissionPackageFile[] } | { ok: false; code: string } | null>,
+  getSubmissionPackage: async (request: { projectId: string; caseId: string }) =>
+    ipcRenderer.invoke('submission:package:latest', request) as Promise<{
+      package: import('../engine/submission/SubmissionPackageContract.js').SubmissionPackage;
+      files: import('../engine/submission/SubmissionPackageContract.js').SubmissionPackageFile[];
+    } | null>,
+  attachSubmissionPackageOutcome: async (request: { projectId: string; packageId: string; outcomeId: string; type: import('../engine/submission/SubmissionPackageContract.js').SubmissionPackageFileType; required?: boolean; note?: string }) =>
+    ipcRenderer.invoke('submission:package:attachOutcome', request) as Promise<{ ok: true; file: import('../engine/submission/SubmissionPackageContract.js').SubmissionPackageFile } | { ok: false; code: string } | null>,
+  attachSubmissionPackageFile: async (request: { projectId: string; packageId: string; type: import('../engine/submission/SubmissionPackageContract.js').SubmissionPackageFileType; filePath: string; required?: boolean }) =>
+    ipcRenderer.invoke('submission:package:attachFile', request) as Promise<{ ok: true; file: import('../engine/submission/SubmissionPackageContract.js').SubmissionPackageFile } | { ok: false; code: string } | null>,
+  removeSubmissionPackageFile: async (request: { projectId: string; packageId: string; fileId: string }) =>
+    ipcRenderer.invoke('submission:package:removeFile', request) as Promise<boolean>,
+  exportSubmissionPackage: async (request: { projectId: string; packageId: string }) =>
+    ipcRenderer.invoke('submission:package:export', request) as Promise<{ ok: true; dir: string; exported: Array<{ fileId: string; path: string; format: 'docx' | 'markdown' | 'copy' }>; failures: Array<{ fileId: string; code: string; message: string }> } | { ok: false; code: string } | null>,
+  freezeSubmissionPackage: async (request: { projectId: string; packageId: string }) =>
+    ipcRenderer.invoke('submission:package:freeze', request) as Promise<{ ok: true; package: import('../engine/submission/SubmissionPackageContract.js').SubmissionPackage } | { ok: false; code: string; blockers?: import('../engine/submission/SubmissionPackageContract.js').SubmissionPreflightCheck[] } | null>,
+  validateSubmissionPackage: async (request: { projectId: string; packageId: string }) =>
+    ipcRenderer.invoke('submission:package:validate', request) as Promise<{ ok: true; results: Array<{ fileId: string; type: import('../engine/submission/SubmissionPackageContract.js').SubmissionPackageFileType; status: import('../engine/submission/SubmissionPackageContract.js').SubmissionPackageFileValidationStatus; reason: string }>; summary: { valid: number; invalid: number; needsConfirmation: number; pending: number } } | { ok: false; code: string } | null>,
+  generateSubmissionCoverLetter: async (request: { projectId: string; caseId: string }) =>
+    ipcRenderer.invoke('submission:coverLetter:generate', request) as Promise<{ ok: true; outcomeId: string; version: number; needsConfirmation: string[]; extraction: 'llm' | 'template' } | { ok: false; code: string } | null>,
+  // ── Submission P3/P4（投稿通信：SMTP 外发 + IMAP 监听 + 关联确认）──
+  listSubmissionMailAccounts: async () =>
+    ipcRenderer.invoke('submission:mail:accounts') as Promise<Array<{ id: string; label: string; user: string; host: string; createdAt: number; lastCheckedAt: number | null; lastOkAt: number | null }>>,
+  previewSubmissionMail: async (request: {
+    accountId: string; to: string; cc?: string; bcc?: string; subject: string; bodyText: string;
+    attachments?: Array<{ filename: string; path?: string; contentBase64?: string }>;
+  }) =>
+    ipcRenderer.invoke('submission:mail:preview', request) as Promise<{ ok: true; preview: {
+      accountId: string; accountLabel: string; from: string; to: string; cc: string; bcc: string;
+      subject: string; bodyText: string;
+      attachments: Array<{ filename: string; source: 'content' | 'path' | 'empty' }>;
+      smtp: { host: string; port: number; secure: boolean } | null;
+    } } | { ok: false; code: string; message: string } | null>,
+  sendSubmissionMail: async (request: {
+    projectId: string; caseId?: string; accountId: string; operationId: string;
+    to: string; cc?: string; bcc?: string; subject: string; bodyText: string;
+    attachments?: Array<{ filename: string; path?: string; contentBase64?: string }>;
+    confirmed: true;
+  }) =>
+    ipcRenderer.invoke('submission:mail:send', request) as Promise<{ ok: true; alreadySent: boolean; record: import('../engine/submission/SubmissionCorrespondenceContract.js').SubmissionCorrespondence; messageId?: string } | { ok: false; code: string; message: string } | null>,
+  syncSubmissionMail: async (request: { projectId: string; accountId: string; limit?: number }) =>
+    ipcRenderer.invoke('submission:mail:sync', request) as Promise<{ ok: true; fetched: number; recorded: number; duplicates: number; pending: number } | { ok: false; code: string; message: string } | null>,
+  listSubmissionCorrespondence: async (request: { projectId: string; caseId: string }) =>
+    ipcRenderer.invoke('submission:correspondence:listByCase', request) as Promise<import('../engine/submission/SubmissionCorrespondenceContract.js').SubmissionCorrespondence[]>,
+  listPendingSubmissionCorrespondence: async (request: { projectId: string }) =>
+    ipcRenderer.invoke('submission:correspondence:listPending', request) as Promise<import('../engine/submission/SubmissionCorrespondenceContract.js').SubmissionCorrespondence[]>,
+  confirmSubmissionCorrespondenceMatch: async (request: { projectId: string; id: string; caseId?: string }) =>
+    ipcRenderer.invoke('submission:correspondence:confirmMatch', request) as Promise<{ ok: true; record: import('../engine/submission/SubmissionCorrespondenceContract.js').SubmissionCorrespondence } | { ok: false; code: string } | null>,
+  rejectSubmissionCorrespondenceMatch: async (request: { projectId: string; id: string }) =>
+    ipcRenderer.invoke('submission:correspondence:rejectMatch', request) as Promise<{ ok: true; record: import('../engine/submission/SubmissionCorrespondenceContract.js').SubmissionCorrespondence } | { ok: false; code: string } | null>,
+  createSubmissionRoundFromCorrespondence: async (request: { projectId: string; id: string }) =>
+    ipcRenderer.invoke('submission:correspondence:createRound', request) as Promise<{ ok: true; roundId: string } | { ok: false; code: string; message?: string } | null>,
+  // 返修截止日期同步到任务板（Goal）。
+  syncSubmissionDeadlineToGoal: async (request: { projectId: string; caseId: string; roundId: string }) =>
+    ipcRenderer.invoke('submission:review:syncDeadline', request) as Promise<{ ok: true; goalId: string } | { ok: false; code: string } | null>,
+  // 后台邮件监听推送（新编辑来信，含决定信类高亮信息）。
+  onSubmissionMailChanged: (callback: (notification: { at: number; items: Array<{ projectId: string; records: Array<{ id: string; subject: string; classification: string; caseId: string | null }> }> }) => void) => {
+    const listener = (_event: unknown, notification: Parameters<typeof callback>[0]) => callback(notification);
+    ipcRenderer.on('submission:mail:changed', listener);
+    return () => { ipcRenderer.removeListener('submission:mail:changed', listener); };
+  },
+  // ── Submission P3（投稿门户：Browser-assisted Submission）──
+  openSubmissionPortal: async (request: { projectId: string; caseId: string; portalUrl?: string }) =>
+    ipcRenderer.invoke('submission:portal:open', request) as Promise<{ ok: true; session: import('../engine/submission/SubmissionPortalContract.js').PortalSession } | { ok: false; code: string; message: string } | null>,
+  planSubmissionPortalFill: async (request: { projectId: string; caseId: string }) =>
+    ipcRenderer.invoke('submission:portal:planFill', request) as Promise<{ ok: true; actions: import('../engine/submission/SubmissionPortalContract.js').PortalFieldAction[] } | { ok: false; code: string; message: string } | null>,
+  executeSubmissionPortalSteps: async (request: { projectId: string; caseId: string; actions: import('../engine/submission/SubmissionPortalContract.js').PortalFieldAction[]; confirmed?: boolean }) =>
+    ipcRenderer.invoke('submission:portal:execute', request) as Promise<{ ok: true; results: Array<{ fieldKey: string; status: 'done' | 'skipped'; detail: string }> } | { ok: false; code: string; message: string } | null>,
+  confirmSubmissionPortalSubmitted: async (request: { projectId: string; caseId: string; remoteSubmissionId?: string; receiptNote?: string }) =>
+    ipcRenderer.invoke('submission:portal:confirmSubmitted', request) as Promise<{ ok: true; case: import('../engine/submission/SubmissionRuntimeContract.js').SubmissionCase } | { ok: false; code: string; message: string } | null>,
+  markSubmissionPortalUncertain: async (request: { projectId: string; caseId: string; reason: string }) =>
+    ipcRenderer.invoke('submission:portal:markUncertain', request) as Promise<{ ok: true } | { ok: false; code: string; message: string } | null>,
   // ── Literature watch (T25) ──
   listWatchSubscriptions: async () => ipcRenderer.invoke('watch:list') as Promise<Array<{
     id: string;
@@ -961,10 +1125,6 @@ const api = {
     nodes: Array<{ id: string; kind: 'source' | 'code' | 'claim'; label: string }>;
     edges: Array<{ from: string; to: string; kind: 'supports' | 'coded' }>;
   } | null>,
-  // ── ASR transcription (T23) ──
-  openAudioDialog: async () => ipcRenderer.invoke('dialog:openAudio') as Promise<string | null>,
-  transcribeAudio: async (request: { filePath: string; language?: string }) =>
-    ipcRenderer.invoke('transcribe:audio', request) as Promise<{ ok: boolean; text?: string; model?: string; error?: string; hint?: string }>,
   // ── WebDAV cloud backup (T33) ──
   getCloudSyncConfig: async () => ipcRenderer.invoke('cloudSync:getConfig') as Promise<{ configured: boolean; url?: string; username?: string }>,
   saveCloudSyncConfig: async (request: { url: string; username: string; password: string }) =>
@@ -1122,6 +1282,28 @@ const api = {
       await ipcRenderer.invoke('scenario:control', request.data),
       request.data.operationId,
     );
+  },
+  /**
+   * 步骤卡控制（2026-09-01 刘总方案二期）：对运行的某一步「指导重做/跳过」。
+   * 落库成功后前端补发「继续」即可触发断点恢复。
+   */
+  scenarioStepControl: async (request: { sessionId: string; stepId: string; action: 'redo' | 'skip'; guidance?: string }) => (
+    ipcRenderer.invoke('scenario:stepControl', request) as Promise<
+      { ok: true; runId: string; message: string } | { ok: false; code: string; message: string }
+    >
+  ),
+  /**
+   * Metis Office 关闭自动同步事件（2026-09-01 刘总要求）：编辑器进程退出时
+   * 主进程自动同步（有改动建新版本/无改动安静收尾）并推送结果。
+   * 返回取消订阅函数。
+   */
+  onOutcomeExternalEditorAutoSync: (callback: (payload: {
+    projectId: string; outcomeId: string; ok: boolean; changed: boolean;
+    version?: number; title?: string; code?: string; message?: string;
+  }) => void) => {
+    const listener = (_event: unknown, payload: Parameters<typeof callback>[0]) => callback(payload);
+    ipcRenderer.on('outcomes:external-editor:auto-sync', listener);
+    return () => { ipcRenderer.removeListener('outcomes:external-editor:auto-sync', listener); };
   },
 
   // ── Papers ─────────────────────────────────────────────
@@ -1297,6 +1479,13 @@ const api = {
   listOutcomes: async (raw: unknown) => { const p=OutcomeListRequestSchema.safeParse(raw); return p.success ? ipcRenderer.invoke('outcomes:list',p.data) : []; },
   getOutcome: async (raw: unknown) => { const p=OutcomeGetRequestSchema.safeParse(raw); return p.success ? ipcRenderer.invoke('outcomes:get',p.data) : null; },
   listOutcomeVersions: async (raw: unknown) => { const p=OutcomeVersionsRequestSchema.safeParse(raw); return p.success ? ipcRenderer.invoke('outcomes:versions',p.data) : []; },
+  openOutcomeInGenoffice: async (raw: unknown) => { const p=OutcomeExternalEditorOpenRequestSchema.safeParse(raw); if (!p.success) return OutcomeExternalEditorOpenResultSchema.parse({ ok:false, code:'invalid_request', message:'GenOffice 编辑请求无效。' }); const result=OutcomeExternalEditorOpenResultSchema.safeParse(await ipcRenderer.invoke('outcomes:external-editor:open',p.data)); return result.success ? result.data : OutcomeExternalEditorOpenResultSchema.parse({ ok:false, code:'genoffice_open_failed', message:'GenOffice 编辑器打开失败。' }); },
+  syncOutcomeFromGenoffice: async (raw: unknown) => { const p=OutcomeExternalEditorSyncRequestSchema.safeParse(raw); if (!p.success) return OutcomeExternalEditorSyncResultSchema.parse({ ok:false, code:'invalid_request', message:'GenOffice 同步请求无效。' }); const result=OutcomeExternalEditorSyncResultSchema.safeParse(await ipcRenderer.invoke('outcomes:external-editor:sync',p.data)); return result.success ? result.data : OutcomeExternalEditorSyncResultSchema.parse({ ok:false, code:'outcome_save_failed', message:'GenOffice 同步失败，当前成果没有被修改。' }); },
+  closeOutcomeGenofficeEditor: async (raw: unknown) => { const p=OutcomeExternalEditorCloseRequestSchema.safeParse(raw); return p.success ? ipcRenderer.invoke('outcomes:external-editor:close', p.data) as Promise<boolean> : false; },
+  stateOutcomeGenofficeEditor: async (raw: unknown) => { const p=OutcomeExternalEditorStateRequestSchema.safeParse(raw); if (!p.success) return OutcomeExternalEditorStateSchema.parse({ exists: false, changed: false, session: null }); const result=OutcomeExternalEditorStateSchema.safeParse(await ipcRenderer.invoke('outcomes:external-editor:state', p.data)); return result.success ? result.data : OutcomeExternalEditorStateSchema.parse({ exists: false, changed: false, session: null }); },
+  genofficeEmbeddedSetBounds: async (raw: unknown) => { try { return Boolean(await ipcRenderer.invoke('genoffice-embedded:set-bounds', raw)); } catch { return false; } },
+  genofficeEmbeddedSetVisible: async (raw: unknown) => { try { return Boolean(await ipcRenderer.invoke('genoffice-embedded:set-visible', raw)); } catch { return false; } },
+  genofficeEmbeddedFocus: async (raw: unknown) => { try { return Boolean(await ipcRenderer.invoke('genoffice-embedded:focus', raw)); } catch { return false; } },
   createOutcome: async (raw: unknown) => { const p=OutcomeCreateRequestSchema.safeParse(raw); return p.success ? ipcRenderer.invoke('outcomes:create',p.data) : null; },
   saveOutcome: async (raw: unknown) => { const p=OutcomeSaveRequestSchema.safeParse(raw); return p.success ? ipcRenderer.invoke('outcomes:save',p.data) : null; },
   restoreOutcome: async (raw: unknown) => { const p=OutcomeRestoreRequestSchema.safeParse(raw); return p.success ? ipcRenderer.invoke('outcomes:restore',p.data) : null; },
@@ -1313,6 +1502,12 @@ const api = {
   locateOutcomeSource: async (raw: unknown) => { const p=OutcomeSourceLocateRequestSchema.safeParse(raw); if(!p.success) return OutcomeSourceLocateResultSchema.parse({ ok:false, code:'invalid_request' }); const result=OutcomeSourceLocateResultSchema.safeParse(await ipcRenderer.invoke('outcomes:source:locate',p.data)); return result.success ? result.data : OutcomeSourceLocateResultSchema.parse({ ok:false, code:'source_not_found' }); },
   savePptTemplate: async (raw: unknown) => { const p=PptTemplateSaveRequestSchema.safeParse(raw); return p.success ? ipcRenderer.invoke('outcomes:template:save',p.data) : null; },
   listPptTemplates: () => ipcRenderer.invoke('outcomes:template:list'),
+  listOutcomeTemplates: async (raw: unknown) => { const p=OutcomeTemplateListRequestSchema.safeParse(raw); return p.success ? ipcRenderer.invoke('outcomes:template:listByKind',p.data) : []; },
+  saveOutcomeTemplate: async (raw: unknown) => { const p=OutcomeTemplateSaveRequestSchema.safeParse(raw); return p.success ? ipcRenderer.invoke('outcomes:template:saveUnified',p.data) : null; },
+  updateOutcomeTemplate: async (raw: unknown) => { const p=OutcomeTemplateUpdateRequestSchema.safeParse(raw); return p.success ? ipcRenderer.invoke('outcomes:template:update',p.data) : null; },
+  deleteOutcomeTemplate: async (raw: unknown) => { const p=OutcomeTemplateDeleteRequestSchema.safeParse(raw); return p.success ? ipcRenderer.invoke('outcomes:template:delete',p.data) : false; },
+  getDefaultOutcomeTemplate: async (raw: unknown) => { const p=OutcomeTemplateDefaultGetRequestSchema.safeParse(raw); return p.success ? ipcRenderer.invoke('outcomes:template-defaults:get',p.data) : null; },
+  setDefaultOutcomeTemplate: async (raw: unknown) => { const p=OutcomeDefaultTemplateSetRequestSchema.safeParse(raw); return p.success ? ipcRenderer.invoke('outcomes:template-defaults:set',p.data) : false; },
   savePptGenerationSkill: async (raw: unknown) => { const p=PptGenerationSkillSaveRequestSchema.safeParse(raw); return p.success ? ipcRenderer.invoke('outcomes:generation-skill:save',p.data) : null; },
   listPptGenerationSkills: () => ipcRenderer.invoke('outcomes:generation-skill:list'),
   executeOutcomePptGeneration: async (raw: unknown) => { const p=PptGenerationExecuteRequestSchema.safeParse(raw); if (!p.success) return PptGenerationResultSchema.parse({ status:'error', code:'invalid_request', message:'PPT 生成请求无效。', answer:'', sources:[], diagnostics:[{code:'invalid_request',message:'请求未通过 PPT Generation Skill 契约校验。'}] }); const result=PptGenerationResultSchema.safeParse(await ipcRenderer.invoke('outcomes:ppt:generation:execute',p.data)); return result.success ? result.data : PptGenerationResultSchema.parse({ status:'error', code:'generation_unavailable', message:'PPT 生成响应无效，请重试。', answer:'', sources:[], diagnostics:[{code:'generation_unavailable',message:'主进程返回了无效的 PPT 生成响应。'}] }); },
@@ -1322,6 +1517,34 @@ const api = {
   importOutcomeWordDocx: async (raw: unknown) => { const p=OutcomeWordDocxImportRequestSchema.safeParse(raw); if (!p.success) return OutcomeWordDocxImportResultSchema.parse({ ok:false, code:'invalid_request', message:'DOCX 导入请求无效。', warnings:[] }); const result=OutcomeWordDocxImportResultSchema.safeParse(await ipcRenderer.invoke('outcomes:word:docx:import',p.data)); return result.success ? result.data : OutcomeWordDocxImportResultSchema.parse({ ok:false, code:'docx_read_failed', message:'DOCX 导入响应无效。', warnings:[] }); },
   commitOutcomeWordDocxImportMedia: async (raw: unknown) => { const p=OutcomeWordDocxImportCommitRequestSchema.safeParse(raw); if (!p.success) return OutcomeWordDocxImportCommitResultSchema.parse({ ok:false, code:'invalid_request', message:'DOCX 导入媒体提交请求无效。' }); const result=OutcomeWordDocxImportCommitResultSchema.safeParse(await ipcRenderer.invoke('outcomes:word:docx:import:commitMedia',p.data)); return result.success ? result.data : OutcomeWordDocxImportCommitResultSchema.parse({ ok:false, code:'docx_media_commit_failed', message:'DOCX 导入媒体提交响应无效。' }); },
   exportOutcomeWordDocx: async (raw: unknown) => { const p=OutcomeWordDocxExportRequestSchema.safeParse(raw); if (!p.success) return OutcomeWordDocxExportResultSchema.parse({ ok:false, code:'invalid_request', message:'DOCX 导出请求无效。', warnings:[] }); const result=OutcomeWordDocxExportResultSchema.safeParse(await ipcRenderer.invoke('outcomes:word:docx:export',p.data)); return result.success ? result.data : OutcomeWordDocxExportResultSchema.parse({ ok:false, code:'docx_write_failed', message:'DOCX 导出响应无效。', warnings:[] }); },
+  // 预览栏「导出为 Word」（2026-08-31）：预览 Markdown 直接转 DOCX，无需先建成果。
+  exportMarkdownAsDocx: async (request: { title: string; markdown: string }) =>
+    ipcRenderer.invoke('outcomes:word:docx:exportMarkdown', request) as Promise<{ ok: boolean; fileName?: string; code?: string; message?: string; warnings?: unknown[] }>,
+  // 排版面板「导入 Word 模板」（2026-09-01）：选模板文件→解析排版规则→返回配置与识别清单。
+  parseWordTemplateStyle: async () =>
+    ipcRenderer.invoke('outcomes:word:templateStyle:parse') as Promise<{
+      ok: boolean; fileName?: string; code?: string; message?: string;
+      config?: Record<string, unknown>; recognized?: string[]; unrecognized?: string[];
+    }>,
+  // 排版面板「从投稿要求生成」（2026-09-01）：规范文本→（确定性+AI兜底）解析为排版配置。
+  parseFormattingFromText: async (text: string) =>
+    ipcRenderer.invoke('outcomes:word:formattingFromText', { text }) as Promise<{
+      ok: boolean; code?: string; message?: string; source?: string; note?: string;
+      config?: Record<string, unknown>; matched?: string[]; unclear?: string[];
+    }>,
+  // 场景配置助手「上传申报书模板」（2026-09-01）：选文件→分析入库→返回模板ID与栏目结构摘要。
+  analyzeFundingTemplateForAssistant: async (projectId: string) =>
+    ipcRenderer.invoke('fundingTemplate:analyzeForAssistant', { projectId }) as Promise<{
+      ok: boolean; message?: string; templateId?: string; summary?: string;
+    }>,
+  // 投稿参谋（2026-09-01 刘总规格）：共享浏览器+成果上下文的编排对话。
+  submissionAssistantChat: async (request: { projectId: string; outcomeId: string; instruction: string; thinkingLevel?: string; intent?: Record<string, unknown>; shortlist?: Array<{ name: string; source?: string }> }) =>
+    ipcRenderer.invoke('submission:assistant:chat', request) as Promise<{ ok: boolean; answer?: string; error?: string }>,
+  // 申报书面板「生成填写草稿」（2026-09-01）：已分析模板结构+素材→逐栏草稿 Markdown。
+  draftFundingOutline: async (request: { projectId: string; templateId: string; materialText?: string }) =>
+    ipcRenderer.invoke('fundingTemplate:draftOutline', request) as Promise<{
+      ok: boolean; code?: string; message?: string; markdown?: string;
+    }>,
   importOutcomePptx: async (raw: unknown) => { const p=OutcomePptxImportRequestSchema.safeParse(raw); if (!p.success) return OutcomePptxImportResultSchema.parse({ ok:false, code:'invalid_request', message:'PPTX 导入请求无效。', warnings:[] }); const result=OutcomePptxImportResultSchema.safeParse(await ipcRenderer.invoke('outcomes:pptx:import',p.data)); return result.success ? result.data : OutcomePptxImportResultSchema.parse({ ok:false, code:'pptx_read_failed', message:'PPTX 导入响应无效。', warnings:[] }); },
   commitOutcomePptxImportMedia: async (raw: unknown) => { const p=OutcomePptxImportCommitRequestSchema.safeParse(raw); if (!p.success) return OutcomePptxImportCommitResultSchema.parse({ ok:false, code:'invalid_request', message:'PPTX 导入媒体提交请求无效。' }); const result=OutcomePptxImportCommitResultSchema.safeParse(await ipcRenderer.invoke('outcomes:pptx:import:commitMedia',p.data)); return result.success ? result.data : OutcomePptxImportCommitResultSchema.parse({ ok:false, code:'pptx_media_commit_failed', message:'PPTX 导入媒体提交响应无效。' }); },
   exportOutcomePptx: async (raw: unknown) => { const p=OutcomePptxExportRequestSchema.safeParse(raw); if (!p.success) return OutcomePptxExportResultSchema.parse({ ok:false, code:'invalid_request', message:'PPTX 导出请求无效。', warnings:[] }); const result=OutcomePptxExportResultSchema.safeParse(await ipcRenderer.invoke('outcomes:pptx:export',p.data)); return result.success ? result.data : OutcomePptxExportResultSchema.parse({ ok:false, code:'pptx_write_failed', message:'PPTX 导出响应无效。', warnings:[] }); },
@@ -1589,6 +1812,24 @@ const api = {
     return response;
   },
 
+  listPersonalizationIntegrityIssues: async (rawRequest: PersonalizationIntegrityListRequest) => {
+    const request = PersonalizationIntegrityListRequestSchema.safeParse(rawRequest);
+    if (!request.success) throw new TypeError('Invalid personalization integrity request');
+    const response = decodePersonalizationIntegrityListResponse(
+      await ipcRenderer.invoke('personalization:integrity:list', request.data),
+    );
+    if (!response.ok) throw new TypeError(`Personalization integrity list failed: ${response.code}`);
+    return response;
+  },
+
+  recoverPersonalizationIntegrityIssue: async (rawRequest: PersonalizationIntegrityRecoverRequest) => {
+    const request = PersonalizationIntegrityRecoverRequestSchema.safeParse(rawRequest);
+    if (!request.success) return { ok: false as const, code: 'invalid_request' as const };
+    return decodePersonalizationMutationResult(
+      await ipcRenderer.invoke('personalization:integrity:recover', request.data),
+    );
+  },
+
   aiGenerateScenario: async (rawRequest: unknown) => (
     ipcRenderer.invoke('personalization:aiGenerateScenario', rawRequest) as Promise<{
       ok: boolean;
@@ -1727,7 +1968,21 @@ const api = {
   outcomesConversationById: async (rawRequest: { projectId: string; conversationId: string }) => (
     ipcRenderer.invoke('outcomes:conversation:byId', rawRequest) as Promise<Array<{ id: string; role: 'user' | 'assistant' | 'system'; content: string; sources: unknown[]; createdAt: number }>>
   ),
-  compileScenarioHarness: async (rawRequest: { current: ScenarioDefinition; instruction: string; materialIds?: string[]; projectId?: string; scenarioId?: string; conversationId?: string }) => (
+  getScenarioRunForProject: async (projectId: string) => (
+    ipcRenderer.invoke('scenario:runStateForProject', projectId) as Promise<{
+      ok: boolean;
+      runId?: string;
+      scenarioId?: string;
+      scenarioName?: string;
+      status?: 'running' | 'completed' | 'failed' | 'interrupted' | 'paused' | 'cancelled';
+      steps?: Array<{
+        stepId: string;
+        name: string;
+        status: 'pending' | 'running' | 'completed' | 'failed' | 'blocked' | 'skipped';
+      }>;
+    }>
+  ),
+  compileScenarioHarness: async (rawRequest: { current: ScenarioDefinition; instruction: string; materialIds?: string[]; projectId?: string; scenarioId?: string; conversationId?: string; thinkingLevel?: string }) => (
     ipcRenderer.invoke('scenario:compileHarness', rawRequest) as Promise<{
       ok: boolean;
       code?: string;
@@ -1738,6 +1993,8 @@ const api = {
       summary?: string;
       diff?: ScenarioHarnessDiffEntry[];
       assessment?: ScenarioHarnessAssessment;
+      /** 主进程已在编译成功后直接持久化（渲染端无需再保存）。 */
+      autosaved?: boolean;
       /** 全自动安装（2026-08-23 刘总授权）：本次编译中自动安装的技能/MCP。 */
       installedDefinitions?: Array<{ id: string; name: string; kind: 'skill' | 'mcp'; url: string }>;
     }>
@@ -1798,6 +2055,7 @@ const api = {
       sections?: Array<{ title: string; instruction: string }>;
     }>
   ),
+  rendererLog: async (line: string) => { try { await ipcRenderer.invoke('diag:rendererLog', String(line).slice(0, 600)); } catch { /* 诊断日志不阻塞 */ } },
   getPersonalization: async (rawRequest: PersonalizationGetRequest) => {
     const request = PersonalizationGetRequestSchema.safeParse(rawRequest);
     if (!request.success) return { ok: true as const, definition: null };

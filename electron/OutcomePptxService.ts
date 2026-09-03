@@ -11,6 +11,7 @@ import { inflateRawSync } from 'node:zlib';
 import { ZipWriter } from '../engine/export/renderers/ZipWriter.js';
 import { PptDocumentSchema, type OutcomePptxWarning, type PptDocument, type PptElement } from '../engine/runtime/OutcomeRuntimeContract.js';
 import { isSafeSvgBuffer } from './OutcomeSvgSecurity.js';
+import { exportPptxViaGenoffice, importPptxViaGenoffice, GENOFFICE_PPTX_ORIGINAL_ARCHIVE_KEY } from './office/genofficePptxBridge.js';
 
 const EOCD = 0x06054b50;
 const CENTRAL = 0x02014b50;
@@ -25,7 +26,12 @@ type ZipEntry = { name: string; method: number; compressedSize: number; localHea
 type RecordValue = Record<string, unknown>;
 export type OutcomePptxManagedImageReference = { mediaId: string; mediaType: 'image/png' | 'image/jpeg' | 'image/svg+xml'; displayName: string };
 export type OutcomePptxManagedImage = OutcomePptxManagedImageReference & { bytes: Buffer };
-export type OutcomePptxServiceOptions = { resolveManagedImage?: (reference: OutcomePptxManagedImageReference) => Promise<OutcomePptxManagedImage | undefined> };
+export type OutcomePptxServiceOptions = {
+  /** Explicit test/rollback selector. Production defaults to GenOffice. */
+  engine?: 'genoffice' | 'legacy';
+  resolveManagedImage?: (reference: OutcomePptxManagedImageReference) => Promise<OutcomePptxManagedImage | undefined>;
+  resolveOriginalArchive?: (mediaId: string) => Promise<Buffer | undefined>;
+};
 type MediaPart = OutcomePptxManagedImage & { partName: string };
 type SlideImageBinding = { elementIndex: number; relationshipId: string; media: MediaPart };
 type ManagedImagePlan = { slides: SlideImageBinding[][]; media: MediaPart[] };
@@ -43,6 +49,25 @@ function xmlText(xml: string): string { return [...xml.matchAll(/<a:t\b[^>]*>([\
 function numberOr(value: string | undefined, fallback: number): number { const number = Number(value); return Number.isFinite(number) ? number : fallback; }
 function stringProp(props: RecordValue, key: string): string { const value = props[key]; return typeof value === 'string' ? value : ''; }
 function hexColor(value: unknown, fallback: string): string { const candidate = typeof value === 'string' ? value.replace(/^#/u, '').toUpperCase() : ''; return /^[0-9A-F]{6}$/u.test(candidate) ? candidate : fallback; }
+function styleNumber(value: unknown, minimum: number): number | undefined { return typeof value === 'number' && Number.isFinite(value) && value >= minimum ? value : undefined; }
+function styleFont(value: unknown): string | undefined { return typeof value === 'string' && value.trim() ? value.trim() : undefined; }
+function solidFillXml(value: unknown): string { const color = hexColor(value, ''); return color ? `<a:solidFill><a:srgbClr val="${color}"/></a:solidFill>` : ''; }
+function shapeStyleXml(element: PptElement, geometry: string, arrow = ''): string {
+  const props = element.props as RecordValue; const fill = solidFillXml(props.fillColor); const borderColor = hexColor(props.borderColor, ''); const borderWidth = styleNumber(props.borderWidth, 0);
+  const hasLine = Boolean(borderColor || borderWidth !== undefined || geometry === 'line'); if (!fill && !hasLine) return '';
+  const width = borderWidth === undefined ? (geometry === 'line' ? 19_050 : 12_700) : Math.round(Math.min(1_000, borderWidth) * 12_700);
+  return `${fill}${hasLine ? `<a:ln w="${width}">${solidFillXml(borderColor)}${arrow}</a:ln>` : ''}`;
+}
+function textRunProperties(props: RecordValue): string {
+  const fontSize = styleNumber(props.fontSize, 1); const fontFamily = styleFont(props.fontFamily); const textColor = solidFillXml(props.textColor);
+  const size = fontSize === undefined ? '' : ` sz="${Math.round(Math.min(1_000, fontSize) * 100)}"`;
+  const font = fontFamily ? `<a:latin typeface="${escapeXml(fontFamily)}"/><a:ea typeface="${escapeXml(fontFamily)}"/><a:cs typeface="${escapeXml(fontFamily)}"/>` : '';
+  return `<a:rPr lang="zh-CN" dirty="0"${size}>${textColor}${font}</a:rPr>`;
+}
+function themeFont(theme: RecordValue, key: 'titleFont' | 'bodyFont'): string | undefined {
+  const direct = styleFont(theme[key]); if (direct) return direct;
+  const scheme = theme.fontScheme; return scheme && typeof scheme === 'object' && !Array.isArray(scheme) ? styleFont((scheme as RecordValue)[key]) : undefined;
+}
 function warning(warnings: OutcomePptxWarning[], code: OutcomePptxWarning['code'], message: string): void { if (!warnings.some((item) => item.code === code)) warnings.push({ code, message }); }
 
 type ImageCrop = { left: number; top: number; right: number; bottom: number };
@@ -243,11 +268,51 @@ function shapeType(xml: string, kind: 'sp' | 'cxnSp'): PptElement['type'] {
   if (geometry === 'line') return 'line';
   return xmlText(xml) ? 'text' : 'rect';
 }
+function themeSlotColor(theme: string, slot: string): string | undefined {
+  const value = contents(theme, slot) ?? ''; const srgb = attribute(tagValue(value, 'a:srgbClr'), 'val');
+  if (srgb && /^[0-9A-F]{6}$/iu.test(srgb)) return `#${srgb.toUpperCase()}`;
+  const system = attribute(tagValue(value, 'a:sysClr'), 'lastClr');
+  return system && /^[0-9A-F]{6}$/iu.test(system) ? `#${system.toUpperCase()}` : undefined;
+}
 function parseTheme(entries: Map<string, Buffer>, warnings: OutcomePptxWarning[]): RecordValue {
   const theme = entries.get('ppt/theme/theme1.xml')?.toString('utf8'); if (!theme) return {};
-  const primary = attribute(tagValue(contents(theme, 'a:accent1') ?? '', 'a:srgbClr'), 'val'); const secondary = attribute(tagValue(contents(theme, 'a:accent2') ?? '', 'a:srgbClr'), 'val');
-  if (!primary && !secondary) warning(warnings, 'unsupported_theme', 'PPT 主题使用了当前模型不能完整映射的颜色定义。');
-  return { ...(primary ? { primary: `#${primary.toUpperCase()}` } : {}), ...(secondary ? { accent: `#${secondary.toUpperCase()}` } : {}) };
+  const primary = themeSlotColor(theme, 'a:accent1'); const accent = themeSlotColor(theme, 'a:accent2');
+  const surface = themeSlotColor(theme, 'a:lt1') ?? themeSlotColor(theme, 'a:lt2'); const text = themeSlotColor(theme, 'a:dk1') ?? themeSlotColor(theme, 'a:dk2');
+  const fontScheme = contents(theme, 'a:fontScheme') ?? ''; const majorFont = contents(fontScheme, 'a:majorFont') ?? ''; const minorFont = contents(fontScheme, 'a:minorFont') ?? '';
+  const titleFont = attribute(tagValue(majorFont, 'a:latin') ?? tagValue(majorFont, 'a:ea'), 'typeface'); const bodyFont = attribute(tagValue(minorFont, 'a:latin') ?? tagValue(minorFont, 'a:ea'), 'typeface');
+  if (!primary && !accent && !surface && !text) warning(warnings, 'unsupported_theme', 'PPT 主题使用了当前模型不能完整映射的颜色定义。');
+  return {
+    ...(primary ? { primary } : {}), ...(accent ? { accent } : {}), ...(surface ? { surface } : {}), ...(text ? { text } : {}),
+    ...(titleFont ? { titleFont } : {}), ...(bodyFont ? { bodyFont } : {}),
+  };
+}
+function themeColorValue(theme: RecordValue, scheme: string): string | undefined {
+  const key = scheme === 'accent1' ? 'primary' : scheme === 'accent2' ? 'accent' : scheme === 'lt1' || scheme === 'lt2' ? 'surface' : scheme === 'dk1' || scheme === 'dk2' ? 'text' : undefined;
+  const value = key ? theme[key] : undefined; return typeof value === 'string' && /^#[0-9A-F]{6}$/iu.test(value) ? value.toUpperCase() : undefined;
+}
+function colorValueFromXml(xml: string, theme: RecordValue): string | undefined {
+  const srgb = attribute(tagValue(xml, 'a:srgbClr'), 'val'); if (srgb && /^[0-9A-F]{6}$/iu.test(srgb)) return `#${srgb.toUpperCase()}`;
+  const system = attribute(tagValue(xml, 'a:sysClr'), 'lastClr'); if (system && /^[0-9A-F]{6}$/iu.test(system)) return `#${system.toUpperCase()}`;
+  const scheme = attribute(tagValue(xml, 'a:schemeClr'), 'val'); return scheme ? themeColorValue(theme, scheme) : undefined;
+}
+function parseShapeStyles(xml: string, theme: RecordValue): RecordValue {
+  const props: RecordValue = {}; const shapeProperties = contents(xml, 'p:spPr') ?? '';
+  const fill = contents(shapeProperties, 'a:solidFill') ?? ''; const fillColor = colorValueFromXml(fill, theme); if (fillColor) props.fillColor = fillColor;
+  const lineTag = tagValue(shapeProperties, 'a:ln'); const line = contents(shapeProperties, 'a:ln') ?? '';
+  if (lineTag) {
+    const width = Number(attribute(lineTag, 'w')); if (Number.isFinite(width) && width >= 0) props.borderWidth = Number((width / 12_700).toFixed(4));
+    const borderColor = colorValueFromXml(line, theme); if (borderColor) props.borderColor = borderColor;
+  }
+  const textBody = contents(xml, 'p:txBody') ?? '';
+  // A non-self-closing rPr carries children (solidFill, latin/ea/cs fonts...);
+  // a lazy alternation would truncate at the first self-closed child such as
+  // <a:srgbClr/>, silently dropping every font tag after it. Match the
+  // self-closed form first, then the full open/close block.
+  const run = textBody.match(/<a:(?:rPr|defRPr)\b[^>]*\/>|<a:(?:rPr|defRPr)\b[^>]*>[\s\S]*?<\/a:(?:rPr|defRPr)>/u)?.[0] ?? '';
+  const runTag = tagValue(run, 'a:rPr') ?? tagValue(run, 'a:defRPr'); const fontSize = Number(attribute(runTag, 'sz')); if (Number.isFinite(fontSize) && fontSize > 0) props.fontSize = Number((fontSize / 100).toFixed(4));
+  const fontTag = tagValue(run, 'a:latin') ?? tagValue(run, 'a:ea') ?? tagValue(run, 'a:cs'); const fontFamily = attribute(fontTag, 'typeface'); if (fontFamily) props.fontFamily = fontFamily;
+  const textColor = colorValueFromXml(run, theme); if (textColor) props.textColor = textColor;
+  return props;
 }
 function slidePaths(entries: Map<string, Buffer>, presentation: string): string[] {
   const rels = entries.get('ppt/_rels/presentation.xml.rels')?.toString('utf8') ?? ''; const targets = new Map<string, string>();
@@ -257,6 +322,7 @@ function slidePaths(entries: Map<string, Buffer>, presentation: string): string[
 }
 function parsePpt(entries: Map<string, Buffer>): OutcomePptxImport {
   const presentation = entries.get('ppt/presentation.xml')?.toString('utf8'); if (!presentation) throw new Error('pptx_presentation_missing'); const warnings: OutcomePptxWarning[] = [];
+  const theme = parseTheme(entries, warnings);
   const size = tagValue(presentation, 'p:sldSz'); const type = attribute(size, 'type'); const ratio: Ratio = type === 'screen4x3' || (numberOr(attribute(size, 'cx'), 16) / numberOr(attribute(size, 'cy'), 9) < 1.5) ? '4:3' : '16:9';
   const paths = slidePaths(entries, presentation); if (!paths.length) throw new Error('pptx_slides_missing');
   const pages = paths.flatMap((path, pageIndex) => {
@@ -280,30 +346,33 @@ function parsePpt(entries: Map<string, Buffer>): OutcomePptxImport {
           // Real extracted binary media is surfaced on the element (mediaType/name +
           // extracted flag); writing it into the project-private OutcomeMedia store
           // and persisting an import-owned version remains a separate integration.
-          elements.push({ id: `ppt-${pageIndex + 1}-image-${elements.length + 1}`, type: 'image', ...position, locked: false, props: { text: '图片占位', importedImage: true, extractedImage: true, extractedImageOrder: image.elementOrder, mediaType: image.mediaType, mediaName: image.displayName, ...parseImageTransform(item.xml, warnings) } });
+          elements.push({ id: `ppt-${pageIndex + 1}-image-${elements.length + 1}`, type: 'image', ...position, locked: false, props: { text: '图片占位', importedImage: true, extractedImage: true, extractedImageOrder: image.elementOrder, mediaType: image.mediaType, mediaName: image.displayName, ...parseShapeStyles(item.xml, theme), ...parseImageTransform(item.xml, warnings) } });
         } else {
           if (!unsupportedType) warning(warnings, 'unsupported_image', '图片二进制未导入；已保留可编辑图片占位。');
-          elements.push({ id: `ppt-${pageIndex + 1}-image-${elements.length + 1}`, type: 'image', ...position, locked: false, props: { text: '图片占位', importedImage: true, ...parseImageTransform(item.xml, warnings) } });
+          elements.push({ id: `ppt-${pageIndex + 1}-image-${elements.length + 1}`, type: 'image', ...position, locked: false, props: { text: '图片占位', importedImage: true, ...parseShapeStyles(item.xml, theme), ...parseImageTransform(item.xml, warnings) } });
         }
         continue;
       }
       const text = xmlText(item.xml); const isTitle = /<p:ph\b[^>]*type="(?:title|ctrTitle)"/iu.test(item.xml); if (isTitle) { if (text) title = text; continue; }
-      const position = gridPosition(item.xml, ratio, warnings); elements.push({ id: `ppt-${pageIndex + 1}-element-${elements.length + 1}`, type: shapeType(item.xml, item.kind), ...position, locked: false, props: text ? { text } : {} });
+      const position = gridPosition(item.xml, ratio, warnings); elements.push({ id: `ppt-${pageIndex + 1}-element-${elements.length + 1}`, type: shapeType(item.xml, item.kind), ...position, locked: false, props: { ...parseShapeStyles(item.xml, theme), ...(text ? { text } : {}) } });
     }
     return [{ id: `slide-${pageIndex + 1}`, title, pageType: pageIndex === 0 ? 'cover' : 'content', humanModified: false, status: 'complete' as const, elements }];
   });
   if (entries.has('ppt/notesSlides/notesSlide1.xml') || [...entries.keys()].some((name) => name.startsWith('ppt/notesSlides/'))) warning(warnings, 'unsupported_notes', '演讲者备注未导入 PPT Grid。');
   const masters = [...entries.keys()].filter((name) => /^ppt\/slideMasters\/slideMaster\d+\.xml$/u.test(name)); if (masters.some((name) => /<p:sp\b/iu.test(entries.get(name)?.toString('utf8') ?? ''))) warning(warnings, 'unsupported_master', '母版中的形状和占位符未映射到 PPT Grid。');
-  const document = PptDocumentSchema.parse({ type: 'ppt', ratio, theme: parseTheme(entries, warnings), templateId: null, generationSkillId: null, pages });
+  const document = PptDocumentSchema.parse({ type: 'ppt', ratio, theme, templateId: null, generationSkillId: null, pages });
   return { document, warnings };
 }
 function groupTree(): string { return '<p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>'; }
-function textBody(text: string): string { return `<p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang="zh-CN" dirty="0"/><a:t>${escapeXml(text)}</a:t></a:r><a:endParaRPr lang="zh-CN"/></a:p></p:txBody>`; }
-function shapeXml(type: PptElement['type'], element: PptElement, numericId: number, ratio: Ratio, title = false): string {
+function textBody(text: string, props: RecordValue = {}, fontFallback?: string): string {
+  const textProps = { ...props, ...(styleFont(props.fontFamily) ? {} : (fontFallback ? { fontFamily: fontFallback } : {})) };
+  return `<p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r>${textRunProperties(textProps)}<a:t>${escapeXml(text)}</a:t></a:r><a:endParaRPr lang="zh-CN"/></a:p></p:txBody>`;
+}
+function shapeXml(type: PptElement['type'], element: PptElement, numericId: number, ratio: Ratio, title = false, document?: PptDocument): string {
   const size = dimensions(ratio); const x = Math.round(element.x / size.grid * size.cx); const y = Math.round(element.y / 18 * size.cy); const width = Math.round(element.width / size.grid * size.cx); const height = Math.round(element.height / 18 * size.cy);
-  const geometry = type === 'roundRect' ? 'roundRect' : type === 'ellipse' ? 'ellipse' : type === 'triangle' ? 'triangle' : type === 'line' || type === 'arrow' ? 'line' : 'rect'; const text = stringProp(element.props as RecordValue, 'text');
-  const arrow = type === 'arrow' ? '<a:headEnd type="triangle"/><a:tailEnd type="triangle"/>' : '';
-  return `<p:sp><p:nvSpPr><p:cNvPr id="${numericId}" name="METIS:${type}:${escapeXml(element.id)}"/><p:cNvSpPr${type === 'text' ? ' txBox="1"' : ''}/><p:nvPr>${title ? '<p:ph type="title"/>' : ''}</p:nvPr></p:nvSpPr><p:spPr><a:xfrm><a:off x="${x}" y="${y}"/><a:ext cx="${width}" cy="${height}"/></a:xfrm><a:prstGeom prst="${geometry}"><a:avLst/></a:prstGeom>${geometry === 'line' ? `<a:ln w="19050">${arrow}</a:ln>` : ''}</p:spPr>${text ? textBody(text) : ''}</p:sp>`;
+  const geometry = type === 'roundRect' ? 'roundRect' : type === 'ellipse' ? 'ellipse' : type === 'triangle' ? 'triangle' : type === 'line' || type === 'arrow' ? 'line' : 'rect'; const props = element.props as RecordValue; const text = stringProp(props, 'text');
+  const arrow = type === 'arrow' ? '<a:headEnd type="triangle"/><a:tailEnd type="triangle"/>' : ''; const theme = document?.theme ?? {}; const fallbackFont = themeFont(theme, title ? 'titleFont' : 'bodyFont');
+  return `<p:sp><p:nvSpPr><p:cNvPr id="${numericId}" name="METIS:${type}:${escapeXml(element.id)}"/><p:cNvSpPr${type === 'text' ? ' txBox="1"' : ''}/><p:nvPr>${title ? '<p:ph type="title"/>' : ''}</p:nvPr></p:nvSpPr><p:spPr><a:xfrm><a:off x="${x}" y="${y}"/><a:ext cx="${width}" cy="${height}"/></a:xfrm><a:prstGeom prst="${geometry}"><a:avLst/></a:prstGeom>${shapeStyleXml(element, geometry, arrow)}</p:spPr>${text ? textBody(text, props, fallbackFont) : ''}</p:sp>`;
 }
 function placeholderElement(element: PptElement): PptElement { return { ...element, type: 'rect', props: { ...element.props, text: stringProp(element.props as RecordValue, 'text') || `[${element.type} 占位]` } }; }
 function imageXml(element: PptElement, numericId: number, ratio: Ratio, relationshipId: string, displayName: string, warnings: OutcomePptxWarning[]): string {
@@ -317,7 +386,7 @@ function imageXml(element: PptElement, numericId: number, ratio: Ratio, relation
   const opacity = transform.opacity === undefined ? '' : `<a:alphaModFix amt="${Math.round(transform.opacity * 100_000)}"/>`;
   const geometry = transform.mask ?? 'rect';
   const blip = opacity ? `<a:blip r:embed="${relationshipId}">${opacity}</a:blip>` : `<a:blip r:embed="${relationshipId}"/>`;
-  return `<p:pic><p:nvPicPr><p:cNvPr id="${numericId}" name="METIS:image:${escapeXml(element.id)}" descr="${escapeXml(displayName)}"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr><p:blipFill>${blip}<a:stretch><a:fillRect/></a:stretch>${srcRect}</p:blipFill><p:spPr><a:xfrm${rotation}${flipH}${flipV}><a:off x="${x}" y="${y}"/><a:ext cx="${width}" cy="${height}"/></a:xfrm><a:prstGeom prst="${geometry}"><a:avLst/></a:prstGeom></p:spPr></p:pic>`;
+  return `<p:pic><p:nvPicPr><p:cNvPr id="${numericId}" name="METIS:image:${escapeXml(element.id)}" descr="${escapeXml(displayName)}"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr><p:blipFill>${blip}<a:stretch><a:fillRect/></a:stretch>${srcRect}</p:blipFill><p:spPr><a:xfrm${rotation}${flipH}${flipV}><a:off x="${x}" y="${y}"/><a:ext cx="${width}" cy="${height}"/></a:xfrm><a:prstGeom prst="${geometry}"><a:avLst/></a:prstGeom>${shapeStyleXml(element, geometry)}</p:spPr></p:pic>`;
 }
 function slideXml(page: PptDocument['pages'][number], document: PptDocument, warnings: OutcomePptxWarning[], imageBindings: readonly SlideImageBinding[]): string {
   let id = 3; const title: PptElement = { id: `title-${page.id}`, type: 'text', x: 2, y: 1, width: document.ratio === '4:3' ? 20 : 28, height: 2, locked: false, props: { text: page.title } };
@@ -331,13 +400,17 @@ function slideXml(page: PptDocument['pages'][number], document: PptDocument, war
       else warning(warnings, 'unsupported_image', 'PPT Grid 图片导出为可见占位形状；该元素没有可验证的已持久化图片二进制。');
     } else if (element.type === 'chart') warning(warnings, 'unsupported_chart', 'PPT Grid 图表导出为可见占位形状；原始图表结构尚未嵌入 PPTX。');
     else if (['svg', 'table', 'group'].includes(element.type)) warning(warnings, 'unsupported_shape', `PPT Grid ${element.type} 元素导出为可见占位形状。`);
-    return shapeXml(['image', 'chart', 'svg', 'table', 'group'].includes(element.type) ? 'rect' : element.type, ['image', 'chart', 'svg', 'table', 'group'].includes(element.type) ? placeholderElement(element) : element, id++, document.ratio, false);
+    return shapeXml(['image', 'chart', 'svg', 'table', 'group'].includes(element.type) ? 'rect' : element.type, ['image', 'chart', 'svg', 'table', 'group'].includes(element.type) ? placeholderElement(element) : element, id++, document.ratio, false, document);
   });
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree>${groupTree()}${shapeXml('text', title, 2, document.ratio, true)}${elements.join('')}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>`;
+  const surface = hexColor(document.theme.surface, 'FFFFFF');
+  const background = `<p:bg><p:bgPr><a:solidFill><a:srgbClr val="${surface}"/></a:solidFill><a:effectLst/></p:bgPr></p:bg>`;
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld>${background}<p:spTree>${groupTree()}${shapeXml('text', title, 2, document.ratio, true, document)}${elements.join('')}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>`;
 }
 function themeXml(document: PptDocument): string {
   const primary = hexColor(document.theme.primary, '4472C4'); const accent = hexColor(document.theme.accent, 'ED7D31');
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="METIS"><a:themeElements><a:clrScheme name="METIS"><a:dk1><a:sysClr val="windowText" lastClr="000000"/></a:dk1><a:lt1><a:sysClr val="window" lastClr="FFFFFF"/></a:lt1><a:dk2><a:srgbClr val="1F1F1F"/></a:dk2><a:lt2><a:srgbClr val="F3F6FA"/></a:lt2><a:accent1><a:srgbClr val="${primary}"/></a:accent1><a:accent2><a:srgbClr val="${accent}"/></a:accent2><a:accent3><a:srgbClr val="A5A5A5"/></a:accent3><a:accent4><a:srgbClr val="FFC000"/></a:accent4><a:accent5><a:srgbClr val="5B9BD5"/></a:accent5><a:accent6><a:srgbClr val="70AD47"/></a:accent6><a:hlink><a:srgbClr val="0563C1"/></a:hlink><a:folHlink><a:srgbClr val="954F72"/></a:folHlink></a:clrScheme><a:fontScheme name="METIS"><a:majorFont><a:latin typeface="Aptos Display"/><a:ea typeface="等线"/><a:cs typeface="Aptos Display"/></a:majorFont><a:minorFont><a:latin typeface="Aptos"/><a:ea typeface="等线"/><a:cs typeface="Aptos"/></a:minorFont></a:fontScheme><a:fmtScheme name="METIS"><a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:gradFill rotWithShape="1"><a:gsLst><a:gs pos="0"><a:schemeClr val="phClr"><a:lumMod val="110000"/><a:satMod val="105000"/><a:tint val="67000"/></a:schemeClr></a:gs><a:gs pos="100000"><a:schemeClr val="phClr"><a:lumMod val="105000"/><a:satMod val="103000"/><a:shade val="90000"/></a:schemeClr></a:gs></a:gsLst><a:lin ang="5400000" scaled="0"/></a:gradFill><a:noFill/></a:fillStyleLst><a:lnStyleLst><a:ln w="9525"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/></a:ln><a:ln w="25400"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/></a:ln><a:ln w="38100"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/></a:ln></a:lnStyleLst><a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"><a:tint val="95000"/><a:satMod val="170000"/></a:schemeClr></a:solidFill><a:gradFill rotWithShape="1"><a:gsLst><a:gs pos="0"><a:schemeClr val="phClr"><a:tint val="93000"/><a:satMod val="150000"/><a:shade val="98000"/><a:lumMod val="102000"/></a:schemeClr></a:gs><a:gs pos="100000"><a:schemeClr val="phClr"><a:tint val="98000"/><a:satMod val="130000"/></a:schemeClr></a:gs></a:gsLst><a:lin ang="5400000" scaled="0"/></a:gradFill></a:bgFillStyleLst></a:fmtScheme></a:themeElements></a:theme>`;
+  const surface = hexColor(document.theme.surface, 'FFFFFF'); const text = hexColor(document.theme.text, '183B59');
+  const titleFont = themeFont(document.theme, 'titleFont') ?? 'Aptos Display'; const bodyFont = themeFont(document.theme, 'bodyFont') ?? 'Aptos';
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="METIS"><a:themeElements><a:clrScheme name="METIS"><a:dk1><a:srgbClr val="${text}"/></a:dk1><a:lt1><a:srgbClr val="${surface}"/></a:lt1><a:dk2><a:srgbClr val="${text}"/></a:dk2><a:lt2><a:srgbClr val="${surface}"/></a:lt2><a:accent1><a:srgbClr val="${primary}"/></a:accent1><a:accent2><a:srgbClr val="${accent}"/></a:accent2><a:accent3><a:srgbClr val="A5A5A5"/></a:accent3><a:accent4><a:srgbClr val="FFC000"/></a:accent4><a:accent5><a:srgbClr val="5B9BD5"/></a:accent5><a:accent6><a:srgbClr val="70AD47"/></a:accent6><a:hlink><a:srgbClr val="0563C1"/></a:hlink><a:folHlink><a:srgbClr val="954F72"/></a:folHlink></a:clrScheme><a:fontScheme name="METIS"><a:majorFont><a:latin typeface="${escapeXml(titleFont)}"/><a:ea typeface="${escapeXml(titleFont)}"/><a:cs typeface="${escapeXml(titleFont)}"/></a:majorFont><a:minorFont><a:latin typeface="${escapeXml(bodyFont)}"/><a:ea typeface="${escapeXml(bodyFont)}"/><a:cs typeface="${escapeXml(bodyFont)}"/></a:minorFont></a:fontScheme><a:fmtScheme name="METIS"><a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:gradFill rotWithShape="1"><a:gsLst><a:gs pos="0"><a:schemeClr val="phClr"><a:lumMod val="110000"/><a:satMod val="105000"/><a:tint val="67000"/></a:schemeClr></a:gs><a:gs pos="100000"><a:schemeClr val="phClr"><a:lumMod val="105000"/><a:satMod val="103000"/><a:shade val="90000"/></a:schemeClr></a:gs></a:gsLst><a:lin ang="5400000" scaled="0"/></a:gradFill><a:noFill/></a:fillStyleLst><a:lnStyleLst><a:ln w="9525"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/></a:ln><a:ln w="25400"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/></a:ln><a:ln w="38100"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/></a:ln></a:lnStyleLst><a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"><a:tint val="95000"/><a:satMod val="170000"/></a:schemeClr></a:solidFill><a:gradFill rotWithShape="1"><a:gsLst><a:gs pos="0"><a:schemeClr val="phClr"><a:tint val="93000"/><a:satMod val="150000"/><a:shade val="98000"/><a:lumMod val="102000"/></a:schemeClr></a:gs><a:gs pos="100000"><a:schemeClr val="phClr"><a:tint val="98000"/><a:satMod val="130000"/></a:schemeClr></a:gs></a:gsLst><a:lin ang="5400000" scaled="0"/></a:gradFill></a:bgFillStyleLst></a:fmtScheme></a:themeElements></a:theme>`;
 }
 function packageParts(document: PptDocument, warnings: OutcomePptxWarning[], imagePlan: ManagedImagePlan = { slides: document.pages.map(() => []), media: [] }): Map<string, Buffer> {
   const size = dimensions(document.ratio); const entries = new Map<string, Buffer>(); const slideOverrides = document.pages.map((_, index) => `<Override PartName="/ppt/slides/slide${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>`).join('');
@@ -364,6 +437,10 @@ function packageParts(document: PptDocument, warnings: OutcomePptxWarning[], ima
 
 export class OutcomePptxService {
   constructor(private readonly options: OutcomePptxServiceOptions = {}) {}
+  private useGenoffice(): boolean {
+    if (this.options.engine) return this.options.engine === 'genoffice';
+    return process.env.METIS_OFFICE_ENGINE?.toLowerCase() !== 'legacy' && process.env.NODE_ENV !== 'test';
+  }
   private encode(document: PptDocument, warnings: OutcomePptxWarning[], imagePlan?: ManagedImagePlan): OutcomePptxExport {
     const zip = new ZipWriter(); for (const [name, data] of packageParts(document, warnings, imagePlan)) zip.addFile(name, data); const bytes = zip.toBuffer();
     if (bytes.length < 22 || bytes.readUInt32LE(0) !== 0x04034b50 || bytes.readUInt32LE(bytes.length - 22) !== EOCD) throw new Error('pptx_zip_write_invalid');
@@ -374,6 +451,19 @@ export class OutcomePptxService {
     return this.encode(parsed, warnings);
   }
   async exportManagedDocument(document: PptDocument): Promise<OutcomePptxExport> {
+    if (this.useGenoffice() && this.options.resolveOriginalArchive) {
+      const mediaId = document.theme[GENOFFICE_PPTX_ORIGINAL_ARCHIVE_KEY];
+      if (typeof mediaId === 'string' && mediaId) {
+        const original = await this.options.resolveOriginalArchive(mediaId).catch(() => undefined);
+        if (original) {
+          const result = await exportPptxViaGenoffice(document, original);
+          if (!result.requiresLegacy) return { bytes: Buffer.from(result.bytes), warnings: result.warnings };
+          // Structural changes (new/deleted/reordered Grid elements) are not
+          // silently discarded: fall through to the existing full writer,
+          // which is the authoritative path for such changes in P2.
+        }
+      }
+    }
     const parsed = PptDocumentSchema.parse(document); const warnings: OutcomePptxWarning[] = []; const resolve = this.options.resolveManagedImage;
     if (!resolve) return this.encode(parsed, warnings);
     const mediaById = new Map<string, MediaPart>(); const slides: SlideImageBinding[][] = [];
@@ -399,9 +489,20 @@ export class OutcomePptxService {
     }
     return this.encode(parsed, warnings, { slides, media: [...mediaById.values()] });
   }
-  async exportFile(filePath: string, document: PptDocument): Promise<OutcomePptxExport> { const result = this.options.resolveManagedImage ? await this.exportManagedDocument(document) : this.exportDocument(document); await writeFile(filePath, result.bytes); return result; }
+  async exportFile(filePath: string, document: PptDocument): Promise<OutcomePptxExport> { const result = this.options.resolveManagedImage || this.options.resolveOriginalArchive ? await this.exportManagedDocument(document) : this.exportDocument(document); await writeFile(filePath, result.bytes); return result; }
   importBuffer(archive: Buffer): OutcomePptxImport { return parsePpt(readEntries(archive)); }
-  async importFile(filePath: string): Promise<OutcomePptxImport> { return this.importBuffer(await readFile(filePath)); }
+  async importFile(filePath: string): Promise<OutcomePptxImport> { return this.importBufferV2(await readFile(filePath)); }
+  async importBufferV2(archive: Buffer): Promise<OutcomePptxImport> {
+    if (this.useGenoffice()) {
+      try {
+        const imported = await importPptxViaGenoffice(archive);
+        return { document: imported.document, warnings: imported.warnings };
+      } catch {
+        // Unsupported/corrupt packages fall back to the existing codec.
+      }
+    }
+    return this.importBuffer(archive);
+  }
   /**
    * Resolve the extracted-image markers from an unsaved import into durable media
    * handles. The caller owns persistence and authorization; this codec only
@@ -409,6 +510,14 @@ export class OutcomePptxService {
    */
   async commitImportedMedia(filePath: string, document: PptDocument, persist: (image: ExtractedSlideImage) => Promise<{ id: string; mediaType: 'image/png' | 'image/jpeg' | 'image/svg+xml'; displayName: string } | undefined>): Promise<PptDocument> {
     const entries = readEntries(await readFile(filePath));
+    return this.commitImportedMediaEntries(entries, document, persist);
+  }
+
+  async commitImportedMediaBuffer(archive: Buffer, document: PptDocument, persist: (image: ExtractedSlideImage) => Promise<{ id: string; mediaType: 'image/png' | 'image/jpeg' | 'image/svg+xml'; displayName: string } | undefined>): Promise<PptDocument> {
+    return this.commitImportedMediaEntries(readEntries(archive), document, persist);
+  }
+
+  private async commitImportedMediaEntries(entries: Map<string, Buffer>, document: PptDocument, persist: (image: ExtractedSlideImage) => Promise<{ id: string; mediaType: 'image/png' | 'image/jpeg' | 'image/svg+xml'; displayName: string } | undefined>): Promise<PptDocument> {
     const parsed = PptDocumentSchema.parse(document);
     const presentation = entries.get('ppt/presentation.xml')?.toString('utf8') ?? '';
     const paths = presentation ? slidePaths(entries, presentation) : [];

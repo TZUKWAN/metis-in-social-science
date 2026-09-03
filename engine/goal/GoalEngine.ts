@@ -954,7 +954,7 @@ export class GoalEngine {
           description: 'Find relevant papers using keywords from the goal',
           prompt: `Search for academic papers related to: ${goal.description}\n\nReturn a list of 5-10 relevant papers with title, authors, year, and a brief relevance note.`,
           inputFrom: [],
-          tools: ['search_web'],
+          tools: ['web_search'],
           maxTurns: 6,
         },
         {
@@ -1017,7 +1017,7 @@ export class GoalEngine {
           description: 'Identify the target paper from the goal description',
           prompt: `Identify the specific paper to analyze based on: ${goal.description}\n\nReturn: title, authors, year, and a brief summary of what the paper is about.`,
           inputFrom: [],
-          tools: ['search_web'],
+          tools: ['web_search'],
           maxTurns: 6,
         },
         {
@@ -1215,7 +1215,7 @@ export class GoalEngine {
           description: 'Search and collect relevant information',
           prompt: 'Search for information to answer the key questions identified.\n\nGoal breakdown:\n{{understand.output}}',
           inputFrom: ['understand'],
-          tools: ['search_web'],
+          tools: ['web_search'],
           maxTurns: 6,
         },
         {

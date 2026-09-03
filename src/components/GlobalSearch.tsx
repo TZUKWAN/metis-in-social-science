@@ -4,9 +4,11 @@
  */
 
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import { Search } from 'lucide-react';
 import { useMetisStore } from '../store';
 import { useTranslation } from '../i18n';
 import { Highlight } from './Highlight';
+import { Input } from './ui';
 import type { Page, ReadStatus } from '../store';
 import { isNavVisible } from '../../engine/capabilities/DiagnosticMode';
 
@@ -39,6 +41,7 @@ const RESEARCH_PAGES: Page[] = [
   'experiments',
   'kanban',
   'outcomes',
+  'submissions',
   'settings',
 ];
 
@@ -53,6 +56,7 @@ const PAGE_LABEL_KEYS: Record<Page, string> = {
   kanban: 'nav.kanban',
   autonomous: 'autonomous.title',
   outcomes: 'nav.outcomes',
+  submissions: 'nav.submissions',
   timeline: 'nav.timeline',
   latex: 'nav.latexEditor',
   pdf: 'nav.pdfReader',
@@ -399,15 +403,15 @@ export default function GlobalSearch({ onNavigate, onClose }: GlobalSearchProps)
         style={{ width: 560, maxWidth: '90vw', padding: 0, overflow: 'hidden' }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
-          <input
+        <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Search size={16} color="var(--text-muted)" aria-hidden="true" />
+          <Input
             ref={inputRef}
             type="text"
             value={query}
             onChange={(e) => { setQuery(e.target.value); setSelectedIndex(0); }}
             placeholder={t('globalSearch.placeholder')}
-            className="search-input"
-            style={{ border: 'none', padding: 0, background: 'transparent' }}
+            style={{ border: 'none', padding: 0, background: 'transparent', boxShadow: 'none' }}
           />
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, padding: '8px 16px', borderBottom: '1px solid var(--border)' }}>

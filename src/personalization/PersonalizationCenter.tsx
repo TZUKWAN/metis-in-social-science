@@ -8,6 +8,7 @@ import {
   type ArchivedPersonalizationDefinition,
   type McpDefinition,
   type PersonalizationDefinition,
+  type PersonalizationIntegrityIssue,
   type PersonalizationMutationResult,
   type PersonalizationVersionView,
   type ScenarioDefinition,
@@ -1375,6 +1376,8 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
   const zh = locale === 'zh';
   const [definitions, setDefinitions] = useState<PersonalizationDefinition[]>([]);
   const [archivedDefinitions, setArchivedDefinitions] = useState<ArchivedPersonalizationDefinition[]>([]);
+  const [integrityIssues, setIntegrityIssues] = useState<PersonalizationIntegrityIssue[]>([]);
+  const [recoveringIntegrityIssueId, setRecoveringIntegrityIssueId] = useState<string | null>(null);
   const [kind, setKind] = useState<Kind>('scenario');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [browseBuiltinOpen, setBrowseBuiltinOpen] = useState(false);
@@ -1452,6 +1455,14 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
       const response = await list({ contractVersion: 1, includeDisabled: true });
       const next = response.definitions;
       setDefinitions(next);
+      let issues: PersonalizationIntegrityIssue[] = [];
+      try {
+        const integrity = await window.metis?.listPersonalizationIntegrityIssues?.({ contractVersion: 1 });
+        issues = integrity?.issues ?? [];
+      } catch {
+        // The verified catalog stays usable even if diagnostics are unavailable.
+      }
+      setIntegrityIssues(issues);
       // The current preload exposes this call.  Keeping its failure isolated
       // lets an older running desktop shell keep its active scene list usable
       // during a hot renderer refresh; it never fabricates trash data.
@@ -1484,6 +1495,37 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
     () => definitions.filter((item) => item.provenance.origin !== 'builtin'),
     [definitions],
   );
+  const visibleIntegrityIssues = useMemo(() => integrityIssues.filter((issue) => issue.kind === kind), [integrityIssues, kind]);
+  const recoverIntegrityIssue = useCallback(async (issue: PersonalizationIntegrityIssue) => {
+    if (issue.latestVerifiedRevision === null) {
+      setStatus(zh ? '该异常场景没有可验证的历史版本，已保持隔离，不能自动恢复。' : 'This quarantined item has no verified history and remains isolated.');
+      return;
+    }
+    const recover = window.metis?.recoverPersonalizationIntegrityIssue;
+    if (!recover) {
+      setStatus(zh ? '安全恢复服务不可用。' : 'The trusted recovery service is unavailable.');
+      return;
+    }
+    setRecoveringIntegrityIssueId(issue.id);
+    try {
+      const result = await recover({
+        contractVersion: 1,
+        id: issue.id,
+        sourceRevision: issue.latestVerifiedRevision,
+        expectedCurrentRevision: issue.currentRevision,
+      });
+      if (!result.ok || result.code !== 'saved') {
+        setStatus(zh ? `恢复未完成：${result.code}` : `Recovery did not complete: ${result.code}`);
+        return;
+      }
+      setStatus(zh ? `已从已验证的 r${issue.latestVerifiedRevision} 创建新的可信版本。异常快照已隔离保存。` : `Published a new trusted version from verified r${issue.latestVerifiedRevision}; the quarantined snapshot was retained.`);
+      await load();
+    } catch {
+      setStatus(zh ? '恢复服务暂时不可用，异常数据仍保持隔离。' : 'Recovery is unavailable; the quarantined data remains isolated.');
+    } finally {
+      setRecoveringIntegrityIssueId(null);
+    }
+  }, [load, zh]);
   const filtered = useMemo(() => userDefinitions.filter((item) => item.kind === kind), [userDefinitions, kind]);
   const selected = userDefinitions.find((item) => item.id === selectedId) ?? null;
 
@@ -1996,6 +2038,7 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
             </div>
   ) : null;
 
+
   return (
     <div className="personalization-page">
       {/* 场景是组合主体；技能、MCP 与 Metis.md 仍可直接切换和配置。 */}
@@ -2013,6 +2056,19 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
       {isScenarioKind && !loading && loadError && (
         <div className="personalization-load-error" role="alert"><span>{loadError}</span><button type="button" onClick={() => void load()}>{zh ? '重试' : 'Retry'}</button></div>
       )}
+      {visibleIntegrityIssues.length > 0 && <section className="personalization-integrity-notice" role="alert" aria-label={zh ? '场景完整性恢复' : 'Personalization integrity recovery'}>
+        <strong>{zh ? '发现已隔离的保存异常' : 'Quarantined saved items detected'}</strong>
+        <p>{zh ? '这些定义没有通过版本完整性校验，因此不会被执行或静默当作不存在。可以仅从已验证历史版本恢复；异常快照会保留用于审计。' : 'These definitions failed version-integrity verification, so they are not executed or silently treated as absent. Recovery only uses verified history and retains the quarantined snapshot.'}</p>
+        <div>
+          {visibleIntegrityIssues.map((issue) => <article key={issue.id}>
+            <span><strong>{issue.id}</strong><small>{zh ? `当前 r${issue.currentRevision}：${issue.code}` : `current r${issue.currentRevision}: ${issue.code}`}</small></span>
+            {issue.latestVerifiedRevision === null
+              ? <em>{zh ? '没有可验证历史版本；保持隔离。' : 'No verified history; remains quarantined.'}</em>
+              : <button type="button" disabled={recoveringIntegrityIssueId === issue.id} onClick={() => void recoverIntegrityIssue(issue)}>{recoveringIntegrityIssueId === issue.id ? (zh ? '恢复中…' : 'Recovering…') : (zh ? `从可信 r${issue.latestVerifiedRevision} 恢复` : `Recover from trusted r${issue.latestVerifiedRevision}`)}</button>}
+          </article>)}
+        </div>
+      </section>}
+      {status && <p className="personalization-load-error" role="status">{status}</p>}
       {isScenarioKind ? (
         <ScenarioWorkbench
           zh={zh}

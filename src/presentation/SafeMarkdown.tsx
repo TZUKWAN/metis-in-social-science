@@ -147,6 +147,31 @@ function textOf(children: ReactNode): string {
   )).join('');
 }
 
+// Hook-free memoization: SafeMarkdown must stay callable as a plain function
+// (tests and legacy call sites invoke it outside React render), so useMemo is
+// not available here. Plugin arrays are cached per mode|locale (few combos);
+// the components map uses a single-entry memo — streaming frames repeat the
+// same props, which is exactly the hot path this protects.
+const remarkPluginsCache = new Map<string, [typeof remarkGfm, ReturnType<typeof createRemarkPresentationBoundary>]>();
+
+function getRemarkPlugins(resolvedMode: SafeMarkdownMode, locale: PresentationLocale) {
+  const key = `${resolvedMode}|${locale}`;
+  let plugins = remarkPluginsCache.get(key);
+  if (!plugins) {
+    plugins = [remarkGfm, createRemarkPresentationBoundary(resolvedMode, locale)];
+    remarkPluginsCache.set(key, plugins);
+  }
+  return plugins;
+}
+
+let lastComponentsKey: {
+  codeComponent?: Components['code'];
+  locale: PresentationLocale;
+  onOpenPaper?: (doi: string) => void;
+  resolvedMode: SafeMarkdownMode;
+} | null = null;
+let lastComponents: Components | null = null;
+
 export function SafeMarkdown({
   content,
   uiMode = 'normal',
@@ -155,7 +180,21 @@ export function SafeMarkdown({
   onOpenPaper,
 }: SafeMarkdownProps) {
   const resolvedMode: SafeMarkdownMode = uiMode === 'diagnostic' ? 'diagnostic' : 'normal';
-  const safeComponents: Components = {
+  const remarkPlugins = getRemarkPlugins(resolvedMode, locale);
+  const safeComponents: Components = (() => {
+    const prev = lastComponentsKey;
+    if (
+      prev
+      && prev.codeComponent === codeComponent
+      && prev.locale === locale
+      && prev.onOpenPaper === onOpenPaper
+      && prev.resolvedMode === resolvedMode
+      && lastComponents
+    ) {
+      return lastComponents;
+    }
+    lastComponentsKey = { codeComponent, locale, onOpenPaper, resolvedMode };
+    lastComponents = {
     ...(codeComponent ? { code: codeComponent } : {}),
     a({ href, children }) {
       const safeUrl = typeof href === 'string' ? sanitizeMarkdownUrl(href) : null;
@@ -221,13 +260,12 @@ export function SafeMarkdown({
       );
     },
   };
+    return lastComponents;
+  })();
 
   return (
     <ReactMarkdown
-      remarkPlugins={[
-        remarkGfm,
-        createRemarkPresentationBoundary(resolvedMode, locale),
-      ]}
+      remarkPlugins={remarkPlugins}
       skipHtml
       allowedElements={ALLOWED_ELEMENTS}
       urlTransform={(url) => sanitizeMarkdownUrl(url) ?? ''}

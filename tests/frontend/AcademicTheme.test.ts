@@ -1,5 +1,5 @@
 /**
- * DESIGN-METIS-403 academic theme smoke contract.
+ * METIS design-token smoke contract.
  *
  * @vitest-environment jsdom
  */
@@ -14,23 +14,23 @@ const themeCss = readFileSync(
   'utf8',
 );
 
-describe('AcademicTheme computed design tokens', () => {
+describe('METIS computed design tokens', () => {
   beforeEach(() => {
     document.head.innerHTML = `<style>${themeCss}</style>`;
     document.documentElement.removeAttribute('data-theme');
   });
 
-  it('uses the rational ink-navy accent in light mode', () => {
+  it('uses the rational blue accent in light mode', () => {
     const tokens = readComputedDesignTokens();
-    expect(tokens.accentPrimary).toBe('#263a59');
-    expect(tokens.accentHover).toBe('#1c2c45');
+    expect(tokens.accentPrimary).toBe('#2563EB');
+    expect(tokens.accentHover).toBe('#1F5ED0');
   });
 
-  it('uses low-saturation aged parchment in dark mode (anthropic-inspired warm evolution)', () => {
+  it('uses the dark-mode blue accent in dark mode', () => {
     document.documentElement.dataset.theme = 'dark';
     const tokens = readComputedDesignTokens();
-    expect(tokens.accentPrimary).toBe('#d3c6a6');
-    expect(tokens.accentHover).toBe('#e2d8bf');
+    expect(tokens.accentPrimary).toBe('#3B82F6');
+    expect(tokens.accentHover).toBe('#60A5FA');
   });
 
   it('exposes eight distinct semantic chart colors and retains chart blue', () => {
@@ -38,10 +38,10 @@ describe('AcademicTheme computed design tokens', () => {
     expect(light.chartPalette).toHaveLength(8);
     expect(new Set(light.chartPalette).size).toBe(8);
     expect(light.chartPalette[0]).toBe(light.accentPrimary);
-    expect(light.chartPalette[3]).toBe('#4d7a9e');
+    expect(light.chartPalette[3]).toBe('#4F7396');
 
     document.documentElement.dataset.theme = 'dark';
-    expect(readComputedDesignTokens().chartPalette[3]).toBe('#7aa2d4');
+    expect(readComputedDesignTokens().chartPalette[3]).toBe('#7FAAD4');
   });
 
   it('provides separate legal focus color and shadow values', () => {
@@ -50,13 +50,15 @@ describe('AcademicTheme computed design tokens', () => {
     expect(tokens.focusRingShadow).toMatch(/^0 0 0 2px rgba?\(/u);
   });
 
-  it('keeps the precise academic type and radius scale', () => {
+  it('keeps the rational type and radius scale', () => {
     const tokens = readComputedDesignTokens();
-    expect(tokens.fontSans).toContain('Source Han Sans SC');
+    expect(tokens.fontSans).toContain('Inter');
+    expect(tokens.fontSans).toContain('Noto Sans SC');
     expect(tokens.fontSerif).toContain('Source Han Serif SC');
     expect(tokens.fontMono).toContain('JetBrains Mono');
-    expect(tokens.radiusSm).toBe('2px');
-    expect(tokens.radiusMd).toBe('4px');
+    expect(tokens.radiusSm).toBe('6px');
+    expect(tokens.radiusCard).toBe('8px');
+    expect(tokens.radiusMd).toBe('12px');
   });
 
   it('AA contrast: accent-on-card meets WCAG 4.5:1 minimum', () => {
@@ -88,11 +90,9 @@ describe('AcademicTheme computed design tokens', () => {
     expect(tokens.textOnAccent).toBe(style.getPropertyValue('--text-on-accent').trim());
   });
 
-  it('no blue fallback: focus-ring uses the ink accent, not generic blue', () => {
+  it('focus-ring derives from the active accent', () => {
     const style = getComputedStyle(document.documentElement);
     const ring = style.getPropertyValue('--focus-ring').trim();
-    expect(ring).not.toContain('3b82f6');
-    expect(ring).not.toContain('2563eb');
     expect(ring).toMatch(/^0 0 0 2px rgba?\(/);
   });
 

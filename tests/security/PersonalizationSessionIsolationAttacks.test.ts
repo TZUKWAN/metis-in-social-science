@@ -397,7 +397,8 @@ describe('immutable per-session personalization snapshots', () => {
     expect(recovered.systemPrompt).not.toContain('MALICIOUS_PERSISTED_PROMPT');
     expect(recovered.systemPrompt).toContain(value.marker);
     expect(digestResolvedManifestSnapshot(recovered.manifest)).toBe(recovered.manifest.manifestDigest);
-    expect(recovered.manifest.manifestDigest).not.toBe(tampered.manifestDigest);
+    // HMAC reject must never revive the tampered row: re-resolution must byte-match the original manifest (digest included).
+    expect(recovered.manifest.manifestDigest).toBe(original.manifest.manifestDigest);
     expect(repository.getActiveRunManifest('hmac-session')?.manifestDigest).toBe(recovered.manifest.manifestDigest);
     expect(repository.getActiveRunManifest('hmac-session')?.promptStack[0]?.content)
       .not.toContain('MALICIOUS_PERSISTED_PROMPT');

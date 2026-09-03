@@ -40,6 +40,10 @@ export interface FundingTemplatePanelDependencies {
   activateTemplate(request: IpcRequest<'activate'>): Promise<unknown>;
   archiveTemplate(request: IpcRequest<'archive'>): Promise<unknown>;
   restoreTemplate(request: IpcRequest<'restore'>): Promise<unknown>;
+  /** 逐栏填写草稿生成（2026-09-01）：可选；未注入时隐藏草稿区。 */
+  draftOutline?(request: { projectId: string; templateId: string; materialText?: string }): Promise<{ ok: boolean; markdown?: string; message?: string }>;
+  /** 草稿导出 DOCX（2026-09-01）：可选；未注入时隐藏导出按钮。 */
+  exportDraftDocx?(request: { title: string; markdown: string }): Promise<{ ok: boolean; fileName?: string; message?: string }>;
 }
 
 export interface FundingTemplatePanelProps {
@@ -133,6 +137,35 @@ export default function FundingTemplatePanel({
   const [targetVersion, setTargetVersion] = useState('1');
   const [version, setVersion] = useState<FundingTemplateVersionView | null>(null);
   const [selectedCapabilityId, setSelectedCapabilityId] = useState<string | null>(null);
+  const [materialText, setMaterialText] = useState('');
+  const [draftMarkdown, setDraftMarkdown] = useState<string | null>(null);
+  const [draftBusy, setDraftBusy] = useState(false);
+  const [draftStatus, setDraftStatus] = useState('');
+
+  const generateDraft = (): void => {
+    if (!projectId || !selectedTemplate || draftBusy) return;
+    setDraftBusy(true);
+    setDraftStatus('');
+    dependencies.draftOutline?.({ projectId, templateId: selectedTemplate.templateId, materialText: materialText.trim() || undefined })
+      .then((result) => {
+        if (result.ok && result.markdown) {
+          setDraftMarkdown(result.markdown);
+          setDraftStatus(zh ? '草稿已生成；请逐栏核对并替换「待补充」项后再使用。' : 'Draft generated; verify every section before use.');
+        } else {
+          setDraftStatus(result.message ?? (zh ? '草稿生成未完成。' : 'Draft generation did not complete.'));
+        }
+      })
+      .catch(() => setDraftStatus(zh ? '草稿生成请求未完成。' : 'Draft generation request failed.'))
+      .finally(() => setDraftBusy(false));
+  };
+
+  const exportDraft = (): void => {
+    if (!draftMarkdown || !dependencies.exportDraftDocx) return;
+    const title = `${selectedTemplate?.templateId ?? '申报书'}-填写草稿`;
+    void dependencies.exportDraftDocx({ title, markdown: draftMarkdown })
+      .then((result) => setDraftStatus(result.ok ? (zh ? `已导出 ${result.fileName ?? 'DOCX'}。` : `Exported ${result.fileName ?? 'DOCX'}.`) : (result.message ?? (zh ? '导出未完成。' : 'Export failed.'))))
+      .catch(() => setDraftStatus(zh ? '导出请求未完成。' : 'Export request failed.'));
+  };
   const [selectedFormat, setSelectedFormat] = useState<'PDF' | 'DOCX' | null>(null);
   const [lastDiffBinding, setLastDiffBinding] = useState<FundingTemplateDiffView | null>(null);
   const [displayedDiff, setDisplayedDiff] = useState<FundingTemplateDiffView | null>(null);
@@ -693,6 +726,46 @@ export default function FundingTemplatePanel({
           {error}
         </div>
       )}
+
+      {dependencies.draftOutline && projectId && (
+        <div className="funding-template-panel__draft" aria-label={zh ? '申报书填写草稿' : 'Application draft'}>
+          <strong>{zh ? '生成填写草稿' : 'Generate application draft'}</strong>
+          <p>
+            {zh
+              ? '按上方已分析模板的栏目结构，结合你提供的材料生成逐栏填写草稿。草稿只使用材料里真实存在的内容；材料没覆盖的栏目会给出填写框架与待补充清单。'
+              : 'Drafts every section against the analyzed template using your own material. Sections the material does not cover receive an outline plus a to-fill checklist instead of invented facts.'}
+          </p>
+          <textarea
+            rows={4}
+            value={materialText}
+            onChange={(event) => setMaterialText(event.target.value)}
+            placeholder={zh ? '粘贴申请材料：研究基础、代表性成果、团队情况、前期数据…（可留空）' : 'Paste your material: research basis, publications, team, preliminary data… (optional)'}
+          />
+          <div className="funding-template-panel__draft-actions">
+            <button
+              type="button"
+              disabled={disabled || !selectedTemplate || draftBusy}
+              onClick={() => { void generateDraft(); }}
+            >
+              {draftBusy ? (zh ? '生成中…' : 'Generating…') : (zh ? '生成填写草稿' : 'Generate draft')}
+            </button>
+            {draftMarkdown && (
+              <button
+                type="button"
+                disabled={draftBusy}
+                onClick={() => { void exportDraft(); }}
+              >
+                {zh ? '导出为 DOCX' : 'Export as DOCX'}
+              </button>
+            )}
+          </div>
+          {draftMarkdown && (
+            <pre className="funding-template-panel__draft-output" aria-label={zh ? '草稿内容' : 'Draft content'}>{draftMarkdown}</pre>
+          )}
+          {draftStatus && <p role="status">{draftStatus}</p>}
+        </div>
+      )}
+
       <div className="funding-template-panel__status" role="status" aria-live="polite">
         {busy ? (zh ? '正在执行…' : 'Working…') : status}
       </div>

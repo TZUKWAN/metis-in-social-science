@@ -4,14 +4,22 @@
  * Restrained academic styling for the chat interface.
  * No rainbow, no large rounded corners, no generic AI copy.
  * Research-grade information display, not consumer chat.
+ *
+ * Phase-3: aligned with the Apple-HIG shell language (AcademicPolish) —
+ * motion (--ease-out/--dur-fast), elevation (--shadow-1 in light, border
+ * separation in dark) and radius tokens (--radius-card/--radius-pill).
+ * All colors derive from AcademicTheme tokens; no hardcoded hex/rgba.
  */
 
 /* ─── Chat Layout ─────────────────────────────────── */
 
 .chat-main {
-  flex: 1;
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
   overflow: hidden;
   /* P1-9：作为 .chat-return-latest 的定位父级。此前无 positioned 祖先，
    * 按钮的 absolute 偏移实际锚定到视口，位置随布局漂移。 */
@@ -38,17 +46,30 @@
   min-height: 30px;
   padding: 5px 10px;
   border: 1px solid var(--border);
-  border-radius: 3px;
+  border-radius: var(--radius-pill, 999px); /* 浮动控件：胶囊形浮于内容之上 */
   background: var(--bg-card);
   color: var(--text-primary);
   font: inherit;
   font-size: 12px;
   cursor: pointer;
+  box-shadow: var(--shadow-1); /* 浅色分层细阴影；深色下为 none，靠描边分离 */
+  transition: border-color var(--dur-fast, 160ms) var(--ease-out, ease),
+    background-color var(--dur-fast, 160ms) var(--ease-out, ease),
+    color var(--dur-fast, 160ms) var(--ease-out, ease),
+    box-shadow var(--dur-fast, 160ms) var(--ease-out, ease),
+    transform var(--dur-fast, 160ms) var(--ease-out, ease);
 }
 
-.chat-return-latest:hover {
-  border-color: var(--primary);
-  color: var(--primary);
+@media (hover: hover) and (pointer: fine) {
+  .chat-return-latest:hover {
+    border-color: var(--primary);
+    color: var(--primary);
+    box-shadow: var(--shadow-2); /* hover 抬升一档海拔 */
+  }
+}
+
+.chat-return-latest:active:not(:disabled) {
+  transform: scale(0.97);
 }
 
 .chat-return-latest:focus-visible {
@@ -58,15 +79,15 @@
 
 /* ─── Empty State ─────────────────────────────────── */
 
+/* 卡片化构图（边框/留白/衬线标题）由 AcademicPolish 统一负责，这里只保留
+ * 文本对齐与颜色，避免与 polish 层的留白规则互相覆盖。 */
 .chat-empty {
   text-align: center;
-  padding-top: 100px;
   color: var(--text-secondary);
 }
 
 .chat-empty h2 {
   font-family: var(--font-serif);
-  font-size: 18px;
   margin-bottom: 8px;
   color: var(--text-primary);
   font-weight: 600;
@@ -78,10 +99,7 @@
 }
 
 .chat-empty__examples {
-  margin-top: 6px;
   font-size: 12px;
-  opacity: 0.8;
-  font-style: italic;
 }
 
 /* ─── Message Bubbles — restrained radii ──────────── */
@@ -103,9 +121,9 @@
 }
 
 .message-avatar {
-  width: 26px;
-  height: 26px;
-  border-radius: 3px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -114,7 +132,7 @@
   flex-shrink: 0;
   background: var(--bg-hover);
   color: var(--text-secondary);
-  letter-spacing: 0.3px;
+  letter-spacing: 0.2px;
 }
 
 .message-body {
@@ -123,21 +141,25 @@
 }
 
 .message-content {
-  padding: 8px 12px;
+  padding: 10px 14px;
   font-size: 13px;
   line-height: 1.6;
-  border-radius: 3px;
+  border-radius: var(--radius-lg, 16px);
 }
 
 .chat-message.user .message-content {
   background: var(--primary);
   color: var(--text-on-primary);
+  border-bottom-right-radius: 6px;
 }
 
 .chat-message.assistant .message-content,
 .chat-message.tool .message-content {
   background: var(--bg-card);
   border: 1px solid var(--border);
+  border-bottom-left-radius: 6px;
+  /* 浅色：苹果式柔和阴影把气泡抬离灰底；深色：--shadow-1 为 none，描边承担分离。 */
+  box-shadow: var(--shadow-1);
 }
 
 /* O8: citations — clickable source chips under an assistant answer. */
@@ -165,7 +187,7 @@
 }
 
 .chat-citation:hover {
-  background: var(--bg-hover, rgba(0, 0, 0, 0.04));
+  background: var(--bg-hover);
   color: var(--text-primary);
 }
 
@@ -194,7 +216,7 @@
   margin-left: 6px;
   padding: 0 4px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-pill, 999px);
 }
 
 .fork-switcher__label {
@@ -260,7 +282,7 @@
 .code-block-wrapper {
   margin: 6px 0;
   border: 1px solid var(--border);
-  border-radius: 3px;
+  border-radius: var(--radius-card, 6px);
   overflow: hidden;
 }
 
@@ -296,7 +318,7 @@
 
 .tool-call-card {
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-card, 6px);
   overflow: hidden;
   margin: 6px 0;
   background: var(--bg-card);
@@ -337,7 +359,7 @@
 .agent-activity-timeline {
   margin: 0 0 9px;
   border: 1px solid var(--border-light, var(--border));
-  border-radius: 4px;
+  border-radius: var(--radius-card, 6px);
   background: color-mix(in srgb, var(--bg-secondary) 58%, var(--bg-card));
   color: var(--text-secondary);
   font-size: 12px;
@@ -388,7 +410,7 @@
 .agent-activity-timeline__state--max_turns_reached { background: var(--status-failed); }
 .agent-activity-timeline__state--interrupted,
 .agent-activity-timeline__state--cancelled { background: var(--text-muted); }
-.agent-activity-timeline__state--unknown { background: var(--warning, #b8860b); }
+.agent-activity-timeline__state--unknown { background: var(--warning); }
 
 .agent-activity-timeline__label { color: var(--text-primary); font-weight: 600; }
 .agent-activity-timeline__count { color: var(--text-muted); }
@@ -461,14 +483,14 @@
   border-bottom: 1px solid var(--text-muted);
   content: '';
   transform: rotate(45deg) translateY(-2px);
-  transition: transform .15s ease;
+  transition: transform var(--dur-fast, 160ms) var(--ease-out, ease);
 }
 .agent-tool-result[open] .agent-tool-result__summary::after { transform: rotate(225deg) translate(-2px, -2px); }
 .agent-tool-result__body {
   margin: 2px 0 7px;
   padding: 7px 9px;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: var(--radius-card, 6px);
   background: color-mix(in srgb, var(--bg-card) 68%, var(--bg-primary));
 }
 .agent-tool-result__detail { margin: 0; color: var(--text-secondary); line-height: 1.5; overflow-wrap: anywhere; }
@@ -497,7 +519,7 @@
   color: var(--text-secondary);
   padding: 6px 10px;
   border: 1px solid var(--border);
-  border-radius: 3px;
+  border-radius: var(--radius-card, 6px);
   background: var(--bg-secondary);
 }
 
@@ -513,7 +535,7 @@
 .chat-input-grid {
   display: flex;
   gap: 8px;
-  align-items: center;
+  align-items: flex-end;
   flex: 1;
   min-width: 0;
   max-width: 960px;
@@ -521,7 +543,13 @@
   width: 100%;
 }
 
-.chat-side-upload { align-self: center; width: 30px; height: 30px; }
+.chat-tool-icon.chat-side-upload {
+  align-self: flex-end;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  margin-bottom: 0;
+}
 
 .chat-input-maincol {
   display: flex;
@@ -534,32 +562,40 @@
 .chat-input-topbar {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 2px;
   flex-wrap: wrap;
 }
 
+/* Ghost chip button spec: 28px 高、圆角 6px、透明无底、hover 仅指针设备。 */
 .chat-top-tool {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 4px;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: transparent;
-  color: var(--text-muted, #7c8698);
+  color: var(--text-secondary);
   font: inherit;
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 500;
   cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
 }
 
-.chat-top-tool:hover:not(:disabled) {
-  background: var(--bg-hover, rgba(31, 58, 95, 0.08));
-  color: var(--primary, #1f3a5f);
+@media (hover: hover) and (pointer: fine) {
+  .chat-top-tool:hover:not(:disabled) {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
 }
 
-.chat-top-tool:disabled { opacity: 0.45; cursor: not-allowed; }
+.chat-top-tool:active:not(:disabled) { transform: scale(0.95); }
 
-.mts-icon-label { font-size: 11px; font-weight: 600; }
+.chat-top-tool:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.mts-icon-label { font-size: 12px; font-weight: 500; }
 
 .chat-input-row {
   display: flex;
@@ -573,25 +609,32 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   padding: 0;
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: transparent;
-  color: var(--text-muted, #7c8698);
+  color: var(--text-secondary);
   cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
 }
 
-.chat-tool-icon:hover:not(:disabled) {
-  background: var(--bg-hover, rgba(31, 58, 95, 0.08));
-  color: var(--primary, #1f3a5f);
+@media (hover: hover) and (pointer: fine) {
+  .chat-tool-icon:hover:not(:disabled) {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
 }
 
-.chat-tool-icon:disabled { opacity: 0.45; cursor: not-allowed; }
+.chat-tool-icon:active:not(:disabled) { transform: scale(0.95); }
+
+.chat-tool-icon:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .chat-input-area {
   display: flex;
+  flex: 0 0 auto;
+  min-width: 0;
   gap: 8px;
   padding: 10px 20px;
   border-top: 1px solid var(--border);
@@ -613,9 +656,16 @@
   overflow-y: auto;
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-radius: var(--radius-md, 4px);
-  box-shadow: var(--shadow-raised, 0 -4px 12px rgba(0, 0, 0, 0.08));
+  border-radius: var(--radius-overlay, 10px); /* 浮层允许更大的 Apple 式圆角 */
+  box-shadow: var(--shadow-2);
   z-index: var(--z-inpage, 40); /* 页内局部层：浮于消息流之上 */
+  transition: opacity var(--dur-base, 220ms) var(--ease-out, ease),
+    transform var(--dur-base, 220ms) var(--ease-out, ease);
+}
+
+/* 物质化入场：从锚点（输入区）方向轻微上浮，而非从 0 缩放。 */
+@starting-style {
+  .slash-command-menu { opacity: 0; transform: translateY(4px); }
 }
 
 .slash-command-item {
@@ -637,40 +687,48 @@
 .chat-textarea {
   flex: 1;
   min-width: 0;
-  padding: 8px 12px;
+  padding: 9px 14px;
   border: 1px solid var(--border);
-  border-radius: 3px;
+  border-radius: var(--radius-lg, 16px);
   font-size: 13px;
   font-family: inherit;
   outline: none;
   resize: none;
-  min-height: 36px;
-  max-height: calc(1.5em * 10 + 16px);
+  min-height: 38px;
+  max-height: calc(1.5em * 10 + 18px);
   line-height: 1.5;
   background: var(--bg-input);
   color: var(--text-primary);
-  transition: border-color 0.12s;
+  box-shadow: var(--shadow-1);
+  transition: border-color var(--dur-fast, 160ms) var(--ease-out, ease),
+    box-shadow var(--dur-fast, 160ms) var(--ease-out, ease);
 }
 
 .chat-textarea:focus {
   border-color: var(--primary);
+  box-shadow: var(--focus-ring-shadow), var(--shadow-1);
 }
 
 .chat-send {
-  padding: 8px 16px;
+  padding: 8px 18px;
   background: var(--primary);
   color: var(--text-on-primary);
   border: none;
-  border-radius: 3px;
+  border-radius: var(--radius-pill, 999px);
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 600;
   cursor: pointer;
-  height: 36px;
-  transition: background 0.12s;
+  height: 38px;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
+  transition: background var(--dur-fast, 160ms) var(--ease-out, ease), transform var(--dur-fast, 160ms) var(--ease-out, ease);
 }
 
 .chat-send:hover:not(:disabled) {
   background: var(--primary-hover);
+}
+
+.chat-send:active:not(:disabled) {
+  transform: scale(0.97);
 }
 
 .chat-send:disabled {
@@ -682,7 +740,7 @@
   height: 36px;
   padding: 8px 12px;
   border: 1px solid var(--status-failed);
-  border-radius: 3px;
+  border-radius: var(--radius-sm, 2px);
   background: transparent;
   color: var(--status-failed);
   font-size: 12px;
@@ -724,10 +782,12 @@
 .chat-session-item {
   position: relative;
   padding: 8px 24px 8px 8px;
-  margin-bottom: 2px;
-  border-radius: 3px;
+  margin-bottom: 1px;
+  border-radius: var(--radius-sm, 2px);
   cursor: pointer;
   border: 1px solid transparent;
+  /* 选中指示：左侧 2px 细线（与 AcademicPolish 的会话栏语言一致）。 */
+  border-left: 2px solid transparent;
 }
 
 .chat-session-item:hover {
@@ -735,8 +795,9 @@
 }
 
 .chat-session-item.active {
-  background: var(--bg-active);
-  border-color: var(--primary);
+  background: var(--accent-soft);
+  border-color: transparent;
+  border-left-color: var(--accent);
 }
 
 /* ─── Right Panel ─────────────────────────────────── */
@@ -767,13 +828,6 @@
   border-bottom-color: var(--primary);
 }
 
-/* ─── Dark Mode ───────────────────────────────────── */
-
-[data-theme="dark"] .chat-message.assistant .message-content,
-[data-theme="dark"] .chat-message.tool .message-content {
-  background: var(--bg-card);
-}
-
 /* ─── RTL ─────────────────────────────────────────── */
 
 [dir="rtl"] .chat-message.user {
@@ -791,6 +845,8 @@
 
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  /* 纯位移按压反馈在 reduced-motion 下关闭（与 AcademicPolish 同一约定）。 */
+  .chat-return-latest:active:not(:disabled) { transform: none; }
 }
 
 @media (forced-colors: active) {
@@ -820,7 +876,7 @@
 .chat-scenario-bar__retry:hover { border-color: var(--primary); color: var(--primary); }
 .chat-scenario-bar__retry:focus-visible { outline: 2px solid var(--focus-ring-color); outline-offset: 2px; }
 .chat-scenario-bar__policy { color: var(--text-muted); font-size: 10px; text-align: right; }
-.chat-scenario-bar__policy--interrupting { color: var(--warning, #b8860b); font-weight: 650; }
+.chat-scenario-bar__policy--interrupting { color: var(--warning); font-weight: 650; }
 
 @media (max-width: 720px) {
   .chat-scenario-bar { align-items: flex-start; flex-direction: column; gap: 4px; }
@@ -830,4 +886,55 @@
 @media (forced-colors: active) {
   .chat-scenario-bar { border-bottom-color: CanvasText; }
   .chat-scenario-bar__retry { border-color: ButtonBorder; background: ButtonFace; color: ButtonText; }
+}
+
+/* 项目内多对话切换条（2026-08-29 刘总要求） */
+.chat-session-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 16px; border-bottom: 1px solid var(--border-light);
+  background: var(--bg-secondary);
+}
+.chat-session-bar label { display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex: 0 1 auto; }
+.chat-session-bar label > span { font-size: 11px; color: var(--text-muted); letter-spacing: .08em; font-weight: 700; }
+.chat-session-bar select { max-width: 320px; padding: 4px 26px 4px 8px; border: 1px solid var(--border-light); border-radius: var(--radius); background: var(--bg-input); color: var(--text-primary); font-size: 12px; }
+
+/* ─── Streaming chrome (dsh-style incremental rendering) ────── */
+
+/* Pulsing caret at the tip of the streaming bubble. The global
+ * prefers-reduced-motion kill-switch above covers the animation; the
+ * explicit override below removes it entirely for reduced motion. */
+.streaming-caret {
+  display: inline-block;
+  width: 7px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -0.15em;
+  background: var(--primary);
+  border-radius: 1.5px; /* 圆头插入符，避免生硬直角 */
+  opacity: 0.85;
+  animation: streaming-caret-pulse 1s ease-in-out infinite;
+}
+
+@keyframes streaming-caret-pulse {
+  0%, 100% { opacity: 0.85; }
+  50% { opacity: 0.15; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .streaming-caret { animation: none; }
+}
+
+/* Latest reasoning line surfaced inside the <summary> while streaming.
+ * 斜体 + 弱化灰：读作「正在思考」的瞬时状态，与正文的直立体裁区分。 */
+.chat-reasoning__latest {
+  display: inline-block;
+  margin-left: 8px;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+  color: var(--text-muted);
+  font-weight: 400;
+  font-style: italic;
 }

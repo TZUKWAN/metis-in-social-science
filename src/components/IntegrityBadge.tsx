@@ -21,10 +21,10 @@ interface IntegrityInfo {
 }
 
 const STATUS_STYLE: Record<IntegrityStatus, Omit<IntegrityInfo, 'status'>> = {
-  checking: { label: '...', color: '#94a3b8' },
-  verified: { label: 'VERIFIED', color: '#16a34a' },
-  retracted: { label: 'RETRACTED', color: '#dc2626' },
-  unknown: { label: 'UNKNOWN', color: '#6b7280' },
+  checking: { label: '...', color: 'var(--evidence-stale)' },
+  verified: { label: 'VERIFIED', color: 'var(--evidence-verified)' },
+  retracted: { label: 'RETRACTED', color: 'var(--evidence-refuted)' },
+  unknown: { label: 'UNKNOWN', color: 'var(--text-muted)' },
 };
 
 // Module-level cache so navigating away and back does not refetch.
@@ -77,7 +77,7 @@ export function IntegrityBadge({ doi }: { doi: string }) {
   return (
     <span
       className="badge integrity-badge"
-      style={{ background: style.color, color: '#fff', marginLeft: 6 }}
+      style={{ background: style.color, color: 'var(--text-on-accent)', marginLeft: 6 }}
       title={`Citation integrity: ${style.label}`}
       data-integrity-status={status}
     >

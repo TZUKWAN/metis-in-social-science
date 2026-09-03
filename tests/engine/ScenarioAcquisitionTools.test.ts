@@ -57,6 +57,7 @@ describe('scenario_install_extension tool', () => {
         calls.push(request);
         return { ok: true, mode: String(request.mode), definition: { id: 'user:skills/new-skill', name: '新技能' } };
       },
+      notifications: new Map(),
     };
     return { binding, calls };
   }
@@ -105,9 +106,41 @@ describe('scenario_install_extension tool', () => {
     expect(JSON.parse(otherSession).ok).toBe(true);
   });
 
+  it('routes installation notifications and counter cleanup to only the matching compile session', async () => {
+    const { binding } = okApply();
+    const router = createScenarioInstallRouter(binding);
+    const notificationsA: string[] = [];
+    const notificationsB: string[] = [];
+    const listenerA = (message: { installedId: string }) => { notificationsA.push(message.installedId); };
+    const listenerB = (message: { installedId: string }) => { notificationsB.push(message.installedId); };
+    binding.notifications.set('session-a', listenerA);
+    binding.notifications.set('session-b', listenerB);
+
+    const [resultA, resultB] = await Promise.all([
+      router.handler({ kind: 'skill', url: 'https://github.com/o/a' }, contextOf('session-a')),
+      router.handler({ kind: 'skill', url: 'https://github.com/o/b' }, contextOf('session-b')),
+    ]);
+    expect(JSON.parse(resultA).ok).toBe(true);
+    expect(JSON.parse(resultB).ok).toBe(true);
+    expect(notificationsA).toEqual(['user:skills/new-skill']);
+    expect(notificationsB).toEqual(['user:skills/new-skill']);
+
+    // A's completion only removes A's callback and counter; B remains capped and notified.
+    for (let index = 1; index < SCENARIO_INSTALL_LIMIT; index += 1) {
+      expect(JSON.parse(await router.handler({ kind: 'skill', url: `https://github.com/o/b-${index}` }, contextOf('session-b'))).ok).toBe(true);
+    }
+    if (binding.notifications.get('session-a') === listenerA) binding.notifications.delete('session-a');
+    router.clearSessionCounter('session-a');
+    expect(JSON.parse(await router.handler({ kind: 'skill', url: 'https://github.com/o/a-again' }, contextOf('session-a'))).ok).toBe(true);
+    expect(JSON.parse(await router.handler({ kind: 'skill', url: 'https://github.com/o/b-overflow' }, contextOf('session-b'))).error).toBe('install_limit_reached');
+    expect(notificationsA).toEqual(['user:skills/new-skill']);
+    expect(notificationsB).toHaveLength(SCENARIO_INSTALL_LIMIT);
+  });
+
   it('reports installer failure codes verbatim', async () => {
     const binding: ScenarioInstallerBinding = {
       apply: async () => ({ ok: false, code: 'digest_mismatch', detailCode: 'sha256' }),
+      notifications: new Map(),
     };
     const router = createScenarioInstallRouter(binding);
     const raw = await router.handler({ kind: 'skill', url: 'https://github.com/o/r' }, contextOf('s1'));

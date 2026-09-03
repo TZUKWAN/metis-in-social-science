@@ -4,7 +4,7 @@
   position: fixed;
   inset: 0;
   z-index: var(--z-overlay, 89);
-  background: color-mix(in srgb, var(--bg-page, #111) 50%, transparent);
+  background: var(--bg-modal-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -113,7 +113,7 @@
 }
 
 .submissions-panel__comment--resolved {
-  border-left-color: var(--success, #2e7d32);
+  border-left-color: var(--success);
   color: var(--text-primary);
 }
 

@@ -73,7 +73,11 @@ async function renderWorkbench(props: ReturnType<typeof harness>['props']) {
 }
 
 describe('ScenarioWorkbench focused authoring', () => {
-  beforeEach(() => { window.metis = undefined; });
+  beforeEach(async () => {
+    window.metis = undefined;
+    const mod = await import('../../src/personalization/ScenarioWorkbench.js');
+    mod.resetScenarioWorkbenchDraftStoreForTests();
+  });
 
   it('renders exactly the four requested authoring sections and no advanced runtime controls', async () => {
     const { props } = harness();
@@ -204,6 +208,79 @@ describe('ScenarioWorkbench focused authoring', () => {
     expect(screen.getByTestId('sw-assistant-undo')).toHaveProperty('disabled', false);
     fireEvent.click(screen.getByTestId('sw-assistant-undo'));
     expect(screen.getByTestId('sw-config-name')).toHaveProperty('value', current.name);
+  });
+
+  it('does not report an AI compilation as saved when the trusted main-process commit fails', async () => {
+    const { props, save } = harness();
+    const compiled = scenario({ name: '仅内存草稿' });
+    const compileScenarioHarness = vi.fn().mockResolvedValue({
+      ok: false,
+      code: 'revision_conflict',
+      message: '场景内容已生成，但未能安全保存（revision_conflict）。当前草稿仍在页面中，请重试保存。',
+      scenario: compiled,
+    });
+    window.metis = { compileScenarioHarness } as unknown as typeof window.metis;
+    await renderWorkbench(props);
+    fireEvent.change(screen.getByTestId('sw-assistant-input'), { target: { value: '生成一个场景。' } });
+    fireEvent.click(screen.getByTestId('sw-assistant-send'));
+
+    expect((await screen.findAllByText(/未能安全保存/u)).length).toBeGreaterThan(0);
+    expect(save).not.toHaveBeenCalled();
+    expect(screen.queryAllByText(/已自动保存/u)).toHaveLength(0);
+  });
+
+  it('retains generated content as an unsaved draft when trusted autosave fails, then preserves it for safe save-as-new on conflict', async () => {
+    const { props, save } = harness();
+    const compiled = scenario({
+      name: 'AI 实证论文（待保存）',
+      workflowPrompt: '按连续工作流逐步完成实证研究。',
+    });
+    const compileScenarioHarness = vi.fn().mockResolvedValue({
+      ok: false,
+      code: 'revision_conflict',
+      message: '场景内容已生成，但未能安全保存（revision_conflict）。当前草稿仍在页面中，请重试保存。',
+      scenario: compiled,
+    });
+    window.metis = { compileScenarioHarness } as unknown as typeof window.metis;
+    await renderWorkbench(props);
+    fireEvent.change(screen.getByTestId('sw-assistant-input'), { target: { value: '根据材料完善连续 Workflow。' } });
+    fireEvent.click(screen.getByTestId('sw-assistant-send'));
+
+    expect(await screen.findByDisplayValue(compiled.workflowPrompt!)).toBeTruthy();
+    expect(screen.getAllByText(/已保留为未保存草稿/u).length).toBeGreaterThan(0);
+    expect(screen.queryAllByText('已自动保存。')).toHaveLength(0);
+    expect(save).not.toHaveBeenCalled();
+
+    expect(screen.getByText('保存')).toHaveProperty('disabled', true);
+    fireEvent.click(screen.getByTestId('sw-save-as-new'));
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    const saved = save.mock.calls[0]![0] as ScenarioDefinition;
+    expect(saved.name).toBe(`${compiled.name} 副本`);
+    expect(saved.id).toMatch(/^user:scenarios\//u);
+    expect(save.mock.calls[0]![1]).toBe(0);
+  });
+
+  it('locks every focused-editor mutation control while compilation is in flight', async () => {
+    const { props } = harness();
+    let resolveCompile: ((value: unknown) => void) | undefined;
+    const compileScenarioHarness = vi.fn().mockImplementation(() => new Promise((resolve) => {
+      resolveCompile = resolve;
+    }));
+    window.metis = { compileScenarioHarness } as unknown as typeof window.metis;
+    await renderWorkbench(props);
+    fireEvent.change(screen.getByTestId('sw-assistant-input'), { target: { value: '生成连续 Workflow。' } });
+    fireEvent.click(screen.getByTestId('sw-assistant-send'));
+
+    await waitFor(() => expect(compileScenarioHarness).toHaveBeenCalledTimes(1));
+    expect(screen.getByTestId('sw-config-name')).toHaveProperty('disabled', true);
+    expect(screen.getByTestId('sw-workflow-prompt')).toHaveProperty('disabled', true);
+    expect(screen.getByTestId('sw-step-prompt')).toHaveProperty('disabled', true);
+    expect(screen.getByTestId('sw-workflow-add')).toHaveProperty('disabled', true);
+    expect(screen.getByTestId('sw-assistant-upload')).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: props.definitions[0]!.name })).toHaveProperty('disabled', true);
+
+    resolveCompile?.({ ok: false, code: 'generation_failed' });
+    await waitFor(() => expect(screen.getByTestId('sw-config-name')).toHaveProperty('disabled', false));
   });
 
   it('exposes local, URL, and online discovery per step and opens the real local MCP importer', async () => {

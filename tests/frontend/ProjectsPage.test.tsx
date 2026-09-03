@@ -1,5 +1,5 @@
 /**
- * ProjectsPage + ArtifactsCenter tests.
+ * ProjectsPage tests.
  *
  * @vitest-environment jsdom
  */
@@ -8,7 +8,6 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { useState } from 'react';
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
 import ProjectsPage, { type ProjectViewMode } from '../../src/pages/ProjectsPage';
-import ArtifactsCenter from '../../src/pages/ArtifactsCenter';
 import { researchWorkspaceStore } from '../../src/research/researchWorkspaceStore';
 import type { MetisAPI } from '../../electron/preload';
 
@@ -42,21 +41,6 @@ function projectDto(id: string, title: string, updatedAt: number) {
   };
 }
 
-function artifactDto(id: string, title: string, artifactType: string, updatedAt: number, reviewStatus = 'draft') {
-  return {
-    id,
-    projectId: 'proj-1',
-    title,
-    artifactType,
-    reviewStatus,
-    contentRef: null,
-    inputHash: null,
-    version: 2,
-    createdAt: updatedAt - 1000,
-    updatedAt,
-    deletedAt: null,
-  };
-}
 
 function emptySnapshot(projectId: string, capturedAt = Date.now()) {
   return {
@@ -174,8 +158,6 @@ describe('ProjectsPage — 科研项目工作台', () => {
     fireEvent.click(screen.getByTestId('projects-mode-kanban'));
     await waitFor(() => expect(screen.getByTestId('kanban-board')).toBeTruthy());
 
-    fireEvent.click(screen.getByTestId('projects-mode-artifacts'));
-    await waitFor(() => expect(screen.getByTestId('artifacts-center')).toBeTruthy());
   });
 
   it('project list width is user-resizable via the split handle', async () => {
@@ -200,81 +182,3 @@ describe('ProjectsPage — 科研项目工作台', () => {
   });
 });
 
-describe('ArtifactsCenter — 研究成果', () => {
-  beforeEach(() => {
-    resetWorkspace();
-  });
-
-  afterEach(() => {
-    cleanup();
-    (window as Window).metis = undefined;
-  });
-
-  function snapshotWithArtifacts(artifacts: ReturnType<typeof artifactDto>[]) {
-    const snapshot = emptySnapshot('proj-1');
-    snapshot.snapshot.artifacts = artifacts as never;
-    return snapshot;
-  }
-
-  it('lists artifacts newest-first with category chips and version counts', async () => {
-    const older = artifactDto('a1', '阶段报告', 'report', Date.now() - 60_000);
-    const newer = artifactDto('a2', '证据数据表', 'table', Date.now());
-    setMockMetis({
-      researchSnapshot: vi.fn().mockResolvedValue(snapshotWithArtifacts([older, newer])),
-      researchVersion: vi.fn().mockImplementation((request: { artifactId: string }) => {
-        if (request.artifactId !== 'a2') return Promise.resolve({ success: true, items: [] });
-        return Promise.resolve({
-          success: true,
-          items: [{ artifactId: 'a2', version: 2, contentHash: 'hash-a2', createdAt: Date.now(), createdBy: 'ai', branchFromVersion: 1 }],
-        });
-      }),
-    });
-
-    render(<ArtifactsCenter projectId="proj-1" />);
-
-    await waitFor(() => expect(screen.getByText('阶段报告')).toBeTruthy());
-    const items = screen.getAllByTestId('artifacts-center-item');
-    // 最新在前：a2（证据数据表）排在 a1 之前。
-    expect(items[0]?.getAttribute('data-artifact-id')).toBe('a2');
-    expect(items[1]?.getAttribute('data-artifact-id')).toBe('a1');
-    // 类别直接展示：report → 论文，table → 元数据（筛选按钮与条目徽章都会出现）。
-    expect(screen.getAllByText('论文').length).toBeGreaterThanOrEqual(2);
-    expect(screen.getAllByText('元数据').length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText('1 个版本')).toBeTruthy();
-  });
-
-  it('keeps the project artifact center read-only', async () => {
-    const artifact = artifactDto('a1', '终稿论文', 'manuscript', Date.now(), 'draft');
-    const researchReview = vi.fn().mockResolvedValue({
-      success: true,
-      code: 'reviewed',
-      projectId: 'proj-1',
-      resourceKind: 'artifact',
-      resourceId: 'a1',
-      version: 3,
-    });
-    setMockMetis({
-      researchSnapshot: vi.fn().mockResolvedValue(snapshotWithArtifacts([artifact])),
-      researchVersion: vi.fn().mockResolvedValue({ success: true, items: [] }),
-      researchReview,
-    });
-
-    render(<ArtifactsCenter projectId="proj-1" />);
-    await waitFor(() => expect(screen.getByText('终稿论文')).toBeTruthy());
-
-    fireEvent.contextMenu(screen.getByTestId('artifacts-center-item'));
-    expect(screen.queryByTestId('artifacts-center-menu')).toBeNull();
-    expect(screen.queryByTestId('artifacts-submissions-open')).toBeNull();
-    expect(researchReview).not.toHaveBeenCalled();
-    expect(screen.queryByRole('button', { name: '最终版' })).toBeNull();
-    expect(document.querySelector('[contenteditable="true"]')).toBeNull();
-  });
-
-  it('shows the empty state when the project has no artifacts', async () => {
-    setMockMetis({
-      researchSnapshot: vi.fn().mockResolvedValue(emptySnapshot('proj-1')),
-    });
-    render(<ArtifactsCenter projectId="proj-1" />);
-    await waitFor(() => expect(screen.getByText('暂无研究成果')).toBeTruthy());
-  });
-});

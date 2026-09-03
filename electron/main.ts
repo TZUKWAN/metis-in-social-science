@@ -14,19 +14,43 @@ import {
   BrowserWindow,
   ipcMain,
   dialog,
+  net,
   safeStorage,
   screen,
+  session as electronSession,
   shell,
   protocol,
   type IpcMainInvokeEvent,
 } from 'electron';
 import path from 'node:path';
+import { z } from 'zod';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
-import { spawnSync, exec } from 'node:child_process';
+import { spawn, spawnSync, exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import os from 'node:os';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+
+// ── 主进程文件日志（2026-08-25 刘总要求）─────────────────────────
+// Start-Process 管道重定向下 Node console 是 64KB 块缓冲，过程日志会长期
+// 滞留缓冲区无法用于实时诊断。开发模式下把 console 输出同步追加到
+// logs/main-app.log，保证场景编译等长流程的每一步都可实时 tail。
+{
+  const logDir = path.join(process.cwd(), 'logs');
+  try { fs.mkdirSync(logDir, { recursive: true }); } catch { /* 目录已存在 */ }
+  const mainLog = path.join(logDir, 'main-app.log');
+  const wrapConsole = (orig: (...args: unknown[]) => void) => (...args: unknown[]) => {
+    try {
+      const line = args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
+      fs.appendFileSync(mainLog, new Date().toISOString() + ' ' + line + '\n');
+    } catch { /* 日志失败绝不影响主流程 */ }
+    orig(...args);
+  };
+  console.log = wrapConsole(console.log.bind(console));
+  console.warn = wrapConsole(console.warn.bind(console));
+  console.error = wrapConsole(console.error.bind(console));
+}
+
 
 // Windows occlusion tracking can throttle — or fully stall — input delivery to
 // windows the OS reports as occluded. This is common on VMs / remote-desktop
@@ -54,6 +78,7 @@ import { LiteratureSearchService } from './LiteratureSearchService.js';
 import { RESEARCH_CAPABILITY_TASKS } from '../engine/evals/research-capability-suite.js';
 import { extendSciSsciIssns } from '../engine/literature/CoreJournalLists.js';
 import { detectStage } from '../engine/research/StageDetector.js';
+import { configureJournalCatalogFetcher } from '../engine/research/JournalCatalog.js';
 import { JobQueueService } from './JobQueueService.js';
 import { ResearchJournalService } from './ResearchJournalService.js';
 import { MethodLibraryService } from './MethodLibraryService.js';
@@ -82,13 +107,92 @@ import {
 } from './StorageLocation.js';
 import { ResearchRepository } from '../engine/persistence/ResearchRepository.js';
 import { OutcomeRepository } from './OutcomeRepository.js';
+import { SubmissionRepository } from './SubmissionRepository.js';
+import {
+  SUBMISSION_STATUSES,
+  TargetingCriteriaSchema,
+  SubmissionCaseCreateRequestSchema,
+  SubmissionCaseUpdateRequestSchema,
+  SubmissionStatusChangeRequestSchema,
+} from '../engine/submission/SubmissionRuntimeContract.js';
+
+import { aggregateVenueCandidates } from '../engine/submission/JournalTargeting.js';
+import { buildVenueMatchQuery, filterRelevantPapers, outcomeContentToMatchText } from './SubmissionVenueMatching.js';
+import { SUBMISSION_GAP_STATUSES } from '../engine/submission/JournalProfileContract.js';
+import { JournalProfileRepository } from './JournalProfileRepository.js';
+import { JournalProfileService } from './JournalProfileService.js';
+import { JournalCorpusService } from './JournalCorpusService.js';
+import { JournalPatternService } from './JournalPatternService.js';
+import { SubmissionGapService, extractManuscriptPlainText } from './SubmissionGapService.js';
+import { SubmissionOptimizationService } from './SubmissionOptimizationService.js';
+import { SUBMISSION_PACKAGE_FILE_TYPES } from '../engine/submission/SubmissionPackageContract.js';
+import { PortalFieldActionSchema } from '../engine/submission/SubmissionPortalContract.js';
+import { ReviewCommentPatchSchema } from '../engine/submission/SubmissionReviewContract.js';
+import { SubmissionPackageRepository } from './SubmissionPackageRepository.js';
+import { SubmissionReviewRepository } from './SubmissionReviewRepository.js';
+import { SubmissionReviewService } from './SubmissionReviewService.js';
+import { SubmissionPreflightService } from './SubmissionPreflightService.js';
+import { SubmissionPackageService } from './SubmissionPackageService.js';
+import { CoverLetterService } from './CoverLetterService.js';
+import { ImapFlow } from 'imapflow';
+import { MailboxPoolStore } from './ModelDiscoveryStore.js';
+import { SubmissionCorrespondenceRepository } from './SubmissionCorrespondenceRepository.js';
+import { MailSendService } from './MailSendService.js';
+import { SubmissionMailService } from './SubmissionMailService.js';
+import { SubmissionPortalService, type PortalBrowser } from './SubmissionPortalService.js';
+import { SubmissionDeadlineSync } from './SubmissionDeadlineSync.js';
+import { SubmissionMailWatcher } from './SubmissionMailWatcher.js';
+import type { ImapFlowConstructor } from '../engine/mail/MailboxPool.js';
+
+const SUBMISSION_STATUS_SET: ReadonlySet<string> = new Set<string>(SUBMISSION_STATUSES);
+type SubmissionStatusName = (typeof SUBMISSION_STATUSES)[number];
 import { OutcomeMediaService } from './OutcomeMediaService.js';
+import { GenofficeEmbeddedViewService } from './genofficeEmbedded/GenofficeEmbeddedViewService.js';
+import { registerGenofficeDocsCompat, onEmbeddedThemeChanged } from './genofficeEmbedded/genofficeEmbeddedDocsCompat.js';
 import { OutcomeImageService } from './OutcomeImageService.js';
 import { OutcomeAssistantService } from './OutcomeAssistantService.js';
 import { OutcomeProjectContextService, readOutcomeProjectMetisFromWorkspace, type OutcomeProjectMetisReadResult } from './OutcomeProjectContextService.js';
-import { OutcomeWordDocxService } from './OutcomeWordDocxService.js';
+import { OutcomeWordDocxService, GENOFFICE_ENABLED } from './OutcomeWordDocxService.js';
+import { parseWordTemplateStyle } from './WordTemplateStyleParser.js';
+import { createSubmissionBrowserTools } from './SubmissionBrowserTools.js';
+import { SubmissionAssistantService } from './SubmissionAssistantService.js';
+import { parseGuidelineFormatting, type MutableFormattingDraft, type MutableFormattingSlot } from '../engine/outcomes/GuidelineFormatting.js';
+import { buildFundingTemplateSeed } from '../engine/personalization/FundingTemplateSeed.js';
+import type { WordFormattingConfig } from '../engine/outcomes/WordDocumentFormatting.js';
+
+/** 字段级校验并写入排版配置槽；非法值返回 false 由调用方计数丢弃。 */
+function setFormattingField(slot: MutableFormattingSlot, field: string, value: string | number): boolean {
+  switch (field) {
+    case 'fontFamily':
+      if (typeof value !== 'string' || !value.trim() || value.length > 60) return false;
+      slot.fontFamily = value.trim();
+      return true;
+    case 'fontSizePt':
+    case 'lineSpacing':
+    case 'firstLineIndentChars': {
+      if (typeof value !== 'number' || !Number.isFinite(value)) return false;
+      if (field === 'fontSizePt' && (value < 5 || value > 72)) return false;
+      if (field === 'lineSpacing' && (value < 0.5 || value > 4)) return false;
+      if (field === 'firstLineIndentChars' && (value < 0 || value > 16)) return false;
+      slot[field] = value;
+      return true;
+    }
+    case 'align':
+      if (value !== 'left' && value !== 'center' && value !== 'right' && value !== 'justify') return false;
+      slot.align = value;
+      return true;
+    default:
+      return false;
+  }
+}
 import { OutcomePptGenerationService } from './OutcomePptGenerationService.js';
 import { OutcomePptxService } from './OutcomePptxService.js';
+import { GENOFFICE_PPTX_ORIGINAL_ARCHIVE_KEY } from './office/genofficePptxBridge.js';
+import { OutcomeExternalEditorService } from './OutcomeExternalEditorService.js';
+import { externalDocumentFromSavedBytes, externalEditorExtension, externalEditorKindForOutcome, isExternalEditorDocumentBytes, parseSpreadsheetWorkbook, validatePdfBytes } from './OutcomeExternalEditorBridge.js';
+import { parseGenofficeReadyLine } from './genofficeStandaloneProtocol.js';
+import { createBlankPdfBytes, createBlankSpreadsheetBytes } from './OutcomeBlankDocumentFactory.js';
+import { buildGenofficeEnvironment, resolveGenofficeRoot } from './genofficeRuntimePaths.js';
 import { AgentExecutionEventBridge } from './AgentExecutionEventBridge.js';
 import { FreeModelService } from './FreeModelService.js';
 import { OutcomeMediaSvgExportResultSchema } from '../engine/runtime/OutcomeRuntimeContract.js';
@@ -102,8 +206,12 @@ import { ApprovalShutdownRegistry, ScenarioApprovalRegistry } from './ApprovalSh
 import { createScenarioLoopRunTracker } from './ScenarioLoopRunTracker.js';
 import { OpenAICompatProvider } from '../engine/providers/OpenAICompatProvider.js';
 import { AgentLoop } from '../engine/core/AgentLoop.js';
-import { OutcomeAssistantChatRequestSchema, OutcomeAssistantChatResultSchema, OutcomeCategoryCreateSchema, OutcomeCategoryDeleteSchema, OutcomeCategoryRenameSchema, OutcomeCreateRequestSchema, OutcomeFinalRequestSchema, OutcomeGetRequestSchema, OutcomeImageGenerateResultSchema, OutcomeImageSettingsGetResultSchema, OutcomeImageSettingsSaveResultSchema, OutcomeListRequestSchema, OutcomeMediaImportRequestSchema, OutcomeMediaReadRequestSchema, OutcomeMoveRequestSchema, OutcomePptxExportRequestSchema, OutcomePptxExportResultSchema, OutcomePptxImportCommitRequestSchema, OutcomePptxImportCommitResultSchema, OutcomePptxImportRequestSchema, OutcomePptxImportResultSchema, OutcomeRenameRequestSchema, OutcomeRestoreRequestSchema, OutcomeSaveRequestSchema, OutcomeVersionsRequestSchema, OutcomeWordDocxExportRequestSchema, OutcomeWordDocxExportResultSchema, OutcomeWordDocxImportCommitRequestSchema, OutcomeWordDocxImportCommitResultSchema, OutcomeWordDocxImportRequestSchema, OutcomeWordDocxImportResultSchema, PptGenerationExecuteRequestSchema, PptGenerationResultSchema, PptGenerationSkillSaveRequestSchema, PptGenerationSkillSchema, PptTemplateSaveRequestSchema, PptTemplateSchema, ScenarioScopedConversationCreateSchema, ScenarioScopedConversationRequestSchema, ScopedConversationMessageRequestSchema, ScopedConversationRequestSchema, ScopedConversationCreateSchema, ScopedConversationRefSchema, ScopedConversationAppendToSchema, OutcomeSourceLocateRequestSchema, OutcomeSourceLocateResultSchema, OutcomeTrashListRequestSchema, OutcomeTrashRequestSchema } from '../engine/runtime/OutcomeRuntimeContract.js';
+import { OutcomeAssistantChatRequestSchema, OutcomeAssistantChatResultSchema, OutcomeCategoryCreateSchema, OutcomeCategoryDeleteSchema, OutcomeCategoryRenameSchema, OutcomeCreateRequestSchema, OutcomeExternalEditorCloseRequestSchema, OutcomeExternalEditorOpenRequestSchema, OutcomeExternalEditorOpenResultSchema, OutcomeExternalEditorStateRequestSchema, OutcomeExternalEditorStateSchema, OutcomeExternalEditorSyncRequestSchema, OutcomeExternalEditorSyncResultSchema, OutcomeFinalRequestSchema, OutcomeGetRequestSchema, OutcomeImageGenerateResultSchema, OutcomeImageSettingsGetResultSchema, OutcomeImageSettingsSaveResultSchema, OutcomeListRequestSchema, OutcomeMediaImportRequestSchema, OutcomeMediaReadRequestSchema, OutcomeMoveRequestSchema, OutcomePptxExportRequestSchema, OutcomePptxExportResultSchema, OutcomePptxImportCommitRequestSchema, OutcomePptxImportCommitResultSchema, OutcomePptxImportRequestSchema, OutcomePptxImportResultSchema, OutcomeRenameRequestSchema, OutcomeRestoreRequestSchema, OutcomeSaveRequestSchema, OutcomeVersionsRequestSchema, OutcomeWordDocxExportRequestSchema, OutcomeWordDocxExportResultSchema, OutcomeWordDocxImportCommitRequestSchema, OutcomeWordDocxImportCommitResultSchema, OutcomeWordDocxImportRequestSchema, OutcomeWordDocxImportResultSchema, PptGenerationExecuteRequestSchema, PptGenerationResultSchema, PptGenerationSkillSaveRequestSchema, PptGenerationSkillSchema, PptTemplateSaveRequestSchema, PptTemplateSchema, ScenarioScopedConversationCreateSchema, ScenarioScopedConversationRequestSchema, ScopedConversationMessageRequestSchema, ScopedConversationRequestSchema, ScopedConversationCreateSchema, ScopedConversationRefSchema, ScopedConversationAppendToSchema, OutcomeSourceLocateRequestSchema, OutcomeSourceLocateResultSchema, OutcomeTrashListRequestSchema, OutcomeTrashRequestSchema } from '../engine/runtime/OutcomeRuntimeContract.js';
+import { PptDocumentSchema, decodePptTemplateDefinition, decodePptTemplatePages } from '../engine/runtime/OutcomeRuntimeContract.js';
 import type { PptDocument, WordDocument } from '../engine/runtime/OutcomeRuntimeContract.js';
+import { applyWordFormatting } from '../engine/outcomes/WordDocumentFormatting.js';
+import { OutcomeTemplateDefaultGetRequestSchema, OutcomeTemplateDeleteRequestSchema, OutcomeTemplateListRequestSchema, OutcomeTemplateSaveRequestSchema, OutcomeTemplateUpdateRequestSchema, OutcomeDefaultTemplateSetRequestSchema, WordFormattingTemplateDefinitionSchema, type OutcomeTemplateKind } from '../engine/runtime/OutcomeRuntimeContract.js';
+import { OutcomeTemplateService } from './OutcomeTemplateService.js';
 import { ToolRegistry } from '../engine/tools/ToolRegistry.js';
 import { ToolDispatcher } from '../engine/tools/ToolDispatcher.js';
 import { registerBuiltinTools } from '../engine/tools/index.js';
@@ -122,7 +230,7 @@ const scenarioPatchRouterSingleton = createScenarioPatchRouter(true);
 // 在工具注册之后才创建，这里用晚绑定持有者，初始化时注入。
 const scenarioAcquisition: { search: ScenarioMarketSearchFn | null; install: ScenarioInstallerBinding } = {
   search: null,
-  install: { apply: null, notify: undefined },
+  install: { apply: null, notifications: new Map() },
 };
 const scenarioMarketSearchRouterSingleton = createScenarioMarketSearchRouter(
   (kind, query, source) => (scenarioAcquisition.search ? scenarioAcquisition.search(kind, query, source) : Promise.resolve({ ok: false, code: 'unavailable' })),
@@ -279,7 +387,8 @@ import {
   runPersistedChatTurn,
   runEphemeralChatTurn,
 } from './ChatTurnService.js';
-import { compileScenarioExecutionManifest, runPersistedScenarioWorkflow } from './ScenarioWorkflowService.js';
+import { applyStepControl, compileScenarioExecutionManifest, runPersistedScenarioWorkflow } from './ScenarioWorkflowService.js';
+import { createScenarioLiteratureBridge, type ScenarioLiteratureBridge } from './ScenarioLiteratureBridge.js';
 import { isAuthorizedRendererMainFrame } from './RendererAuthorization.js';
 import { createSecureExternalOpenHandler } from './SecureExternalOpenHandler.js';
 import {
@@ -540,6 +649,24 @@ let autoUpdaterService: AutoUpdaterService | null = null;
 let lastUpdateEvent: { type: string; version?: string; percent?: number; message?: string } = { type: 'idle' };
 let researchRepository: ResearchRepository | null = null;
 let outcomeRepository: OutcomeRepository | null = null;
+let outcomeTemplateService: OutcomeTemplateService | null = null;
+let submissionRepository: import('./SubmissionRepository.js').SubmissionRepository | null = null;
+let journalProfileRepository: JournalProfileRepository | null = null;
+let submissionPackageRepository: SubmissionPackageRepository | null = null;
+let submissionReviewRepository: SubmissionReviewRepository | null = null;
+let submissionReviewService: SubmissionReviewService | null = null;
+let submissionPreflightService: SubmissionPreflightService | null = null;
+let submissionPackageService: SubmissionPackageService | null = null;
+// 无 agentLoop 的基础实例（模板降级路径）；provider 就绪时通道内按项目运行时另建带 agentLoop 的实例。
+let submissionCoverLetterService: CoverLetterService | null = null;
+// ── Submission P3/P4 外联服务：邮件外发 / 邮件监听 / 投稿门户操作 ──
+let submissionCorrespondenceRepository: SubmissionCorrespondenceRepository | null = null;
+let submissionMailboxStore: MailboxPoolStore | null = null;
+let mailSendService: MailSendService | null = null;
+let submissionMailService: SubmissionMailService | null = null;
+let submissionPortalService: SubmissionPortalService | null = null;
+let submissionDeadlineSync: SubmissionDeadlineSync | null = null;
+let submissionMailWatcher: SubmissionMailWatcher | null = null;
 let outcomeMedia: OutcomeMediaService | null = null;
 let outcomeImage: OutcomeImageService | null = null;
 let researchRuntime: ResearchRuntimeService | null = null;
@@ -555,6 +682,10 @@ type PptxImportSession = {
   projectId: string;
   filePath: string;
   fileName: string;
+  // Single snapshot read at import time: media commit and archive persist must
+  // never re-read the path, or a mid-import file change would tear the
+  // document apart from its media (TOCTOU).
+  bytes: Buffer;
   document: PptDocument;
   createdAt: number;
   outcomeId?: string;
@@ -566,6 +697,7 @@ type WordDocxImportSession = {
   projectId: string;
   filePath: string;
   fileName: string;
+  bytes: Buffer;
   document: WordDocument;
   createdAt: number;
   outcomeId?: string;
@@ -791,6 +923,10 @@ function ensureBrowserService(): BrowserService | null {
   if (!win || win.isDestroyed()) return null;
   if (!browserService) {
     browserService = new BrowserService({ window: win, dataDir: DATA_DIR, store: store ?? null });
+    // Attach eagerly so headless flows (portal automation, mail link fetch,
+    // navigate/extract before the user opens the browser tab) have a live
+    // WebContentsView. The view stays hidden until browser:show.
+    browserService.attach();
   }
   return browserService;
 }
@@ -839,6 +975,46 @@ setBrowserControlBridge({
 // The data directory is user-configurable (Settings → 存储位置). Only a tiny
 // pointer file lives in `userData`; everything else follows DATA_DIR. Any
 // pending relocation runs here, before any database handle is opened.
+// ── 主进程文件日志镜像（2026-08-29 刘总要求：任何失败必须有据可查）──
+// Windows GUI 子系统下主进程 console 不进任何管道，导致运行失败长期"无痕"。
+// 这里把 log/warn/error 镜像到 DATA_DIR/logs/main-<日期>.log；DATA_DIR 解析
+// 完成前先缓存在内存，初始化后一次性落盘并持续追加。
+const mainLogBuffer: string[] = [];
+let mainLogStream: import('node:fs').WriteStream | null = null;
+function mirrorMainLog(level: string, args: unknown[]): void {
+  const line = `[${new Date().toISOString()}] [${level}] ${args.map((item) => {
+    if (typeof item === 'string') return item;
+    try { return JSON.stringify(item); } catch { return String(item); }
+  }).join(' ')}
+`;
+  if (mainLogStream) {
+    try { mainLogStream.write(line); } catch { /* 日志写失败不影响主流程 */ }
+  } else {
+    mainLogBuffer.push(line);
+    if (mainLogBuffer.length > 2000) mainLogBuffer.splice(0, mainLogBuffer.length - 2000);
+  }
+}
+for (const level of ['log', 'warn', 'error'] as const) {
+  const original = console[level].bind(console);
+  console[level] = (...args: unknown[]) => {
+    mirrorMainLog(level, args);
+    original(...args);
+  };
+}
+function initMainLogFile(dataDir: string): void {
+  try {
+    const logDir = path.join(dataDir, 'logs');
+    fs.mkdirSync(logDir, { recursive: true });
+    mainLogStream = fs.createWriteStream(
+      path.join(logDir, `main-${new Date().toISOString().slice(0, 10)}.log`),
+      { flags: 'a' },
+    );
+    for (const line of mainLogBuffer.splice(0)) mainLogStream.write(line);
+  } catch (error) {
+    console.warn('[Main] 文件日志初始化失败（不影响主流程）：', error instanceof Error ? error.message : error);
+  }
+}
+
 const USER_DATA_DIR = app.getPath('userData');
 const DEFAULT_DATA_DIR = path.join(USER_DATA_DIR, 'metis-data');
 const resolvedLocation = resolveDataDir(USER_DATA_DIR, (message) => console.log(`[Main] ${message}`));
@@ -1019,63 +1195,6 @@ ipcMain.handle('settings:importIssnList', async (event) => {
     return { ok: true, added, totalCandidates: candidates.length };
   } catch (err) {
     return { ok: false, added: 0, error: String((err as Error).message ?? err).slice(0, 160) };
-  }
-});
-
-// ── ASR 访谈转写（T23）：走当前已配置的 OpenAI 兼容 audio 端点 ──
-ipcMain.handle('dialog:openAudio', async (event) => {
-  try {
-    requireRendererMainFrame(event);
-    const { dialog } = await import('electron');
-    const result = await dialog.showOpenDialog({
-      title: '选择要转写的音频文件',
-      filters: [{ name: '音频', extensions: ['mp3', 'wav', 'm4a', 'webm', 'ogg', 'flac'] }],
-      properties: ['openFile'],
-    });
-    return result.canceled ? null : result.filePaths[0] ?? null;
-  } catch {
-    return null;
-  }
-});
-
-ipcMain.handle('transcribe:audio', async (event, raw: unknown) => {
-  try {
-    requireRendererMainFrame(event);
-    const request = raw as { filePath?: unknown; language?: unknown };
-    const filePath = typeof request?.filePath === 'string' ? request.filePath : '';
-    if (!filePath || !fs.existsSync(filePath)) return { ok: false, error: 'file_not_found' };
-    const config = currentConfig;
-    if (!config?.baseUrl || !config.apiKey) {
-      return { ok: false, error: 'provider_not_configured', hint: '请先在设置中配置模型连接（ baseUrl + API Key ）。' };
-    }
-    const audioModel = (config as { audioModel?: string }).audioModel || config.model;
-    const bytes = fs.readFileSync(filePath);
-    const form = new FormData();
-    form.append('file', new Blob([new Uint8Array(bytes)]), path.basename(filePath));
-    form.append('model', audioModel);
-    if (typeof request?.language === 'string' && request.language) form.append('language', request.language);
-    const base = config.baseUrl.replace(/\/+$/u, '');
-    const url = /\/chat\/completions$/u.test(base) ? base.replace(/\/chat\/completions$/u, '/audio/transcriptions') : `${base}/audio/transcriptions`;
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${config.apiKey}` },
-      body: form,
-      signal: AbortSignal.timeout(300_000),
-    });
-    if (!response.ok) {
-      const detail = (await response.text()).slice(0, 200);
-      return {
-        ok: false,
-        error: `audio_http_${response.status}`,
-        hint: `当前端点/模型（${audioModel}）可能不支持音频转写：${detail}`,
-      };
-    }
-    const payload = await response.json() as { text?: string };
-    const text = typeof payload.text === 'string' ? payload.text : '';
-    if (!text.trim()) return { ok: false, error: 'empty_transcript' };
-    return { ok: true, text: text.slice(0, 100_000), model: audioModel };
-  } catch (err) {
-    return { ok: false, error: String((err as Error).message ?? err).slice(0, 200) };
   }
 });
 
@@ -1385,6 +1504,276 @@ const IMPORTS_DIR = path.join(DATA_DIR, 'imports');
 const EXPORTS_DIR = path.join(DATA_DIR, 'exports');
 const RESEARCH_MEDIA_DIR = path.join(DATA_DIR, 'research-media');
 const OUTCOME_MEDIA_DIR = path.join(DATA_DIR, 'outcome-media');
+const GENOFFICE_ROOT = resolveGenofficeRoot({
+  isPackaged: app.isPackaged,
+  resourcesPath: process.resourcesPath,
+  envRoot: process.env.METIS_GENOFFICE_ROOT,
+  devCandidates: [
+    path.resolve(__dirname, '..', '..', '..', 'tools', 'genoffice'),
+    path.resolve(process.cwd(), '..', 'tools', 'genoffice'),
+  ],
+});
+const GENOFFICE_EDITOR_ROOTS = {
+  word: path.join(GENOFFICE_ROOT, 'apps', 'docs'),
+  ppt: path.join(GENOFFICE_ROOT, 'apps', 'slides'),
+  spreadsheet: path.join(GENOFFICE_ROOT, 'apps', 'sheets'),
+  pdf: path.join(GENOFFICE_ROOT, 'apps', 'pdf'),
+} as const;
+const GENOFFICE_EDITOR_ENTRIES = {
+  word: path.join(GENOFFICE_EDITOR_ROOTS.word, 'out', 'main', 'index.js'),
+  ppt: path.join(GENOFFICE_EDITOR_ROOTS.ppt, 'out', 'main', 'index.js'),
+  spreadsheet: path.join(GENOFFICE_EDITOR_ROOTS.spreadsheet, 'out', 'main', 'index.js'),
+  pdf: path.join(GENOFFICE_EDITOR_ROOTS.pdf, 'out', 'main', 'index.js'),
+} as const;
+// Packaged runs load the wrapper from resources/genoffice outside app.asar;
+// afterPack pins a neighbouring package.json to "type": "module" because the
+// compiled Electron bundle is ESM.
+const GENOFFICE_STANDALONE_WRAPPER = app.isPackaged
+  ? path.join(GENOFFICE_ROOT, 'wrapper', 'genofficeStandaloneWrapper.js')
+  : path.join(__dirname, 'genofficeStandaloneWrapper.js');
+
+async function launchGenofficeEditor(input: { kind: 'word' | 'ppt' | 'spreadsheet' | 'pdf'; filePath: string }): Promise<{ pid?: number; close: () => Promise<void> }> {
+  const entry = GENOFFICE_EDITOR_ENTRIES[input.kind];
+  const appRoot = GENOFFICE_EDITOR_ROOTS[input.kind];
+  if (!fs.existsSync(entry) || !fs.existsSync(GENOFFICE_STANDALONE_WRAPPER)) {
+    throw new Error('genoffice_unavailable');
+  }
+  const userData = path.join(DATA_DIR, 'genoffice-userdata', input.kind, path.basename(path.dirname(input.filePath)));
+  fs.mkdirSync(userData, { recursive: true });
+  const electronCli = app.isPackaged
+    ? path.join(GENOFFICE_ROOT, 'electron', process.platform === 'win32' ? 'electron.exe' : 'electron')
+    : path.join(GENOFFICE_ROOT, 'node_modules', 'electron', 'dist', process.platform === 'win32' ? 'electron.exe' : 'Electron');
+  if (!fs.existsSync(electronCli)) throw new Error('genoffice_unavailable');
+  const debugPort = Number(process.env.METIS_GENOFFICE_DEBUG_PORT);
+  const debugArguments = process.env.METIS_GENOFFICE_DEBUG === '1'
+    && Number.isInteger(debugPort) && debugPort >= 1024 && debugPort <= 65_535
+    ? [`--remote-debugging-port=${debugPort}`]
+    : [];
+  const sidecarPath = app.isPackaged
+    ? path.join(GENOFFICE_ROOT, 'apps', 'sheets', 'native', 'xlsx-engine', 'target', 'release')
+    : path.join(__dirname, 'native', 'xlsx-engine', 'target', 'release');
+  const childEnvironment = buildGenofficeEnvironment(process.env, {
+    GENOFFICE_USER_DATA: userData,
+    AI_OFFICE_USER_DATA: userData,
+    XLSX_OPEN_PATH: input.kind === 'spreadsheet' ? input.filePath : '',
+    XLSX_SIDECAR_PATH: input.kind === 'spreadsheet'
+      ? path.join(sidecarPath, process.platform === 'win32' ? 'xlsx-sidecar.exe' : 'xlsx-sidecar')
+      : '',
+    GENOFFICE_DISABLE_ANALYTICS: '1',
+    GENOFFICE_DISABLE_CLOUD: '1',
+    METIS_GENOFFICE_DEBUG: process.env.METIS_GENOFFICE_DEBUG === '1' ? '1' : '',
+    // The wrapper's debug-only file-path exposure reads the port from the
+    // environment; CDP alone is passed as a CLI argument and is not enough.
+    METIS_GENOFFICE_DEBUG_PORT: process.env.METIS_GENOFFICE_DEBUG === '1'
+      && Number.isInteger(debugPort) && debugPort >= 1024 && debugPort <= 65_535
+      ? String(debugPort)
+      : '',
+    // Metis Office 对齐：AI 用 METIS 当前连接（OpenAI 兼容 custom profile），
+    // 外观主题跟随 METIS 当前深浅；两者都由 wrapper 读取，编辑器内不可单独改。
+    ...(currentConfig && currentConfig.baseUrl && currentConfig.apiKey && currentConfig.model ? {
+      METIS_AI_BASE_URL: currentConfig.baseUrl,
+      METIS_AI_API_KEY: currentConfig.apiKey,
+      METIS_AI_MODEL: currentConfig.model,
+    } : {}),
+    METIS_UI_THEME: currentTheme === 'dark' ? 'dark' : 'light',
+  });
+  const child = spawn(electronCli, [`--user-data-dir=${userData}`, ...debugArguments, GENOFFICE_STANDALONE_WRAPPER, entry, input.filePath], {
+    cwd: appRoot,
+    env: childEnvironment,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: false,
+  });
+  child.stdout?.resume();
+  // Keep the pipe drained even though user-facing errors are returned through
+  // the bounded IPC contract. An editor with verbose diagnostics must not block
+  // on a full stderr pipe while the METIS window remains open.
+  let childStderrTail = '';
+  child.stderr?.setEncoding('utf8');
+  child.stderr?.on('data', (chunk: string) => {
+    childStderrTail = `${childStderrTail}${chunk}`.slice(-4000);
+  });
+  let closedByLauncher = false;
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    let buffer = '';
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      if (process.platform === 'win32' && child.pid) spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+      reject(new Error('genoffice_open_timeout'));
+    }, 30_000);
+    child.stdout?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk: string) => {
+      buffer += chunk;
+      let newline = buffer.indexOf('\n');
+      while (newline >= 0) {
+        const line = buffer.slice(0, newline).replace(/\r$/u, '');
+        buffer = buffer.slice(newline + 1);
+        const ready = parseGenofficeReadyLine(line);
+        const samePath = (left: string, right: string): boolean => process.platform === 'win32'
+          ? path.normalize(left).toLowerCase() === path.normalize(right).toLowerCase()
+          : path.normalize(left) === path.normalize(right);
+        if (ready && ready.editorReady === true && samePath(ready.entry, entry)
+          && ready.filePath !== null && samePath(ready.filePath, input.filePath) && !settled) {
+          settled = true;
+          clearTimeout(timeout);
+          resolve();
+          break;
+        }
+        newline = buffer.indexOf('\n');
+      }
+    });
+    child.once('error', (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.once('exit', (code, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      reject(new Error(`genoffice_open_failed:${code ?? signal ?? 'unknown'}`));
+    });
+  });
+  child.once('exit', (code, signal) => {
+    // A non-zero exit is expected when METIS itself closed the session after a
+    // successful sync (taskkill on Windows reports code 1); only unexpected
+    // terminations carry the stderr tail into the log.
+    if (code !== 0 && signal === null && !closedByLauncher) console.warn(`[GenOffice] ${input.kind} editor exited with code ${code}${childStderrTail ? `\n${childStderrTail}` : ''}`);
+  });
+  return {
+    pid: child.pid,
+    close: async () => {
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      closedByLauncher = true;
+      if (process.platform === 'win32' && child.pid) {
+        const result = spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+        if (result.error || result.status !== 0) throw new Error('genoffice_close_failed');
+      } else {
+        if (!child.kill()) throw new Error('genoffice_close_failed');
+      }
+      await new Promise<void>((resolve, reject) => {
+        if (child.exitCode !== null || child.signalCode !== null) { resolve(); return; }
+        const timer = setTimeout(() => reject(new Error('genoffice_close_timeout')), 10_000);
+        child.once('exit', () => { clearTimeout(timer); resolve(); });
+      });
+    },
+  };
+}
+async function syncOutcomeFromGenoffice(projectId: string, outcomeId: string, token: string) {
+  try {
+    if (!outcomeRepository || !outcomeMedia || !outcomeExternalEditor) return OutcomeExternalEditorSyncResultSchema.parse({ ok: false, code: 'outcomes_unavailable', message: '成果或 GenOffice 编辑服务尚未初始化。' });
+    const current = outcomeRepository.get(projectId, outcomeId);
+    if (!current) return OutcomeExternalEditorSyncResultSchema.parse({ ok: false, code: 'outcome_not_found', message: '当前成果不存在或不属于当前项目。' });
+    const opened = await outcomeExternalEditor.read({ token: token, projectId: projectId, outcomeId: outcomeId, currentVersion: current.outcome.currentVersion });
+    if (opened.session.kind === 'word') {
+      const imported = await new OutcomeWordDocxService({ engine: 'genoffice' }).importBufferV2(opened.bytes);
+      const createdMedia: string[] = [];
+      try {
+        const document = await new OutcomeWordDocxService({ engine: 'genoffice' }).commitImportedMedia(opened.bytes, imported.document, async (image) => {
+          const media = await outcomeMedia!.persistGenerated(projectId, outcomeId, image.bytes, image.mediaType, image.displayName);
+          if (media) createdMedia.push(media.id);
+          return media ? { id: media.id, mediaType: image.mediaType, displayName: media.displayName } : undefined;
+        }, async (mediaIds) => outcomeMedia!.removeGenerated(projectId, outcomeId, mediaIds));
+        const archive = await outcomeMedia.persistArchive(projectId, outcomeId, opened.bytes, 'docx', opened.session.filePath.split(/[\\/]/u).pop() ?? 'external.docx');
+         if (!archive) throw new Error('genoffice_archive_persist_failed');
+         createdMedia.push(archive.id); (document.page as Record<string, unknown>)._originalArchiveMediaId = archive.id;
+          const saved = outcomeRepository.save({ projectId: projectId, outcomeId: outcomeId, baseVersion: opened.session.baseVersion, content: document, note: '通过 GenOffice 编辑器同步 Word', actor: 'human', sources: [] });
+          let warning: string | undefined;
+          try { await outcomeExternalEditor.close(token); } catch { warning = '版本已保存，但 GenOffice 会话未能清理；请稍后重试“放弃会话”。'; }
+         return OutcomeExternalEditorSyncResultSchema.parse({ ok: true, detail: saved, ...(warning ? { warning } : {}) });
+      } catch (error) {
+        await outcomeMedia.removeGenerated(projectId, outcomeId, createdMedia);
+        throw error;
+      }
+    }
+    if (opened.session.kind === 'ppt') {
+      const imported = await new OutcomePptxService({ engine: 'genoffice' }).importBufferV2(opened.bytes);
+      const createdMedia: string[] = [];
+      try {
+        const document = await new OutcomePptxService({ engine: 'genoffice' }).commitImportedMediaBuffer(opened.bytes, imported.document, async (image) => {
+          const media = await outcomeMedia!.persistGenerated(projectId, outcomeId, image.bytes, image.mediaType, image.displayName);
+          if (media) createdMedia.push(media.id);
+          return media ? { id: media.id, mediaType: image.mediaType, displayName: media.displayName } : undefined;
+        });
+        const archive = await outcomeMedia.persistArchive(projectId, outcomeId, opened.bytes, 'pptx', opened.session.filePath.split(/[\\/]/u).pop() ?? 'external.pptx');
+         if (!archive) throw new Error('genoffice_archive_persist_failed');
+         createdMedia.push(archive.id); document.theme[GENOFFICE_PPTX_ORIGINAL_ARCHIVE_KEY] = archive.id;
+          const saved = outcomeRepository.save({ projectId: projectId, outcomeId: outcomeId, baseVersion: opened.session.baseVersion, content: document, note: '通过 GenOffice 编辑器同步 PPT', actor: 'human', sources: [] });
+          let warning: string | undefined;
+          try { await outcomeExternalEditor.close(token); } catch { warning = '版本已保存，但 GenOffice 会话未能清理；请稍后重试“放弃会话”。'; }
+         return OutcomeExternalEditorSyncResultSchema.parse({ ok: true, detail: saved, ...(warning ? { warning } : {}) });
+      } catch (error) {
+        await outcomeMedia.removeGenerated(projectId, outcomeId, createdMedia);
+        throw error;
+      }
+    }
+    try {
+      if (opened.session.kind === 'pdf') await validatePdfBytes(opened.bytes);
+      else await parseSpreadsheetWorkbook(opened.bytes);
+    } catch {
+      return OutcomeExternalEditorSyncResultSchema.parse({ ok: false, code: 'genoffice_import_failed', message: 'GenOffice 保存文件没有通过真实文件结构校验，当前成果没有被修改。' });
+    }
+    const media = await outcomeMedia.persistExternalDocument(projectId, outcomeId, opened.bytes, opened.session.kind, opened.session.filePath.split(/[\\/]/u).pop() ?? (opened.session.kind === 'pdf' ? 'external.pdf' : 'external.xlsx'));
+    if (!media) return OutcomeExternalEditorSyncResultSchema.parse({ ok: false, code: 'genoffice_import_failed', message: 'GenOffice 保存文件未通过真实文件完整性校验，当前成果没有被修改。' });
+    try {
+      const content = await externalDocumentFromSavedBytes(opened.session.kind, media, opened.bytes);
+      const saved = outcomeRepository.save({ projectId: projectId, outcomeId: outcomeId, baseVersion: opened.session.baseVersion, content, note: `通过 GenOffice 编辑器同步${opened.session.kind === 'pdf' ? ' PDF' : ' Excel'}`, actor: 'human', sources: [] });
+      let warning: string | undefined;
+      try { await outcomeExternalEditor.close(token); } catch { warning = '版本已保存，但 GenOffice 会话未能清理；请稍后重试“放弃会话”。'; }
+      return OutcomeExternalEditorSyncResultSchema.parse({ ok: true, detail: saved, ...(warning ? { warning } : {}) });
+    } catch (error) {
+      await outcomeMedia.removeGenerated(projectId, outcomeId, [media.id]);
+      throw error;
+    }
+  } catch (error) {
+    const code = String((error as Error).message ?? error);
+     const known = ['external_editor_scope_denied', 'external_editor_version_conflict', 'external_editor_not_changed', 'external_editor_file_missing', 'external_editor_file_invalid', 'genoffice_close_failed', 'genoffice_close_timeout', 'genoffice_archive_persist_failed', 'pdf_structure_invalid', 'pdf_signature_invalid', 'spreadsheet_workbook_missing'].includes(code) ? code : 'outcome_save_failed';
+    const message = known === 'external_editor_version_conflict' ? '成果版本已更新，GenOffice 草稿没有覆盖当前版本。请重新打开当前版本再同步。' : known === 'external_editor_not_changed' ? 'GenOffice 尚未保存该文件，当前成果没有被修改。' : 'GenOffice 文件同步没有完成，当前成果没有被修改。';
+    return OutcomeExternalEditorSyncResultSchema.parse({ ok: false, code: known, message });
+  }
+}
+
+const outcomeExternalEditor = new OutcomeExternalEditorService(
+  path.join(DATA_DIR, 'external-editors'),
+  launchGenofficeEditor,
+  {
+    // 会话彻底关闭后同步回收对应的内嵌视图（运行期才调用，无 TDZ 问题）。
+    onClosed: (session) => {
+      try { genofficeEmbeddedViews.closeByOutcome(session.outcomeId); } catch (error) {
+        console.warn('[genoffice-embedded] close cleanup failed:', error instanceof Error ? error.message : error);
+      }
+    },
+    // 编辑器关闭自动同步（2026-09-01 刘总要求）：独立窗口的 Metis Office 一关，
+    // 有保存改动就直接入库新版本并通知页面，不再要求手点「同步回 METIS」。
+    onEditorClosed: async (session, changed) => {
+      const broadcast = (payload: Record<string, unknown>) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('outcomes:external-editor:auto-sync', { projectId: session.projectId, outcomeId: session.outcomeId, ...payload });
+        }
+      };
+      if (!changed) {
+        try { await outcomeExternalEditor.close(session.token); } catch (error) {
+          console.warn('[genoffice-external] clean-close failed:', error instanceof Error ? error.message : error);
+        }
+        broadcast({ ok: true, changed: false, message: 'Metis Office 已关闭：内容没有修改，会话已自动结束。' });
+        return;
+      }
+      console.log(`[genoffice-external] editor closed with changes — auto-syncing outcome=${session.outcomeId}`);
+      const result = await syncOutcomeFromGenoffice(session.projectId, session.outcomeId, session.token);
+      broadcast(result.ok
+        ? { ok: true, changed: true, version: result.detail.outcome.currentVersion, title: result.detail.outcome.title, message: `检测到 Metis Office 已关闭，改动已自动同步为新版本 v${result.detail.outcome.currentVersion}。` }
+        : { ok: false, changed: true, code: result.code, message: `Metis Office 已关闭，但自动同步没有完成：${result.message}（会话保留，可手动重试同步或放弃）` });
+    },
+  },
+);
+void outcomeExternalEditor.recoverStale().catch(() => undefined);
+// 嵌入式 GenOffice：把编辑器渲染页装进主窗口的 WebContentsView，
+// 几何对齐成果页编辑区；数据仍走外部会话管线（同一 token/文件）。
+const genofficeEmbeddedViews = new GenofficeEmbeddedViewService({ genofficeRoot: GENOFFICE_ROOT });
+// 兼容通道必须在 METIS 自身全部 handler 注册完成之后再挂载：
+// compatHandle 只补空白通道，绝不覆盖主应用已有通道（如 project:list）。
 const TERMINAL_WORKSPACE_DIR = path.join(DATA_DIR, 'terminal-workspace');
 const DB_PATH = path.join(DATA_DIR, 'metis.db');
 const CONFIG_PATH = path.join(DATA_DIR, 'provider-config.json');
@@ -1945,7 +2334,7 @@ function currentGoalPersistence(): GoalPersistence | undefined {
  * board both refresh from this). Payload is contract-validated before send;
  * an invalid payload is dropped rather than risking a mis-shaped event.
  */
-function broadcastGoalChanged(sender: Electron.WebContents, goal: Goal, statusOverride?: Goal['status'] | 'cancelled') {
+function broadcastGoalChanged(_sender: Electron.WebContents, goal: Goal, statusOverride?: Goal['status'] | 'cancelled') {
   try {
     const event = decodeGoalChangedEvent({
       goalId: goal.id,
@@ -1954,7 +2343,12 @@ function broadcastGoalChanged(sender: Electron.WebContents, goal: Goal, statusOv
       priority: goal.priority,
       createdAt: goal.createdAt,
     });
-    if (event) sender.send('goal:changed', event);
+    if (!event) return;
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
+        window.webContents.send('goal:changed', event);
+      }
+    }
   } catch {
     // Broadcast must never break the caller.
   }
@@ -2093,6 +2487,18 @@ function linkPaperToProjectSource(
   }) !== undefined;
 }
 
+// 文献入库桥（2026-08-30 刘总问题 B 修复）：场景产物里的 JSON 题录过真实性闸后
+// 写入 papers 并三写 sources+paper_project_links。懒加载单例——store 与
+// researchRepository 初始化完成前返回 undefined，工作流侧自动跳过。
+let scenarioLiteratureBridge: ScenarioLiteratureBridge | null = null;
+function getScenarioLiteratureBridge(): ScenarioLiteratureBridge | undefined {
+  if (!store || !researchRepository) return undefined;
+  if (!scenarioLiteratureBridge) {
+    scenarioLiteratureBridge = createScenarioLiteratureBridge({ store, researchRepository });
+  }
+  return scenarioLiteratureBridge;
+}
+
 async function isPdfFile(filePath: string): Promise<boolean> {
   try {
     const stat = await fs.promises.stat(filePath);
@@ -2216,6 +2622,60 @@ function createAgentLoop(
     researchRepository: researchRepository ?? undefined,
   });
   fundingTemplateTools?.register(toolRegistry, dispatcher);
+  // 投稿工作区共享浏览器工具（2026-09-01 刘总规格）：agent 操作的就是用户中栏
+  // 看到的同一个 WebContentsView，不另开隐藏会话。
+  try {
+    const submissionBrowser = createSubmissionBrowserTools({
+      navigate: async (url) => {
+        const service = ensureBrowserService();
+        if (!service) return { ok: false, error: 'browser_unavailable' };
+        return service.navigate(url);
+      },
+      extract: async () => {
+        const service = ensureBrowserService();
+        if (!service) return { ok: false, error: 'browser_unavailable' };
+        return service.extract();
+      },
+    });
+    for (const spec of submissionBrowser.specs) {
+      toolRegistry.register(spec);
+      dispatcher.registerHandler(spec.name, submissionBrowser.handlers.find(([name]) => name === spec.name)![1]);
+    }
+  } catch (browserToolError) {
+    console.warn('[Main] submission browser tools unavailable:', browserToolError instanceof Error ? browserToolError.message : browserToolError);
+  }
+  // NCPSSD 中文文献检索工具（2026-09-01 刘总指出中文源缺位）：场景检索步骤与
+  // 投稿参谋可查国家哲学社会科学文献中心，默认限核心期刊。
+  try {
+    toolRegistry.register({
+      name: 'ncpssd_search',
+      description: '检索国家哲学社会科学文献中心（NCPSSD）的中文期刊论文，默认仅限核心期刊。返回题录（标题/作者/期刊/年份/摘要/链接）。中文人文社科文献优先使用本工具。',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: '中文检索词（主题/篇名关键词）' },
+          limit: { type: 'number', description: '返回条数（5-25，默认 10）' },
+          coreOnly: { type: 'boolean', description: '仅限核心期刊（默认 true）' },
+        },
+        required: ['query'],
+      },
+    });
+    dispatcher.registerHandler('ncpssd_search', async (args) => {
+      const query = String(args.query ?? '').trim();
+      if (!query) return 'Error: query is required.';
+      const limit = typeof args.limit === 'number' && Number.isFinite(args.limit) ? Math.max(5, Math.min(25, Math.floor(args.limit))) : 10;
+      const coreOnly = args.coreOnly !== false;
+      const result = await literatureSearchService.search({ query, sources: ['ncpssd'], pageSize: limit, coreOnly });
+      if (!result.ok) return JSON.stringify({ ok: false, code: result.code, note: 'NCPSSD 检索失败；如实告知用户并尝试其他来源。' }, null, 2);
+      const papers = result.results.map((paper) => ({
+        title: paper.title, authors: paper.authors, year: paper.year, venue: paper.venue,
+        abstract: (paper.abstract ?? '').slice(0, 300), url: paper.url, source: paper.source,
+      }));
+      return JSON.stringify({ query, coreOnly, total: papers.length, papers }, null, 2);
+    });
+  } catch (ncpssdToolError) {
+    console.warn('[Main] ncpssd search tool unavailable:', ncpssdToolError instanceof Error ? ncpssdToolError.message : ncpssdToolError);
+  }
   for (const registration of additionalRegistrations) {
     toolRegistry.register(registration.spec);
     dispatcher.registerHandler(registration.spec.name, registration.handler);
@@ -2607,7 +3067,16 @@ function loadConfig(): ProviderConfig | null {
 
 const SETTINGS_PATH = path.join(DATA_DIR, 'settings.json');
 
-interface PersistedSettings { theme: string; providerVision: boolean; providerMaxContextTokens: number; setupSkipped: boolean; }
+interface PersistedSettings { theme: string; accent: string; providerVision: boolean; providerMaxContextTokens: number; setupSkipped: boolean; }
+
+const ACCENT_THEMES = new Set(['gold', 'blue', 'green', 'gray']);
+const CUSTOM_ACCENT_RE = /^#[0-9a-fA-F]{6}$/;
+
+/** Preset id or custom #RRGGBB hex. Anything else falls back to blue. */
+function normalizeAccent(raw: unknown): string {
+  if (typeof raw === 'string' && (ACCENT_THEMES.has(raw) || CUSTOM_ACCENT_RE.test(raw))) return raw;
+  return 'blue';
+}
 
 function loadPersistedSettings(): PersistedSettings {
   try {
@@ -2615,6 +3084,7 @@ function loadPersistedSettings(): PersistedSettings {
       const raw = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf-8'));
       return {
         theme: raw.theme || 'light',
+        accent: normalizeAccent(raw.accent),
         providerVision: raw.providerVision === true,
         providerMaxContextTokens: Number(raw.providerMaxContextTokens) > 0 ? Number(raw.providerMaxContextTokens) : 0,
         setupSkipped: raw.setupSkipped === true,
@@ -2624,21 +3094,22 @@ function loadPersistedSettings(): PersistedSettings {
   // Backward compat: read old theme.txt
   try {
     if (fs.existsSync(THEME_PATH)) {
-      return { theme: fs.readFileSync(THEME_PATH, 'utf-8').trim() || 'light', providerVision: false, providerMaxContextTokens: 0, setupSkipped: false };
+      return { theme: fs.readFileSync(THEME_PATH, 'utf-8').trim() || 'light', accent: 'blue', providerVision: false, providerMaxContextTokens: 0, setupSkipped: false };
     }
   } catch { /* ignore */ }
-  return { theme: 'light', providerVision: false, providerMaxContextTokens: 0, setupSkipped: false };
+  return { theme: 'light', accent: 'blue', providerVision: false, providerMaxContextTokens: 0, setupSkipped: false };
 }
 
 function loadTheme(): string { return loadPersistedSettings().theme; }
+function loadAccent(): string { return loadPersistedSettings().accent; }
 function loadProviderVision(): boolean { return loadPersistedSettings().providerVision; }
 function loadProviderMaxContextTokens(): number { return loadPersistedSettings().providerMaxContextTokens; }
 function loadSetupSkipped(): boolean { return loadPersistedSettings().setupSkipped; }
 
-function saveSettings(theme: string, providerVision: boolean, providerMaxContextTokens: number): boolean {
+function saveSettings(theme: string, accent: string, providerVision: boolean, providerMaxContextTokens: number): boolean {
   try {
     // Merge so unrelated persisted keys (setupSkipped) survive a theme update.
-    const merged = { ...loadPersistedSettings(), theme, providerVision, providerMaxContextTokens };
+    const merged = { ...loadPersistedSettings(), theme, accent, providerVision, providerMaxContextTokens };
     fs.writeFileSync(SETTINGS_PATH, JSON.stringify(merged), 'utf-8');
     return true;
   } catch (err) {
@@ -3187,6 +3658,855 @@ function setupIPC(): void {
   }));
 
 
+  // ── Submission domain: 投稿事务（Series / Case / Events / 状态机） ──
+  ipcMain.handle('submission:listSeries', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p = z.string().min(1).safeParse(raw); return p.success && submissionRepository ? submissionRepository.listSeries(p.data) : []; } catch { return []; } });
+  ipcMain.handle('submission:listCases', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.object({ projectId: z.string().min(1), status: z.string().optional(), query: z.string().max(200).optional(), includeClosed: z.boolean().optional() }).safeParse(raw);
+      if (!p.success || !submissionRepository) return [];
+      const status = SUBMISSION_STATUS_SET.has(p.data.status ?? '') ? (p.data.status as SubmissionStatusName) : undefined;
+      return submissionRepository.listCases(p.data.projectId, { status, query: p.data.query, includeClosed: p.data.includeClosed });
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('submission_duplicate_active')) throw error;
+      return [];
+    }
+  });
+  ipcMain.handle('submission:getCase', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw); return p.success && submissionRepository ? submissionRepository.getCase(p.data.projectId, p.data.caseId) ?? null : null; } catch { return null; } });
+  ipcMain.handle('submission:createCase', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = SubmissionCaseCreateRequestSchema.safeParse(raw);
+      if (!p.success || !submissionRepository) {
+        console.error('[submission:createCase] rejected:', p.success ? 'repository_unavailable' : JSON.stringify(p.error.issues));
+        return null;
+      }
+      return submissionRepository.createCase(p.data);
+    } catch (error) {
+      // 一稿多投风险：结构化返回，不静默吞掉。
+      if (error instanceof Error && error.message.startsWith('submission_duplicate_active')) {
+        const [, caseId, journal] = error.message.split(':');
+        return { ok: false as const, code: 'duplicate_active' as const, activeCaseId: caseId ?? '', activeJournal: journal ?? '' };
+      }
+      console.error('[submission:createCase] failed:', error instanceof Error ? error.stack : error);
+      return null;
+    }
+  });
+  ipcMain.handle('submission:updateCase', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p = z.object({ projectId: z.string().min(1), patch: SubmissionCaseUpdateRequestSchema }).safeParse(raw); if (!p.success || !submissionRepository) return null; return submissionRepository.updateCase(p.data.projectId, p.data.patch) ?? null; } catch { return null; } });
+  ipcMain.handle('submission:changeStatus', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.object({ projectId: z.string().min(1), change: SubmissionStatusChangeRequestSchema }).safeParse(raw);
+      if (!p.success || !submissionRepository) return null;
+      // 最终提交是外部副作用，必须走 submission:submit（Human Approval 门控 + 回执），
+      // 不允许经通用状态通道直接推到已提交/已重投。
+      if (p.data.change.to === 'SUBMITTED' || p.data.change.to === 'RESUBMITTED') {
+        return { ok: false as const, code: 'use_submit_flow' as const, message: '正式提交/重投必须通过「确认投稿」流程完成（需人工确认与投稿回执）。' };
+      }
+      return submissionRepository.changeStatus(p.data.projectId, p.data.change) ?? null;
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('Illegal submission status transition')) {
+        return { ok: false as const, code: 'illegal_transition' as const, message: error.message };
+      }
+      return null;
+    }
+  });
+  ipcMain.handle('submission:listEvents', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw); return p.success && submissionRepository ? submissionRepository.listEvents(p.data.projectId, p.data.caseId) : []; } catch { return []; } });
+  ipcMain.handle('submission:addEvent', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1), type: z.string().min(1).max(60), source: z.enum(['human', 'system', 'browser', 'email', 'agent']).default('human'), sourceId: z.string().max(300).nullable().optional(), actor: z.string().max(120).optional(), description: z.string().max(2000).optional(), metadata: z.record(z.string(), z.unknown()).optional() }).safeParse(raw);
+      if (!p.success || !submissionRepository) return null;
+      return submissionRepository.addEvent(p.data.projectId, { caseId: p.data.caseId, type: p.data.type, source: p.data.source, sourceId: p.data.sourceId ?? null, actor: p.data.actor, description: p.data.description, metadata: p.data.metadata }) ?? null;
+    } catch { return null; }
+  });
+  ipcMain.handle('submission:archiveCase', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw); return p.success && submissionRepository ? submissionRepository.archiveCase(p.data.projectId, p.data.caseId) : false; } catch { return false; } });
+  ipcMain.handle('submission:checkActive', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p = z.object({ projectId: z.string().min(1), sourceOutcomeId: z.string().min(1) }).safeParse(raw); return p.success && submissionRepository ? submissionRepository.findActiveCase(p.data.projectId, p.data.sourceOutcomeId) ?? null : null; } catch { return null; } });
+
+  ipcMain.handle('submission:matchJournals', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.object({
+        projectId: z.string().min(1),
+        caseId: z.string().min(1).optional(),
+        query: z.string().min(2).max(200),
+        outcomeId: z.string().min(1).optional(),
+        criteria: TargetingCriteriaSchema,
+      }).safeParse(raw);
+      if (!p.success || !literatureSearchService) return null;
+      const { criteria } = p.data;
+      // 匹配策略修正（2026-09-01 刘总报告：匹配结果与论文毫无关系）：
+      // ①查询词从论文正文关键词构造（标题只是兜底，且剥离“交付物/工作流”等
+      //   元信息噪声）——成果标题是工作流名，不是论文主题；
+      // ②搜到的每篇论文标题必须与关键词集合有实质重叠才进入聚合，
+      //   零相关的候选宁可返回空，也不再拿不相干论文凑数。
+      let contentText = '';
+      if (p.data.outcomeId && outcomeRepository) {
+        try {
+          const detail = outcomeRepository.get(p.data.projectId, p.data.outcomeId);
+          if (detail) contentText = outcomeContentToMatchText(detail.version.content);
+        } catch { /* 成果读取失败退回标题查询 */ }
+      }
+      const { query, keywords } = buildVenueMatchQuery(contentText, p.data.query);
+      if (!query.trim()) {
+        return { ok: true as const, candidates: [], warnings: [], disclaimer: '论文内容里没有提取到可用的主题关键词，无法匹配；请在稿件里补充主题内容，或改用“指定期刊”模式。' };
+      }
+      const wantsChinese = criteria.categories.some((c) => ['cssci', 'cscd', 'pku_core', 'cn_general'].includes(c));
+      const sources = wantsChinese ? ['ncpssd' as const, 'openalex' as const] : ['openalex' as const];
+      const search = await literatureSearchService.search({ query, sources, pageSize: 25, coreOnly: false });
+      if (!search.ok) return { ok: false as const, code: search.code, candidates: [], warnings: [] };
+      const relevant = filterRelevantPapers(search.results.map((item) => ({ title: item.title, year: item.year, venue: item.venue, doi: item.doi, issn: item.issn, source: item.source })), keywords);
+      const candidates = aggregateVenueCandidates({
+        papers: relevant.map((item) => ({ title: item.title, year: item.year, venue: item.venue, doi: item.doi, issn: item.issn, source: item.source })),
+        criteria,
+        limit: 20,
+      });
+      // 留痕：匹配完成写事件（仅摘要计数，不塞全文）。
+      if (p.data.caseId && submissionRepository) {
+        try {
+          submissionRepository.addEvent(p.data.projectId, {
+            caseId: p.data.caseId, type: 'note_added', source: 'agent', actor: 'journal-matcher',
+            description: `期刊匹配完成：候选 ${candidates.length} 个（满足条件 ${candidates.filter((item) => item.meetsCriteria === true).length} 个）`,
+            metadata: { top: candidates.slice(0, 5).map((item) => ({ name: item.name, meets: item.meetsCriteria, count: item.recentPaperCount })) },
+          });
+        } catch { /* 留痕失败不影响匹配结果 */ }
+      }
+      return {
+        ok: true as const,
+        candidates,
+        warnings: search.warnings,
+        disclaimer: keywords.length > 0
+          ? `候选按论文主题（关键词：${keywords.slice(0, 5).join('、')}）过滤——仅保留标题与之相关的近期论文（${relevant.length}/${search.results.length} 篇）；索引层级由本地白名单核验。`
+          : '候选基于近期主题相关论文的发表期刊聚合；索引层级由本地白名单核验。',
+      };
+    } catch (error) {
+      console.warn('[Submission] journal match failed:', (error as Error)?.message);
+      return null;
+    }
+  });
+
+  // ── Submission P1: 期刊档案 / 投稿要求 / 语料 / 范式 / 差距诊断 / 优化方案 ──
+  // agentLoop 接线照 OutcomeAssistantService：每次调用按当前项目 provider 运行时解析；
+  // provider 未配置时可降级的通道自动退化为确定性路径，plan:apply 返回 provider_not_configured。
+  const submissionJournalProfileForCase = (projectId: string, caseId: string) => {
+    const submissionCase = submissionRepository?.getCase(projectId, caseId);
+    if (!submissionCase?.targetJournalId) return null;
+    return journalProfileRepository?.getProfile(projectId, submissionCase.targetJournalId) ?? null;
+  };
+  const submissionManuscriptAbstract = (text: string): string => {
+    const match = /(?:^|\n)\s*(?:abstract|摘\s*要)\s*[:：]?\s*/iu.exec(text);
+    if (!match) return '';
+    const rest = text.slice(match.index + match[0].length, match.index + match[0].length + 3000);
+    const end = rest.search(/\n\s*(?:keywords?|key words|关键词|关键字|introduction|引\s*言)\s*[:：]?\s*/iu);
+    return (end > 50 ? rest.slice(0, end) : rest).trim().slice(0, 2000);
+  };
+  const submissionManuscriptKeywords = (text: string): string[] => {
+    const match = /(?:^|\n)\s*(?:keywords?|key words|关键词|关键字)\s*[:：]?\s*/iu.exec(text);
+    if (!match) return [];
+    const line = text.slice(match.index + match[0].length).split('\n')[0] ?? '';
+    return line.split(/[,;，；、|]/u).map((item) => item.trim()).filter(Boolean).slice(0, 12);
+  };
+
+  ipcMain.handle('submission:journal:identify', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.object({
+        projectId: z.string().min(1),
+        caseId: z.string().min(1).optional(),
+        name: z.string().max(300).optional(),
+        issn: z.string().max(20).optional(),
+      }).safeParse(raw);
+      if (!p.success || !journalProfileRepository) return null;
+      const result = await new JournalProfileService({ repository: journalProfileRepository })
+        .identifyJournal({ projectId: p.data.projectId, name: p.data.name, issn: p.data.issn });
+      // 核验成功且带 caseId：把档案写回 case 并留痕（不改变状态机状态）。
+      if (result.ok && p.data.caseId && submissionRepository) {
+        try {
+          submissionRepository.updateCase(p.data.projectId, {
+            caseId: p.data.caseId,
+            targetJournalId: result.profile.id,
+            targetJournalName: result.profile.canonicalName,
+          }, 'system');
+          submissionRepository.addEvent(p.data.projectId, {
+            caseId: p.data.caseId, type: 'journal_identified', source: 'system', actor: 'journal-profile',
+            description: `期刊身份核验完成：${result.profile.canonicalName}${result.profile.issn ? `（ISSN ${result.profile.issn}）` : ''}`,
+            metadata: { profileId: result.profile.id, issn: result.profile.issn },
+          });
+        } catch { /* 写回/留痕失败不影响核验结果 */ }
+      }
+      return result;
+    } catch { return null; }
+  });
+
+  ipcMain.handle('submission:journal:fetchGuidelines', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw);
+      if (!p.success || !journalProfileRepository || !submissionRepository) return null;
+      const profile = submissionJournalProfileForCase(p.data.projectId, p.data.caseId);
+      if (!profile) return { ok: false as const, code: 'journal_profile_not_found' as const, message: '该投稿案件尚未关联已核验的期刊档案，请先完成期刊核验。' };
+      const runtime = resolveProjectOutcomeProvider(p.data.projectId);
+      const result = await new JournalProfileService({
+        repository: journalProfileRepository,
+        ...(runtime.status === 'ready' ? { agentLoop: runtime.agentLoop, providerProfileBinding: runtime.binding } : {}),
+      }).fetchGuidelines({ projectId: p.data.projectId, profileId: profile.id, caseId: p.data.caseId });
+      // 成功后留痕；状态推进留给 UI 显式调用 submission:changeStatus。
+      if (result.ok) {
+        try {
+          submissionRepository.addEvent(p.data.projectId, {
+            caseId: p.data.caseId, type: 'profile_completed', source: 'system', actor: 'journal-profile',
+            description: `期刊官方投稿要求抓取完成：${result.requirements.length} 条要求（${result.extraction === 'llm' ? '模型抽取' : '确定性抽取'}）。`,
+            metadata: { profileId: profile.id, snapshotId: result.snapshot.id, requirementCount: result.requirements.length, extraction: result.extraction },
+          });
+        } catch { /* 留痕失败不影响结果 */ }
+      }
+      return result;
+    } catch { return null; }
+  });
+
+  ipcMain.handle('submission:journal:profile', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw);
+      if (!p.success || !journalProfileRepository) return null;
+      const profile = submissionJournalProfileForCase(p.data.projectId, p.data.caseId);
+      if (!profile) return null;
+      const snapshot = journalProfileRepository.latestSnapshot(profile.id) ?? null;
+      return {
+        profile,
+        snapshot,
+        requirements: snapshot ? journalProfileRepository.listRequirements(snapshot.id) : null,
+        observations: snapshot ? journalProfileRepository.listPatternObservations(snapshot.id) : null,
+        corpus: journalProfileRepository.listCorpusItems(profile.id),
+      };
+    } catch { return null; }
+  });
+
+  ipcMain.handle('submission:journal:buildCorpus', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw);
+      if (!p.success || !journalProfileRepository || !submissionRepository || !outcomeRepository) return null;
+      const profile = submissionJournalProfileForCase(p.data.projectId, p.data.caseId);
+      if (!profile) return { ok: false as const, code: 'journal_profile_not_found' as const, message: '该投稿案件尚未关联已核验的期刊档案，请先完成期刊核验。' };
+      const submissionCase = submissionRepository.getCase(p.data.projectId, p.data.caseId)!;
+      const outcomeId = submissionCase.workingOutcomeId ?? submissionCase.sourceOutcomeId;
+      const detail = outcomeId ? outcomeRepository.get(p.data.projectId, outcomeId) : undefined;
+      if (!detail) return { ok: false as const, code: 'manuscript_not_found' as const, message: '投稿案件没有可用的稿件成果（工作稿/源成果均缺失）。' };
+      const text = extractManuscriptPlainText(detail.version.content);
+      const abstract = submissionManuscriptAbstract(text);
+      const keywords = submissionManuscriptKeywords(text);
+      const snapshot = journalProfileRepository.latestSnapshot(profile.id) ?? null;
+      const result = await new JournalCorpusService({ repository: journalProfileRepository, literatureSearch: literatureSearchService })
+        .buildCorpus({
+          projectId: p.data.projectId,
+          profileId: profile.id,
+          snapshotId: snapshot?.id ?? null,
+          manuscript: {
+            title: detail.outcome.title,
+            ...(abstract ? { abstract } : {}),
+            ...(keywords.length > 0 ? { keywords } : {}),
+          },
+        });
+      if (result.ok) {
+        try {
+          submissionRepository.addEvent(p.data.projectId, {
+            caseId: p.data.caseId, type: 'corpus_built', source: 'system', actor: 'journal-corpus',
+            description: `期刊写作范式语料构建完成：新增 ${result.items.length} 篇。`,
+            metadata: { profileId: profile.id, count: result.items.length },
+          });
+        } catch { /* 留痕失败不影响结果 */ }
+      }
+      return result;
+    } catch { return null; }
+  });
+
+  ipcMain.handle('submission:journal:analyzePatterns', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw);
+      if (!p.success || !journalProfileRepository || !submissionRepository) return null;
+      const profile = submissionJournalProfileForCase(p.data.projectId, p.data.caseId);
+      if (!profile) return { ok: false as const, code: 'journal_profile_not_found' as const, message: '该投稿案件尚未关联已核验的期刊档案，请先完成期刊核验。' };
+      const snapshot = journalProfileRepository.latestSnapshot(profile.id);
+      if (!snapshot) return { ok: false as const, code: 'journal_snapshot_not_found' as const, message: '该期刊档案尚无研究快照，请先抓取投稿要求。' };
+      const runtime = resolveProjectOutcomeProvider(p.data.projectId);
+      const result = await new JournalPatternService({
+        repository: journalProfileRepository,
+        ...(runtime.status === 'ready' ? { agentLoop: runtime.agentLoop, providerProfileBinding: runtime.binding } : {}),
+      }).analyzePatterns({ projectId: p.data.projectId, snapshotId: snapshot.id });
+      if (result.ok) {
+        try {
+          submissionRepository.addEvent(p.data.projectId, {
+            caseId: p.data.caseId, type: 'patterns_analyzed', source: 'system', actor: 'journal-pattern',
+            description: `期刊写作范式分析完成：${result.observations.length} 条观察（语料 ${result.corpusSize} 篇）。`,
+            metadata: { profileId: profile.id, snapshotId: snapshot.id, observationCount: result.observations.length, corpusSize: result.corpusSize },
+          });
+        } catch { /* 留痕失败不影响结果 */ }
+      }
+      return result;
+    } catch { return null; }
+  });
+
+  ipcMain.handle('submission:journal:diffSnapshots', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw);
+      if (!p.success || !journalProfileRepository || !store) return null;
+      const profile = submissionJournalProfileForCase(p.data.projectId, p.data.caseId);
+      if (!profile) return null;
+      const rows = store.raw.prepare(
+        'SELECT id FROM journal_profile_snapshots WHERE profile_id = ? ORDER BY retrieved_at DESC, created_at DESC LIMIT 2',
+      ).all(profile.id) as Array<{ id: string }>;
+      if (rows.length < 2) return null;
+      return new JournalProfileService({ repository: journalProfileRepository }).diffSnapshots(rows[1]!.id, rows[0]!.id);
+    } catch { return null; }
+  });
+
+  ipcMain.handle('submission:diagnose', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw);
+      if (!p.success || !journalProfileRepository || !submissionRepository || !outcomeRepository) return null;
+      const runtime = resolveProjectOutcomeProvider(p.data.projectId);
+      return await new SubmissionGapService({
+        submissionRepository,
+        journalRepository: journalProfileRepository,
+        outcomeRepository,
+        ...(runtime.status === 'ready' ? { agentLoop: runtime.agentLoop } : {}),
+      }).diagnose(p.data);
+    } catch { return null; }
+  });
+
+  ipcMain.handle('submission:plan:create', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1), gapItemIds: z.array(z.string().min(1)).max(100).optional() }).safeParse(raw);
+      if (!p.success || !journalProfileRepository || !submissionRepository || !outcomeRepository) return null;
+      return await new SubmissionOptimizationService({
+        submissionRepository,
+        journalRepository: journalProfileRepository,
+        outcomeRepository,
+        gapService: new SubmissionGapService({ submissionRepository, journalRepository: journalProfileRepository, outcomeRepository }),
+      }).createPlanFromGaps(p.data);
+    } catch { return null; }
+  });
+
+  ipcMain.handle('submission:plan:latest', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw);
+      if (!p.success || !journalProfileRepository || !submissionRepository) return null;
+      if (!submissionRepository.getCase(p.data.projectId, p.data.caseId)) return null;
+      const plan = journalProfileRepository.latestPlanForCase(p.data.caseId);
+      if (!plan) return null;
+      return { plan, items: journalProfileRepository.listPlanItems(plan.id) };
+    } catch { return null; }
+  });
+
+  ipcMain.handle('submission:plan:approve', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.object({ projectId: z.string().min(1), planId: z.string().min(1), selectedItemIds: z.array(z.string().min(1)).max(200).optional() }).safeParse(raw);
+      if (!p.success || !journalProfileRepository || !submissionRepository || !outcomeRepository) return null;
+      // 越权防护：方案所属 case 必须属于当前项目。
+      const plan = journalProfileRepository.getPlan(p.data.planId);
+      if (!plan || !submissionRepository.getCase(p.data.projectId, plan.caseId)) {
+        return { ok: false as const, code: 'plan_not_found' as const };
+      }
+      return await new SubmissionOptimizationService({
+        submissionRepository,
+        journalRepository: journalProfileRepository,
+        outcomeRepository,
+        gapService: new SubmissionGapService({ submissionRepository, journalRepository: journalProfileRepository, outcomeRepository }),
+      }).approvePlan(p.data);
+    } catch { return null; }
+  });
+
+  ipcMain.handle('submission:plan:apply', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.object({ projectId: z.string().min(1), planId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw);
+      if (!p.success || !journalProfileRepository || !submissionRepository || !outcomeRepository) return null;
+      // 自动修改依赖成果助手（LLM）；provider 未配置时结构化拒绝，不产生半执行状态。
+      const runtime = resolveProjectOutcomeProvider(p.data.projectId);
+      if (runtime.status !== 'ready') return { ok: false as const, code: 'provider_not_configured' as const };
+      const assistant = new OutcomeAssistantService({
+        repository: outcomeRepository,
+        agentLoop: runtime.agentLoop,
+        modelName: runtime.binding.model,
+        providerProfileBinding: runtime.binding,
+        projectContext: new OutcomeProjectContextService(outcomeRepository, { read: readOutcomeProjectMetis }),
+      });
+      return await new SubmissionOptimizationService({
+        submissionRepository,
+        journalRepository: journalProfileRepository,
+        outcomeRepository,
+        gapService: new SubmissionGapService({ submissionRepository, journalRepository: journalProfileRepository, outcomeRepository, agentLoop: runtime.agentLoop }),
+        assistant,
+      }).applyPlan(p.data);
+    } catch { return null; }
+  });
+
+  ipcMain.handle('submission:plan:verify', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.object({ projectId: z.string().min(1), planId: z.string().min(1) }).safeParse(raw);
+      if (!p.success || !journalProfileRepository || !submissionRepository || !outcomeRepository) return null;
+      const plan = journalProfileRepository.getPlan(p.data.planId);
+      if (!plan || !submissionRepository.getCase(p.data.projectId, plan.caseId)) {
+        return { ok: false as const, code: 'plan_not_found' as const };
+      }
+      return await new SubmissionOptimizationService({
+        submissionRepository,
+        journalRepository: journalProfileRepository,
+        outcomeRepository,
+        gapService: new SubmissionGapService({ submissionRepository, journalRepository: journalProfileRepository, outcomeRepository }),
+      }).verifyPlan(p.data);
+    } catch { return null; }
+  });
+
+  ipcMain.handle('submission:gap:update', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.object({
+        projectId: z.string().min(1),
+        caseId: z.string().min(1),
+        itemId: z.string().min(1),
+        // patch 只放行 status 字段（UI 侧用于确认/忽略/重开差距项）。
+        patch: z.strictObject({ status: z.enum(SUBMISSION_GAP_STATUSES) }),
+      }).safeParse(raw);
+      if (!p.success || !journalProfileRepository || !submissionRepository) return null;
+      if (!submissionRepository.getCase(p.data.projectId, p.data.caseId)) return null;
+      return journalProfileRepository.updateGapItem(p.data.caseId, p.data.itemId, { status: p.data.patch.status }) ?? null;
+    } catch { return null; }
+  });
+
+  // ── Submission P2: 投稿预检 / 投稿包 / Cover Letter ──
+  // 归属校验分层：case 级操作由服务内 getCase(projectId, caseId) 把关；
+  // package 级写操作由 SubmissionPackageService.ownedPackage（经 case 反查项目）把关；
+  // 查询类与 removeFile（不经服务）在本层显式做项目归属校验。
+  const submissionOwnedPackage = (projectId: string, packageId: string) => {
+    const pkg = submissionPackageRepository?.getPackage(packageId);
+    if (!pkg || !submissionRepository?.getCase(projectId, pkg.caseId)) return null;
+    return pkg;
+  };
+
+  ipcMain.handle('submission:preflight:run', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw);
+      if (!p.success || !submissionPreflightService) return null;
+      return await submissionPreflightService.run(p.data);
+    } catch { return null; }
+  });
+
+  ipcMain.handle('submission:preflight:latest', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw);
+      if (!p.success || !submissionPackageRepository || !submissionRepository) return null;
+      if (!submissionRepository.getCase(p.data.projectId, p.data.caseId)) return null;
+      const run = submissionPackageRepository.latestPreflightRun(p.data.caseId);
+      if (!run) return null;
+      return { run, checks: submissionPackageRepository.listPreflightChecks(run.id) };
+    } catch { return null; }
+  });
+
+  ipcMain.handle('submission:package:assemble', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw);
+      if (!p.success || !submissionPackageService) return null;
+      return await submissionPackageService.assemble(p.data);
+    } catch { return null; }
+  });
+
+  ipcMain.handle('submission:package:latest', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw);
+      if (!p.success || !submissionPackageRepository || !submissionRepository) return null;
+      if (!submissionRepository.getCase(p.data.projectId, p.data.caseId)) return null;
+      const pkg = submissionPackageRepository.latestPackageForCase(p.data.caseId);
+      if (!pkg) return null;
+      return { package: pkg, files: submissionPackageRepository.listPackageFiles(pkg.id) };
+    } catch { return null; }
+  });
+
+  ipcMain.handle('submission:package:attachOutcome', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.strictObject({
+        projectId: z.string().min(1),
+        packageId: z.string().min(1),
+        outcomeId: z.string().min(1),
+        type: z.enum(SUBMISSION_PACKAGE_FILE_TYPES),
+        required: z.boolean().optional(),
+        note: z.string().max(20000).optional(),
+      }).safeParse(raw);
+      if (!p.success || !submissionPackageService) return null;
+      return await submissionPackageService.attachOutcome(p.data);
+    } catch { return null; }
+  });
+
+  ipcMain.handle('submission:package:attachFile', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.strictObject({
+        projectId: z.string().min(1),
+        packageId: z.string().min(1),
+        type: z.enum(SUBMISSION_PACKAGE_FILE_TYPES),
+        filePath: z.string().min(1).max(2000),
+        required: z.boolean().optional(),
+      }).safeParse(raw);
+      if (!p.success || !submissionPackageService) return null;
+      // filePath 必须是已存在常规文件的绝对路径；拒绝目录与相对路径（选择对话框由 UI 复用现有通道）。
+      const filePath = p.data.filePath;
+      if (!path.isAbsolute(filePath) || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+        return { ok: false as const, code: 'file_not_found' as const };
+      }
+      return await submissionPackageService.attachFile(p.data);
+    } catch { return null; }
+  });
+
+  ipcMain.handle('submission:package:removeFile', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.strictObject({ projectId: z.string().min(1), packageId: z.string().min(1), fileId: z.string().min(1) }).safeParse(raw);
+      if (!p.success || !submissionPackageRepository) return false;
+      // 项目归属校验：package 所属 case 必须属于该项目；frozen 由仓储层硬边界拒绝。
+      if (!submissionOwnedPackage(p.data.projectId, p.data.packageId)) return false;
+      return submissionPackageRepository.removePackageFile(p.data.packageId, p.data.fileId);
+    } catch { return false; }
+  });
+
+  ipcMain.handle('submission:package:export', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.strictObject({ projectId: z.string().min(1), packageId: z.string().min(1) }).safeParse(raw);
+      if (!p.success || !submissionPackageService) return null;
+      return await submissionPackageService.exportToDisk(p.data);
+    } catch { return null; }
+  });
+
+  ipcMain.handle('submission:package:freeze', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.strictObject({ projectId: z.string().min(1), packageId: z.string().min(1) }).safeParse(raw);
+      if (!p.success || !submissionPackageService) return null;
+      // preflight 门控（最近一次预检必须 passed）在服务内执行并返回真实 blockers。
+      return await submissionPackageService.freeze(p.data);
+    } catch { return null; }
+  });
+
+  ipcMain.handle('submission:package:validate', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.strictObject({ projectId: z.string().min(1), packageId: z.string().min(1) }).safeParse(raw);
+      if (!p.success || !submissionPackageService) return null;
+      return await submissionPackageService.validate(p.data);
+    } catch { return null; }
+  });
+
+  ipcMain.handle('submission:coverLetter:generate', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw);
+      if (!p.success || !submissionCoverLetterService || !submissionRepository || !journalProfileRepository || !outcomeRepository) return null;
+      // provider 就绪时按当前项目运行时解析 agentLoop 走 LLM 成稿（照 P1 fetchGuidelines 写法）；
+      // 未配置时用无 agentLoop 的基础实例，服务内如实降级为模板骨架（extraction: 'template'）。
+      const runtime = resolveProjectOutcomeProvider(p.data.projectId);
+      const service = runtime.status === 'ready'
+        ? new CoverLetterService({
+            submissionRepository,
+            journalRepository: journalProfileRepository,
+            outcomeRepository,
+            ...(submissionPackageRepository ? { packageRepository: submissionPackageRepository } : {}),
+            agentLoop: runtime.agentLoop,
+            providerProfileBinding: runtime.binding,
+          })
+        : submissionCoverLetterService;
+      return await service.generate(p.data);
+    } catch { return null; }
+  });
+
+  // ── Submission P4: Decision Letter 拆解 / 返修工作台 / Response Letter ──
+  ipcMain.handle('submission:review:createRound', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.object({
+        projectId: z.string().min(1), caseId: z.string().min(1),
+        decisionLetterText: z.string().min(1).max(200_000),
+        deadline: z.number().int().nonnegative().nullable().optional(),
+      }).safeParse(raw);
+      if (!p.success || !submissionReviewService) return null;
+      return submissionReviewService.createRoundFromLetter(p.data);
+    } catch { return null; }
+  });
+
+  ipcMain.handle('submission:review:list', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw);
+      if (!p.success || !submissionReviewService || !submissionRepository) return [];
+      if (!submissionRepository.getCase(p.data.projectId, p.data.caseId)) return [];
+      return submissionReviewService.listRounds(p.data.projectId, p.data.caseId);
+    } catch { return []; }
+  });
+
+  ipcMain.handle('submission:review:updateComment', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.object({ projectId: z.string().min(1), commentId: z.string().min(1), patch: ReviewCommentPatchSchema }).safeParse(raw);
+      if (!p.success || !submissionReviewRepository) return null;
+      return submissionReviewRepository.updateComment(p.data.projectId, p.data.commentId, p.data.patch) ?? null;
+    } catch { return null; }
+  });
+
+  ipcMain.handle('submission:review:beginRevision', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw);
+      if (!p.success || !submissionReviewService) return { ok: false as const, code: 'unavailable' };
+      return await submissionReviewService.beginRevision(p.data);
+    } catch { return null; }
+  });
+
+  ipcMain.handle('submission:review:generateResponse', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw);
+      if (!p.success || !submissionReviewService) return null;
+      return await submissionReviewService.generateResponseLetter(p.data);
+    } catch { return null; }
+  });
+
+  // ── Submission P3: 最终提交（强制 Human Approval 门控 + 回执）──
+  // 直接经 submission:changeStatus 推到 SUBMITTED / RESUBMITTED 一律拒绝，
+  // 必须走本通道：confirmed=true + 预检通过 + 材料包已冻结才放行。
+  ipcMain.handle('submission:submit', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.strictObject({
+        projectId: z.string().min(1),
+        caseId: z.string().min(1),
+        submissionMethod: z.enum(['portal_web', 'email', 'offline_manual']),
+        portalUrl: z.string().max(2000).optional(),
+        remoteSubmissionId: z.string().max(300).optional(),
+        notes: z.string().max(5000).optional(),
+        confirmed: z.literal(true),
+      }).safeParse(raw);
+      if (!p.success || !submissionRepository || !submissionPackageRepository) {
+        return p.success && !p.data.confirmed ? { ok: false as const, code: 'approval_required' as const } : null;
+      }
+      const { projectId, caseId } = p.data;
+      const submissionCase = submissionRepository.getCase(projectId, caseId);
+      if (!submissionCase) return { ok: false as const, code: 'case_not_found' as const };
+      // 预检门控：最近一次预检必须存在且无必须处理项。
+      const run = submissionPackageRepository.latestPreflightRun(caseId);
+      if (!run || !run.passed) return { ok: false as const, code: 'preflight_not_passed' as const };
+      // 材料包门控：必须已冻结（正式提交前冻结 Package）。
+      const pkg = submissionPackageRepository.latestPackageForCase(caseId);
+      if (!pkg || pkg.status !== 'frozen') return { ok: false as const, code: 'package_not_frozen' as const };
+      // 回执信息：remoteSubmissionId 是外部副作用的幂等凭证（人工从投稿系统回填）。
+      submissionRepository.updateCase(projectId, {
+        caseId,
+        submissionMethod: p.data.submissionMethod,
+        ...(p.data.portalUrl !== undefined ? { submissionPortalUrl: p.data.portalUrl } : {}),
+        ...(p.data.remoteSubmissionId !== undefined ? { remoteSubmissionId: p.data.remoteSubmissionId } : {}),
+        ...(p.data.notes !== undefined ? { notes: p.data.notes } : {}),
+      }, 'human');
+      // 状态链：READY_TO_SUBMIT → SUBMITTING → SUBMITTED；READY_TO_RESUBMIT → RESUBMITTED。
+      const before = submissionRepository.getCase(projectId, caseId)!;
+      if (before.status === 'READY_TO_SUBMIT') {
+        if (!submissionRepository.changeStatus(projectId, { caseId, to: 'SUBMITTING', reason: '进入提交流程（人工确认）', source: 'human', actor: 'human' })) {
+          return { ok: false as const, code: 'illegal_transition' as const };
+        }
+        if (!submissionRepository.changeStatus(projectId, { caseId, to: 'SUBMITTED', reason: `投稿回执：${p.data.remoteSubmissionId ?? '（无编号）'}`, source: 'human', actor: 'human' })) {
+          return { ok: false as const, code: 'illegal_transition' as const };
+        }
+      } else if (before.status === 'READY_TO_RESUBMIT') {
+        if (!submissionRepository.changeStatus(projectId, { caseId, to: 'RESUBMITTED', reason: '重新提交（人工确认）', source: 'human', actor: 'human' })) {
+          return { ok: false as const, code: 'illegal_transition' as const };
+        }
+      } else if (before.status !== 'SUBMITTING' && before.status !== 'SUBMISSION_STATE_UNCERTAIN') {
+        return { ok: false as const, code: 'illegal_status' as const };
+      }
+      const current = submissionRepository.getCase(projectId, caseId)!;
+      submissionRepository.addEvent(projectId, {
+        caseId, type: 'submission_receipt', source: 'human', actor: 'human',
+        description: `投稿确认完成：${current.targetJournalName} · ${p.data.submissionMethod === 'email' ? '邮件投稿' : '网页投稿'}${p.data.remoteSubmissionId ? ` · 编号 ${p.data.remoteSubmissionId}` : ''}`,
+        metadata: { method: p.data.submissionMethod, portalUrl: p.data.portalUrl ?? '', remoteSubmissionId: p.data.remoteSubmissionId ?? '', packageId: pkg.id },
+      });
+      return { ok: true as const, submissionCase: current };
+    } catch { return null; }
+  });
+
+  // ── Submission P3/P4: 投稿通信（邮件外发/监听）与投稿门户操作 ──
+  // 邮箱账户安全投影：绝不向渲染端暴露 encryptedSecret。
+  ipcMain.handle('submission:mail:accounts', (event) => {
+    try {
+      requireRendererMainFrame(event);
+      return (submissionMailboxStore?.list() ?? []).map((account) => ({
+        id: account.id, label: account.label, user: account.user, host: account.host,
+        createdAt: account.createdAt, lastCheckedAt: account.lastCheckedAt, lastOkAt: account.lastOkAt,
+      }));
+    } catch { return []; }
+  });
+  ipcMain.handle('submission:mail:preview', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.strictObject({
+        accountId: z.string().min(1),
+        to: z.string().max(4000), cc: z.string().max(4000).optional(), bcc: z.string().max(4000).optional(),
+        subject: z.string().max(4000), bodyText: z.string().max(200_000),
+        attachments: z.array(z.strictObject({ filename: z.string().min(1).max(500), path: z.string().max(4000).optional(), contentBase64: z.string().max(40_000_000).optional() })).max(20).optional(),
+      }).safeParse(raw);
+      if (!p.success || !mailSendService) return null;
+      return mailSendService.previewSend({
+        accountId: p.data.accountId, to: p.data.to, cc: p.data.cc, bcc: p.data.bcc,
+        subject: p.data.subject, bodyText: p.data.bodyText,
+        attachments: (p.data.attachments ?? []).map((a) => ({
+          filename: a.filename,
+          ...(a.path ? { path: a.path } : {}),
+          ...(a.contentBase64 ? { content: Buffer.from(a.contentBase64, 'base64') } : {}),
+        })),
+      });
+    } catch { return null; }
+  });
+  // 外发必须带 confirmed:true（人类确认）+ operationId（幂等键，重试不重发）。
+  ipcMain.handle('submission:mail:send', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.strictObject({
+        projectId: z.string().min(1), caseId: z.string().min(1).optional(),
+        accountId: z.string().min(1), operationId: z.string().min(1).max(200),
+        to: z.string().max(4000), cc: z.string().max(4000).optional(), bcc: z.string().max(4000).optional(),
+        subject: z.string().max(4000), bodyText: z.string().max(200_000),
+        attachments: z.array(z.strictObject({ filename: z.string().min(1).max(500), path: z.string().max(4000).optional(), contentBase64: z.string().max(40_000_000).optional() })).max(20).optional(),
+        confirmed: z.literal(true),
+      }).safeParse(raw);
+      if (!p.success || !mailSendService) return null;
+      return await mailSendService.sendMail({
+        projectId: p.data.projectId, caseId: p.data.caseId, accountId: p.data.accountId,
+        operationId: p.data.operationId, to: p.data.to, cc: p.data.cc, bcc: p.data.bcc,
+        subject: p.data.subject, bodyText: p.data.bodyText,
+        attachments: (p.data.attachments ?? []).map((a) => ({
+          filename: a.filename,
+          ...(a.path ? { path: a.path } : {}),
+          ...(a.contentBase64 ? { content: Buffer.from(a.contentBase64, 'base64') } : {}),
+        })),
+      });
+    } catch { return null; }
+  });
+  ipcMain.handle('submission:mail:sync', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.strictObject({ projectId: z.string().min(1), accountId: z.string().min(1), limit: z.number().int().min(1).max(50).optional() }).safeParse(raw);
+      if (!p.success || !submissionMailService) return null;
+      return await submissionMailService.syncAccount(p.data);
+    } catch { return null; }
+  });
+  ipcMain.handle('submission:correspondence:listByCase', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw);
+      if (!p.success || !submissionCorrespondenceRepository) return [];
+      return submissionCorrespondenceRepository.listByCase(p.data.projectId, p.data.caseId);
+    } catch { return []; }
+  });
+  ipcMain.handle('submission:correspondence:listPending', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.object({ projectId: z.string().min(1) }).safeParse(raw);
+      if (!p.success || !submissionCorrespondenceRepository) return [];
+      return submissionCorrespondenceRepository.listPending(p.data.projectId);
+    } catch { return []; }
+  });
+  ipcMain.handle('submission:correspondence:confirmMatch', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.strictObject({ projectId: z.string().min(1), id: z.string().min(1), caseId: z.string().min(1).optional() }).safeParse(raw);
+      if (!p.success || !submissionMailService) return null;
+      return submissionMailService.confirmMatch(p.data);
+    } catch { return null; }
+  });
+  ipcMain.handle('submission:correspondence:rejectMatch', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.strictObject({ projectId: z.string().min(1), id: z.string().min(1) }).safeParse(raw);
+      if (!p.success || !submissionMailService) return null;
+      return submissionMailService.rejectMatch(p.data);
+    } catch { return null; }
+  });
+  // 从已确认关联的 Decision/Revision 邮件一键建审稿轮次（服务内部再校验分类与确认状态）。
+  ipcMain.handle('submission:correspondence:createRound', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.strictObject({ projectId: z.string().min(1), id: z.string().min(1) }).safeParse(raw);
+      if (!p.success || !submissionMailService) return null;
+      return submissionMailService.createRoundFromCorrespondence(p.data);
+    } catch { return null; }
+  });
+  // 返修截止日期同步到任务板（Goal）。幂等：已绑定的轮次返回 already_synced。
+  ipcMain.handle('submission:review:syncDeadline', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.strictObject({ projectId: z.string().min(1), caseId: z.string().min(1), roundId: z.string().min(1) }).safeParse(raw);
+      if (!p.success || !submissionDeadlineSync) return { ok: false as const, code: 'service_unavailable' };
+      return submissionDeadlineSync.syncRoundToGoal(p.data);
+    } catch { return { ok: false as const, code: 'service_unavailable' }; }
+  });
+  // ── 投稿门户（Browser-assisted Submission）：法律/财务/声明/最终提交永不由 Agent 执行 ──
+  ipcMain.handle('submission:portal:open', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.strictObject({ projectId: z.string().min(1), caseId: z.string().min(1), portalUrl: z.string().max(2000).optional() }).safeParse(raw);
+      if (!p.success || !submissionPortalService) return null;
+      return await submissionPortalService.openPortal(p.data);
+    } catch { return null; }
+  });
+  ipcMain.handle('submission:portal:planFill', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw);
+      if (!p.success || !submissionPortalService) return null;
+      return await submissionPortalService.planFill(p.data);
+    } catch { return null; }
+  });
+  ipcMain.handle('submission:portal:execute', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.strictObject({
+        projectId: z.string().min(1), caseId: z.string().min(1),
+        actions: z.array(PortalFieldActionSchema).max(50),
+        confirmed: z.boolean().optional(),
+      }).safeParse(raw);
+      if (!p.success || !submissionPortalService) return null;
+      return await submissionPortalService.executeAutoSteps(p.data);
+    } catch { return null; }
+  });
+  ipcMain.handle('submission:portal:confirmSubmitted', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.strictObject({
+        projectId: z.string().min(1), caseId: z.string().min(1),
+        remoteSubmissionId: z.string().max(300).optional(), receiptNote: z.string().max(5000).optional(),
+      }).safeParse(raw);
+      if (!p.success || !submissionPortalService) return null;
+      return submissionPortalService.confirmSubmitted(p.data);
+    } catch { return null; }
+  });
+  ipcMain.handle('submission:portal:markUncertain', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = z.strictObject({ projectId: z.string().min(1), caseId: z.string().min(1), reason: z.string().min(1).max(2000) }).safeParse(raw);
+      if (!p.success || !submissionPortalService) return null;
+      return submissionPortalService.markUncertain(p.data);
+    } catch { return null; }
+  });
+
   // ── Outcomes workbench: project-owned formal deliverables ──
   ipcMain.handle('outcomes:categories:list', (event) => { try { requireRendererMainFrame(event); return outcomeRepository?.listCategories() ?? []; } catch { return []; } });
   ipcMain.handle('outcomes:categories:create', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=OutcomeCategoryCreateSchema.safeParse(raw); return p.success && outcomeRepository ? outcomeRepository.createCategory(p.data.name) : null; } catch { return null; } });
@@ -3195,6 +4515,132 @@ function setupIPC(): void {
   ipcMain.handle('outcomes:list', async (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=OutcomeListRequestSchema.safeParse(raw); if (!p.success || !outcomeRepository) return []; await purgeExpiredOutcomeTrash(); return outcomeRepository.list(p.data.projectId,p.data.query); } catch { return []; } });
   ipcMain.handle('outcomes:get', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=OutcomeGetRequestSchema.safeParse(raw); return p.success && outcomeRepository ? outcomeRepository.get(p.data.projectId,p.data.outcomeId,p.data.version) ?? null : null; } catch { return null; } });
   ipcMain.handle('outcomes:versions', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=OutcomeVersionsRequestSchema.safeParse(raw); return p.success && outcomeRepository ? outcomeRepository.versions(p.data.projectId,p.data.outcomeId) : []; } catch { return []; } });
+  ipcMain.handle('outcomes:external-editor:open', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = OutcomeExternalEditorOpenRequestSchema.safeParse(raw);
+      if (!parsed.success) return OutcomeExternalEditorOpenResultSchema.parse({ ok: false, code: 'invalid_request', message: 'GenOffice 编辑请求无效。' });
+      if (!outcomeRepository || !outcomeMedia || !outcomeExternalEditor) return OutcomeExternalEditorOpenResultSchema.parse({ ok: false, code: 'outcomes_unavailable', message: '成果或 GenOffice 编辑服务尚未初始化。' });
+      const detail = outcomeRepository.get(parsed.data.projectId, parsed.data.outcomeId, parsed.data.version);
+      if (!detail) return OutcomeExternalEditorOpenResultSchema.parse({ ok: false, code: 'outcome_not_found', message: '当前成果不存在或不属于当前项目。' });
+      if (parsed.data.version !== undefined && parsed.data.version !== detail.outcome.currentVersion) {
+        return OutcomeExternalEditorOpenResultSchema.parse({ ok: false, code: 'external_editor_version_conflict', message: '只能在 GenOffice 中编辑当前成果版本；历史版本不可直接覆盖当前版本。' });
+      }
+      const kind = externalEditorKindForOutcome(detail.outcome.kind);
+      if (!kind) return OutcomeExternalEditorOpenResultSchema.parse({ ok: false, code: 'outcome_kind_mismatch', message: '当前成果类型没有对应的 GenOffice 编辑器。' });
+      const fileNameBase = detail.outcome.title.replace(/[\\/:*?"<>|]+/gu, '-').trim() || 'outcome';
+      let bytes: Buffer;
+      let fileName = `${fileNameBase}${externalEditorExtension(kind)}`;
+      if (kind === 'word') {
+        const exported = await new OutcomeWordDocxService({
+          resolveManagedImage: async (mediaId) => outcomeMedia!.readImageForWordDocxExport(parsed.data.projectId, parsed.data.outcomeId, mediaId),
+          resolveOriginalArchive: async (mediaId) => outcomeMedia!.readArchive(parsed.data.projectId, parsed.data.outcomeId, mediaId),
+        }).exportManagedDocument(detail.version.content as WordDocument);
+        bytes = Buffer.from(exported.bytes);
+      } else if (kind === 'ppt') {
+        const exported = await new OutcomePptxService({
+          resolveManagedImage: async (reference) => outcomeMedia!.readImageForPptxExport(parsed.data.projectId, parsed.data.outcomeId, reference),
+          resolveOriginalArchive: async (mediaId) => outcomeMedia!.readArchive(parsed.data.projectId, parsed.data.outcomeId, mediaId),
+        }).exportManagedDocument(detail.version.content as PptDocument);
+        bytes = Buffer.from(exported.bytes);
+      } else {
+        const content = detail.version.content;
+        if (content.type !== (kind === 'spreadsheet' ? 'spreadsheet' : 'pdf') || !content.media) return OutcomeExternalEditorOpenResultSchema.parse({ ok: false, code: 'outcome_kind_mismatch', message: '当前成果没有可交给 GenOffice 的真实文件媒体。' });
+        const stored = await outcomeMedia.readBytes(parsed.data.projectId, parsed.data.outcomeId, content.media.id);
+        if (!stored || !isExternalEditorDocumentBytes(kind, stored.bytes)) return OutcomeExternalEditorOpenResultSchema.parse({ ok: false, code: 'outcome_kind_mismatch', message: '当前成果媒体不存在、完整性校验失败或文件类型不匹配。' });
+        bytes = stored.bytes;
+        const originalExtension = path.extname(stored.displayName).toLowerCase();
+        if ((kind === 'spreadsheet' && (originalExtension === '.xlsx' || originalExtension === '.xlsm')) || (kind === 'pdf' && originalExtension === '.pdf')) fileName = `${fileNameBase}${originalExtension}`;
+      }
+      if (parsed.data.embedded === true) {
+        // 内嵌模式：会话照常建，但不 spawn 子进程——由主窗口内的
+        // WebContentsView 承载 GenOffice 渲染页。
+        const session = await outcomeExternalEditor.create({ projectId: parsed.data.projectId, outcomeId: parsed.data.outcomeId, baseVersion: detail.version.version, kind, fileName, bytes, skipLaunch: true });
+        const ownerWindow = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+        if (!ownerWindow) return OutcomeExternalEditorOpenResultSchema.parse({ ok: false, code: 'genoffice_open_failed', message: '主窗口尚未就绪，无法在页面内打开 GenOffice 编辑器。' });
+        const embedded = await genofficeEmbeddedViews.open({
+          token: session.token,
+          kind,
+          projectId: parsed.data.projectId,
+          outcomeId: parsed.data.outcomeId,
+          filePath: session.filePath,
+          fileName: path.basename(session.filePath),
+          ownerWindow,
+          ...(process.env.METIS_GENOFFICE_DEBUG === '1' && Number.isInteger(Number(process.env.METIS_GENOFFICE_DEBUG_PORT)) ? { debugPort: Number(process.env.METIS_GENOFFICE_DEBUG_PORT) } : {}),
+        });
+        return OutcomeExternalEditorOpenResultSchema.parse({ ok: true, session: { token: session.token, kind: session.kind, fileName: path.basename(session.filePath) }, webContentsId: embedded.viewId });
+      }
+      const session = await outcomeExternalEditor.create({ projectId: parsed.data.projectId, outcomeId: parsed.data.outcomeId, baseVersion: detail.version.version, kind, fileName, bytes });
+      return OutcomeExternalEditorOpenResultSchema.parse({ ok: true, session: { token: session.token, kind: session.kind, fileName: path.basename(session.filePath) } });
+    } catch (error) {
+      const message = String((error as Error).message ?? error);
+      return OutcomeExternalEditorOpenResultSchema.parse({ ok: false, code: message.startsWith('genoffice_') ? 'genoffice_open_failed' : 'genoffice_unavailable', message: message === 'genoffice_unavailable' ? 'GenOffice 构建产物不可用，请先完成 GenOffice 构建。' : 'GenOffice 编辑器没有成功打开当前成果。' });
+    }
+  });
+  ipcMain.handle('outcomes:external-editor:sync', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = OutcomeExternalEditorSyncRequestSchema.safeParse(raw);
+      if (!parsed.success) return OutcomeExternalEditorSyncResultSchema.parse({ ok: false, code: 'invalid_request', message: 'GenOffice 同步请求无效。' });
+      return await syncOutcomeFromGenoffice(parsed.data.projectId, parsed.data.outcomeId, parsed.data.token);
+    } catch {
+      return OutcomeExternalEditorSyncResultSchema.parse({ ok: false, code: 'invalid_request', message: 'GenOffice 同步请求无效。' });
+    }
+  });
+  ipcMain.handle('outcomes:external-editor:close', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = OutcomeExternalEditorCloseRequestSchema.safeParse(raw);
+      if (!parsed.success) return false;
+      const session = outcomeExternalEditor.session(parsed.data.token);
+      if (!session || session.projectId !== parsed.data.projectId || session.outcomeId !== parsed.data.outcomeId) return false;
+      await outcomeExternalEditor.close(parsed.data.token);
+      return true;
+    } catch { return false; }
+  });
+  ipcMain.handle('outcomes:external-editor:state', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = OutcomeExternalEditorStateRequestSchema.safeParse(raw);
+      if (!parsed.success) return OutcomeExternalEditorStateSchema.parse({ exists: false, changed: false, session: null });
+      const state = await outcomeExternalEditor.stateFor(parsed.data.projectId, parsed.data.outcomeId);
+      return OutcomeExternalEditorStateSchema.parse({
+        exists: state.exists,
+        changed: state.changed,
+        session: state.session ? { token: state.session.token, kind: state.session.kind, fileName: path.basename(state.session.filePath) } : null,
+      });
+    } catch {
+      return OutcomeExternalEditorStateSchema.parse({ exists: false, changed: false, session: null });
+    }
+  });
+  // ── 嵌入式 GenOffice 视图控制（几何 / 显隐 / 焦点）──
+  ipcMain.handle('genoffice-embedded:set-bounds', (event, raw: unknown) => {
+    try {
+      const p = z.object({ webContentsId: z.number().int().positive(), rect: z.object({ x: z.number(), y: z.number(), width: z.number().positive(), height: z.number().positive() }) }).safeParse(raw);
+      if (!p.success) return false;
+      const window = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+      if (!window) return false;
+      genofficeEmbeddedViews.setBounds(window, p.data.webContentsId, p.data.rect);
+      return true;
+    } catch { return false; }
+  });
+  ipcMain.handle('genoffice-embedded:set-visible', (event, raw: unknown) => {
+    try {
+      const p = z.object({ webContentsId: z.number().int().positive(), visible: z.boolean() }).safeParse(raw);
+      if (!p.success || !mainWindow || mainWindow.isDestroyed()) return false;
+      if (p.data.visible) genofficeEmbeddedViews.show(mainWindow, p.data.webContentsId);
+      else genofficeEmbeddedViews.hide(p.data.webContentsId);
+      return true;
+    } catch { return false; }
+  });
+  ipcMain.handle('genoffice-embedded:focus', (event, raw: unknown) => {
+    try {
+      const p = z.object({ webContentsId: z.number().int().positive() }).safeParse(raw);
+      if (!p.success) return false;
+      genofficeEmbeddedViews.focus(p.data.webContentsId);
+      return true;
+    } catch { return false; }
+  });
   ipcMain.handle('outcomes:create', async (event, raw: unknown) => {
     try {
       requireRendererMainFrame(event);
@@ -3204,14 +4650,59 @@ function setupIPC(): void {
       const wordSession = p.data.importToken ? wordDocxImportSessions.get(p.data.importToken) : undefined;
       const session = pptxSession ?? wordSession;
       if (p.data.importToken && (!session || session.projectId !== p.data.projectId || session.outcomeId !== p.data.outcomeId)) return null;
+      const createdMedia: string[] = [];
+      let reservedOutcomeId: string | undefined;
       try {
-        const created = outcomeRepository.create(p.data);
+        let createRequest = p.data;
+        if (p.data.applyDefaultTemplate && !p.data.importToken && outcomeTemplateService) {
+          const defaultKind: OutcomeTemplateKind | undefined = p.data.kind === 'word' ? 'word_formatting' : p.data.kind === 'ppt' ? 'ppt' : undefined;
+          const defaultTemplate = defaultKind ? outcomeTemplateService.getDefault(defaultKind) : null;
+          if (defaultTemplate) {
+            if (p.data.kind === 'word' && defaultKind === 'word_formatting') {
+              const parsed = WordFormattingTemplateDefinitionSchema.safeParse(defaultTemplate.definition);
+              if (parsed.success && p.data.content.type === 'word') {
+                const formatted = applyWordFormatting(p.data.content, parsed.data.config).document;
+                createRequest = { ...p.data, content: { ...formatted, header: parsed.data.header, footer: parsed.data.footer, page: { ...formatted.page, pageNumber: parsed.data.pageNumber } } };
+              }
+            } else if (p.data.kind === 'ppt' && defaultKind === 'ppt' && p.data.content.type === 'ppt') {
+              const decoded = decodePptTemplateDefinition(defaultTemplate.definition, p.data.content.ratio);
+              if (decoded) {
+                const ratio = decoded.ratio ?? p.data.content.ratio;
+                const pages = decoded.pages ?? decodePptTemplatePages(p.data.content.pages, ratio);
+                const theme = decoded.theme ?? p.data.content.theme;
+                const candidate = pages
+                  ? PptDocumentSchema.safeParse({ ...p.data.content, ratio, theme, pages, templateId: defaultTemplate.id })
+                  : { success: false as const };
+                if (candidate.success) createRequest = { ...p.data, content: candidate.data };
+              }
+            }
+          }
+        }
+        let finalRequest = createRequest;
+        if (!p.data.importToken && (p.data.kind === 'spreadsheet' || p.data.kind === 'pdf') && outcomeMedia) {
+          reservedOutcomeId = p.data.outcomeId ?? `out-${randomUUID()}`;
+          outcomeRepository.reserve({ projectId: p.data.projectId, outcomeId: reservedOutcomeId, categoryId: p.data.categoryId, title: p.data.title, kind: p.data.kind });
+          const bytes = p.data.kind === 'spreadsheet' ? await createBlankSpreadsheetBytes() : createBlankPdfBytes();
+          const media = await outcomeMedia.persistExternalDocument(p.data.projectId, reservedOutcomeId, bytes, p.data.kind, `${p.data.title}.${p.data.kind === 'spreadsheet' ? 'xlsx' : 'pdf'}`);
+          if (!media) throw new Error('outcome_blank_media_failed');
+          createdMedia.push(media.id);
+          finalRequest = {
+            ...createRequest,
+            outcomeId: reservedOutcomeId,
+            content: p.data.kind === 'spreadsheet'
+              ? { type: 'spreadsheet', media, originalArchiveMediaId: media.id, workbook: { sheetNames: ['Sheet1'], activeSheet: 'Sheet1', activeCell: null, cells: {} } }
+              : { type: 'pdf', media, originalArchiveMediaId: media.id, pageCount: 1, activePage: null },
+          };
+        }
+        const created = outcomeRepository.create(finalRequest);
         if (p.data.importToken) {
           if (pptxSession) pptxImportSessions.delete(p.data.importToken);
           if (wordSession) wordDocxImportSessions.delete(p.data.importToken);
         }
         return created;
       } catch (error) {
+        if (createdMedia.length > 0 && reservedOutcomeId) await outcomeMedia?.removeGenerated(p.data.projectId, reservedOutcomeId, createdMedia);
+        if (reservedOutcomeId) outcomeRepository.deleteReserved(p.data.projectId, reservedOutcomeId);
         if (p.data.importToken && pptxSession) await discardPptxImportSession(p.data.importToken, pptxSession);
         if (p.data.importToken && wordSession) await discardWordDocxImportSession(p.data.importToken, wordSession);
         throw error;
@@ -3253,10 +4744,10 @@ function setupIPC(): void {
     try { purged = outcomeRepository.purgeExpired(); } catch { return; }
     for (const item of purged) { try { await outcomeMedia?.purgeFiles(item.projectId, item.storedNames); } catch { /* best-effort：数据库行已删，文件缺失不阻断 */ } }
   };
-  ipcMain.handle('outcomes:archive', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=OutcomeTrashRequestSchema.safeParse(raw); return p.success && outcomeRepository ? outcomeRepository.archive(p.data.projectId,p.data.outcomeId) : false; } catch { return false; } });
+  ipcMain.handle('outcomes:archive', async (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=OutcomeTrashRequestSchema.safeParse(raw); if (!p.success || !outcomeRepository) return false; if ((await outcomeExternalEditor.closeFor(p.data.projectId, p.data.outcomeId)) === 'dirty') return false; return outcomeRepository.archive(p.data.projectId,p.data.outcomeId); } catch { return false; } });
   ipcMain.handle('outcomes:trash:list', async (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=OutcomeTrashListRequestSchema.safeParse(raw); if (!p.success || !outcomeRepository) return []; await purgeExpiredOutcomeTrash(); return outcomeRepository.listArchived(p.data.projectId); } catch { return []; } });
   ipcMain.handle('outcomes:trash:restore', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=OutcomeTrashRequestSchema.safeParse(raw); return p.success && outcomeRepository ? outcomeRepository.restoreArchived(p.data.projectId,p.data.outcomeId) : false; } catch { return false; } });
-  ipcMain.handle('outcomes:delete', async (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=OutcomeTrashRequestSchema.safeParse(raw); if (!p.success || !outcomeRepository) return false; const storedNames = outcomeRepository.deletePermanent(p.data.projectId,p.data.outcomeId); if (!storedNames) return false; try { await outcomeMedia?.purgeFiles(p.data.projectId, storedNames); } catch { /* best-effort */ } return true; } catch { return false; } });
+  ipcMain.handle('outcomes:delete', async (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=OutcomeTrashRequestSchema.safeParse(raw); if (!p.success || !outcomeRepository) return false; if ((await outcomeExternalEditor.closeFor(p.data.projectId, p.data.outcomeId)) === 'dirty') return false; const storedNames = outcomeRepository.deletePermanent(p.data.projectId,p.data.outcomeId); if (!storedNames) return false; try { await outcomeMedia?.purgeFiles(p.data.projectId, storedNames); } catch { /* best-effort */ } return true; } catch { return false; } });
   ipcMain.handle('outcomes:conversation:list', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=ScopedConversationRequestSchema.safeParse(raw); return p.success && outcomeRepository ? outcomeRepository.listConversation(p.data) : []; } catch { return []; } });
   ipcMain.handle('outcomes:conversation:append', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=ScopedConversationMessageRequestSchema.safeParse(raw); return p.success && outcomeRepository ? outcomeRepository.appendConversation(p.data) : null; } catch { return null; } });
   ipcMain.handle('outcomes:conversation:units', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=ScopedConversationRequestSchema.safeParse(raw); return p.success && outcomeRepository ? outcomeRepository.listConversations(p.data) : []; } catch { return []; } });
@@ -3450,8 +4941,53 @@ function setupIPC(): void {
       return OutcomeSourceLocateResultSchema.parse({ ok: false, code: 'source_not_found' });
     }
   });
-  ipcMain.handle('outcomes:template:save', (event,raw:unknown)=>{try{requireRendererMainFrame(event);const p=PptTemplateSaveRequestSchema.safeParse(raw);if(!p.success||!store)return null;const now=Date.now(),id='ppt-template-'+randomUUID();store.raw.prepare('INSERT INTO outcome_templates (id,name,kind,definition_json,created_at,updated_at) VALUES (?,?,?,?,?,?)').run(id,p.data.name,'ppt',JSON.stringify(p.data.definition),now,now);return {id,name:p.data.name,definition:p.data.definition,createdAt:now,updatedAt:now};}catch{return null;}});
-  ipcMain.handle('outcomes:template:list',(event)=>{try{requireRendererMainFrame(event);return (store?.raw.prepare("SELECT * FROM outcome_templates WHERE kind = 'ppt' ORDER BY updated_at DESC").all() as Array<{id:string;name:string;definition_json:string;created_at:number;updated_at:number}>??[]).flatMap(row=>{try{return[{id:row.id,name:row.name,definition:JSON.parse(row.definition_json),createdAt:row.created_at,updatedAt:row.updated_at}];}catch{return[];}});}catch{return[];}});
+  ipcMain.handle('outcomes:template:listByKind', (event, raw: unknown) => {
+    try { requireRendererMainFrame(event); const p = OutcomeTemplateListRequestSchema.safeParse(raw); return p.success ? outcomeTemplateService?.list(p.data.kind) ?? [] : []; } catch { return []; }
+  });
+  ipcMain.handle('outcomes:template:saveUnified', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = OutcomeTemplateSaveRequestSchema.safeParse(raw);
+      if (!p.success || !outcomeTemplateService) return null;
+      if (p.data.kind === 'word_formatting' && !WordFormattingTemplateDefinitionSchema.safeParse(p.data.definition).success) return null;
+      return outcomeTemplateService.save(p.data);
+    } catch { return null; }
+  });
+  ipcMain.handle('outcomes:template:update', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = OutcomeTemplateUpdateRequestSchema.safeParse(raw);
+      if (!p.success || !outcomeTemplateService) return null;
+      if (p.data.kind === 'word_formatting' && p.data.definition !== undefined && !WordFormattingTemplateDefinitionSchema.safeParse(p.data.definition).success) return null;
+      return outcomeTemplateService.update(p.data);
+    } catch { return null; }
+  });
+  ipcMain.handle('outcomes:template:delete', (event, raw: unknown) => {
+    try { requireRendererMainFrame(event); const p = OutcomeTemplateDeleteRequestSchema.safeParse(raw); if (!p.success || !outcomeTemplateService) return false; outcomeTemplateService.delete(p.data); return true; } catch { return false; }
+  });
+  ipcMain.handle('outcomes:template-defaults:get', (event, raw: unknown) => {
+    try { requireRendererMainFrame(event); const p = OutcomeTemplateDefaultGetRequestSchema.safeParse(raw); return p.success ? outcomeTemplateService?.getDefault(p.data.kind) ?? null : null; } catch { return null; }
+  });
+  ipcMain.handle('outcomes:template-defaults:set', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = OutcomeDefaultTemplateSetRequestSchema.safeParse(raw);
+      if (!p.success || !outcomeTemplateService) return false;
+      outcomeTemplateService.setDefault(p.data.kind, p.data.templateId);
+      return true;
+    } catch { return false; }
+  });
+  ipcMain.handle('outcomes:template:save', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const p = PptTemplateSaveRequestSchema.safeParse(raw);
+      if (!p.success || !outcomeTemplateService) return null;
+      return outcomeTemplateService.save({ kind: 'ppt', name: p.data.name, definition: p.data.definition });
+    } catch { return null; }
+  });
+  ipcMain.handle('outcomes:template:list', (event) => {
+    try { requireRendererMainFrame(event); return outcomeTemplateService?.list('ppt') ?? []; } catch { return []; }
+  });
   ipcMain.handle('outcomes:generation-skill:save',(event,raw:unknown)=>{try{requireRendererMainFrame(event);const p=PptGenerationSkillSaveRequestSchema.safeParse(raw);if(!p.success||!store)return null;const now=Date.now();const value=PptGenerationSkillSchema.parse({id:'ppt-skill-'+randomUUID(),...p.data});store.raw.prepare('INSERT INTO outcome_templates (id,name,kind,definition_json,created_at,updated_at) VALUES (?,?,?,?,?,?)').run(value.id,value.name,'ppt_generation_skill',JSON.stringify(value),now,now);return value;}catch{return null;}});
   ipcMain.handle('outcomes:generation-skill:list',(event)=>{try{requireRendererMainFrame(event);return (store?.raw.prepare("SELECT definition_json FROM outcome_templates WHERE kind = 'ppt_generation_skill' ORDER BY updated_at DESC").all() as Array<{definition_json:string}>??[]).flatMap(row=>{try{const p=PptGenerationSkillSchema.safeParse(JSON.parse(row.definition_json));return p.success?[p.data]:[];}catch{return[];}});}catch{return[];}});
   ipcMain.handle('outcomes:ppt:generation:execute', async (event, raw: unknown) => {
@@ -3507,7 +5043,7 @@ function setupIPC(): void {
       tracked.cleanup();
     }
   });
-  ipcMain.handle('outcomes:media:import',async(event,raw:unknown)=>{try{const window=requireRendererMainFrame(event);const p=OutcomeMediaImportRequestSchema.safeParse(raw);if(!p.success||!outcomeMedia)return null;const selected=await dialog.showOpenDialog(window,{properties:['openFile'],filters:[{name:'成果文件',extensions:['pdf','png','jpg','jpeg','svg']}]});return selected.canceled||!selected.filePaths[0]?null:await outcomeMedia.importFromDialog(p.data.projectId,p.data.outcomeId,selected.filePaths[0]);}catch{return null;}});
+  ipcMain.handle('outcomes:media:import',async(event,raw:unknown)=>{try{const window=requireRendererMainFrame(event);const p=OutcomeMediaImportRequestSchema.safeParse(raw);if(!p.success||!outcomeMedia)return null;const selected=await dialog.showOpenDialog(window,{properties:['openFile'],filters:[{name:'成果文件',extensions:['pdf','xlsx','xlsm','png','jpg','jpeg','svg']}]});return selected.canceled||!selected.filePaths[0]?null:await outcomeMedia.importFromDialog(p.data.projectId,p.data.outcomeId,selected.filePaths[0]);}catch{return null;}});
   ipcMain.handle('outcomes:media:read',async(event,raw:unknown)=>{try{requireRendererMainFrame(event);const p=OutcomeMediaReadRequestSchema.safeParse(raw);return p.success&&outcomeMedia?await outcomeMedia.readDataUrl(p.data.projectId,p.data.outcomeId,p.data.mediaId)??null:null;}catch{return null;}});
   // Standalone SVG export: re-validates ownership and the safe-SVG contract at
   // every boundary, then writes a defensive byte copy through the roundtrip check.
@@ -3532,6 +5068,114 @@ function setupIPC(): void {
     } catch { return OutcomeMediaSvgExportResultSchema.parse({ ok: false, code: 'svg_write_failed', message: 'SVG 导出没有完成。' }); }
   });
   // DOCX import is preview-only until the renderer explicitly commits media and saves a version.
+  ipcMain.handle('outcomes:word:templateStyle:parse', async (event) => {
+    try {
+      const window = requireRendererMainFrame(event);
+      const selected = await dialog.showOpenDialog(window, { properties: ['openFile'], filters: [{ name: 'Word 模板', extensions: ['docx'] }] });
+      if (selected.canceled || !selected.filePaths[0]) return { ok: false as const, code: 'cancelled' };
+      const filePath = selected.filePaths[0]!;
+      const bytes = await fs.promises.readFile(filePath);
+      if (bytes.length > 20 * 1024 * 1024) return { ok: false as const, code: 'file_too_large', message: '模板文件超过 20MB 上限。' };
+      const parsed = parseWordTemplateStyle(bytes);
+      return { ok: true as const, fileName: path.basename(filePath), config: parsed.config, recognized: parsed.recognized, unrecognized: parsed.unrecognized };
+    } catch (error) {
+      return { ok: false as const, code: 'parse_failed', message: `无法解析该模板：${error instanceof Error ? error.message : String(error)}` };
+    }
+  });
+  // 「从投稿要求生成排版」（2026-09-01）：确定性规则引擎优先，AI 只兜底引擎判不清的句子，
+  // 且每条 AI 规则的 evidence 必须是原文逐字片段（空白归一化），否则丢弃——防模型编造排版要求。
+  ipcMain.handle('outcomes:word:formattingFromText', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsedInput = z.object({ text: z.string().min(20).max(20_000) }).safeParse(raw);
+      if (!parsedInput.success) return { ok: false as const, code: 'invalid_request', message: '请提供 20-20000 字的投稿要求/排版规范文本。' };
+      const text = parsedInput.data.text;
+      const deterministic = parseGuidelineFormatting(text);
+      if (!agentLoop) {
+        return { ok: true as const, source: 'deterministic', config: deterministic.config, matched: deterministic.matched.map((item) => item.rule), unclear: deterministic.unclear };
+      }
+      const deterministicFields = new Set<string>(['page']);
+      if (deterministic.config.page) for (const key of Object.keys(deterministic.config.page)) deterministicFields.add(`page.${key}`);
+      if (deterministic.config.body) for (const key of Object.keys(deterministic.config.body)) deterministicFields.add(`body.${key}`);
+      for (const [level, style] of Object.entries(deterministic.config.headings ?? {})) {
+        for (const key of Object.keys(style ?? {})) deterministicFields.add(`headings.${level}.${key}`);
+      }
+      const aiPrompt = [
+        '你是学术论文排版规范解析助手。下面是期刊投稿要求/论文格式规范的原文。请把其中可执行的排版规则解析为 JSON 数组。',
+        '要求：',
+        '1. 只输出 JSON 数组，不要解释或 Markdown 围栏。',
+        '2. 每个元素结构：{ "target": "body|heading1|heading2|heading3|heading4|heading5|heading6|page", "field": "fontFamily|fontSizePt|align|lineSpacing|firstLineIndentChars|marginTopCm|marginBottomCm|marginLeftCm|marginRightCm|paper", "value": 字符串或数字, "evidence": "支撑该规则的原文逐字片段" }。',
+        '3. field 与 value 对应关系：fontFamily=字体名(字符串)；fontSizePt=字号磅值(5-72数字，中文字号换算：初号42 小初36 一号26 小一24 二号22 小二18 三号16 小三15 四号14 小四12 五号10.5 小五9 六号7.5 小六6.5 七号5.5 八号5)；align=left|center|right|justify；lineSpacing=行距倍数(0.5-4数字)；firstLineIndentChars=首行缩进字符数；marginXXXCm=页边距厘米值；paper=A4|Letter。',
+        '4. evidence 必须是原文中逐字存在的片段（可含标点），找不到原文依据的规则不要输出。普通内容要求（如摘要字数、参考文献格式）不是排版规则，不要输出。',
+        `原文：\n${text}`,
+      ].join('\n');
+      const tracked = trackEphemeralOperation(runtimeShutdown, {
+        id: `outcomes:formattingFromText:${Date.now().toString(36)}`,
+        rejection: { ok: false as const, code: 'application_shutting_down' },
+      });
+      if (!tracked.admitted) return tracked.rejection;
+      try {
+        const answer = await runEphemeralChatTurn({
+          agentLoop,
+          sessionId: `word-formatting-${Date.now().toString(36)}`,
+          messages: [{ role: 'user', content: '请按系统指令解析该排版规范。' }],
+          requestId: `word_formatting_${Date.now().toString(36)}`,
+          maxTurns: 1,
+          allowedTools: [],
+          skillPrompt: aiPrompt,
+          signal: tracked.signal,
+        });
+        if (answer.status !== 'completed') {
+          return { ok: true as const, source: 'deterministic', config: deterministic.config, matched: deterministic.matched.map((item) => item.rule), unclear: deterministic.unclear, note: `AI 兜底未完成（${answer.status}），结果仅含确定性规则。` };
+        }
+        const normalizedText = text.replace(/\s+/gu, ' ');
+        const merged = JSON.parse(JSON.stringify(deterministic.config)) as MutableFormattingDraft;
+        const matchedRules = deterministic.matched.map((item) => item.rule);
+        let aiAccepted = 0;
+        let aiRejected = 0;
+        try {
+          const jsonText = answer.answer.slice(answer.answer.indexOf('['), answer.answer.lastIndexOf(']') + 1);
+          const rules = z.array(z.strictObject({
+            target: z.enum(['body', 'heading1', 'heading2', 'heading3', 'heading4', 'heading5', 'heading6', 'page']),
+            field: z.enum(['fontFamily', 'fontSizePt', 'align', 'lineSpacing', 'firstLineIndentChars', 'marginTopCm', 'marginBottomCm', 'marginLeftCm', 'marginRightCm', 'paper']),
+            value: z.union([z.string(), z.number()]),
+            evidence: z.string(),
+          })).parse(JSON.parse(jsonText));
+          for (const rule of rules) {
+            const evidence = rule.evidence.replace(/\s+/gu, ' ').trim();
+            if (!evidence || !normalizedText.includes(evidence)) { aiRejected += 1; continue; }
+            const key = rule.target === 'page' ? `page.${rule.field}` : rule.target === 'body' ? `body.${rule.field}` : `headings.${rule.target.slice('heading'.length)}.${rule.field}`;
+            if (deterministicFields.has(key)) continue; // 确定性引擎已有的字段不覆盖
+            const level = rule.target.startsWith('heading') ? Number(rule.target.slice('heading'.length)) : 0;
+            if (rule.target === 'page') {
+              merged.page ??= {};
+              if (rule.field === 'paper' && (rule.value === 'A4' || rule.value === 'Letter')) merged.page.paper = rule.value;
+              else if (rule.field.endsWith('Cm') && typeof rule.value === 'number' && rule.value > 0 && rule.value <= 10) merged.page[rule.field] = rule.value;
+              else { aiRejected += 1; continue; }
+            } else if (rule.target === 'body') {
+              merged.body ??= {};
+              if (!setFormattingField(merged.body, rule.field, rule.value)) { aiRejected += 1; continue; }
+            } else if (level >= 1 && level <= 6) {
+              merged.headings ??= {};
+              const slot = { ...(merged.headings[level as 1 | 2 | 3 | 4 | 5 | 6] ?? {}) };
+              if (!setFormattingField(slot, rule.field, rule.value)) { aiRejected += 1; continue; }
+              merged.headings[level as 1 | 2 | 3 | 4 | 5 | 6] = slot;
+            } else { aiRejected += 1; continue; }
+            deterministicFields.add(key);
+            matchedRules.push(`${rule.target === 'body' ? '正文' : rule.target === 'page' ? '页面' : `${level} 级标题`}：${rule.field}=${String(rule.value)}（AI 解析）`);
+            aiAccepted += 1;
+          }
+        } catch {
+          return { ok: true as const, source: 'deterministic', config: merged, matched: matchedRules, unclear: deterministic.unclear, note: 'AI 兜底输出未通过契约校验，结果仅含确定性规则。' };
+        }
+        return { ok: true as const, source: aiAccepted > 0 ? 'ai_assisted' : 'deterministic', config: merged as unknown as WordFormattingConfig, matched: matchedRules, unclear: deterministic.unclear, note: aiRejected > 0 ? `${aiRejected} 条 AI 规则因缺少原文依据或数值越界被丢弃。` : undefined };
+      } finally {
+        tracked.cleanup();
+      }
+    } catch (error) {
+      return { ok: false as const, code: 'parse_failed', message: error instanceof Error ? error.message : String(error) };
+    }
+  });
   ipcMain.handle('outcomes:word:docx:import', async (event, raw: unknown) => {
     try {
       const window = requireRendererMainFrame(event);
@@ -3544,9 +5188,10 @@ function setupIPC(): void {
       if (selected.canceled || !selected.filePaths[0]) return OutcomeWordDocxImportResultSchema.parse({ ok: false, code: 'cancelled', message: '已取消 DOCX 导入。', warnings: [] });
       try {
         const filePath = selected.filePaths[0];
-        const imported = await new OutcomeWordDocxService().importFile(filePath);
+        const bytes = await fs.promises.readFile(filePath);
+        const imported = await new OutcomeWordDocxService().importBufferV2(bytes);
         const importToken = `docx-import-${randomUUID()}`;
-        wordDocxImportSessions.set(importToken, { projectId: parsed.data.projectId, filePath, fileName: path.basename(filePath), document: imported.document, createdAt: Date.now(), reservedOutcome: false, mediaIds: [] });
+        wordDocxImportSessions.set(importToken, { projectId: parsed.data.projectId, filePath, fileName: path.basename(filePath), bytes, document: imported.document, createdAt: Date.now(), reservedOutcome: false, mediaIds: [] });
         return OutcomeWordDocxImportResultSchema.parse({ ok: true, fileName: path.basename(filePath), importToken, document: imported.document, preview: imported.preview, warnings: imported.warnings });
       } catch {
         return OutcomeWordDocxImportResultSchema.parse({ ok: false, code: 'docx_read_failed', message: '无法读取该 DOCX；文件可能损坏或含有当前版本不支持的压缩/OOXML 结构。', warnings: [] });
@@ -3571,8 +5216,7 @@ function setupIPC(): void {
       }
       const createdMedia: string[] = [];
       try {
-        const archive = await fs.promises.readFile(session.filePath);
-        const committed = await new OutcomeWordDocxService().commitImportedMedia(archive, parsed.data.document, async (image) => {
+        const committed = await new OutcomeWordDocxService().commitImportedMedia(session.bytes, parsed.data.document, async (image) => {
           const media = await outcomeMedia!.persistGenerated(parsed.data.projectId, outcomeId, image.bytes, image.mediaType, image.displayName);
           if (media) createdMedia.push(media.id);
           return media ? { id: media.id, mediaType: image.mediaType, displayName: media.displayName } : undefined;
@@ -3580,6 +5224,17 @@ function setupIPC(): void {
         session.mediaIds.push(...createdMedia);
         session.outcomeId = outcomeId;
         session.committedDocument = committed;
+        // GenOffice byte-preserving anchor: keep the original package and pin
+        // its media id on the document so later exports re-align against it.
+        if (GENOFFICE_ENABLED && outcomeMedia) {
+          const archiveMedia = await outcomeMedia.persistArchive(parsed.data.projectId, outcomeId, session.bytes, 'docx', path.basename(session.filePath)).catch(() => undefined);
+          if (archiveMedia) {
+            createdMedia.push(archiveMedia.id);
+            session.mediaIds.push(archiveMedia.id);
+            (committed.page as Record<string, unknown>)._originalArchiveMediaId = archiveMedia.id;
+            session.committedDocument = committed;
+          }
+        }
         return OutcomeWordDocxImportCommitResultSchema.parse({ ok: true, document: committed, outcomeId });
       } catch {
         await outcomeMedia.removeGenerated(parsed.data.projectId, outcomeId, createdMedia);
@@ -3599,7 +5254,12 @@ function setupIPC(): void {
       if (!detail) return OutcomeWordDocxExportResultSchema.parse({ ok: false, code: 'outcome_not_found', message: '未找到要导出的成果版本。', warnings: [] });
       if (detail.version.content.type !== 'word') return OutcomeWordDocxExportResultSchema.parse({ ok: false, code: 'outcome_not_word', message: '只有 Word 成果可以导出为 DOCX。', warnings: [] });
       const baseName = detail.outcome.title.replace(/[\\/:*?"<>|]+/gu, '-').trim() || 'outcome';
-      const selected = await dialog.showSaveDialog(window, { defaultPath: `${baseName}.docx`, filters: [{ name: 'Word 文档', extensions: ['docx'] }], properties: ['createDirectory', 'showOverwriteConfirmation'] });
+      // E2E seam: when explicitly set, exports bypass the native save dialog and
+      // write into the given directory so automation can assert the real bytes.
+      const e2eExportDir = process.env.METIS_E2E_EXPORT_DIR;
+      const selected = e2eExportDir
+        ? { canceled: false as const, filePath: path.join(e2eExportDir, `${baseName}.docx`) }
+        : await dialog.showSaveDialog(window, { defaultPath: `${baseName}.docx`, filters: [{ name: 'Word 文档', extensions: ['docx'] }], properties: ['createDirectory', 'showOverwriteConfirmation'] });
       if (selected.canceled || !selected.filePath) return OutcomeWordDocxExportResultSchema.parse({ ok: false, code: 'cancelled', message: '已取消 DOCX 导出。', warnings: [] });
       const filePath = /\.docx$/iu.test(selected.filePath) ? selected.filePath : `${selected.filePath}.docx`;
       try {
@@ -3610,10 +5270,44 @@ function setupIPC(): void {
             parsed.data.outcomeId,
             mediaId,
           ),
+          resolveOriginalArchive: async (mediaId) => scopedMedia?.readArchive(
+            parsed.data.projectId,
+            parsed.data.outcomeId,
+            mediaId,
+          ),
         }).exportFile(filePath, detail.version.content);
         return OutcomeWordDocxExportResultSchema.parse({ ok: true, fileName: path.basename(filePath), warnings: exported.warnings });
       } catch { return OutcomeWordDocxExportResultSchema.parse({ ok: false, code: 'docx_write_failed', message: 'DOCX 文件写入失败。', warnings: [] }); }
     } catch { return OutcomeWordDocxExportResultSchema.parse({ ok: false, code: 'docx_write_failed', message: 'DOCX 导出没有完成。', warnings: [] }); }
+  });
+  // 生成物预览栏「导出为 Word」（2026-08-31 刘总要求）：预览内容（Markdown）
+  // 经结构化转换从零构建 DOCX，不依赖既有成果/模板归档。返回诚实状态文案。
+  ipcMain.handle('outcomes:word:docx:exportMarkdown', async (event, raw: unknown) => {
+    try {
+      const window = requireRendererMainFrame(event);
+      const request = raw as { title?: unknown; markdown?: unknown };
+      const title = typeof request?.title === 'string' && request.title.trim() ? request.title.trim() : '生成物';
+      const markdown = typeof request?.markdown === 'string' ? request.markdown : '';
+      if (!markdown.trim()) return { ok: false, code: 'empty_markdown', message: '预览内容为空，没有可导出的正文。' };
+      const { markdownToWordDocument } = await import('../engine/export/MarkdownToWordDocument.js');
+      const document = markdownToWordDocument(markdown);
+      if (document.blocks.length === 0) return { ok: false, code: 'empty_document', message: '预览内容没有可转换的正文结构。' };
+      const baseName = title.replace(/[\\/:*?"<>|]+/gu, '-').trim().slice(0, 120) || 'artifact';
+      const e2eExportDir = process.env.METIS_E2E_EXPORT_DIR;
+      const selected = e2eExportDir
+        ? { canceled: false as const, filePath: path.join(e2eExportDir, `${baseName}.docx`) }
+        : await dialog.showSaveDialog(window, { defaultPath: `${baseName}.docx`, filters: [{ name: 'Word 文档', extensions: ['docx'] }], properties: ['createDirectory', 'showOverwriteConfirmation'] });
+      if (selected.canceled || !selected.filePath) return { ok: false, code: 'cancelled', message: '已取消导出。' };
+      const filePath = /\.docx$/iu.test(selected.filePath) ? selected.filePath : `${selected.filePath}.docx`;
+      try {
+        const exported = await new OutcomeWordDocxService({}).exportFile(filePath, document);
+        return { ok: true, fileName: path.basename(filePath), warnings: exported.warnings };
+      } catch (writeError) {
+        return { ok: false, code: 'docx_write_failed', message: `DOCX 文件写入失败：${writeError instanceof Error ? writeError.message : String(writeError)}` };
+      }
+    } catch (error) {
+      return { ok: false, code: 'docx_export_failed', message: `DOCX 导出没有完成：${error instanceof Error ? error.message : String(error)}` };
+    }
   });
   // PPTX import is deliberately DB-free. The short-lived token keeps the
   // selected package in the main process until an explicit renderer save.
@@ -3629,9 +5323,10 @@ function setupIPC(): void {
       if (selected.canceled || !selected.filePaths[0]) return OutcomePptxImportResultSchema.parse({ ok: false, code: 'cancelled', message: '已取消 PPTX 导入。', warnings: [] });
       try {
         const filePath = selected.filePaths[0];
-        const imported = await new OutcomePptxService().importFile(filePath);
+        const bytes = await fs.promises.readFile(filePath);
+        const imported = await new OutcomePptxService().importBufferV2(bytes);
         const importToken = `pptx-import-${randomUUID()}`;
-        pptxImportSessions.set(importToken, { projectId: parsed.data.projectId, filePath, fileName: path.basename(filePath), document: imported.document, createdAt: Date.now(), reservedOutcome: false, mediaIds: [] });
+        pptxImportSessions.set(importToken, { projectId: parsed.data.projectId, filePath, fileName: path.basename(filePath), bytes, document: imported.document, createdAt: Date.now(), reservedOutcome: false, mediaIds: [] });
         return OutcomePptxImportResultSchema.parse({ ok: true, fileName: path.basename(filePath), importToken, document: imported.document, warnings: imported.warnings });
       } catch { return OutcomePptxImportResultSchema.parse({ ok: false, code: 'pptx_read_failed', message: '无法读取该 PPTX；文件可能损坏或含有当前版本不支持的压缩/PresentationML 结构。', warnings: [] }); }
     } catch { return OutcomePptxImportResultSchema.parse({ ok: false, code: 'pptx_read_failed', message: 'PPTX 导入没有完成。', warnings: [] }); }
@@ -3651,7 +5346,7 @@ function setupIPC(): void {
       if (reserved) { outcomeRepository.reserve({ projectId: parsed.data.projectId, outcomeId, categoryId: null, title: session.fileName.replace(/\.pptx$/iu, '').trim() || '导入 PPT 演示文稿', kind: 'ppt' }); session.reservedOutcome = true; }
       const createdMedia: string[] = [];
       try {
-        const committed = await new OutcomePptxService().commitImportedMedia(session.filePath, parsed.data.document, async (image) => {
+        const committed = await new OutcomePptxService().commitImportedMediaBuffer(session.bytes, parsed.data.document, async (image) => {
           const media = await outcomeMedia!.persistGenerated(parsed.data.projectId, outcomeId, image.bytes, image.mediaType, image.displayName);
           if (media) createdMedia.push(media.id);
           return media ? { id: media.id, mediaType: image.mediaType, displayName: media.displayName } : undefined;
@@ -3659,6 +5354,12 @@ function setupIPC(): void {
         session.mediaIds.push(...createdMedia);
         session.outcomeId = outcomeId;
         session.committedDocument = committed;
+        const archiveMedia = await outcomeMedia.persistArchive(parsed.data.projectId, outcomeId, session.bytes, 'pptx', session.fileName).catch(() => undefined);
+        if (archiveMedia) {
+          session.mediaIds.push(archiveMedia.id);
+          committed.theme = { ...committed.theme, [GENOFFICE_PPTX_ORIGINAL_ARCHIVE_KEY]: archiveMedia.id };
+          session.committedDocument = committed;
+        }
         return OutcomePptxImportCommitResultSchema.parse({ ok: true, document: committed, outcomeId });
       } catch {
         await outcomeMedia.removeGenerated(parsed.data.projectId, outcomeId, createdMedia);
@@ -3678,13 +5379,17 @@ function setupIPC(): void {
       if (!detail) return OutcomePptxExportResultSchema.parse({ ok: false, code: 'outcome_not_found', message: '未找到要导出的成果版本。', warnings: [] });
       if (detail.version.content.type !== 'ppt') return OutcomePptxExportResultSchema.parse({ ok: false, code: 'outcome_not_ppt', message: '只有 PPT 成果可以导出为 PPTX。', warnings: [] });
       const baseName = detail.outcome.title.replace(/[\\/:*?"<>|]+/gu, '-').trim() || 'presentation';
-      const selected = await dialog.showSaveDialog(window, { defaultPath: `${baseName}.pptx`, filters: [{ name: 'PowerPoint 演示文稿', extensions: ['pptx'] }], properties: ['createDirectory', 'showOverwriteConfirmation'] });
+      const e2eExportDir = process.env.METIS_E2E_EXPORT_DIR;
+      const selected = e2eExportDir
+        ? { canceled: false as const, filePath: path.join(e2eExportDir, `${baseName}.pptx`) }
+        : await dialog.showSaveDialog(window, { defaultPath: `${baseName}.pptx`, filters: [{ name: 'PowerPoint 演示文稿', extensions: ['pptx'] }], properties: ['createDirectory', 'showOverwriteConfirmation'] });
       if (selected.canceled || !selected.filePath) return OutcomePptxExportResultSchema.parse({ ok: false, code: 'cancelled', message: '已取消 PPTX 导出。', warnings: [] });
       const filePath = /\.pptx$/iu.test(selected.filePath) ? selected.filePath : `${selected.filePath}.pptx`;
       try {
         const scopedMedia = outcomeMedia;
         const exported = await new OutcomePptxService({
           resolveManagedImage: async (reference) => scopedMedia?.readImageForPptxExport(parsed.data.projectId, parsed.data.outcomeId, reference),
+          resolveOriginalArchive: async (mediaId) => scopedMedia?.readArchive(parsed.data.projectId, parsed.data.outcomeId, mediaId),
         }).exportFile(filePath, detail.version.content);
         return OutcomePptxExportResultSchema.parse({ ok: true, fileName: path.basename(filePath), warnings: exported.warnings });
       } catch { return OutcomePptxExportResultSchema.parse({ ok: false, code: 'pptx_write_failed', message: 'PPTX 文件写入失败。', warnings: [] }); }
@@ -4615,6 +6320,7 @@ function setupIPC(): void {
         hasApiKey: true,
         needsReauth: false,
         theme: currentTheme,
+        accent: loadAccent(),
         providerVision: loadProviderVision(),
         providerMaxContextTokens: loadProviderMaxContextTokens(),
         setupSkipped: true,
@@ -4626,6 +6332,7 @@ function setupIPC(): void {
         hasApiKey: false,
         needsReauth: false,
         theme: currentTheme,
+        accent: loadAccent(),
         providerVision: loadProviderVision(),
         providerMaxContextTokens: loadProviderMaxContextTokens(),
         setupSkipped: loadSetupSkipped(),
@@ -4638,6 +6345,7 @@ function setupIPC(): void {
       hasApiKey: !!currentConfig.apiKey,
       needsReauth: !currentConfig.apiKey,
       theme: currentTheme,
+      accent: loadAccent(),
       providerVision: loadProviderVision(),
       providerMaxContextTokens: loadProviderMaxContextTokens(),
       setupSkipped: loadSetupSkipped(),
@@ -5315,9 +7023,11 @@ function setupIPC(): void {
 
       const vision = request.providerVision ?? loadProviderVision();
       const maxContext = request.providerMaxContextTokens ?? loadProviderMaxContextTokens();
-      const ok = saveSettings(request.theme, vision, maxContext);
+      const theme = request.theme ?? currentTheme;
+      const accent = request.accent ?? loadAccent();
+      const ok = saveSettings(theme, accent, vision, maxContext);
       if (!ok) return createSettingsMutationFailure('settings_update_unavailable');
-      currentTheme = request.theme;
+      currentTheme = theme;
       if (currentConfig) currentConfig.maxContextTokens = maxContext > 0 ? maxContext : undefined;
       return decodeSettingsMutationResult({ success: true, code: 'settings_saved' });
     } catch {
@@ -5605,15 +7315,20 @@ function setupIPC(): void {
         projectRulesId = projection.projectRulesId;
         projectRule = projection.definition;
       }
+      // projectRulesId 为 null（新项目还没有 Project Metis.md）时必须省略字段：
+      // strict schema 对显式 null 会拒绝，导致 resolveForAgent 守卫返回 undefined。
       const resolved = personalizationRuntime.resolveForAgent({
         contractVersion: 1,
         sessionId: sessionId.replace(/:/gu, '-'),
         projectId: effectiveProjectId,
-        scenarioId,
-        projectRulesId,
+        ...(scenarioId ? { scenarioId } : {}),
+        ...(projectRulesId ? { projectRulesId } : {}),
       }, projectRule);
       if (!resolved?.ok) {
-        console.warn('[AgentChat] scenario resolveForAgent failed:', JSON.stringify(resolved).slice(0, 200));
+        // resolveForAgent can return undefined for guard-clause rejections;
+        // stringify defensively and surface the request shape for diagnosis.
+        const detail = resolved ? JSON.stringify(resolved).slice(0, 200) : 'undefined (guard-clause rejection)';
+        console.warn(`[AgentChat] scenario resolveForAgent failed: ${detail} | sessionId=${sessionId} projectId=${effectiveProjectId} scenarioId=${scenarioId ?? 'null'} projectRulesId=${projectRulesId ?? 'null'}`);
         return createChatTurnErrorResponse(requestId, 'error', 'personalization_resolution_failed');
       }
       console.log(`[AgentChat] scenario resolved: workflow=${resolved.manifest.workflow.length} hooks=${resolved.manifest.hooks?.length ?? 0} agents=${resolved.manifest.agentIds.length} systemPromptChars=${resolved.systemPrompt.length}`);
@@ -5803,29 +7518,63 @@ function setupIPC(): void {
         } catch { /* stream forwarding must never break the turn */ }
         return ctx;
       };
-      runAgentLoop.registerHook('model.stream_chunk', forwardModelStream, { name: 'chat-stream-forward' });
+      // 场景工作流运行不向聊天流转发模型 token 流（2026-08-30 刘总要求）：
+      // 31 步工作流每步产出动辄数万字，整段流进聊天正是「过程性内容占满
+      // 聊天」的最后一环。步骤进度由执行事件桥（agent-execution-*）与每步
+      // 完成后的摘要消息承载；普通聊天与 Goal 轮保留原有流式体验。
+      const isScenarioWorkflowRun = scenarioCompilation?.useCoordinator === true;
+      if (!isScenarioWorkflowRun) {
+        runAgentLoop.registerHook('model.stream_chunk', forwardModelStream, { name: 'chat-stream-forward' });
+      }
       console.log('[AgentChat] dispatching scenario workflow runner');
       try {
         // Public Scenario pause/cancel admission: dedicated controllers keep the
         // public control contract separate from the plain interrupt signal.
         activeRun.scenarioPause = new AbortController();
         activeRun.scenarioCancel = new AbortController();
-        const response = scenarioCompilation.useCoordinator && resolvedManifest && resolvedSystemPrompt && personalizationRepository
+        const scenarioRuntime = scenarioCompilation.useCoordinator
+          && resolvedManifest
+          && resolvedSystemPrompt
+          && personalizationRepository
+          ? { manifest: resolvedManifest, repository: personalizationRepository }
+          : null;
+        // 场景运行 → 任务看板接通（2026-08-28 刘总要求）：仅真实进入
+        // 持久化场景协调器的执行才创建卡片，避免普通对话被误标为场景任务。
+        let scenarioRunGoalId: string | null = null;
+        if (scenarioRuntime) {
+          try {
+            const runScenarioId = scenarioRuntime.manifest.scenarioId;
+            const runScenarioName = scenarioRuntime.repository.get(runScenarioId)?.name ?? runScenarioId;
+            const runGoal = goalEngine?.createGoal(
+              `场景工作流：${runScenarioName}`,
+              undefined,
+              scenarioRuntime.manifest.projectId ?? projectId,
+            );
+            scenarioRunGoalId = runGoal?.id ?? null;
+            if (scenarioRunGoalId) {
+              goalEngine?.setStatus(scenarioRunGoalId, 'running');
+              if (runGoal) broadcastGoalChanged(event.sender, runGoal, 'running');
+            }
+          } catch { /* 任务卡片创建失败不阻断运行 */ }
+        }
+        const response = scenarioRuntime
           ? await runPersistedScenarioWorkflow({
               agentLoop: runAgentLoop,
               agentLoopForModel,
               store,
-              repository: personalizationRepository,
+              repository: scenarioRuntime.repository,
               sessionId,
               messages,
               requestId,
-              manifest: resolvedManifest,
+              manifest: scenarioRuntime.manifest,
               mode,
               signal: activeRun.controller.signal,
               pauseSignal: activeRun.scenarioPause.signal,
               cancelSignal: activeRun.scenarioCancel.signal,
               liveSteering: liveSteeringQueue,
-              projectId: resolvedManifest.projectId ?? projectId,
+              projectId: scenarioRuntime.manifest.projectId ?? projectId,
+              researchRepository: researchRepository ?? undefined,
+              literatureBridge: getScenarioLiteratureBridge(),
               isCurrentRuntime: () => runtimeGeneration === requestRuntimeGeneration,
               // 场景 Hook（场景重构 P4）：审批默认拒绝，异常时 fail closed；
               // 审批窗口实现位于 IPC 处理器外，避免交互分支污染 agent:chat 安全边界。
@@ -5855,9 +7604,90 @@ function setupIPC(): void {
             });
 
         executionEvents.finish(response.status);
+        if (scenarioRunGoalId) {
+          try {
+            const finalStatus = response.status === 'completed'
+              ? 'completed'
+              : response.status === 'cancelled'
+                ? 'cancelled'
+                : response.status === 'interrupted'
+                  ? 'paused'
+                  : 'failed';
+            goalEngine?.setStatus(scenarioRunGoalId, finalStatus);
+            const finalGoal = goalEngine?.getGoal(scenarioRunGoalId);
+            if (finalGoal) broadcastGoalChanged(event.sender, finalGoal);
+          } catch { /* 状态同步失败不影响返回 */ }
+        }
+        // 场景运行成果自动落库（2026-08-28 刘总要求；2026-08-31 修正）：工作流
+        // 成功跑完后，把最终产出写为该项目的正式成果（已存在则追加新版本），
+        // 保证生成物在科研项目的工作流/成果视图中可见，而不是只留在会话流里。
+        // 2026-08-31 修正点：①数据源从「聊天最后一条消息」换成最终交付包正文
+        // （response.answer 在 bundle 场景即 primary 全文）——此前聊天里只有
+        // 摘要，建出来的成果是摘要段落堆；②按双换行切段换成 Markdown 结构化
+        // 转换（标题层级/列表/表格/引用保真），成果真正排版成形。
+        // 2026-09-01 刘总建议（来源标记）：场景产出统一挂「科研产出」保留分类，
+        // 成果页按分类分区展示，一眼可辨哪些是工作流产出；旧的无分类成果补挂标记。
+        if (scenarioRuntime && response.status === 'completed' && projectId && outcomeRepository && store) {
+          try {
+            const SCENARIO_CATEGORY_ID = 'cat-scenario-output';
+            if (!store.raw.prepare('SELECT id FROM outcome_categories WHERE id = ?').get(SCENARIO_CATEGORY_ID)) {
+              store.raw.prepare(
+                'INSERT INTO outcome_categories (id, name, sort_order, created_at, updated_at) VALUES (?, ?, 0, ?, ?)',
+              ).run(SCENARIO_CATEGORY_ID, '科研产出', Date.now(), Date.now());
+            }
+            const history = store.getMessages(sessionId);
+            const finalMessage = [...history].reverse().find((m) => m.role === 'assistant' && m.content.trim().length > 0);
+            const deliverableMarkdown = (typeof response.answer === 'string' && response.answer.trim())
+              ? response.answer
+              : (finalMessage?.content ?? '');
+            if (deliverableMarkdown.trim()) {
+              const { markdownToWordDocument } = await import('../engine/export/MarkdownToWordDocument.js');
+              const deliverableContent = markdownToWordDocument(deliverableMarkdown);
+              if (deliverableContent.blocks.length === 0) throw new Error('deliverable_blocks_empty');
+              const runScenarioId = scenarioRuntime.manifest.scenarioId;
+              const runScenarioName = scenarioRuntime.repository.get(runScenarioId)?.name ?? runScenarioId;
+              const deliverableTitle = `${runScenarioName} 交付物`.slice(0, 200);
+              const existing = outcomeRepository.list(projectId).find((item) => item.title === deliverableTitle);
+              if (existing) {
+                if (!existing.categoryId) {
+                  outcomeRepository.move(projectId, existing.id, SCENARIO_CATEGORY_ID);
+                  console.log(`[ScenarioRun] outcome ${existing.id} retagged to 科研产出`);
+                }
+                const detail = outcomeRepository.get(projectId, existing.id);
+                if (detail) {
+                  const saved = outcomeRepository.save({
+                    projectId,
+                    outcomeId: existing.id,
+                    baseVersion: detail.outcome.currentVersion,
+                    content: deliverableContent,
+                    note: `场景工作流产出 ${new Date().toLocaleString('zh-CN')}`,
+                    actor: 'ai',
+                    sources: [],
+                  });
+                  console.log(`[ScenarioRun] deliverable appended to outcome ${existing.id}: v${saved.version.version}`);
+                }
+              } else {
+                const created = outcomeRepository.create({
+                  projectId,
+                  categoryId: SCENARIO_CATEGORY_ID,
+                  title: deliverableTitle,
+                  kind: 'word',
+                  content: deliverableContent,
+                  note: '场景工作流产出（自动创建）',
+                  actor: 'ai',
+                });
+                console.log(`[ScenarioRun] deliverable outcome created: ${created.outcome.id}`);
+              }
+            }
+          } catch (deliverableError) {
+            console.warn('[ScenarioRun] deliverable persistence failed:', deliverableError instanceof Error ? deliverableError.message : deliverableError);
+          }
+        }
         return response;
       } finally {
-        runAgentLoop.unregisterHook('model.stream_chunk', 'chat-stream-forward');
+        if (!isScenarioWorkflowRun) {
+          runAgentLoop.unregisterHook('model.stream_chunk', 'chat-stream-forward');
+        }
         executionEvents.dispose();
         if (activeRun.executionEvents === executionEvents) activeRun.executionEvents = undefined;
       }
@@ -6046,6 +7876,40 @@ function setupIPC(): void {
     }
   });
 
+  // 步骤卡控制（2026-09-01 刘总方案二期）：对已完成/中断运行的某一步做
+  // 「指导重做 / 跳过」。纯函数改记录（completed 记录不可变 → 派生续作分支），
+  // 落库后由前端补发「继续」触发恢复；运行中的会话拒绝操作（防竞态）。
+  ipcMain.handle('scenario:stepControl', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = (typeof rawRequest === 'object' && rawRequest !== null ? rawRequest : {}) as {
+        sessionId?: unknown; stepId?: unknown; action?: unknown; guidance?: unknown;
+      };
+      const sessionId = typeof request.sessionId === 'string' ? request.sessionId : '';
+      const stepId = typeof request.stepId === 'string' ? request.stepId.slice(0, 160) : '';
+      const action = request.action === 'redo' || request.action === 'skip' ? request.action : null;
+      const guidance = typeof request.guidance === 'string' ? request.guidance.slice(0, 2_000) : undefined;
+      if (!sessionId || !stepId || !action || !personalizationRepository) {
+        return { ok: false as const, code: 'invalid_request', message: 'sessionId/stepId/action are required' };
+      }
+      const activeRun = activeChatRuns.get(sessionId);
+      if (activeRun && (activeRun.scenarioPause?.signal.aborted === false || activeRun.scenarioCancel && !activeRun.scenarioCancel.signal.aborted)) {
+        return { ok: false as const, code: 'run_in_progress', message: '场景正在执行，等当前步骤完成后再操作' };
+      }
+      const record = personalizationRepository.getRecoverableScenarioRun(sessionId)
+        ?? personalizationRepository.listScenarioRunRecords(sessionId)[0];
+      if (!record) return { ok: false as const, code: 'no_run_record', message: '该会话没有场景运行记录' };
+      const result = applyStepControl(record, { action, stepId, ...(guidance !== undefined ? { guidance } : {}) });
+      if (!result.ok) return result;
+      personalizationRepository.saveScenarioRunRecord(result.record);
+      console.log(`[ScenarioRun] step control ${action} applied: session=${sessionId.slice(0, 40)} step=${stepId} run=${result.record.runId}`);
+      return { ok: true as const, runId: result.record.runId, message: result.message };
+    } catch (error) {
+      console.warn('[scenario:stepControl] failed:', error instanceof Error ? error.message : error);
+      return { ok: false as const, code: 'step_control_failed', message: error instanceof Error ? error.message : 'unknown' };
+    }
+  });
+
   ipcMain.handle('agent:control', (event, rawRequest: unknown) => {
     let operationId = 'control-recovery';
     try {
@@ -6068,6 +7932,10 @@ function setupIPC(): void {
       operationId = request.data.operationId;
       const run = activeChatRuns.get(request.data.sessionId);
       if (!run) {
+        // 无痕失败禁令（2026-08-29 刘总报告「中断后无法继续」）：应用重启后
+        // 内存运行注册表清空而数据库状态仍为 running，前端会误走实时引导；
+        // 这里必须留下可查日志。
+        console.warn(`[Main] agent:control ${request.data.action} rejected: no_active_run session=${request.data.sessionId}`);
         return decodeAgentControlResponse({
           ok: false,
           contractVersion: LIVE_STEERING_CONTRACT_VERSION,
@@ -6076,6 +7944,7 @@ function setupIPC(): void {
         }, operationId);
       }
       if (run.ownerWebContentsId !== event.sender.id) {
+        console.warn(`[Main] agent:control ${request.data.action} rejected: owner_mismatch session=${request.data.sessionId}`);
         return decodeAgentControlResponse({
           ok: false,
           contractVersion: LIVE_STEERING_CONTRACT_VERSION,
@@ -7238,6 +9107,12 @@ function setupIPC(): void {
       return createGoalWorkflowRecovery();
     }
   });
+  // 渲染端路由诊断（2026-08-29）：进入文件日志，终结"发送走了哪条路"的猜测。
+  ipcMain.handle('diag:rendererLog', (event, rawLine: unknown) => {
+    try { requireRendererMainFrame(event); } catch { return null; }
+    console.log(`[Renderer] ${typeof rawLine === 'string' ? rawLine.slice(0, 600) : String(rawLine)}`);
+    return null;
+  });
   ipcMain.handle('goal:list', (event) => {
     try {
       requireRendererMainFrame(event);
@@ -7438,6 +9313,15 @@ function setupIPC(): void {
       return { success: false, code: 'failed' };
     } catch (error) {
       console.error('[goal:resume] resume failed', error);
+      // 已取消/已完成的目标是终态，恢复永远不可能成功——必须把这个事实
+      // 如实返回给渲染端，而不是笼统的 unavailable（那会让用户一直重试）。
+      const message = String((error as Error)?.message ?? error);
+      if (message.includes('was cancelled and cannot be resumed')) {
+        return { success: false, code: 'goal_cancelled' };
+      }
+      if (message.includes('not found')) {
+        return { success: false, code: 'goal_not_found' };
+      }
       return { success: false, code: 'goal_execution_unavailable' };
     }
   });
@@ -8037,6 +9921,183 @@ function setupIPC(): void {
     }
   });
 
+/** 把申报书模板包压缩为逐栏结构文本（栏目树 + 要求 + 限字 + 填写槽）。 */
+function buildFundingTemplateDigest(pkg: { source?: { sourceFormat?: string; pageCount?: number }; sections: Array<{ sectionId: string; normalizedTitle: string; level: number; order: number; required: { value: unknown } }>; instructions: Array<{ sectionId: string | null; normalizedText: string; maxLength: { value: unknown; unit: unknown } | null }>; contentSlots: Array<{ sectionId: string | null; normalizedLabel: string; maxLength: { value: unknown; unit: unknown } | null }> }): string {
+  const sectionLines: string[] = [];
+  const sectionsById = new Map(pkg.sections.map((section) => [section.sectionId, section]));
+  const orderedSections = [...pkg.sections].sort((left, right) => left.order - right.order);
+  for (const section of orderedSections) {
+    const indent = '  '.repeat(Math.max(0, section.level - 1));
+    sectionLines.push(`${indent}- ${section.normalizedTitle}${section.required.value === true ? '（必填）' : ''}`);
+    for (const instruction of pkg.instructions.filter((item) => item.sectionId === section.sectionId)) {
+      const limit = instruction.maxLength ? `（限 ${String(instruction.maxLength.value)} ${instruction.maxLength.unit === 'words' ? '词' : '字'}）` : '';
+      sectionLines.push(`${indent}  · 要求：${instruction.normalizedText}${limit}`);
+    }
+  }
+  for (const slot of pkg.contentSlots) {
+    const section = slot.sectionId ? sectionsById.get(slot.sectionId) : null;
+    const limit = slot.maxLength ? `（限 ${String(slot.maxLength.value)} ${slot.maxLength.unit === 'words' ? '词' : '字'}）` : '';
+    sectionLines.push(`${section ? `  - 填写槽：${section.normalizedTitle} / ` : '- 填写槽：'}${slot.normalizedLabel}${limit}`);
+  }
+  return [
+    `申报书结构（来源格式 ${pkg.source?.sourceFormat ?? '未知'}，共 ${pkg.source?.pageCount ?? '?'} 页）：`,
+    ...sectionLines,
+  ].join('\n');
+}
+
+  // 「申报书填写草稿」（2026-09-01）：读取已分析的申报书模板结构（栏目/要求/限字），
+  // 结合刘总提供的素材生成逐栏填写草稿（Markdown）。生成不落库，导出与保存由前端决定。
+  ipcMain.handle('fundingTemplate:draftOutline', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsedInput = z.object({
+        projectId: z.string().min(1),
+        templateId: z.string().min(1).max(160),
+        materialText: z.string().max(20_000).optional(),
+      }).safeParse(raw);
+      if (!parsedInput.success) return { ok: false as const, code: 'invalid_request', message: '申报书草稿请求无效。' };
+      if (!fundingTemplateService) return { ok: false as const, code: 'unavailable', message: '申报书模板服务尚未就绪。' };
+      const active = fundingTemplateService.getActive(FUNDING_LOCAL_OWNER_ID, parsedInput.data.projectId, parsedInput.data.templateId);
+      if (!active.ok) return { ok: false as const, code: active.code, message: '未能读取已分析的申报书模板（请先在上方导入并分析模板）。' };
+      const pkg = active.value;
+      if (!agentLoop) return { ok: false as const, code: 'agent_not_initialized', message: 'AI 服务尚未初始化。' };
+
+      const templateDigest = buildFundingTemplateDigest(pkg);
+
+      const systemPrompt = [
+        '你是基金申报书填写助手。根据申报书的栏目结构和你拿到的申请材料，为每个栏目起草填写内容。',
+        '要求：',
+        '1. 输出 Markdown：每个一级/二级栏目一个标题，标题下给出该栏的填写草稿正文。',
+        '2. 草稿必须优先使用材料中真实可查的内容（成果、经历、数据）；材料没有覆盖的栏目，写出结构化的填写框架和「待补充：…」清单，不要编造事实、数字、论文或经费。',
+        '3. 尊重每栏的限字要求，在草稿末尾用（约 N 字）标注预估字数。',
+        '4. 语言风格与正式申报书一致（学术、凝练、第一人称复数或按规定），不写自我说明。',
+      ].join('\n');
+      const tracked = trackEphemeralOperation(runtimeShutdown, {
+        id: `fundingTemplate:draftOutline:${Date.now().toString(36)}`,
+        rejection: { ok: false as const, code: 'application_shutting_down' },
+      });
+      if (!tracked.admitted) return tracked.rejection;
+      try {
+        const userContent = [
+          templateDigest,
+          parsedInput.data.materialText ? `\n申请材料（仅供参考，仅使用其中真实存在的内容）：\n${parsedInput.data.materialText}` : '\n（未提供申请材料：所有栏目只给填写框架与待补充清单。）',
+        ].join('\n');
+        const answer = await runEphemeralChatTurn({
+          agentLoop,
+          sessionId: `funding-draft-${Date.now().toString(36)}`,
+          messages: [{ role: 'user', content: userContent }],
+          requestId: `funding_draft_${Date.now().toString(36)}`,
+          maxTurns: 1,
+          allowedTools: [],
+          skillPrompt: systemPrompt,
+          signal: tracked.signal,
+        });
+        if (answer.status !== 'completed' || !answer.answer.trim()) {
+          return { ok: false as const, code: 'generation_failed', message: `草稿生成未完成（${answer.status}）。` };
+        }
+        return { ok: true as const, markdown: answer.answer };
+      } finally {
+        tracked.cleanup();
+      }
+    } catch (error) {
+      return { ok: false as const, code: 'draft_failed', message: error instanceof Error ? error.message : String(error) };
+    }
+  });
+  // 「助手内上传申报书模板」（2026-09-01 刘总要求）：场景配置助手里直接选
+  // PDF/DOCX → 安全观察+分析入库（固定模板 ID 形成版本链）→ 返回栏目结构摘要，
+  // 供编译指令按申报书栏目组织交付物。
+  ipcMain.handle('fundingTemplate:analyzeForAssistant', async (event, raw: unknown) => {
+    try {
+      const window = requireRendererMainFrame(event);
+      if (!fundingTemplateService || !fundingTemplateRepository) return { ok: false as const, message: '申报书模板服务尚未就绪。' };
+      const parsedInput = z.object({ projectId: z.string().min(1) }).safeParse(raw);
+      if (!parsedInput.success) return { ok: false as const, message: '请求无效。' };
+      const selected = await dialog.showOpenDialog(window, { properties: ['openFile'], filters: [{ name: '申报书模板', extensions: ['pdf', 'docx'] }] });
+      if (selected.canceled || !selected.filePaths[0]) return { ok: false as const, message: '已取消上传。' };
+      const filePath = selected.filePaths[0]!;
+      const templateId = 'user:funding-template';
+      const existing = fundingTemplateRepository.getTemplate(FUNDING_LOCAL_OWNER_ID, parsedInput.data.projectId, templateId, true);
+      let expectedTemplateRevision = 0;
+      let expectedActiveVersion: number | null = null;
+      let expectedActiveDigest: string | null = null;
+      if (existing.ok) {
+        const record = existing.value;
+        const activePkg = record.versions.find((candidate) => candidate.version === record.activeVersion);
+        expectedTemplateRevision = record.revision;
+        expectedActiveVersion = record.activeVersion;
+        expectedActiveDigest = activePkg ? activePkg.packageDigest : null;
+      } else if (existing.code !== 'not_found') {
+        return { ok: false as const, message: `模板库读取失败（${existing.code}）。` };
+      }
+      const imported = await fundingTemplateService.importOrReanalyze({
+        ownerId: FUNDING_LOCAL_OWNER_ID,
+        projectId: parsedInput.data.projectId,
+        templateId,
+        filePath,
+        trustedRoot: path.dirname(filePath),
+        expectedTemplateRevision,
+        expectedActiveVersion,
+        expectedActiveDigest,
+      });
+      if (!imported.ok) {
+        const labels: Record<string, string> = {
+          invalid_request: '请求无效', not_found: '模板不存在', archived: '模板已归档，请先恢复',
+          cas_conflict: '模板版本已变化，请重试', source_unchanged: '文件与已保存版本相同，无需重新上传',
+          observation_failed: '无法安全读取模板结构', docx_layout_unobservable: '模板结构无法解析',
+          analysis_failed: '模板分析失败', package_invalid: '模板包完整性校验失败',
+          sensitive_content: '检测到不应保存的敏感内容', repository_busy: '模板库正忙',
+          repository_corrupt: '模板库损坏', persist_failed: '模板保存失败', invalid_package: '模板包无效',
+        };
+        return { ok: false as const, message: `模板分析未完成：${labels[imported.code] ?? imported.code}` };
+      }
+      const active = fundingTemplateService.getActive(FUNDING_LOCAL_OWNER_ID, parsedInput.data.projectId, templateId);
+      if (!active.ok) return { ok: false as const, message: '模板已保存，但读取栏目结构失败。' };
+      const summary = buildFundingTemplateDigest(active.value);
+      return { ok: true as const, templateId, summary };
+    } catch (error) {
+      return { ok: false as const, message: `模板分析失败：${error instanceof Error ? error.message : String(error)}` };
+    }
+  });
+  // 投稿参谋（2026-09-01 刘总规格）：Artifact+Browser+Intent 三上下文编排对话。
+  ipcMain.handle('submission:assistant:chat', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      if (!agentLoop || !outcomeRepository) return { ok: false as const, answer: '', error: 'AI 或成果服务尚未就绪。' };
+      const parsedInput = z.object({
+        projectId: z.string().min(1),
+        outcomeId: z.string().min(1),
+        instruction: z.string().min(1).max(20_000),
+        thinkingLevel: z.string().optional(),
+        intent: z.record(z.string(), z.unknown()).optional(),
+        shortlist: z.array(z.object({ name: z.string(), source: z.string().optional() })).max(24).optional(),
+      }).safeParse(raw);
+      if (!parsedInput.success) return { ok: false as const, answer: '', error: '请求无效。' };
+      const service = new SubmissionAssistantService({
+        agentLoop,
+        browser: {
+          navigate: async (url) => {
+            const service = ensureBrowserService();
+            if (!service) return { ok: false, error: 'browser_unavailable' };
+            return service.navigate(url);
+          },
+          extract: async () => {
+            const service = ensureBrowserService();
+            if (!service) return { ok: false, error: 'browser_unavailable' };
+            return service.extract();
+          },
+        },
+        loadOutcome: (projectId, outcomeId) => {
+          const repository = outcomeRepository;
+          if (!repository) return null;
+          const detail = repository.get(projectId, outcomeId);
+          return detail ? { title: detail.outcome.title, content: detail.version.content } : null;
+        },
+      });
+      return await service.chat({ ...parsedInput.data, thinkingLevel: parsedInput.data.thinkingLevel });
+    } catch (error) {
+      return { ok: false as const, answer: '', error: error instanceof Error ? error.message : String(error) };
+    }
+  });
   ipcMain.handle('personalization:list', (event, rawRequest: unknown) => {
     try {
       requireRendererMainFrame(event);
@@ -8051,6 +10112,22 @@ function setupIPC(): void {
       return personalizationRuntime?.listTrash(rawRequest) ?? { ok: false, code: 'unavailable' };
     } catch {
       return { ok: false, code: 'unavailable' };
+    }
+  });
+  ipcMain.handle('personalization:integrity:list', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      return personalizationRuntime?.listIntegrityIssues(rawRequest) ?? { ok: false, code: 'unavailable' };
+    } catch {
+      return { ok: false, code: 'unavailable' };
+    }
+  });
+  ipcMain.handle('personalization:integrity:recover', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      return personalizationRuntime?.recoverIntegrityIssue(rawRequest) ?? { ok: false, code: 'io_error' };
+    } catch {
+      return { ok: false, code: 'io_error' };
     }
   });
   ipcMain.handle('personalization:get', (event, rawRequest: unknown) => {
@@ -8259,7 +10336,7 @@ function setupIPC(): void {
         '     "paperStructure": [ { "title": "章节标题(如：引言)", "instruction": "该章节写作指引与文风要求(不超过250字)" } ] }',
         '3. agents 数量 1-2 个；workflow 步骤 2-6 个，按执行顺序排列。',
         '4. paperStructure 必须覆盖：引言 + 2-4 个主体章节 + 结论；每个章节给出针对性写作指引（该写什么、怎么论证、文风如何）。',
-        '5. skillIds/mcpIds 只能从下面“现有定义清单”中选择，没有合适的不填。toolIds 可参考：read_file、write_file、search_web、summarize_text、compare_items、list_sources、extract_evidence、link_evidence、draft_claim、save_artifact。',
+        '5. skillIds/mcpIds 只能从下面“现有定义清单”中选择，没有合适的不填。toolIds 只能使用已注册工具：read_file、write_file、web_search、compare_items、list_sources、extract_evidence、link_evidence、draft_claim、save_artifact。',
         '6. systemPrompt 用中文，写明该智能体在这个场景中的职责、行为边界与输出要求。',
         `现有定义清单：\n${catalog}`,
       ].join('\n');
@@ -8526,6 +10603,47 @@ function setupIPC(): void {
     }
   });
 
+  // 项目工作台进度条数据源（2026-08-28 刘总要求：显示场景工作流的每个步骤
+  // 与当前所处步骤，而不是静态的 Goal 判定百分比）。
+  ipcMain.handle('scenario:runStateForProject', (event, rawProjectId: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const projectId = typeof rawProjectId === 'string' ? rawProjectId : '';
+      if (!projectId || !personalizationRepository) return { ok: false };
+      const run = personalizationRepository.latestScenarioRunForProject(projectId);
+      if (!run) return { ok: false };
+      const nameById = new Map<string, string>(
+        run.manifestSnapshot.workflow.map((step) => [step.id, step.name]),
+      );
+      const scenarioId = run.manifestSnapshot.scenarioId;
+      // The run manifest is already authenticated and contains the immutable
+      // workflow snapshot, so a newer quarantined definition must not erase a
+      // real project's progress view. Prefer the live verified name when it is
+      // available and otherwise retain the signed scenario identifier.
+      const scenarioName = personalizationRepository.get(scenarioId)?.name ?? scenarioId;
+      return {
+        ok: true,
+        runId: run.runId,
+        scenarioId,
+        scenarioName,
+        status: run.status,
+        steps: run.steps.map((step) => ({
+          stepId: step.stepId,
+          name: nameById.get(step.stepId) ?? step.stepId,
+          status: step.status,
+          // 步骤提示词随运行状态下发（2026-08-29 刘总要求：任务清单可展开查看）。
+          prompt: run.manifestSnapshot.workflow.find((workflowStep) => workflowStep.id === step.stepId)?.prompt ?? undefined,
+        })),
+        // 看板编辑提示词需要按 stepId 定位（同一次下发，避免二次查询）。
+        stepsPromptById: Object.fromEntries(
+          run.manifestSnapshot.workflow.map((workflowStep) => [workflowStep.id, workflowStep.prompt ?? '']),
+        ),
+      };
+    } catch {
+      return { ok: false };
+    }
+  });
+
   ipcMain.handle('scenario:compileHarness', async (event, rawRequest: unknown) => {
     try {
       requireRendererMainFrame(event);
@@ -8540,6 +10658,37 @@ function setupIPC(): void {
       const persistProjectId = typeof rawRequest.projectId === 'string' ? rawRequest.projectId : '';
       const persistScenarioId = typeof rawRequest.scenarioId === 'string' ? rawRequest.scenarioId : '';
       const persistConversationId = typeof rawRequest.conversationId === 'string' ? rawRequest.conversationId : '';
+      // ── 对话上下文延续（2026-08-30 刘总要求：所有对话关闭后继续都要接得上）──
+      // 场景配置助手此前每轮模型调用只带本轮指令，历史仅落库不回读——重开
+      // 助手后「按我们刚才讨论的改」模型看不到任何讨论。把最近若干条历史
+      // 拼进本轮指令前缀（草稿状态仍由 current 传递，不依赖聊天历史）。
+      // 落库始终用原始指令，避免拼接版被重复存进历史。
+      let effectiveInstruction = instruction;
+      // 思考强度（2026-09-01 刘总要求）：助手选择器随请求传入；provider 暂无
+      // 原生推理参数，以提示词级注入引导推理深度（如实生效于模型行为层）。
+      const thinkingLevel = typeof rawRequest.thinkingLevel === 'string' && ['fast', 'standard', 'deep'].includes(rawRequest.thinkingLevel)
+        ? rawRequest.thinkingLevel
+        : '';
+      if (thinkingLevel === 'deep') effectiveInstruction = `【思考强度：深度思考】请先充分展开多角度推理、权衡备选方案后再输出结果。
+
+${effectiveInstruction}`;
+      else if (thinkingLevel === 'fast') effectiveInstruction = `【思考强度：快速】请压缩推理过程，直接给出简洁结果。
+
+${effectiveInstruction}`;
+      if (persistProjectId && persistConversationId && outcomeRepository) {
+        try {
+          const history = outcomeRepository.listMessagesByConversation({ projectId: persistProjectId, conversationId: persistConversationId });
+          const recent = history.slice(-12);
+          if (recent.length > 0) {
+            const transcript = recent
+              .map((message) => `${message.role === 'user' ? '用户' : '助手'}：${message.content.slice(0, 1_500)}`)
+              .join('\n');
+            effectiveInstruction = `【此前对话记录（供参考，最近 ${recent.length} 条）】\n${transcript}\n\n【本轮指令】\n${instruction}`;
+          }
+        } catch (historyError) {
+          console.warn('[scenario:compileHarness] 对话历史拼接失败（不影响编译）:', historyError instanceof Error ? historyError.message : historyError);
+        }
+      }
       const definitions = personalizationRepository?.list(undefined, true) ?? [];
       const materialIds = Array.isArray(rawRequest.materialIds)
         ? rawRequest.materialIds.filter((id): id is string => typeof id === 'string').slice(0, 16)
@@ -8553,6 +10702,25 @@ function setupIPC(): void {
         rejection: { ok: false, code: 'application_shutting_down' },
       });
       if (!tracked.admitted) return tracked.rejection;
+      // 历史可找回（2026-08-25 刘总要求）：编译开始即落库用户指令——
+      // 哪怕本轮失败或被中断，历史记录里也能看到这轮指令。
+      const persistUserInstruction = () => {
+        if (!persistProjectId || !persistScenarioId || !persistConversationId || !outcomeRepository) return;
+        try {
+          outcomeRepository.appendToConversation({ projectId: persistProjectId, conversationId: persistConversationId, role: 'user', content: instruction.slice(0, 40_000), sources: [] });
+        } catch (persistError) {
+          console.warn('[scenario:compileHarness] 用户指令落库失败（不影响编译）:', persistError instanceof Error ? persistError.message : persistError);
+        }
+      };
+      const persistAssistantMessage = (content: string) => {
+        if (!persistProjectId || !persistScenarioId || !persistConversationId || !outcomeRepository) return;
+        try {
+          outcomeRepository.appendToConversation({ projectId: persistProjectId, conversationId: persistConversationId, role: 'assistant', content: content.slice(0, 40_000), sources: [] });
+        } catch (persistError) {
+          console.warn('[scenario:compileHarness] 助手消息落库失败（不影响编译）:', persistError instanceof Error ? persistError.message : persistError);
+        }
+      };
+      persistUserInstruction();
       // 过程可视化（2026-08-22 刘总要求）：把 AgentLoop 的实时执行事件
       // （生命周期/模型动作/工具调用）推送到渲染端，场景助手可显示思考与工具阶段。
       const compileSessionId = newCompileSessionId();
@@ -8561,10 +10729,45 @@ function setupIPC(): void {
       scenarioPatchRouterSingleton.open(compileSessionId, current.data);
       // 增量可见（2026-08-23 刘总要求）：每步 patch 成功后把草稿快照实时推送到
       // 渲染端，右侧编辑器随构建过程逐块成型，而不是结束后一次性填入。
-      scenarioPatchRouterSingleton.onDraftUpdated = (update) => {
+      // 回调严格绑定到本次编译；并发会话不能相互替换或清理监听器。
+      const draftUpdatedListener = (update: { sessionId: string; scenario: ScenarioDefinition; summaries: readonly string[] }) => {
         try {
           if (!event.sender.isDestroyed()) event.sender.send('scenario:draft-updated', update);
         } catch { /* 推送失败绝不中断编译 */ }
+        checkpointCompileDraft();
+      };
+      scenarioPatchRouterSingleton.setDraftUpdatedListener(compileSessionId, draftUpdatedListener);
+      // 过程检查点（2026-08-29 刘总要求：编译产物绝不许再整体丢失）：每累计
+      // 8 个成功写入就把草稿落一次库。最终自动保存万一失败、甚至进程被杀，
+      // 已生成内容最多丢最后 8 个写入，而不是像昨晚那样全部蒸发。
+      let lastDraftCheckpointApplied = 0;
+      const checkpointCompileDraft = () => {
+        try {
+          const repository = personalizationRepository;
+          if (!repository) return;
+          const session = scenarioPatchRouterSingleton.activeSession(compileSessionId);
+          const draft = session?.getDraft();
+          const applied = session?.appliedCount ?? 0;
+          if (!draft || applied - lastDraftCheckpointApplied < 8) return;
+          const persisted = repository.get(current.data.id, true);
+          if (!persisted || persisted.provenance.origin === 'builtin') return;
+          const saved = repository.save({
+            contractVersion: 1,
+            definition: {
+              ...draft,
+              revision: persisted.revision + 1,
+              provenance: { ...draft.provenance, locallyModified: true, updatedAt: Date.now() },
+            } as ScenarioDefinition,
+            expectedRevision: persisted.revision,
+          });
+          if (saved.ok && saved.code === 'saved') {
+            lastDraftCheckpointApplied = applied;
+            console.warn(`[scenario:compileHarness] 过程检查点已落库：applied=${applied} rev=${saved.definition.revision}`);
+          }
+        } catch (checkpointError) {
+          // 检查点是尽力而为：失败不阻断编译，最终保存仍是权威提交。
+          console.warn('[scenario:compileHarness] 过程检查点失败（不阻断编译）：', checkpointError instanceof Error ? checkpointError.message : checkpointError);
+        }
       };
       const executionBridge = new AgentExecutionEventBridge({
         sessionId: compileSessionId,
@@ -8577,12 +10780,14 @@ function setupIPC(): void {
       });
       executionBridge.attach(agentLoop);
       // token 级流式：把模型的增量输出/推理实时转发到渲染端。
+      const scenarioStreamHookName = `scenario-stream-forward:${compileSessionId}`;
       const forwardScenarioStream = (ctx: import('../engine/core/HookBus.js').HookContext): import('../engine/core/HookBus.js').HookContext => {
         const payload = ctx as unknown as { sessionId?: unknown; content?: unknown; reasoning?: unknown; isFinished?: unknown };
+        if (payload.sessionId !== compileSessionId) return ctx;
         try {
           if (!event.sender.isDestroyed()) {
             event.sender.send('scenario:stream-chunk', {
-              sessionId: typeof payload.sessionId === 'string' ? payload.sessionId : compileSessionId,
+              sessionId: compileSessionId,
               content: typeof payload.content === 'string' ? payload.content : '',
               reasoning: typeof payload.reasoning === 'string' ? payload.reasoning : undefined,
               isFinished: payload.isFinished === true,
@@ -8591,7 +10796,27 @@ function setupIPC(): void {
         } catch { /* 流转发绝不中断编译 */ }
         return ctx;
       };
-      agentLoop.registerHook('model.stream_chunk', forwardScenarioStream, { name: 'scenario-stream-forward' });
+      agentLoop.registerHook('model.stream_chunk', forwardScenarioStream, { name: scenarioStreamHookName });
+      // 全自动安装追踪：通知按 compileSessionId 隔离，不能被并发编译覆盖。
+      // 在 try 之前注册，确保任一早期失败都能由 finally 精确清理。
+      const installedDefinitions: Array<{ id: string; name: string; kind: 'skill' | 'mcp'; url: string }> = [];
+      const installationNotificationListener = (update: {
+        sessionId: string;
+        installedId: string;
+        installedName: string;
+        kind: 'skill' | 'mcp';
+        url: string;
+      }) => {
+        installedDefinitions.push({ id: update.installedId, name: update.installedName, kind: update.kind, url: update.url });
+        try {
+          if (!event.sender.isDestroyed()) {
+            event.sender.send('scenario:compile-event', {
+              event: { type: 'lifecycle', phase: 'action', summary: `已自动安装${update.kind === 'skill' ? '技能' : 'MCP'}「${update.installedName}」，可绑定到工作流步骤。` },
+            });
+          }
+        } catch { /* 推送失败不影响编译 */ }
+      };
+      scenarioAcquisition.install.notifications.set(compileSessionId, installationNotificationListener);
       try {
         // ── 阶段化编译循环（2026-08-23 刘总方案 v2）────────────────────────
         // 五个阶段依次执行；每阶段先检索后写入，阶段末跑确定性验收门，
@@ -8603,19 +10828,6 @@ function setupIPC(): void {
           SCENARIO_MARKET_SEARCH_TOOL_NAME, SCENARIO_INSTALL_EXTENSION_TOOL_NAME,
         ];
         const patchSession = scenarioPatchRouterSingleton.activeSession(compileSessionId)!;
-        // 全自动安装追踪：notify 由工具 handler 触发，按 sessionId 过滤。
-        const installedDefinitions: Array<{ id: string; name: string; kind: 'skill' | 'mcp'; url: string }> = [];
-        scenarioAcquisition.install.notify = (update) => {
-          if (update.sessionId !== compileSessionId) return;
-          installedDefinitions.push({ id: update.installedId, name: update.installedName, kind: update.kind, url: update.url });
-          try {
-            if (!event.sender.isDestroyed()) {
-              event.sender.send('scenario:compile-event', {
-                event: { type: 'lifecycle', phase: 'action', summary: `已自动安装${update.kind === 'skill' ? '技能' : 'MCP'}「${update.installedName}」，可绑定到工作流步骤。` },
-              });
-            }
-          } catch { /* 推送失败不影响编译 */ }
-        };
         const publishPhaseEvent = (phase: ScenarioPhase, summary: string) => {
           try {
             if (!event.sender.isDestroyed()) {
@@ -8641,20 +10853,69 @@ function setupIPC(): void {
           const label = `${phaseIndex + 1}/${SCENARIO_PHASE_ORDER.length} ${SCENARIO_PHASE_LABELS[phase]}`;
           const prompts = buildScenarioPhasePrompt({
             phase,
-            instruction,
+            instruction: effectiveInstruction,
             current: current.data,
             definitions,
             materialContext,
           });
           const planTool = PHASE_PLAN_TOOL[phase];
 
+          // ── 工作流阶段前置（2026-08-25 刘总要求）：先写工作流总 Prompt，
+          // 再出大纲、逐步骤新增——总 Prompt 为后续步骤提供全局约束。
+          if (phase === 'workflow') {
+            const currentPromptText = (patchSession.getDraft() ?? normalizeScenarioHarness(current.data)).workflowPrompt?.trim() ?? '';
+            if (currentPromptText.length === 0) {
+              publishPhaseEvent(phase, `阶段 ${label}：正在撰写工作流总 Prompt…`);
+              const wpPrompt = buildScenarioPhasePrompt({
+                phase,
+                instruction: effectiveInstruction,
+                current: current.data,
+                definitions,
+                materialContext,
+                fillTarget: { kind: 'workflow_prompt', id: 'workflowPrompt', name: '工作流总 Prompt' },
+              });
+              const appliedBeforeWp = patchSession.appliedCount;
+              let wpAnswer = await runEphemeralChatTurn({
+                agentLoop,
+                sessionId: compileSessionId,
+                messages: [{ role: 'user', content: wpPrompt.user }],
+                requestId: `scenario_harness_${++requestCounter}`,
+                skillPrompt: wpPrompt.system,
+                allowedTools: [SCENARIO_APPLY_UPDATE_TOOL_NAME],
+                maxTurns: 8,
+                acceptUnverified: true,
+                signal: tracked.signal,
+              });
+              if (tracked.signal.aborted) return { ok: false, code: 'application_shutting_down' };
+              if (wpAnswer.status !== 'completed') {
+                console.warn(`[scenario:compileHarness] ${label} 总 Prompt 首写失败（${wpAnswer.status}），重试一次。`);
+                wpAnswer = await runEphemeralChatTurn({
+                  agentLoop,
+                  sessionId: compileSessionId,
+                  messages: [{ role: 'user', content: wpPrompt.user }],
+                  requestId: `scenario_harness_${++requestCounter}`,
+                  skillPrompt: wpPrompt.system,
+                  allowedTools: [SCENARIO_APPLY_UPDATE_TOOL_NAME],
+                  maxTurns: 8,
+                  acceptUnverified: true,
+                  signal: tracked.signal,
+                });
+                if (tracked.signal.aborted) return { ok: false, code: 'application_shutting_down' };
+              }
+              console.warn(`[scenario:compileHarness] ${label} 总 Prompt 撰写 status=${wpAnswer.status} appliedPatches=${patchSession.appliedCount}（+${patchSession.appliedCount - appliedBeforeWp}）`);
+              // 总 Prompt 失败不致命：阶段 4 的规则门会兜底要求补写。
+            } else {
+              console.warn(`[scenario:compileHarness] ${label} 工作流总 Prompt 已存在，跳过前置撰写。`);
+            }
+          }
+
           // ── 设计轮（仅首轮；只出大纲，骨架立即上屏）──
-          let planTargets: Array<{ id: string; name: string }> = [];
+          let planTargets: Array<{ id: string; name: string; kind: 'step' | 'substep' | 'section' }> = [];
           if (planTool) {
             publishPhaseEvent(phase, `阶段 ${label}：正在设计${phase === 'workflow' ? '步骤' : '章节'}大纲…`);
             const planPrompt = buildScenarioPhasePrompt({
               phase,
-              instruction,
+              instruction: effectiveInstruction,
               current: current.data,
               definitions,
               materialContext,
@@ -8673,7 +10934,12 @@ function setupIPC(): void {
             });
             if (tracked.signal.aborted) return { ok: false, code: 'application_shutting_down' };
             const plannedRaw = phase === 'workflow' ? patchSession.getPlannedWorkflow() : patchSession.getPlannedSections();
-            planTargets = plannedRaw.map((item) => ({ id: item.id, name: (item as { name?: string }).name ?? (item as { title?: string }).title ?? item.id }));
+            // 工作流大纲已按 parent→subStep 顺序扁平化（含 kind），逐条驱动填写。
+            planTargets = plannedRaw.map((item) => ({
+              id: item.id,
+              name: (item as { name?: string }).name ?? (item as { title?: string }).title ?? item.id,
+              kind: (item as { kind?: 'step' | 'substep' }).kind ?? (phase === 'workflow' ? 'step' as const : 'section' as const),
+            }));
             console.warn(`[scenario:compileHarness] ${label} 设计轮 status=${planAnswer.status} 大纲数=${planTargets.length}`);
             // 设计轮失败不致命：无大纲则退回综合模式。
           }
@@ -8684,11 +10950,11 @@ function setupIPC(): void {
               publishPhaseEvent(phase, `阶段 ${label}：正在填写「${target.name}」…`);
               const fillPrompt = buildScenarioPhasePrompt({
                 phase,
-                instruction,
+                instruction: effectiveInstruction,
                 current: current.data,
                 definitions,
                 materialContext,
-                fillTarget: { kind: phase === 'workflow' ? 'step' : 'section', id: target.id, name: target.name },
+                fillTarget: { kind: target.kind === 'substep' ? 'substep' : phase === 'workflow' ? 'step' : 'section', id: target.id, name: target.name },
               });
               const appliedBeforeFill = patchSession.appliedCount;
               let fillAnswer = await runEphemeralChatTurn({
@@ -8731,6 +10997,43 @@ function setupIPC(): void {
             }
           }
 
+          // ── 能力获取轮（2026-08-28 刘总要求；2026-08-29 条件化提速）：
+          // 填写轮只允许 apply_update，市场搜索/安装工具唯一入口是填写过门后
+          // 被跳过的综合轮——这导致编译出的场景永远没有 Skill/MCP。但固定
+          // 补一轮对"填写轮已绑定目录资源"的场景是纯浪费。现改为仅当草稿
+          // 完全没有任何 Skill/MCP 绑定时才执行这一轮。
+          if (phase === 'workflow') {
+            const draftForCapability = patchSession.getDraft() ?? normalizeScenarioHarness(current.data);
+            const hasAnyBinding = draftForCapability.skillIds.length > 0 || draftForCapability.mcpIds.length > 0
+              || draftForCapability.workflow.some((step) => step.skillIds.length > 0 || step.mcpIds.length > 0);
+            if (hasAnyBinding) {
+              console.warn(`[scenario:compileHarness] ${label} 草稿已含 Skill/MCP 绑定，跳过能力获取轮。`);
+            } else {
+              publishPhaseEvent(phase, `阶段 ${label}：正在为各步骤检索并安装合适的 Skill/MCP…`);
+              const capabilityPrompt = buildScenarioPhasePrompt({
+                phase,
+                instruction: effectiveInstruction,
+                current: draftForCapability,
+                definitions,
+                materialContext,
+                capabilityPass: true,
+              });
+              const capabilityAnswer = await runEphemeralChatTurn({
+                agentLoop,
+                sessionId: compileSessionId,
+                messages: [{ role: 'user', content: capabilityPrompt.user }],
+                requestId: `scenario_harness_${++requestCounter}`,
+                skillPrompt: capabilityPrompt.system,
+                allowedTools: COMPILE_TOOLS,
+                maxTurns: 12,
+                acceptUnverified: true,
+                signal: tracked.signal,
+              });
+              if (tracked.signal.aborted) return { ok: false, code: 'application_shutting_down' };
+              console.warn(`[scenario:compileHarness] ${label} 能力获取轮 status=${capabilityAnswer.status} installed=${installedDefinitions.length}`);
+            }
+          }
+
           // ── 综合轮 + 门控重试（无大纲阶段的首选路径；有大纲阶段作为修复路径）──
           // 填写轮已使门控达标时直接进入下一阶段，不跑综合轮（省一轮）。
           if (planTargets.length > 0) {
@@ -8752,7 +11055,7 @@ function setupIPC(): void {
               requestId: `scenario_harness_${++requestCounter}`,
               skillPrompt: prompts.system,
               allowedTools: COMPILE_TOOLS,
-              maxTurns: 14,
+              maxTurns: phase === 'basics' || phase === 'output_plan' ? 6 : 10,
               acceptUnverified: true,
               signal: tracked.signal,
             });
@@ -8767,7 +11070,9 @@ function setupIPC(): void {
             }
             if (answer.status !== 'completed') {
               const diag = answer.diagnostics?.[0];
-              return { ok: false, code: 'generation_failed', message: [diag?.code, diag?.message].filter(Boolean).join(': ') || answer.status };
+              const failText = [diag?.code, diag?.message].filter(Boolean).join(': ') || answer.status;
+              persistAssistantMessage(`场景编译未完成（${SCENARIO_PHASE_LABELS[phase]} 阶段执行中断）：${failText}`);
+              return { ok: false, code: 'generation_failed', message: failText };
             }
             const wroteThisAttempt = patchSession.appliedCount > appliedBefore;
             const draftNow = patchSession.getDraft() ?? normalizeScenarioHarness(current.data);
@@ -8795,6 +11100,7 @@ function setupIPC(): void {
               ];
               continue;
             }
+            persistAssistantMessage(`场景编译未完成（阶段验收未通过）：阶段 ${label} 在 ${MAX_PHASE_RETRIES + 1} 次尝试后仍未通过验收。${gate.issues.slice(0, 4).map((issue) => issue.slice(0, 120)).join(' ｜ ')}`);
             return {
               ok: false,
               code: 'phase_gate_failed',
@@ -8803,13 +11109,13 @@ function setupIPC(): void {
             };
           }
         }
-
         // ── Final 自检审计（2026-08-23 刘总要求）：空缺扫描 + schema + 质量审计，
         // 缺陷合并回喂修复，最多 MAX_AUDIT_REPAIRS 轮。
         let compilation: { scenario: ScenarioDefinition; summary: string; diff: ReturnType<typeof diffScenarioHarness>; assessment: ReturnType<typeof assessScenarioHarness> } | null = null;
         for (let repair = 0; repair <= MAX_AUDIT_REPAIRS; repair += 1) {
           const draft = patchSession.getDraft();
           if (!draft) {
+            persistAssistantMessage('场景编译未完成：编译器未产出任何场景草稿。');
             return { ok: false, code: 'generation_failed', message: '编译器未产出任何场景草稿。', issues: [] };
           }
           const finalGate = patchSession.validateFinal();
@@ -8826,7 +11132,7 @@ function setupIPC(): void {
             break;
           }
           if (repair < MAX_AUDIT_REPAIRS) {
-            const auditPrompts = buildScenarioPhasePrompt({ phase: 'workflow', instruction, current: current.data, definitions, materialContext });
+            const auditPrompts = buildScenarioPhasePrompt({ phase: 'workflow', instruction: effectiveInstruction, current: current.data, definitions, materialContext });
             await runEphemeralChatTurn({
               agentLoop,
               sessionId: compileSessionId,
@@ -8844,34 +11150,104 @@ function setupIPC(): void {
             });
             continue;
           }
-          return {
-            ok: false,
-            code: 'invalid_candidate',
-            issues: auditIssues,
-            message: '编译器在自检修复后仍存在缺陷。',
+          // 兜底（2026-08-28 刘总要求：场景构建绝不让成果作废）：草稿在写入点
+          // 已按 schema 净化，自检残留的只是质量提示——照常保存并把提示带给
+          // 用户继续完善，而不是把整轮编译成果丢弃。
+          const fallbackRaw = patchSession.getDraft();
+          if (!fallbackRaw) {
+            persistAssistantMessage('场景编译未完成：编译器未产出任何场景草稿。');
+            return { ok: false, code: 'generation_failed', message: '编译器未产出任何场景草稿。', issues: [] };
+          }
+          const fallbackDraft = normalizeScenarioHarness(fallbackRaw);
+          compilation = {
+            scenario: fallbackDraft,
+            summary: '已按阶段完成场景构建并通过写入校验；自检提示（不阻塞使用）：' + auditIssues.slice(0, 3).map((issue) => issue.slice(0, 120)).join(' ｜ '),
+            diff: diffScenarioHarness(normalizeScenarioHarness(current.data), fallbackDraft),
+            assessment: assessScenarioHarness(fallbackDraft, definitions),
           };
+          break;
         }
         if (!compilation) {
+          persistAssistantMessage('场景编译未完成：编译未能产出合格场景。');
           return { ok: false, code: 'generation_failed', issues: [], message: '编译未能产出合格场景。' };
         }
-        if (persistProjectId && persistScenarioId && persistConversationId && outcomeRepository) {
-          try {
-            outcomeRepository.appendToConversation({ projectId: persistProjectId, conversationId: persistConversationId, role: 'user', content: instruction.slice(0, 40_000), sources: [] });
-            outcomeRepository.appendToConversation({ projectId: persistProjectId, conversationId: persistConversationId, role: 'assistant', content: (compilation.summary || '已更新场景草稿。').slice(0, 40_000), sources: [] });
-          } catch (persistError) {
-            console.warn('[scenario:compileHarness] 对话历史持久化失败（不影响本次生成）:', persistError instanceof Error ? persistError.message : persistError);
+        // 编译结果必须先通过主进程的原子版本提交，才可以报告为成功。渲染端
+        // 草稿只用于展示与重试，不能成为跨重启持久化的替代品。
+        const buildToSave = (base: ScenarioDefinition): ScenarioDefinition => ({
+          ...compilation.scenario,
+          revision: base.revision + 1,
+          provenance: { ...compilation.scenario.provenance, locallyModified: true, updatedAt: Date.now() },
+        } as ScenarioDefinition);
+        let saveResult: ReturnType<PersonalizationRepository['save']> | undefined;
+        try {
+          saveResult = personalizationRepository?.save({
+            contractVersion: 1,
+            definition: buildToSave(current.data),
+            expectedRevision: current.data.revision,
+          });
+        } catch (saveError) {
+          console.warn('[scenario:compileHarness] 主进程自动保存异常：', saveError instanceof Error ? saveError.message : saveError);
+        }
+        // 新建即编译自愈（2026-08-29 刘总要求：创建后立即编译不允许“未能安全保存”）。
+        // revision_conflict 通常意味着渲染端快照落后于持久化版本（创建保存刚落库，
+        // 或本轮等待期间发生过一次保存）：以数据库当前修订为基准重试一次；写入的
+        // 内容仍是本轮编译产物。若场景行尚不存在（创建保存未落库），直接创建 rev1。
+        if (saveResult && !saveResult.ok && (saveResult.code === 'revision_conflict' || saveResult.code === 'not_found')) {
+          const persisted = personalizationRepository?.get(compilation.scenario.id, true);
+          if (persisted && persisted.provenance.origin !== 'builtin') {
+            try {
+              saveResult = personalizationRepository?.save({
+                contractVersion: 1,
+                definition: buildToSave({ ...current.data, revision: persisted.revision }),
+                expectedRevision: persisted.revision,
+              });
+              console.warn(`[scenario:compileHarness] 保存冲突自愈重试：以持久化 rev${persisted.revision} 为基准 → ${saveResult?.ok ? '成功' : saveResult?.code}`);
+            } catch (saveError) {
+              console.warn('[scenario:compileHarness] 自愈重试异常：', saveError instanceof Error ? saveError.message : saveError);
+            }
+          } else if (!persisted) {
+            try {
+              saveResult = personalizationRepository?.save({
+                contractVersion: 1,
+                definition: { ...compilation.scenario, revision: 1, provenance: { ...compilation.scenario.provenance, locallyModified: true, updatedAt: Date.now() } } as ScenarioDefinition,
+                expectedRevision: 0,
+              });
+              console.warn(`[scenario:compileHarness] 场景行缺失自愈：直接创建 → ${saveResult?.ok ? '成功' : saveResult?.code}`);
+            } catch (saveError) {
+              console.warn('[scenario:compileHarness] 创建自愈异常：', saveError instanceof Error ? saveError.message : saveError);
+            }
           }
         }
-        return { ok: true, ...compilation, installedDefinitions };
+        if (!saveResult?.ok || saveResult.code !== 'saved' || saveResult.definition.kind !== 'scenario') {
+          const code = saveResult?.ok ? 'io_error' : (saveResult?.code ?? 'io_error');
+          const detail = saveResult && !saveResult.ok && 'issues' in saveResult && Array.isArray(saveResult.issues)
+            ? `；原因：${saveResult.issues.slice(0, 3).join('；')}`
+            : '';
+          const message = `场景内容已生成，但未能安全保存（${code}${detail}）。过程检查点已保留大部分内容，请重试保存补全。`;
+          console.warn(`[scenario:compileHarness] 主进程自动保存未成功：${code}${detail}`);
+          persistAssistantMessage(message);
+          return { ok: false, code, message, scenario: compilation.scenario, installedDefinitions };
+        }
+        const finalScenario = saveResult.definition;
+        console.warn(`[scenario:compileHarness] 主进程自动保存成功：${finalScenario.id} rev${finalScenario.revision}`);
+        persistAssistantMessage((compilation.summary || '已更新场景草稿。') + '（已自动保存。）');
+        return { ok: true, ...compilation, scenario: finalScenario, autosaved: true, installedDefinitions };
       } catch (error) {
-        if (tracked.signal.aborted) return { ok: false, code: 'application_shutting_down' };
-        return { ok: false, code: 'generation_failed', error: String((error as Error).message ?? error).slice(0, 200) };
+        if (tracked.signal.aborted) {
+          persistAssistantMessage('场景编译未完成：应用正在关闭，编译被中断。可重新发起构建。');
+          return { ok: false, code: 'application_shutting_down' };
+        }
+        const errorMessage = String((error as Error).message ?? error).slice(0, 200);
+        persistAssistantMessage('场景编译未完成：' + errorMessage);
+        return { ok: false, code: 'generation_failed', error: errorMessage };
       } finally {
-        agentLoop.unregisterHook('model.stream_chunk', 'scenario-stream-forward');
+        agentLoop.unregisterHook('model.stream_chunk', scenarioStreamHookName);
+        scenarioPatchRouterSingleton.removeDraftUpdatedListener(compileSessionId, draftUpdatedListener);
         scenarioPatchRouterSingleton.close(compileSessionId);
-        scenarioPatchRouterSingleton.onDraftUpdated = undefined;
-        scenarioAcquisition.install.notify = undefined;
-        scenarioInstallRouterSingleton.resetCounters();
+        if (scenarioAcquisition.install.notifications.get(compileSessionId) === installationNotificationListener) {
+          scenarioAcquisition.install.notifications.delete(compileSessionId);
+        }
+        scenarioInstallRouterSingleton.clearSessionCounter(compileSessionId);
         executionBridge.dispose();
         tracked.cleanup();
       }
@@ -9585,8 +11961,35 @@ app.on('second-instance', () => {
   }
 });
 
+/**
+ * Journal-directory tools (LetPub / Wanwei Shukan) fetch through Chromium's
+ * network stack so they follow proxy rules; some catalog sites are only
+ * reachable via the user's local proxy. Direct net.fetch first, then retry
+ * once through an env-proxy-pinned session when the primary attempt fails.
+ */
+function setupJournalCatalogFetcher(): void {
+  const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy || '';
+  let proxiedCatalogSession: Electron.Session | null = null;
+  configureJournalCatalogFetcher(async (url, init) => {
+    try {
+      return await net.fetch(url, init ?? {});
+    } catch (primaryError) {
+      if (!proxyUrl) throw primaryError;
+      proxiedCatalogSession ??= electronSession.fromPartition('journal-catalog-proxy');
+      await proxiedCatalogSession.setProxy({
+        mode: 'fixed_servers',
+        proxyRules: proxyUrl.replace(/^https?:\/\//u, ''),
+      });
+      return proxiedCatalogSession.fetch(url, init ?? {});
+    }
+  });
+}
+
+
 app.whenReady().then(async () => {
+  initMainLogFile(DATA_DIR);
   if (!gotSingleInstanceLock) return;
+  setupJournalCatalogFetcher();
 
   // Serve the production renderer bundle over metis-app:// (ESM modules cannot
   // load from file:// under Chromium's null-origin CORS rules). Every request
@@ -9723,6 +12126,7 @@ app.whenReady().then(async () => {
   try {
     store = new PersistenceStore(DB_PATH);
     setSharedStore(store);
+    outcomeTemplateService = new OutcomeTemplateService(store);
     jobQueueService.attachStore(store);
     literatureWatch.attachStore(store);
     literatureWatch.start();
@@ -9731,6 +12135,7 @@ app.whenReady().then(async () => {
       store.close();
       store = new PersistenceStore(DB_PATH);
       setSharedStore(store);
+      outcomeTemplateService = new OutcomeTemplateService(store);
       jobQueueService.attachStore(store);
       literatureWatch.attachStore(store);
     }
@@ -9791,6 +12196,26 @@ app.whenReady().then(async () => {
       console.warn('[Main] Funding template services unavailable:', (error as Error)?.message);
     }
     personalizationRepository = new PersonalizationRepository(store.raw, citationTruthSecret ?? undefined);
+    // 内置个人化定义播种（2026-09-01）：基金申报书模板分析等 builtin skill/agent/场景
+    // 首次真正进入生产目录。seedBuiltins 幂等（digest 未变跳过），funding-template
+    // 草稿仅在三个只读工具全部通过注册审计后才会以 enabled 状态落库。
+    try {
+      const seeded = buildFundingTemplateSeed(new Set(builtinToolNames()));
+      personalizationRepository.seedBuiltins(seeded);
+      if (seeded.length > 0) console.log(`[Main] seeded ${seeded.length} funding-template builtin definition(s)`);
+    } catch (seedError) {
+      console.warn('[Main] builtin personalization seeding failed:', seedError instanceof Error ? seedError.message : seedError);
+    }
+    // digest 算法升级的一次性重签（2026-08-30 刘总报告「继续后从头重跑」）：
+    // 旧算法把每次 resolve 的 createdAt 时间戳算进 manifestDigest，历史
+    // checkpoint 的 digest 与新 resolve 永远不相等、resume 永远退化为
+    // start。启动时幂等重签非终态记录，让刘总的既有进度能被「继续」接上。
+    try {
+      const reminted = personalizationRepository.remintScenarioRunManifestDigests();
+      if (reminted > 0) console.log(`[Main] reminted ${reminted} scenario run manifest digest(s) for the createdAt-free digest algorithm`);
+    } catch (remintError) {
+      console.warn('[Main] scenario run digest remint failed:', remintError instanceof Error ? remintError.message : remintError);
+    }
     personalizationRuntime = new PersonalizationRuntimeService(
       personalizationRepository,
       citationTruthSecret ?? undefined,
@@ -9859,6 +12284,9 @@ app.whenReady().then(async () => {
           manifest,
           mode: 'send',
           signal,
+          projectId: manifest.projectId,
+          researchRepository: researchRepository ?? undefined,
+          literatureBridge: getScenarioLiteratureBridge(),
           hookEvent: (hookEvent) => {
             console.log(`[ScenarioLoopHook] ${hookEvent.event} ${hookEvent.action} hook=${hookEvent.hookId} loop=${due.loop.id}`);
           },
@@ -10152,6 +12580,46 @@ app.whenReady().then(async () => {
       }
     }
     outcomeRepository = new OutcomeRepository(store.raw);
+    submissionRepository = new SubmissionRepository(store.raw);
+    journalProfileRepository = new JournalProfileRepository(store.raw);
+    // ── Submission P2 服务（投稿预检 / 投稿包 / Cover Letter）──
+    submissionPackageRepository = new SubmissionPackageRepository(store.raw);
+    submissionPreflightService = new SubmissionPreflightService({
+      submissionRepository,
+      journalRepository: journalProfileRepository,
+      outcomeRepository,
+      packageRepository: submissionPackageRepository,
+    });
+    submissionPackageService = new SubmissionPackageService({
+      submissionRepository,
+      packageRepository: submissionPackageRepository,
+      outcomeRepository,
+      journalRepository: journalProfileRepository,
+      docxService: new OutcomeWordDocxService(),
+      preflightService: submissionPreflightService,
+      userDataDir: USER_DATA_DIR,
+    });
+    submissionCoverLetterService = new CoverLetterService({
+      submissionRepository,
+      journalRepository: journalProfileRepository,
+      outcomeRepository,
+      packageRepository: submissionPackageRepository,
+    });
+    // ── Submission P4 服务（审稿轮次 / Decision Letter 拆解 / Response Letter）──
+    submissionReviewRepository = new SubmissionReviewRepository(store.raw);
+    submissionReviewService = new SubmissionReviewService({
+      submissionRepository,
+      reviewRepository: submissionReviewRepository,
+      outcomeRepository,
+    });
+    // 旧版 submissions.json（如存在）一次性迁移进 SQLite 投稿域；幂等，可重复执行。
+    try {
+      const legacyPath = path.join(DATA_DIR, 'submissions.json');
+      const migrated = submissionRepository.migrateLegacyFile(legacyPath, (p) => fs.readFileSync(p, 'utf8'));
+      if (migrated > 0) console.log(`[Submission] migrated ${migrated} legacy submission record(s) from submissions.json`);
+    } catch (error) {
+      console.warn('[Submission] legacy migration skipped:', (error as Error)?.message);
+    }
   const firstRunStorageForFreeModels = createFirstRunSecureStorage(safeStorage);
   freeModelService = new FreeModelService({
     dataDir: DATA_DIR,
@@ -10181,6 +12649,100 @@ app.whenReady().then(async () => {
       }
     },
   });
+    // ── Submission P3/P4 外联服务：通信记录 / SMTP 外发 / IMAP 监听 / 投稿门户 ──
+    // 放在 FreeModelService 之后：复用其同款 firstRunSecureStorage 解密邮箱授权码。
+    submissionCorrespondenceRepository = new SubmissionCorrespondenceRepository(store.raw);
+    // 与 FreeModelService 内部的 MailboxPoolStore 读同一个 JSON 文件（磁盘为单一事实源，
+    // 每次操作实时读盘，双实例无状态漂移）。Submission 不依赖 FreeModelService 本体。
+    submissionMailboxStore = new MailboxPoolStore(DATA_DIR);
+    const decryptMailboxSecret = (cipher: string): string | null => {
+      try {
+        return firstRunStorageForFreeModels.decrypt(cipher);
+      } catch {
+        return null;
+      }
+    };
+    mailSendService = new MailSendService({
+      mailboxStore: submissionMailboxStore,
+      decryptSecret: decryptMailboxSecret,
+      correspondenceRepository: submissionCorrespondenceRepository,
+      submissionRepository,
+    });
+    submissionMailService = new SubmissionMailService({
+      mailboxStore: submissionMailboxStore,
+      decryptSecret: decryptMailboxSecret,
+      correspondenceRepository: submissionCorrespondenceRepository,
+      submissionRepository,
+      reviewService: submissionReviewService,
+      imapClientCtor: ImapFlow as unknown as ImapFlowConstructor,
+    });
+    // 门户浏览器是懒加载委托：首次调用才创建 BrowserService（依赖主窗口就绪）。
+    const portalBrowser: PortalBrowser = {
+      navigate: (url: string) => {
+        const svc = ensureBrowserService();
+        return svc ? svc.navigate(url) : Promise.resolve({ ok: false, error: 'browser_unavailable' });
+      },
+      extract: () => {
+        const svc = ensureBrowserService();
+        return svc ? svc.extract() : Promise.resolve({ ok: false, error: 'browser_unavailable' });
+      },
+      evaluateInView: (fn: string) => {
+        const svc = ensureBrowserService();
+        return svc ? svc.evaluateInView(fn) : Promise.resolve({ ok: false, error: 'browser_unavailable' });
+      },
+      enumerateFormFields: () => {
+        const svc = ensureBrowserService();
+        return svc ? svc.enumerateFormFields() : Promise.resolve({ ok: false, error: 'browser_unavailable' });
+      },
+    };
+    submissionPortalService = new SubmissionPortalService({
+      browserService: portalBrowser,
+      submissionRepository,
+      journalProfileRepository,
+    });
+    // 返修截止日期 → Goal/TaskBoard 同步（复用 goalEngine 底层，见 goal:create）。
+    submissionDeadlineSync = new SubmissionDeadlineSync({
+      reviewRepository: submissionReviewRepository!,
+      submissionRepository: submissionRepository!,
+      createGoal: (description, context, projectId) => {
+        try {
+          return goalEngine?.createGoal(description, context, projectId) ?? null;
+        } catch {
+          return null;
+        }
+      },
+    });
+    // 投稿邮件后台监听：周期同步全部（项目 × 邮箱账户），新邮件推送渲染端。
+    submissionMailWatcher = new SubmissionMailWatcher({
+      listTargets: () => {
+        const store = submissionMailboxStore!;
+        const repo = submissionRepository!;
+        const corrRepo = submissionCorrespondenceRepository!;
+        const accounts = store.list();
+        if (accounts.length === 0) return [];
+        const projectIds = new Set<string>();
+        for (const record of corrRepo.listPendingAll()) projectIds.add(record.projectId);
+        for (const series of repo.listAllSeries()) projectIds.add(series.projectId);
+        if (projectIds.size === 0) {
+          // 没有任何投稿记录时不同步——避免对纯 FreeModel 邮箱做无谓轮询。
+          return [];
+        }
+        return SubmissionMailWatcher.allProjectAccounts([...projectIds], accounts);
+      },
+      sync: async (target) => {
+        const service = submissionMailService;
+        if (!service) return { ok: false };
+        const result = await service.syncAccount(target);
+        if (!result.ok) return { ok: false };
+        return { ok: true, newRecords: result.newRecords };
+      },
+      notify: (notification) => {
+        const win = getMainWindow();
+        if (win && !win.isDestroyed()) win.webContents.send('submission:mail:changed', notification);
+      },
+      logger: console,
+    });
+    submissionMailWatcher.start();
     outcomeMedia = new OutcomeMediaService(store.raw, OUTCOME_MEDIA_DIR);
     outcomeImage = new OutcomeImageService({
       db: store.raw,
@@ -10275,6 +12837,22 @@ app.whenReady().then(async () => {
   // Setup IPC before loading the renderer, then create the initial window.
   setupIPC();
   console.info('[METIS_RUNTIME_IDENTITY]', JSON.stringify(getRuntimeIdentity()));
+  // 嵌入式 GenOffice 兼容通道：必须在 setupIPC() 之后注册——compatHandle 只补
+  // METIS 尚未认领的空白通道，绝不覆盖主应用已有通道（如 project:list）。
+  registerGenofficeDocsCompat({
+    getSessionByWebContents: (webContentsId) => genofficeEmbeddedViews.getSessionByWebContents(webContentsId),
+    readFileBytes: async (session) => {
+      const { readEmbeddedSessionFile } = await import('./genofficeEmbedded/genofficeEmbeddedFileIo.js');
+      return readEmbeddedSessionFile(session.filePath);
+    },
+    writeSessionFile: async (session, bytes) => {
+      const { writeEmbeddedSessionFile } = await import('./genofficeEmbedded/genofficeEmbeddedFileIo.js');
+      await writeEmbeddedSessionFile(session.filePath, bytes);
+    },
+  });
+  onEmbeddedThemeChanged((value) => {
+    genofficeEmbeddedViews.broadcastTheme(value);
+  });
   // METIS-OPT-4: show the window immediately; heavy personalization
   // initialization below continues in the background. The renderer waits on
   // store:ready before hydrating, so early UI never sees a half-initialized
@@ -10379,6 +12957,8 @@ async function completeApplicationShutdown(): Promise<void> {
       await weChatBotService.stop().catch(() => undefined);
       weChatBotService = null;
     }
+     await outcomeExternalEditor.shutdownAll().catch(() => undefined);
+    genofficeEmbeddedViews.shutdownAll();
     fileCapabilities.clear();
     exportPreviews.clear();
     for (const session of activeTerminals.values()) {

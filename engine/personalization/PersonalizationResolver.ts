@@ -44,10 +44,14 @@ export type ResolvePersonalizationResult =
     };
 
 function canonicalJson(value: unknown): string {
+  if (value === undefined) return 'null';
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
   const record = value as Record<string, unknown>;
-  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(',')}}`;
+  // undefined 值键与 JSON 语义保持一致：不参与序列化（2026-08-29 刘总要求）。
+  // 此前 `agentId:undefined` 会以字面量进入摘要，而传输后该键消失，
+  // 导致 manifest digest 必然不匹配、场景执行被整体拒绝。
+  return `{${Object.keys(record).filter((key) => record[key] !== undefined).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(',')}}`;
 }
 
 function sha256(value: string): string {
@@ -185,6 +189,85 @@ export function composeManifestSystemPrompt(
   ].filter(Boolean).join('\n\n');
 }
 
+/**
+ * 引用类型自愈：把绑进错误数组的定义 id 迁移到与其真实 kind 一致的数组。
+ * 迁移规则：skillIds 中的 agent id → 顶层 agentIds；agentIds/mcpIds 反向同理。
+ * 仅在定义真实存在且 kind 不一致时迁移；缺失/损坏的引用保持原样，
+ * 交由后续依赖校验如实报告。
+ */
+function healScenarioReferenceKinds(
+  scenario: ScenarioDefinition,
+  reader: PersonalizationDefinitionReader,
+): ScenarioDefinition {
+  const kindOf = (id: string): PersonalizationDefinition['kind'] | null => {
+    try {
+      const definition = reader.get(id);
+      return definition?.kind ?? null;
+    } catch {
+      return null;
+    }
+  };
+  let agentIds = [...scenario.agentIds];
+  let skillIds = [...scenario.skillIds];
+  let mcpIds = [...scenario.mcpIds];
+  let changed = false;
+
+  const moveTopLevel = (id: string, from: 'agent' | 'skill' | 'mcp'): void => {
+    const actual = kindOf(id);
+    if (!actual || actual === from) return;
+    if (from === 'skill') skillIds = skillIds.filter((item) => item !== id);
+    if (from === 'agent') agentIds = agentIds.filter((item) => item !== id);
+    if (from === 'mcp') mcpIds = mcpIds.filter((item) => item !== id);
+    if (actual === 'agent' && !agentIds.includes(id)) agentIds.push(id);
+    if (actual === 'skill' && !skillIds.includes(id)) skillIds.push(id);
+    if (actual === 'mcp' && !mcpIds.includes(id)) mcpIds.push(id);
+    changed = true;
+  };
+  for (const id of [...scenario.skillIds]) moveTopLevel(id, 'skill');
+  for (const id of [...scenario.mcpIds]) moveTopLevel(id, 'mcp');
+  for (const id of [...scenario.agentIds]) moveTopLevel(id, 'agent');
+
+  const workflow = scenario.workflow.map((step) => {
+    let next = step;
+    let stepAgentId = next.agentId;
+    let stepSkillIds = [...next.skillIds];
+    let stepMcpIds = [...next.mcpIds];
+    for (const id of [...step.skillIds]) {
+      const actual = kindOf(id);
+      if (!actual || actual === 'skill') continue;
+      stepSkillIds = stepSkillIds.filter((item) => item !== id);
+      if (actual === 'mcp') {
+        if (!stepMcpIds.includes(id)) stepMcpIds.push(id);
+      } else if (actual === 'agent' && !stepAgentId) {
+        stepAgentId = id;
+      } else if (actual === 'agent' && !agentIds.includes(id)) {
+        agentIds.push(id);
+      }
+      changed = true;
+    }
+    for (const id of [...step.mcpIds]) {
+      const actual = kindOf(id);
+      if (!actual || actual === 'mcp') continue;
+      stepMcpIds = stepMcpIds.filter((item) => item !== id);
+      if (actual === 'skill' && !stepSkillIds.includes(id)) stepSkillIds.push(id);
+      else if (actual === 'agent' && !agentIds.includes(id)) agentIds.push(id);
+      changed = true;
+    }
+    if (!changed) return next;
+    changed = true;
+    return { ...next, agentId: stepAgentId, skillIds: stepSkillIds, mcpIds: stepMcpIds };
+  });
+
+  if (!changed) return scenario;
+  return {
+    ...scenario,
+    agentIds,
+    skillIds,
+    mcpIds,
+    workflow,
+  };
+}
+
 export class PersonalizationResolver {
   readonly #reader: PersonalizationDefinitionReader;
 
@@ -205,7 +288,10 @@ export class PersonalizationResolver {
     if (!candidate.enabled) {
       return { ok: false, code: 'scenario_disabled', issues: [`Scenario is disabled: ${request.scenarioId}`] };
     }
-    const scenario = candidate;
+    // 引用类型自愈（2026-08-29 刘总要求：校验用来纠正，不用来拒绝执行）。
+    // 模型常把 agent 定义绑进 skillIds（或反向）——类型标签写错不改变绑定
+    // 意图，这里按库中真实类型迁移到正确数组后再走依赖校验。
+    const scenario = healScenarioReferenceKinds(candidate, this.#reader);
 
     try {
       const workflowAgentIds = scenario.workflow
@@ -398,9 +484,15 @@ export class PersonalizationResolver {
         truthPolicy: 'automatic_required' as const,
         createdAt: request.createdAt ?? Date.now(),
       };
+      // createdAt 是每次 resolve 的当前时间戳（非确定性字段），必须剔除出
+      // digest 输入——否则同一场景定义每次 resolve 的 digest 都不同，恢复
+      // 判定永远失败，任务每次都从头重跑（2026-08-30 刘总报告根因）。
+      // 与 coordinator 端 digestResolvedManifestSnapshot 的剔除清单保持同规。
+      const { createdAt: _createdAt, ...digestInput } = manifestWithoutDigest;
+      void _createdAt;
       const manifest = ResolvedRunManifestSchema.parse({
         ...manifestWithoutDigest,
-        manifestDigest: sha256(canonicalJson(manifestWithoutDigest)),
+        manifestDigest: sha256(canonicalJson(digestInput)),
       });
       return {
         ok: true,

@@ -381,7 +381,7 @@ describe('PersonalizationMcpToolBridge', () => {
     const store = new PersistenceStore(path.join(storeRoot, 'runtime.db'));
     try {
       store.createSession(executionManifest.sessionId);
-      const repository = new PersonalizationRepository(store.raw);
+      const repository = new PersonalizationRepository(store.raw, INTEGRITY_SECRET);
       const bundle = JSON.stringify({
         primary: { name: outputPlan.primaryDeliverable, content: '# MCP-backed manuscript' },
         supporting: outputPlan.supportingArtifacts.map((name) => ({ name, content: '# Evidence appendix' })),
@@ -683,3 +683,4 @@ describe('PersonalizationMcpToolBridge', () => {
     expect(harness.runtime.activeRuntimeCount).toBe(0);
   });
 });
+const INTEGRITY_SECRET = Buffer.alloc(32, 21);

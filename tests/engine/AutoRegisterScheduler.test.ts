@@ -81,18 +81,16 @@ function makeClient(config: FakeConfig): { client: NewApiClient; calls: ClientCa
 }
 
 function makeReader(codesByPoll: string[][]): { reader: AutoRegisterMailboxReader; polls: number } {
-  let poll = 0;
+  const poll = 0;
+  let polls = 0;
   return {
-    polls: 0,
-    get reader(): AutoRegisterMailboxReader {
-      const outer = this;
-      return {
-        async fetchVerificationCandidates(): Promise<VerificationCandidate[]> {
-          outer.polls += 1;
-          const codes = codesByPoll[Math.min(poll, codesByPoll.length - 1)] ?? [];
-          return codes.map((code) => ({ codes: [code], links: [], from: 'noreply@site', subject: '验证码', date: Date.now() }));
-        },
-      };
+    get polls() { return polls; },
+    reader: {
+      async fetchVerificationCandidates(): Promise<VerificationCandidate[]> {
+        polls += 1;
+        const codes = codesByPoll[Math.min(poll, codesByPoll.length - 1)] ?? [];
+        return codes.map((code) => ({ codes: [code], links: [], from: 'noreply@site', subject: '验证码', date: Date.now() }));
+      },
     },
   };
 }

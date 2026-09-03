@@ -3,6 +3,14 @@ import { z } from 'zod';
 export const ThemeModeSchema = z.enum(['light', 'dark', 'system']);
 export type ThemeMode = z.infer<typeof ThemeModeSchema>;
 
+export const AccentThemeSchema = z.enum(['gold', 'blue', 'green', 'gray']);
+export type AccentTheme = z.infer<typeof AccentThemeSchema>;
+
+/** Free-form accent: any #RRGGBB hex, applied globally with derived hover/soft/focus tokens. */
+export const CustomAccentSchema = z.string().regex(/^#[0-9a-fA-F]{6}$/);
+export const AccentSettingSchema = z.union([AccentThemeSchema, CustomAccentSchema]);
+export type AccentSetting = z.infer<typeof AccentSettingSchema>;
+
 const SafeProviderLabelSchema = z.string()
   .trim()
   .min(1)
@@ -19,6 +27,8 @@ export const SettingsViewSchema = z.strictObject({
   hasApiKey: z.boolean(),
   needsReauth: z.boolean(),
   theme: ThemeModeSchema,
+  /** Accent color theme. Defaults to blue (the original ink-navy look). */
+  accent: AccentSettingSchema.default('blue'),
   providerVision: z.boolean().default(false),
   providerMaxContextTokens: z.number().int().min(0).default(0),
   /**
@@ -31,7 +41,9 @@ export const SettingsViewSchema = z.strictObject({
 export type SettingsView = z.infer<typeof SettingsViewSchema>;
 
 export const SettingsUpdateRequestSchema = z.strictObject({
-  theme: ThemeModeSchema,
+  /** Optional so accent-only (or vision-only) updates stay valid. */
+  theme: ThemeModeSchema.optional(),
+  accent: AccentSettingSchema.optional(),
   /** METIS-WX-2: whether the configured model accepts inline images. */
   providerVision: z.boolean().optional(),
   /** User-declared max context tokens (0 = auto-detect from model name). */
@@ -54,6 +66,7 @@ export function createSettingsViewRecovery(): SettingsView {
     hasApiKey: false,
     needsReauth: false,
     theme: 'light',
+    accent: 'blue',
     providerVision: false,
     providerMaxContextTokens: 0,
     setupSkipped: false,

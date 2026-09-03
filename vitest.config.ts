@@ -35,6 +35,14 @@ export default defineConfig({
           pool: 'forks',
           isolate: true,
           fileParallelism: true,
+          maxWorkers: 4,
+          minWorkers: 1,
+          // Native-process integration suites can create several real child
+          // runtimes while the rest of the fork pool is active. Keep the
+          // default timeout honest without mistaking host scheduling pressure
+          // for a product timeout.
+          testTimeout: 30_000,
+          hookTimeout: 30_000,
           coverage: {
             provider: 'v8',
             include: ['engine/**/*.ts', 'src/**/*.{ts,tsx}', 'electron/**/*.ts'],

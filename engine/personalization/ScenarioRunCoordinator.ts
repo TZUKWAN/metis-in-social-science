@@ -9,12 +9,12 @@ import {
 const RUN_RECORD_VERSION = 1 as const;
 const MAX_STEP_OUTPUT_CHARS = 2_000_000;
 // Completion standards are not optional at runtime: when a user authored
-// criteria but did not expose a Loop configuration, the Harness supplies a
-// internal repair loop. This keeps ordinary weak outputs inside the current
-// step instead of falsely progressing to the next one. An exhausted batch
-// restarts from the same checkpoint; only the global system ceiling can stop
-// an unrecoverable repair cycle.
-const SYSTEM_COMPLETION_MAX_ITERATIONS = 5;
+// criteria but did not expose a Loop configuration, the Harness supplies one
+// internal repair pass. 语义（2026-08-28 刘总定稿）：第 1 轮产出后校验一次并
+// 生成完整缺陷清单，第 2 轮按清单逐项修正，然后无论是否完全达标都结束该
+// 步骤（未达标项保留在 errorCode/errorMessage 中供用户查看）。世界上没有
+// 完美的产出：不允许"重跑→不过→再重跑"的永动机，也不允许无限打磨。
+const SYSTEM_COMPLETION_MAX_ITERATIONS = 2;
 const SYSTEM_FAILURE_RETRY_LIMIT = 2;
 
 const SafeRunIdSchema = z.string()
@@ -113,6 +113,17 @@ export const ScenarioRunRecordSchema = z.strictObject({
   workflowIterationsCompleted: z.number().int().min(0).max(100).default(0),
   totalStepExecutions: z.number().int().min(0).max(10_000).default(0),
   backtrackCount: z.number().int().min(0).max(10_000).default(0),
+  /**
+   * 步骤卡「指导重做」的待执行指令（2026-09-01 刘总方案二期）：stepControl
+   * 把用户对某一步的指导写进记录后恢复运行；执行器消费该步的指导后，在
+   * checkpoint 回调里标记 consumedAt，避免后续重跑误用旧指导。
+   */
+  pendingDirectives: z.array(z.strictObject({
+    stepId: z.string().min(1).max(160),
+    guidance: SafeRecordTextSchema,
+    issuedAt: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    consumedAt: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).nullable().default(null),
+  })).max(64).optional(),
 });
 
 export type ScenarioRunRecord = z.infer<typeof ScenarioRunRecordSchema>;
@@ -215,7 +226,10 @@ function canonicalJson(value: unknown, seen = new Set<object>()): string {
       throw new Error('Step output must contain plain JSON objects');
     }
     const record = value as Record<string, unknown>;
-    return `{${Object.keys(record).sort().map(
+    // undefined 值键与 JSON 语义一致：不参与序列化（与 resolver 端摘要同规）。
+    return `{${Object.keys(record).filter(
+      (key) => record[key] !== undefined,
+    ).sort().map(
       (key) => `${JSON.stringify(key)}:${canonicalJson(record[key], seen)}`,
     ).join(',')}}`;
   } finally {
@@ -234,8 +248,13 @@ export function digestScenarioStepOutput(output: unknown): string {
 }
 
 export function digestResolvedManifestSnapshot(manifest: ResolvedRunManifest): string {
-  const { manifestDigest: _manifestDigest, ...withoutDigest } = manifest;
+  // 非确定性字段必须剔除（2026-08-30 刘总报告「继续后从头重跑」根因）：
+  // snapshot 里的 createdAt 是每次 resolve 的当前时间戳，算进 digest 会让
+  // 同一场景定义每次 resolve 的 digest 都不同 → resume 判定永远失败 →
+  // 每次都 start 新轮从第 1 步重跑。manifestDigest 自身同理（自引用）。
+  const { manifestDigest: _manifestDigest, createdAt: _createdAt, ...withoutDigest } = manifest;
   void _manifestDigest;
+  void _createdAt;
   return sha256(canonicalJson(withoutDigest));
 }
 
@@ -502,9 +521,11 @@ export class ScenarioRunCoordinator {
     if (!validation.manifest || !validation.order || record.manifestDigest !== validation.manifest.manifestDigest) {
       return { ok: false, code: 'invalid_record', issues: validation.issues.length > 0 ? validation.issues : ['Run manifest binding mismatch'] };
     }
-    if (!['interrupted', 'paused', 'running'].includes(record.status)) {
+    if (!['interrupted', 'paused', 'running', 'failed'].includes(record.status)) {
       // `cancelled` is terminal by contract and can never be resumed.
-      return { ok: false, code: 'invalid_record', issues: ['Only interrupted, paused or running records can resume'] };
+      // `failed` 带 completed 进度的记录可恢复（2026-08-30 刘总报告：31 步
+      // 跑到 30 步最后一步失败，「继续」必须能只重跑失败步骤而不是从头）。
+      return { ok: false, code: 'invalid_record', issues: ['Only interrupted, paused, running or failed records can resume'] };
     }
     if (record.executionOrder.join('\u0000') !== validation.order.join('\u0000')) {
       return { ok: false, code: 'invalid_record', issues: ['Run execution order mismatch'] };
@@ -554,6 +575,17 @@ export class ScenarioRunCoordinator {
         stepRecord.startedAt = null;
       }
     }
+    // Failed 记录恢复：失败步骤重置为 pending 重跑（completed 步骤不动），
+    // 失败索引随之清空——「继续」只重做失败的那一步，不推翻已有成果。
+    if (record.status === 'failed') {
+      for (const stepRecord of record.steps) {
+        if (stepRecord.status === 'failed') {
+          stepRecord.status = 'pending';
+          stepRecord.startedAt = null;
+        }
+      }
+      record.failureStepIds = [];
+    }
     record.status = 'running';
     record.completedAt = null;
     return this.#execute(record, { signal, pauseSignal, cancelSignal });
@@ -574,6 +606,16 @@ export class ScenarioRunCoordinator {
     if (initialCheckpoint) return initialCheckpoint;
     const maxTotalExecutions = manifest.workflowGovernance?.maxTotalStepExecutions ?? 10_000;
     let terminalStatus: ScenarioRunRecord['status'] = 'completed';
+    // 终末输出计划步骤识别（2026-08-31 机制修正）：线性链场景中最终装配
+    // 步骤只声明直接前驱，信息饥饿导致定稿残缺（生产实证）。携带输出计划
+    // 的终末步骤（无任何下游依赖的步骤）获得全部已完成上游产出的预算化
+    // 视图。与服务端 configuredFinalStepId 的判定同规。
+    const terminalPlanStepId = (() => {
+      if (!manifest.output.plan) return null;
+      const dependedOn = new Set(manifest.workflow.flatMap((step) => step.dependsOn));
+      const terminal = manifest.workflow.filter((step) => !dependedOn.has(step.id));
+      return terminal.length === 1 ? terminal[0]!.id : null;
+    })();
 
     workflowPass: while (true) {
       const stepById = new Map(record.steps.map((step) => [step.stepId, step]));
@@ -602,10 +644,33 @@ export class ScenarioRunCoordinator {
           continue;
         }
 
-        const dependencies = Object.fromEntries(stepRecord.stepSnapshot.dependsOn.map((dependencyId) => {
+        const dependencies: Record<string, unknown> = Object.fromEntries(stepRecord.stepSnapshot.dependsOn.map((dependencyId) => {
           const dependency = stepById.get(dependencyId);
           return [dependencyId, dependency?.output ?? null];
         }));
+        if (terminalPlanStepId === stepId) {
+          // 终末计划步骤的上游预算化注入：直接依赖原样保留；其余已完成步骤
+          // 产出按新近优先注入，总量预算 100k 字符（须与系统提示、历史和
+          // 输出上限共存于模型上下文内）；放不下的显式列入 _omittedUpstream
+          // 清单——模型必须知道哪些上游产出它看不到，绝不静默丢弃。
+          const directDeps = new Set(stepRecord.stepSnapshot.dependsOn);
+          let upstreamBudget = 100_000;
+          const omitted: string[] = [];
+          for (const upstream of [...record.steps].reverse()) {
+            if (upstream.stepId === stepId || directDeps.has(upstream.stepId)) continue;
+            if (upstream.status !== 'completed') continue;
+            const upstreamOutput = upstream.output as { text?: unknown } | null;
+            const upstreamText = upstreamOutput && typeof upstreamOutput.text === 'string' ? upstreamOutput.text : '';
+            if (!upstreamText) continue;
+            if (upstreamText.length > upstreamBudget) {
+              omitted.push(`${upstream.stepId} "${upstream.stepSnapshot.name}" (${upstreamText.length} chars)`);
+              continue;
+            }
+            upstreamBudget -= upstreamText.length;
+            dependencies[upstream.stepId] = cloneJson(upstream.output);
+          }
+          if (omitted.length > 0) dependencies._omittedUpstream = omitted;
+        }
         if (stepRecord.stepSnapshot.condition && stepRecord.loopIteration === 0) {
           if (!this.#evaluateStepCondition) {
             this.#failStep(record, stepRecord, 'condition_evaluator_unavailable', 'Conditional workflow step has no runtime evaluator');
@@ -637,7 +702,14 @@ export class ScenarioRunCoordinator {
         }
 
         let failureAttempt = 0;
-        let runtimeInstruction = '';
+        // 恢复/重试时把最近一次完成度评审的缺陷清单带给下一轮（2026-08-31
+        // 机制修正）：此前评审意见只落 validationHistory、不进提示词，失败
+        // 恢复后的修订轮等于盲改。运行内的循环路径（validation_failed 分支）
+        // 会自行覆盖本值，这里只处理跨进程恢复后的首次执行。
+        const lastValidation = stepRecord.validationHistory.at(-1);
+        let runtimeInstruction = stepRecord.attempts > 0 && lastValidation && !lastValidation.satisfied
+          ? `对上一轮产出做一次修订：校验给出了以下缺陷清单，请逐项修正（清单未提及的内容保持原样，不要全量重写）：\n${lastValidation.reason}`
+          : '';
         let backtrackIndex: number | null = null;
         let stepFinished = false;
         while (!stepFinished) {
@@ -787,8 +859,11 @@ export class ScenarioRunCoordinator {
                   maxIterations: SYSTEM_COMPLETION_MAX_ITERATIONS,
                   stopCondition: stepRecord.stepSnapshot.completionCriteria!.join('\n'),
                   evaluator: 'completion_criteria' as const,
-                  onExhausted: 'backtrack' as const,
-                  backtrackStepId: stepRecord.stepId,
+                  // 耗尽即放行（2026-08-28 刘总决策）：隐式完成标准循环到上限后
+                  // 标注 errorCode='loop_exhausted' 继续推进，而不是回退到步骤
+                  // 自身形成"重跑→不过→再重跑"的永动机（曾 70+ 分钟卡在第 1 步）。
+                  // 显式配置了 backtrackStepId 的作者循环不受影响。
+                  onExhausted: 'continue' as const,
                 }
               : undefined;
           const assessment = success!.completionAssessment ?? (hasCompletionCriteria
@@ -835,7 +910,8 @@ export class ScenarioRunCoordinator {
               break;
             }
           }
-          runtimeInstruction = directive?.instruction ?? `Revise the previous iteration to satisfy the stop condition: ${loop.stopCondition || validationReason}`;
+          runtimeInstruction = directive?.instruction
+            ?? `对上一轮产出做一次修订：校验给出了以下缺陷清单，请逐项修正（清单未提及的内容保持原样，不要全量重写）：\n${validationReason}`;
           if (stepIteration < loop.maxIterations) {
             stepRecord.status = 'pending';
             stepRecord.errorCode = 'validation_failed';

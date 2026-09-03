@@ -11,6 +11,7 @@ import { render, cleanup, fireEvent, waitFor, screen, within } from '@testing-li
 import App from '../../src/App';
 import { useMetisStore } from '../../src/store';
 import { researchWorkspaceStore } from '../../src/research/researchWorkspaceStore';
+import { resetScenarioWorkbenchDraftStoreForTests } from '../../src/personalization/ScenarioWorkbench';
 import type { PersonalizationDefinition } from '../../engine/runtime/PersonalizationRuntimeContract';
 import { buildBuiltinPersonalizationDefinitions } from '../fixtures/personalization/legacyBuiltinDefinitions';
 
@@ -115,6 +116,9 @@ describe('App scenario dirty guard', () => {
   beforeEach(() => {
     window.localStorage.clear();
     window.sessionStorage.clear();
+    // 跨页草稿缓存是模块级状态（jsdom 单次加载），用例间必须清空，
+    // 否则前序用例「留在本页」的草稿会污染后续用例的打开状态。
+    resetScenarioWorkbenchDraftStoreForTests();
     useMetisStore.setState({ papers: [], paperFilter: { query: '' }, notes: [], selectedNote: null, experiments: [], collections: [], selectedCollection: null, workflowRuns: [], locale: 'zh', theme: 'light', isHydrated: true });
     researchWorkspaceStore.setState({ activeProjectId: null });
     setMockMetis();

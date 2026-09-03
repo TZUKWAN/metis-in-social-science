@@ -58,8 +58,17 @@ function checkDeliverable(scenario: ScenarioDefinition): string[] {
   if (!hasText(deliverable.globalLength)) issues.push('deliverable.globalLength 为空：请给出总篇幅要求（字符串，如 "7500字"）。');
   const sections = deliverable.sections ?? [];
   if (sections.length === 0) issues.push('deliverable.sections 为空：请至少定义一个章节，并给每个章节稳定的 id 与标题。');
+  // 二级章节强制（2026-08-28 刘总要求）：AI 编译不允许产出"20 个一级章节、
+  // 0 个二级章节"的空壳结构。每章至少要有政策下限（默认 3）个带标题的子章节。
+  const minSecondary = Math.max(0, deliverable.secondarySections?.min ?? 3);
   sections.forEach((section, index) => {
     if (!hasText(section.title)) issues.push(`deliverable.sections[${index}]（${section.id || '无 id'}）标题为空。`);
+    if (section.kind === 'chapter' && minSecondary > 0) {
+      const childCount = (section.children ?? []).filter((child) => hasText(child.title)).length;
+      if (childCount < minSecondary) {
+        issues.push(`deliverable.sections[${index}]（${section.title}）二级章节不足（${childCount}/${minSecondary}）：请为该章补充至少 ${minSecondary} 个带标题的二级章节（children）。`);
+      }
+    }
   });
   return issues;
 }

@@ -27,15 +27,17 @@ describe('Outcomes DOCX managed-image boundary wiring', () => {
     const importHandler = handlerBlock(mainSource, 'outcomes:word:docx:import');
     const importPageFlow = functionBlock(pageSource, 'const importWordDocx = useCallback', 'const exportWordDocx = useCallback');
 
-    expect(importHandler).toContain('new OutcomeWordDocxService().importFile');
-    expect(importHandler).toContain('new OutcomeWordDocxService().importFile');
+    expect(importHandler).toContain('const bytes = await fs.promises.readFile(filePath)');
+    expect(importHandler).toContain('new OutcomeWordDocxService().importBufferV2(bytes)');
     expect(importHandler).toContain('importToken');
     expect(importHandler).toContain('preview');
     expect(importHandler).not.toContain('return OutcomeWordDocxImportResultSchema.parse({ ok: true, filePath');
     expect(importHandler).not.toContain('return OutcomeWordDocxImportResultSchema.parse({ ok: true, bytes');
     expect(importHandler).toContain('wordDocxImportSessions.set');
     const commitHandler = handlerBlock(mainSource, 'outcomes:word:docx:import:commitMedia');
-    expect(commitHandler).toContain('fs.promises.readFile(session.filePath)');
+    // The commit must reuse the exact import-time snapshot, never re-read the path.
+    expect(commitHandler).toContain('commitImportedMedia(session.bytes');
+    expect(commitHandler).not.toContain('readFile(session.filePath)');
     expect(commitHandler).toContain('commitImportedMedia');
     expect(commitHandler).toContain('removeGenerated');
 

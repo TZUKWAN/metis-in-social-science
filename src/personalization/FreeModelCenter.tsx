@@ -154,6 +154,7 @@ export default function FreeModelCenter({ zh }: { zh: boolean }) {
   }, [zh]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async loader; setState happens after awaited IPC
     void refreshAll();
   }, [refreshAll]);
 

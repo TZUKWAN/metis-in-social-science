@@ -501,7 +501,8 @@ describe('Agent execution timeline', () => {
     fireEvent.click(screen.getByTestId('goal-pause'));
     await waitFor(() => {
       expect(metis.pauseGoal).toHaveBeenCalledWith('goal-ui-1');
-      expect(screen.getByTestId('goal-pause-requested').textContent).toContain('已请求暂停');
+      // 2026-08-29 刘总确认的暂停文案：说明暂停时机与恢复入口。
+      expect(screen.getByTestId('goal-pause-requested').textContent).toContain('暂停请求中');
     });
 
     await act(async () => {
@@ -558,7 +559,7 @@ describe('Agent execution timeline', () => {
     await send('请帮我完成一份完整的方法文献综述计划', metis);
     await waitFor(() => expect(metis.getGoalWorkflow).toHaveBeenCalledWith('goal-a'));
 
-    fireEvent.click(screen.getByText('会话 B').closest('.chat-session-item')!);
+    fireEvent.click(screen.getByText('会话 B', { selector: '.chat-session-title' }).closest('.chat-session-item')!);
     expect(await screen.findByText('会话 B 目标')).toBeDefined();
 
     await act(async () => {

@@ -50,6 +50,10 @@ function installMetis() {
     importOutcomePptx: vi.fn().mockResolvedValue({ ok: false, code: 'cancelled', message: '已取消 PPTX 导入。', warnings: [] }),
     commitOutcomePptxImportMedia: vi.fn().mockResolvedValue({ ok: false, code: 'invalid_request', message: '未提交 PPTX 媒体。' }),
     exportOutcomePptx: vi.fn().mockResolvedValue({ ok: false, code: 'cancelled', message: '已取消 PPTX 导出。', warnings: [] }),
+    openOutcomeInGenoffice: vi.fn().mockResolvedValue({ ok: false, code: 'genoffice_unavailable', message: 'GenOffice 构建产物不可用。' }),
+    syncOutcomeFromGenoffice: vi.fn().mockResolvedValue({ ok: false, code: 'external_editor_not_changed', message: 'GenOffice 尚未保存该文件。' }),
+     closeOutcomeGenofficeEditor: vi.fn().mockResolvedValue(true),
+     stateOutcomeGenofficeEditor: vi.fn().mockResolvedValue({ exists: true, changed: false, session: null }),
     generateOutcomeImage: vi.fn().mockResolvedValue({ ok: false, code: 'image_generation_unconfigured' }),
     readOutcomeMedia: vi.fn().mockResolvedValue(null),
     exportOutcomeMediaSvg: vi.fn().mockResolvedValue({ ok: false, code: 'svg_write_failed', message: '未提交导出。' }),
@@ -90,6 +94,89 @@ describe('OutcomesPage', () => {
     fireEvent.click(screen.getByText('研究论文'));
     expect(await screen.findByText('AI 成果助手')).toBeTruthy();
     expect(screen.getByText('原始段落。')).toBeTruthy();
+  });
+
+  it('places Word layout before DOCX export in the outcome action row', async () => {
+    const { default: OutcomesPage } = await import('../../src/pages/OutcomesPage');
+    const { container } = render(<OutcomesPage />);
+    fireEvent.click(await screen.findByText('研究论文'));
+    await waitFor(() => expect(container.querySelector('.outcomes-editor-head__actions')).toBeTruthy());
+    const actions = container.querySelector('.outcomes-editor-head__actions');
+    if (!actions) throw new Error('成果操作行未渲染');
+    const labels = Array.from(actions.querySelectorAll('button')).map((button) => button.textContent?.trim());
+    expect(labels.indexOf('保存版本')).toBeGreaterThanOrEqual(0);
+    expect(labels.indexOf('排版')).toBeGreaterThanOrEqual(0);
+    expect(labels.indexOf('导出 DOCX')).toBeGreaterThanOrEqual(0);
+    expect(labels.indexOf('排版')).toBeLessThan(labels.indexOf('导出 DOCX'));
+    expect(labels.indexOf('保存版本')).toBeLessThan(labels.indexOf('排版'));
+  });
+
+  it('opens a saved Word outcome in Metis Office and exposes explicit sync and discard controls', async () => {
+    const metis = installMetis();
+    metis.openOutcomeInGenoffice.mockResolvedValue({ ok: true, session: { token: 'oe-word-1', kind: 'word', fileName: '研究论文.docx' } });
+    const { default: OutcomesPage } = await import('../../src/pages/OutcomesPage');
+    render(<OutcomesPage />);
+    fireEvent.click(await screen.findByText('研究论文'));
+    await screen.findAllByRole('button', { name: '保存版本' });
+    fireEvent.click(await screen.findByRole('button', { name: 'Metis Office' }));
+    await waitFor(() => expect(metis.openOutcomeInGenoffice).toHaveBeenCalledWith({ projectId: 'project-1', outcomeId: 'out-1', version: 1 }));
+    expect(await screen.findByRole('button', { name: '同步回 METIS' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '放弃会话' }));
+    await waitFor(() => expect(metis.closeOutcomeGenofficeEditor).toHaveBeenCalledWith({ projectId: 'project-1', outcomeId: 'out-1', token: 'oe-word-1' }));
+    expect(await screen.findByRole('button', { name: 'Metis Office' })).toBeTruthy();
+  });
+
+  it('blocks switching away from a dirty Metis Office session instead of discarding it', async () => {
+    const metis = installMetis();
+    const secondOutcome = { ...outcome, id: 'out-2', title: '第二个成果' };
+    const secondVersion = { ...version, outcomeId: secondOutcome.id };
+    metis.listOutcomes.mockResolvedValue([outcome, secondOutcome]);
+    metis.getOutcome.mockImplementation(async (request: { outcomeId: string }) => request.outcomeId === secondOutcome.id
+      ? { outcome: secondOutcome, version: secondVersion }
+      : { outcome, version });
+    metis.openOutcomeInGenoffice.mockResolvedValue({ ok: true, session: { token: 'oe-dirty', kind: 'word', fileName: '研究论文.docx' } });
+    metis.stateOutcomeGenofficeEditor.mockResolvedValue({ exists: true, changed: true, session: { token: 'oe-dirty', kind: 'word', fileName: '研究论文.docx' } });
+    const { default: OutcomesPage } = await import('../../src/pages/OutcomesPage');
+    render(<OutcomesPage />);
+    fireEvent.click(await screen.findByText('研究论文'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Metis Office' }));
+    await screen.findByRole('button', { name: '同步回 METIS' });
+    fireEvent.click(screen.getByText('第二个成果'));
+    await waitFor(() => expect(metis.stateOutcomeGenofficeEditor).toHaveBeenCalledWith({ projectId: 'project-1', outcomeId: 'out-1' }));
+    expect(metis.closeOutcomeGenofficeEditor).not.toHaveBeenCalled();
+    expect(await screen.findByText(/外部文件有未同步修改/u)).toBeTruthy();
+  });
+
+  it('keeps the external session token when sync saved the version but cleanup failed', async () => {
+    const metis = installMetis();
+    metis.openOutcomeInGenoffice.mockResolvedValue({ ok: true, session: { token: 'oe-warning', kind: 'word', fileName: '研究论文.docx' } });
+    metis.syncOutcomeFromGenoffice.mockResolvedValue({ ok: true, warning: '版本已保存，但 GenOffice 会话未能清理。', detail: { outcome: { ...outcome, currentVersion: 2, updatedAt: 2 }, version: { ...updatedVersion, version: 2, outcomeId: outcome.id } } });
+    metis.listOutcomeVersions.mockResolvedValue([updatedVersion, version]);
+    const { default: OutcomesPage } = await import('../../src/pages/OutcomesPage');
+    render(<OutcomesPage />);
+    fireEvent.click(await screen.findByText('研究论文'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Metis Office' }));
+    await screen.findByRole('button', { name: '同步回 METIS' });
+    fireEvent.click(screen.getByRole('button', { name: '同步回 METIS' }));
+    expect(await screen.findByRole('button', { name: '放弃会话' })).toBeTruthy();
+  });
+
+  it('exposes the Metis Office editor entry for PDF and spreadsheet outcomes without treating them as text documents', async () => {
+    const metis = installMetis();
+    const spreadsheetOutcome = { ...outcome, id: 'out-sheet', title: '实验数据', kind: 'spreadsheet' as const };
+    const spreadsheetVersion = { ...version, outcomeId: spreadsheetOutcome.id, content: { type: 'spreadsheet' as const, media: { id: 'sheet-media', mediaType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' as const, displayName: '实验数据.xlsx', byteLength: 1024 }, workbook: { sheetNames: ['Sheet1'], activeSheet: 'Sheet1', activeCell: 'A1' } } };
+    metis.listOutcomes.mockResolvedValue([spreadsheetOutcome]);
+    metis.getOutcome.mockResolvedValue({ outcome: spreadsheetOutcome, version: spreadsheetVersion });
+    metis.listOutcomeVersions.mockResolvedValue([spreadsheetVersion]);
+    metis.openOutcomeInGenoffice.mockResolvedValue({ ok: false, code: 'outcome_kind_mismatch', message: '当前成果没有可交给 GenOffice 的真实文件媒体。' });
+    const { default: OutcomesPage } = await import('../../src/pages/OutcomesPage');
+    render(<OutcomesPage />);
+    fireEvent.click(await screen.findByText('实验数据'));
+    await screen.findAllByRole('button', { name: '保存版本' });
+    expect(screen.getByRole('button', { name: 'Metis Office' })).toBeTruthy();
+    expect(screen.queryByText('PDF / 图片成果')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Metis Office' }));
+    expect(await screen.findByText('当前成果没有可交给 GenOffice 的真实文件媒体。')).toBeTruthy();
   });
 
   it('uses the durable assistant bridge and refreshes only main-committed AI versions', async () => {
@@ -228,6 +315,176 @@ describe('OutcomesPage', () => {
     fireEvent.change(screen.getByPlaceholderText('例如：根据项目中的实验结果重写当前段落'), { target: { value: '审阅当前页' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
     await waitFor(() => expect(metis.chatOutcomeAssistant).toHaveBeenCalledWith({ projectId: 'project-1', outcomeId: 'out-ppt', instruction: '审阅当前页', selection: { type: 'ppt_element', pageId: 'slide-1', elementId: 'text-saved' } }));
+  });
+
+  it('edits a PPT text object directly on the canvas and keeps the edit local until save', async () => {
+    const metis = installMetis();
+    const textElement = { id: 'text-direct', type: 'text' as const, x: 3, y: 3, width: 10, height: 3, locked: false, props: { text: '原始文本' } };
+    const initialPpt = { ...ppt, pages: [{ ...ppt.pages[0], elements: [textElement] }] };
+    const initialVersion = { ...pptVersion, content: initialPpt };
+    metis.listOutcomes.mockResolvedValue([pptOutcome]);
+    metis.getOutcome.mockResolvedValue({ outcome: pptOutcome, version: initialVersion });
+    metis.listOutcomeVersions.mockResolvedValue([initialVersion]);
+    metis.saveOutcome.mockImplementation(async (request: { content: typeof initialPpt }) => ({
+      outcome: { ...pptOutcome, currentVersion: 2, updatedAt: 2 },
+      version: { ...initialVersion, version: 2, content: request.content, note: '保存 PPT Grid 布局', parentVersion: 1, createdAt: 2 },
+    }));
+    const { default: OutcomesPage } = await import('../../src/pages/OutcomesPage');
+    const { container } = render(<OutcomesPage />);
+    fireEvent.click(await screen.findByText('研究汇报'));
+    const element = await waitFor(() => {
+      const node = container.querySelector<HTMLElement>('.ppt-element');
+      if (!node) throw new Error('PPT 文本对象未渲染');
+      return node;
+    });
+    expect(element.getAttribute('contenteditable')).toBe('true');
+    element.textContent = '已直接编辑文本';
+    fireEvent.input(element);
+    expect(metis.saveOutcome).not.toHaveBeenCalled();
+    expect(element.textContent).toBe('已直接编辑文本');
+    const saveButtons = screen.getAllByRole('button', { name: '保存版本' });
+    fireEvent.click(saveButtons[saveButtons.length - 1]!);
+    await waitFor(() => expect(metis.saveOutcome).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.objectContaining({ pages: [expect.objectContaining({ elements: [expect.objectContaining({ props: expect.objectContaining({ text: '已直接编辑文本' }) })] })] }),
+    })));
+  });
+
+  it('keeps the assistant selection in sync when a PPT element is created from the Ribbon', async () => {
+    const metis = installMetis();
+    metis.listOutcomes.mockResolvedValue([pptOutcome]);
+    metis.getOutcome.mockResolvedValue({ outcome: pptOutcome, version: pptVersion });
+    metis.listOutcomeVersions.mockResolvedValue([pptVersion]);
+    metis.saveOutcome.mockImplementation(async (request: { content: typeof ppt }) => ({ outcome: { ...pptOutcome, currentVersion: 2, updatedAt: 2 }, version: { ...pptVersion, version: 2, content: request.content, note: '保存 PPT Grid 布局', parentVersion: 1, createdAt: 2 } }));
+    metis.chatOutcomeAssistant.mockResolvedValue({
+      status: 'completed', model: 'test-model', answer: '已分析该对象。', sources: [], diagnostics: [],
+      userMessage: { id: 'message-u-ribbon', role: 'user', content: '审阅新增对象', sources: [], createdAt: 4 },
+      assistantMessage: { id: 'message-a-ribbon', role: 'assistant', content: '已分析该对象。', sources: [], createdAt: 5 },
+    });
+    const { default: OutcomesPage } = await import('../../src/pages/OutcomesPage');
+    const { container } = render(<OutcomesPage />);
+    fireEvent.click(await screen.findByText('研究汇报'));
+    await screen.findByText('16:9 · 32 × 18 Grid');
+    fireEvent.click(screen.getByRole('button', { name: '文本' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(metis.saveOutcome).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(container.querySelector('.ppt-element.selected')).toBeTruthy());
+    fireEvent.change(screen.getByPlaceholderText('例如：根据项目中的实验结果重写当前段落'), { target: { value: '审阅新增对象' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(metis.chatOutcomeAssistant).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: 'project-1', outcomeId: 'out-ppt', instruction: '审阅新增对象', selection: { type: 'ppt_element', pageId: 'slide-1', elementId: expect.any(String) },
+    })));
+  });
+
+  it('creates the first PPT element from the Ribbon when the saved deck has no pages', async () => {
+    const metis = installMetis();
+    const emptyPpt = { ...ppt, pages: [] };
+    const emptyVersion = { ...pptVersion, content: emptyPpt };
+    metis.listOutcomes.mockResolvedValue([pptOutcome]);
+    metis.getOutcome.mockResolvedValue({ outcome: pptOutcome, version: emptyVersion });
+    metis.listOutcomeVersions.mockResolvedValue([emptyVersion]);
+    const { default: OutcomesPage } = await import('../../src/pages/OutcomesPage');
+    const { container } = render(<OutcomesPage />);
+    fireEvent.click(await screen.findByText('研究汇报'));
+    await screen.findByText('16:9 · 32 × 18 Grid');
+    fireEvent.click(screen.getByRole('button', { name: '文本' }));
+    expect(container.querySelectorAll('.ppt-element')).toHaveLength(1);
+  });
+
+  it('does not persist an untouched empty-deck fallback page when a new slide is added', async () => {
+    const metis = installMetis();
+    const emptyPpt = { ...ppt, pages: [] };
+    const emptyVersion = { ...pptVersion, content: emptyPpt };
+    metis.listOutcomes.mockResolvedValue([pptOutcome]);
+    metis.getOutcome.mockResolvedValue({ outcome: pptOutcome, version: emptyVersion });
+    metis.listOutcomeVersions.mockResolvedValue([emptyVersion]);
+    const { default: OutcomesPage } = await import('../../src/pages/OutcomesPage');
+    render(<OutcomesPage />);
+    fireEvent.click(await screen.findByText('研究汇报'));
+    await screen.findByText('16:9 · 32 × 18 Grid');
+    fireEvent.click(screen.getByRole('button', { name: '新建幻灯片' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(metis.saveOutcome).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.objectContaining({ pages: [expect.objectContaining({ id: 'slide-2' })] }),
+    })));
+  });
+
+  it('filters the empty-deck fallback when saving from the page header', async () => {
+    const metis = installMetis();
+    const emptyPpt = { ...ppt, pages: [] };
+    const emptyVersion = { ...pptVersion, content: emptyPpt };
+    metis.listOutcomes.mockResolvedValue([pptOutcome]);
+    metis.getOutcome.mockResolvedValue({ outcome: pptOutcome, version: emptyVersion });
+    metis.listOutcomeVersions.mockResolvedValue([emptyVersion]);
+    const { default: OutcomesPage } = await import('../../src/pages/OutcomesPage');
+    render(<OutcomesPage />);
+    fireEvent.click(await screen.findByText('研究汇报'));
+    await screen.findByText('16:9 · 32 × 18 Grid');
+    fireEvent.click(screen.getByRole('button', { name: '新建幻灯片' }));
+    fireEvent.click(screen.getAllByRole('button', { name: '保存版本' })[0]!);
+    await waitFor(() => expect(metis.saveOutcome).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.objectContaining({ pages: [expect.objectContaining({ id: 'slide-2' })] }),
+    })));
+  });
+
+  it('keeps the latest PPT assistant selection when a save resolves after the user changes selection', async () => {
+    const metis = installMetis();
+    const originalElement = { id: 'text-original', type: 'text' as const, x: 3, y: 3, width: 10, height: 3, locked: false, props: { text: '原始对象' } };
+    const initialPpt = { ...ppt, pages: [{ ...ppt.pages[0], elements: [originalElement] }] };
+    const initialVersion = { ...pptVersion, content: initialPpt };
+    metis.listOutcomes.mockResolvedValue([pptOutcome]);
+    metis.getOutcome.mockResolvedValue({ outcome: pptOutcome, version: initialVersion });
+    metis.listOutcomeVersions.mockResolvedValue([initialVersion]);
+    metis.chatOutcomeAssistant.mockResolvedValue({
+      status: 'completed', model: 'test-model', answer: '已分析最新选区。', sources: [], diagnostics: [],
+      userMessage: { id: 'message-u-race', role: 'user', content: '检查最新选区', sources: [], createdAt: 4 },
+      assistantMessage: { id: 'message-a-race', role: 'assistant', content: '已分析最新选区。', sources: [], createdAt: 5 },
+    });
+    let resolveSave: ((value: unknown) => void) | undefined;
+    const pendingSave = new Promise<unknown>((resolve) => { resolveSave = resolve; });
+    metis.saveOutcome.mockImplementation((request: unknown) => {
+      const savedRequest = request as { content: typeof initialPpt };
+      return pendingSave.then(() => ({ outcome: { ...pptOutcome, currentVersion: 2, updatedAt: 2 }, version: { ...initialVersion, version: 2, content: savedRequest.content, note: '保存 PPT Grid 布局', parentVersion: 1, createdAt: 2 } }));
+    });
+    const { default: OutcomesPage } = await import('../../src/pages/OutcomesPage');
+    const { container } = render(<OutcomesPage />);
+    fireEvent.click(await screen.findByText('研究汇报'));
+    await screen.findByText('16:9 · 32 × 18 Grid');
+    fireEvent.click(screen.getByRole('button', { name: '文本' }));
+    const elements = container.querySelectorAll<HTMLElement>('.ppt-element');
+    expect(elements).toHaveLength(2);
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(metis.saveOutcome).toHaveBeenCalledTimes(1));
+    fireEvent.click(elements[0]!);
+    resolveSave?.(undefined);
+    await screen.findByText('v2 · 草稿');
+    fireEvent.change(screen.getByPlaceholderText('例如：根据项目中的实验结果重写当前段落'), { target: { value: '检查最新选区' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(metis.chatOutcomeAssistant).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: 'project-1', outcomeId: 'out-ppt', instruction: '检查最新选区', selection: { type: 'ppt_element', pageId: 'slide-1', elementId: 'text-original' },
+    })));
+  });
+
+  it('clears a Word text-range assistant selection when the saved content no longer contains that range', async () => {
+    const metis = installMetis();
+    const shortenedWord = { ...word, blocks: [{ ...word.blocks[0], text: '新' }] };
+    const shortenedVersion = { ...version, version: 2, content: shortenedWord, note: '保存后文本变化', parentVersion: 1, createdAt: 2 };
+    metis.saveOutcome.mockResolvedValue({ outcome: { ...outcome, currentVersion: 2, updatedAt: 2 }, version: shortenedVersion });
+    metis.chatOutcomeAssistant.mockResolvedValue({
+      status: 'completed', model: 'test-model', answer: '已检查。', sources: [], diagnostics: [],
+      userMessage: { id: 'message-u-word-range', role: 'user', content: '检查', sources: [], createdAt: 4 },
+      assistantMessage: { id: 'message-a-word-range', role: 'assistant', content: '已检查。', sources: [], createdAt: 5 },
+    });
+    const { default: OutcomesPage } = await import('../../src/pages/OutcomesPage');
+    const { container } = render(<OutcomesPage />);
+    fireEvent.click(await screen.findByText('研究论文'));
+    await screen.findByText('原始段落。');
+    selectWordText(container, 0, 2);
+    fireEvent.click(screen.getByTitle('加粗'));
+    fireEvent.click(screen.getByRole('button', { name: '保存', exact: true }));
+    await waitFor(() => expect(metis.saveOutcome).toHaveBeenCalledTimes(1));
+    fireEvent.change(screen.getByPlaceholderText('例如：根据项目中的实验结果重写当前段落'), { target: { value: '检查' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(metis.chatOutcomeAssistant).toHaveBeenCalledWith({ projectId: 'project-1', outcomeId: 'out-1', instruction: '检查' }));
   });
 
   it('persists all supported PPT element types and the selected 4:3 Grid in one real outcome save request', async () => {
@@ -393,7 +650,7 @@ describe('OutcomesPage', () => {
     await waitFor(() => expect(metis.saveOutcome).toHaveBeenCalledTimes(1));
     await screen.findByRole('option', { name: '损坏布局模板' });
     fireEvent.click(screen.getByRole('button', { name: '应用模板内容' }));
-    expect(await screen.findByText(/模板「损坏布局模板」的页面布局不完整/u)).toBeTruthy();
+    expect(await screen.findByText(/模板「损坏布局模板」的比例、主题或页面布局数据无效，当前成果没有被修改/u)).toBeTruthy();
     expect(screen.getByText('封面')).toBeTruthy();
     expect(metis.saveOutcome).toHaveBeenCalledTimes(1);
   });
@@ -607,6 +864,28 @@ describe('OutcomesPage', () => {
     await waitFor(() => expect(metis.chatOutcomeAssistant).toHaveBeenCalledWith({ projectId: 'project-1', outcomeId: 'out-1', instruction: '检查列表项', selection: { type: 'word_block', blockId: 'p-1', start: word.blocks[0].text.length, end: word.blocks[0].text.length } }));
   });
 
+  it('splits a Word paragraph at the caret when Enter is pressed', async () => {
+    const { default: OutcomesPage } = await import('../../src/pages/OutcomesPage');
+    const { container } = render(<OutcomesPage />);
+    fireEvent.click(await screen.findByText('研究论文'));
+    const editable = await waitFor(() => {
+      const node = container.querySelector<HTMLElement>('[data-block="p-1"]');
+      if (!node?.firstChild) throw new Error('Word 编辑块未渲染');
+      return node;
+    });
+    const text = editable.firstChild!;
+    const range = document.createRange();
+    range.setStart(text, 2);
+    range.collapse(true);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    fireEvent.keyDown(editable, { key: 'Enter' });
+    await waitFor(() => expect(container.querySelectorAll('[data-block]').length).toBe(2));
+    expect(container.querySelector('[data-block="p-1"]')?.textContent).toBe('原始');
+    expect(container.querySelector('[data-block="paragraph-2"]')?.textContent).toBe('段落。');
+  });
+
   it('applies Word toolbar formatting and a table through the same saveable document, with reversible history', async () => {
     const metis = installMetis();
     const { default: OutcomesPage } = await import('../../src/pages/OutcomesPage');
@@ -639,7 +918,8 @@ describe('OutcomesPage', () => {
     if (!editable) throw new Error('Word 编辑块未渲染');
     editable.textContent = '保存失败后仍保留的草稿。';
     fireEvent.input(editable);
-    fireEvent.click(screen.getByRole('button', { name: '保存版本' }));
+    const saveButtons = screen.getAllByRole('button', { name: '保存版本' });
+    fireEvent.click(saveButtons[saveButtons.length - 1]!);
     expect(await screen.findByText(/保存未完成/u)).toBeTruthy();
     expect(metis.saveOutcome).toHaveBeenCalledTimes(1);
     expect(screen.getByText('保存失败后仍保留的草稿。')).toBeTruthy();
@@ -727,7 +1007,7 @@ describe('OutcomesPage', () => {
     if (!page) throw new Error('Word 页面预览未渲染');
     expect(page.style.getPropertyValue('--word-page-width')).toBe('816px');
     expect(page.style.getPropertyValue('--word-page-margin-left')).toBe('168px');
-    fireEvent.click(screen.getByTitle('打开排版设置'));
+    fireEvent.click(screen.getByRole('button', { name: '排版' }));
     expect((screen.getByLabelText('正文字体') as HTMLInputElement).value).toBe('仿宋');
     expect((screen.getByLabelText('左边距') as HTMLInputElement).value).toBe('4.45');
     fireEvent.click(screen.getByRole('button', { name: '返回编辑' }));
@@ -942,6 +1222,41 @@ describe('OutcomesPage', () => {
     await waitFor(() => expect(metis.chatOutcomeAssistant).toHaveBeenCalledWith({ projectId: 'project-1', outcomeId: 'out-1', instruction: '请在不改变含义的前提下改写所选文本，使其更清晰、准确。', selection: { type: 'word_table_cell', blockId: 't-1', row: 0, column: 1, start: 0, end: 4 } }));
   });
 
+  it('clears a Word table-cell assistant selection after a save when rows may have moved', async () => {
+    const metis = installMetis();
+    const tableWord = { type: 'word' as const, blocks: [
+      { id: 'p-1', kind: 'paragraph' as const, text: '申报表正文。' },
+      { id: 't-1', kind: 'table' as const, rows: [['项目名称', '相同'], ['负责人', '保留']] },
+    ], page: { paper: 'A4' }, header: '', footer: '' };
+    const movedTableWord = { ...tableWord, blocks: [
+      tableWord.blocks[0],
+      { ...tableWord.blocks[1], rows: [['新增行', '相同'], ['项目名称', '相同'], ['负责人', '保留']] },
+    ] };
+    const tableVersion = { ...version, content: tableWord };
+    const movedVersion = { ...version, version: 2, content: movedTableWord, note: '保存后表格行变化', parentVersion: 1, createdAt: 2 };
+    metis.getOutcome.mockResolvedValue({ outcome, version: tableVersion });
+    metis.listOutcomeVersions.mockResolvedValue([tableVersion]);
+    metis.saveOutcome.mockResolvedValue({ outcome: { ...outcome, currentVersion: 2, updatedAt: 2 }, version: movedVersion });
+    const { default: OutcomesPage } = await import('../../src/pages/OutcomesPage');
+    const { container } = render(<OutcomesPage />);
+    fireEvent.click(await screen.findByText('研究论文'));
+    await waitFor(() => expect(container.querySelectorAll('.word-page:not(.word-page--measure) td').length).toBeGreaterThan(0));
+    const cell = Array.from(container.querySelectorAll<HTMLElement>('.word-page:not(.word-page--measure) td')).find((item) => item.textContent === '相同');
+    const textNode = cell?.firstChild;
+    if (!cell || !textNode) throw new Error('表格单元格未渲染');
+    const range = document.createRange();
+    range.setStart(textNode, 0); range.setEnd(textNode, 2);
+    const selection = window.getSelection();
+    selection?.removeAllRanges(); selection?.addRange(range);
+    fireEvent.keyUp(cell);
+    expect(await screen.findByRole('dialog', { name: '所选文本 AI 操作' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '保存', exact: true }));
+    await waitFor(() => expect(metis.saveOutcome).toHaveBeenCalledTimes(1));
+    fireEvent.change(screen.getByPlaceholderText('例如：根据项目中的实验结果重写当前段落'), { target: { value: '检查表格' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(metis.chatOutcomeAssistant).toHaveBeenCalledWith({ projectId: 'project-1', outcomeId: 'out-1', instruction: '检查表格' }));
+  });
+
   it('moves an outcome into the trash and restores it from the trash dialog', async () => {
     const metis = installMetis();
     const { default: OutcomesPage } = await import('../../src/pages/OutcomesPage');
@@ -1004,7 +1319,8 @@ describe('OutcomesPage', () => {
     expect(await screen.findByAltText('AI-generated-cover.png')).toBeTruthy();
     expect(metis.readOutcomeMedia).toHaveBeenCalledWith({ projectId: 'project-1', outcomeId: 'out-image', mediaId: 'media-generated' });
     expect(metis.saveOutcome).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: '保存图片版本' }));
+    const saveButtons = screen.getAllByRole('button', { name: '保存版本' });
+    fireEvent.click(saveButtons[saveButtons.length - 1]!);
     await waitFor(() => expect(metis.saveOutcome).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'project-1', outcomeId: 'out-image', actor: 'human', content: { ...imageDocument, media: generatedMedia } })));
   });
 

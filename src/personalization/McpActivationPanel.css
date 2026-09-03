@@ -35,7 +35,7 @@
   border: 1px solid var(--primary);
   border-radius: 9px;
   background: var(--primary);
-  color: var(--text-on-primary, #fff);
+  color: var(--text-on-primary);
   font: inherit;
   font-weight: 650;
   cursor: pointer;
@@ -69,9 +69,9 @@
 }
 
 .mcp-activation-panel__alert {
-  border: 1px solid var(--danger, #c73939);
-  background: color-mix(in srgb, var(--danger, #c73939) 10%, transparent);
-  color: var(--danger, #a92828);
+  border: 1px solid var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--danger);
   font-size: 13px;
   line-height: 1.5;
 }
@@ -81,8 +81,8 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 6px 12px;
-  border: 1px solid var(--success, #2b8a5a);
-  background: color-mix(in srgb, var(--success, #2b8a5a) 9%, transparent);
+  border: 1px solid var(--success);
+  background: color-mix(in srgb, var(--success) 9%, transparent);
 }
 
 .mcp-activation-panel__success ul {

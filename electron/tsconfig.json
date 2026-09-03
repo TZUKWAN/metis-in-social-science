@@ -1,4 +1,4 @@
-{
+﻿{
   "compilerOptions": {
     "target": "ES2023",
     "module": "ESNext",
@@ -12,6 +12,6 @@
     "declaration": false,
     "sourceMap": true
   },
-  "include": ["./**/*.ts", "../engine/**/*.ts", "../src/global.d.ts"],
+  "include": ["./**/*.ts", "../engine/**/*.ts", "../vendor/genoffice/**/*.ts", "../src/global.d.ts"],
   "exclude": ["../node_modules", "../tests"]
 }

@@ -52,11 +52,11 @@ interface GoalCardInlineProps {
 // ─── Status color map ────────────────────────────────────────
 
 const STATUS_COLORS: Record<string, string> = {
-  pending: 'var(--text-muted, #94a3b8)',
-  running: 'var(--status-running, #3b82f6)',
-  completed: 'var(--status-completed, #22c55e)',
-  failed: 'var(--status-failed, #ef4444)',
-  skipped: 'var(--text-muted, #94a3b8)',
+  pending: 'var(--text-muted)',
+  running: 'var(--status-running)',
+  completed: 'var(--status-completed)',
+  failed: 'var(--status-failed)',
+  skipped: 'var(--text-muted)',
 };
 
 const STATUS_LABEL_KEYS: Record<string, string> = {
@@ -97,7 +97,7 @@ const STATUS_CLASSES: Record<GoalStepStatus['status'], string> = {
  */
 const INTERNAL_EXECUTION_COPY = /\b(?:agentloop|provider|mcp|runtime)\b/i;
 
-function isInternalExecutionCopy(value: string | undefined): boolean {
+export function isInternalExecutionCopy(value: string | undefined): boolean {
   return Boolean(value && INTERNAL_EXECUTION_COPY.test(value));
 }
 
@@ -124,7 +124,7 @@ export default function GoalCardInline({
     paused: t('goal.paused'),
     completed: t('chat.goalCompleted'),
     failed: t('chat.goalFailed'),
-    cancelled: t('chat.goalCancel'),
+    cancelled: locale === 'zh' ? '已取消' : 'Cancelled',
     unknown: t('chat.goalUnavailable'),
   };
   const safeText = (value: string) => presentSafeMarkdownText(value, uiMode, locale);
@@ -163,7 +163,16 @@ export default function GoalCardInline({
 
       {data.pauseRequested && data.phase === 'executing' && (
         <div className="goal-card-pause-notice" data-testid="goal-pause-requested" role="status">
-          {locale === 'zh' ? '已请求暂停：将在当前步骤结束后保存断点。' : 'Pause requested: the checkpoint will be saved after the current step.'}
+          {locale === 'zh'
+            ? '暂停请求中：当前步骤跑完后即暂停，届时按钮区会出现「继续」。'
+            : 'Pause requested: the run pauses after the current step; a Resume button will appear.'}
+        </div>
+      )}
+      {data.phase === 'paused' && (
+        <div className="goal-card-pause-notice" role="status">
+          {locale === 'zh'
+            ? '已暂停：点下方「继续」从当前步骤恢复执行。'
+            : 'Paused: click Resume below to continue from the current step.'}
         </div>
       )}
 
@@ -185,7 +194,7 @@ export default function GoalCardInline({
                 <div
                   className="progress-fill"
                   style={{
-                    background: data.phase === 'failed' ? 'var(--status-failed, #ef4444)' : 'var(--status-running, #3b82f6)',
+                    background: data.phase === 'failed' ? 'var(--status-failed)' : 'var(--status-running)',
                     width: `${progressPercent}%`,
                   }}
                 />
@@ -266,7 +275,7 @@ export default function GoalCardInline({
       {/* Action buttons */}
       <div className="goal-card-actions">
         {data.phase === 'executing' && onPause && (
-          <button type="button" className="btn-sm btn-secondary" data-testid="goal-pause" disabled={data.pauseRequested} onClick={onPause}>{t('goal.paused')}</button>
+          <button type="button" className="btn-sm btn-secondary" data-testid="goal-pause" disabled={data.pauseRequested} onClick={onPause}>{data.pauseRequested ? (locale === 'zh' ? '暂停请求中…' : 'Pausing…') : (locale === 'zh' ? '暂停' : 'Pause')}</button>
         )}
         {(data.phase === 'executing' || data.phase === 'plan_ready' || data.phase === 'paused') && onCancel && (
           <button type="button" className="btn-sm btn-secondary" onClick={onCancel}>{t('chat.goalCancel')}</button>

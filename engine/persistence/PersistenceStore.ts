@@ -251,6 +251,8 @@ export class PersistenceStore {
     this.migratePaperProjectLinks();
     this.migrateNoteScopes();
     this.migrateSessionsProjectId();
+    this.migrateSubmissionTargeting();
+    this.migrateSubmissionCorrespondenceAttachments();
     this.migrateCollections();
     this.migrateArtifactContent();
     this.migrateFtsIndex();
@@ -419,6 +421,32 @@ export class PersistenceStore {
     ).get();
     if (!idx) {
       this.db.exec('CREATE INDEX idx_sessions_project_id ON sessions (project_id);');
+    }
+  }
+
+  /** Idempotent: submission_cases gained targeting_json (投稿选刊前置条件). */
+  private migrateSubmissionTargeting(): void {
+    const tables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='submission_cases'").all() as Array<{ name: string }>;
+    if (tables.length === 0) return; // fresh DB: SCHEMA_SQL creates it with the column
+    const col = this.db.prepare(
+      "SELECT 1 FROM pragma_table_info('submission_cases') WHERE name = 'targeting_json'",
+    ).get();
+    if (!col) {
+      this.db.exec("ALTER TABLE submission_cases ADD COLUMN targeting_json TEXT NOT NULL DEFAULT '';");
+    }
+  }
+
+  /** Idempotent: submission_correspondence gained attachment columns（决定信附件解析）. */
+  private migrateSubmissionCorrespondenceAttachments(): void {
+    const tables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='submission_correspondence'").all() as Array<{ name: string }>;
+    if (tables.length === 0) return; // fresh DB: SCHEMA_SQL creates it with the columns
+    for (const column of ['attachment_names', 'attachment_texts'] as const) {
+      const col = this.db.prepare(
+        `SELECT 1 FROM pragma_table_info('submission_correspondence') WHERE name = '${column}'`,
+      ).get();
+      if (!col) {
+        this.db.exec(`ALTER TABLE submission_correspondence ADD COLUMN ${column} TEXT NOT NULL DEFAULT '[]';`);
+      }
     }
   }
 

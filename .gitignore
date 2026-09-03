@@ -81,3 +81,13 @@ docs/METIS_REAL_E2E_SESSION.json
 
 # Local resumable agent state is operational metadata, not product source.
 /.codex/CODEX_STATE.md
+
+# Agent workspaces & local-only artifacts (2026-09-01)
+.agents/
+.claude/
+CLAUDE_STATE.md
+HANDOFF_NEXT_AGENT.md
+NUL
+diag-record.mjs
+diff-snap.mjs
+metis-app*.log

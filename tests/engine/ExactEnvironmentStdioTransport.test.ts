@@ -12,6 +12,18 @@ afterEach(() => {
 });
 
 describe('ExactEnvironmentStdioTransport', () => {
+  it('waits for a stubborn child to be killed before close resolves', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'metis-mcp-stubborn-'));
+    roots.push(root);
+    const entry = path.join(root, 'stubborn.mjs');
+    fs.writeFileSync(entry, "process.stdin.on('end', () => {}); setInterval(() => {}, 1000);", 'utf8');
+    const transport = new ExactEnvironmentStdioTransport(root);
+    await transport.start([process.execPath, entry], {});
+    const started = Date.now();
+    await transport.close();
+    expect(Date.now() - started).toBeGreaterThanOrEqual(400);
+  });
+
   it('does not inherit the Metis parent environment and never invokes a shell', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'metis-mcp-exact-env-'));
     roots.push(root);

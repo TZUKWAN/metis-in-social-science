@@ -124,7 +124,7 @@ export class NewApiClient {
   }
 
   async getStatus(baseUrl: string): Promise<StationStatus> {
-    let payload: ApiEnvelope & Record<string, unknown> | null = null;
+    let payload: ApiEnvelope & Record<string, unknown> | null;
     try {
       const response = await this.#request(joinUrl(baseUrl, '/api/status'), { method: 'GET' });
       if (!response.ok) return StationStatus_unreachable();

@@ -15,7 +15,7 @@
   min-width: 0;
   width: 100%;
   height: 36px;
-  background: var(--bg-card, #fff);
+  background: var(--bg-card);
   border-bottom: 1px solid var(--border-light, var(--border-light));
   flex-shrink: 0;
   container-type: inline-size;
@@ -55,7 +55,7 @@
 
 .object-tabs__retry-btn:hover {
   background: var(--accent);
-  color: #fff;
+  color: var(--text-on-accent);
 }
 
 /* ── Loading state ── */
@@ -102,7 +102,7 @@
 }
 
 .object-tabs__empty-desc {
-  color: var(--text-faint, #a0aec0);
+  color: var(--text-faint);
   font-size: 11px;
   flex: 1;
   min-width: 0;
@@ -129,7 +129,7 @@
   padding: 0;
   border: 1px solid var(--border-light, var(--border-light));
   border-radius: 4px;
-  background: var(--bg-card, #fff);
+  background: var(--bg-card);
   color: var(--text-muted, var(--text-muted));
   cursor: pointer;
   transform: translateY(-50%);
@@ -138,7 +138,7 @@
 }
 
 .object-tabs__scroll-arrow:hover {
-  background: var(--bg-hover, #edf2f7);
+  background: var(--bg-hover);
   color: var(--text-main, var(--border));
 }
 
@@ -212,7 +212,7 @@
 
 .object-tabs__tab:hover {
   color: var(--text-main, var(--border));
-  background: var(--bg-hover, #edf2f7);
+  background: var(--bg-hover);
 }
 
 .object-tabs__tab:active {
@@ -311,7 +311,7 @@
 
 .object-tabs__tab-close:hover,
 .object-tabs__tab-close:focus-visible {
-  background: var(--bg-hover, #edf2f7);
+  background: var(--bg-hover);
   color: var(--text-main, var(--border));
 }
 
@@ -358,7 +358,7 @@
   inset-inline-start: 0;
   background: linear-gradient(
     to right,
-    var(--bg-card, #fff) 10%,
+    var(--bg-card) 10%,
     transparent
   );
 }
@@ -367,7 +367,7 @@
   inset-inline-end: 0;
   background: linear-gradient(
     to left,
-    var(--bg-card, #fff) 10%,
+    var(--bg-card) 10%,
     transparent
   );
 }
@@ -381,7 +381,7 @@
 [dir='rtl'] .object-tabs__fade--left {
   background: linear-gradient(
     to left,
-    var(--bg-card, #fff) 10%,
+    var(--bg-card) 10%,
     transparent
   );
 }
@@ -389,7 +389,7 @@
 [dir='rtl'] .object-tabs__fade--right {
   background: linear-gradient(
     to right,
-    var(--bg-card, #fff) 10%,
+    var(--bg-card) 10%,
     transparent
   );
 }

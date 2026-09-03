@@ -128,6 +128,8 @@ export class WeChatBotService {
   private state: WeChatBotState;
   private phase: WeChatBotPhase = 'unbound';
   private qrCode = '';
+  /** 二维码渲染负载（网关返回的绑定 URL）；qrCode 仅作轮询 token。 */
+  private qrRenderContent = '';
   private qrVerifyCode = '';
   private busy = false;
   private running = false;
@@ -239,6 +241,7 @@ export class WeChatBotService {
     this.state.getUpdatesBuf = '';
     this.state.tokenCipher = '';
     this.phase = 'unbound';
+    this.qrRenderContent = '';
     this.saveState();
   }
 
@@ -253,7 +256,7 @@ export class WeChatBotService {
       busy: this.busy,
       lastError: this.state.lastError,
       lastInboundAt: this.state.lastInboundAt,
-      qrContent: this.qrCode,
+      qrContent: this.qrRenderContent || this.qrCode,
       menuWaiting: this.pendingMenu !== null,
       recentLog: [...this.recentLog],
     };
@@ -277,6 +280,7 @@ export class WeChatBotService {
       // immediately reported as expired, so keep the raw token for status
       // polls and return the render payload to the UI.
       this.qrCode = qr.qrcode ?? content;
+      this.qrRenderContent = content;
       this.qrVerifyCode = '';
       this.phase = 'login_pending';
       return { ok: true, qrContent: content };
@@ -361,9 +365,14 @@ export class WeChatBotService {
         default:
           return { phase: this.phase, ok: false };
       }
-    } catch {
-      // Network/gateway errors during polling: keep waiting (ZCode behaves the same).
-      return { phase: this.phase, ok: false };
+    } catch (error) {
+      // Network/gateway errors during polling: keep waiting, but record the real
+      // cause so the settings UI and app log show why instead of a generic failure.
+      const message = error instanceof Error ? error.message : String(error);
+      this.state.lastError = `扫码状态查询失败：${message}`;
+      this.saveState();
+      console.warn(`[WeChatBot] poll error: ${message}`);
+      return { phase: this.phase, ok: false, error: message };
     }
   }
 

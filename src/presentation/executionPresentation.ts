@@ -47,6 +47,13 @@ function isLocalFileContext(text: string, start: number): boolean {
 }
 
 function classifyPosixPath(match: string, text: string, start: number): 'redact' | 'preserve' {
+  // CJK 开头的斜杠 token 不是 POSIX 路径（2026-08-29 刘总报告）：中文工作流
+  // 步骤名「父名 / 子名」、中文正文「词 / 词」此前在这里被整体吞成 [FILE]，
+  // 看板任务名随之显示为「父名 [FILE]」。真实 POSIX 路径段几乎不以 CJK 开头；
+  // 带盘符/UNC/home 等特征的路径仍由其余分支正常脱敏。
+  if (/^\/\s*[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/.test(match)) {
+    return 'preserve';
+  }
   const localPrefix = /^\/(?:home|tmp|Users|etc|usr|var|private|projects|root|opt|bin|lib|sbin|boot|dev|proc|sys|mnt|media|Volumes)(?:[/]|$)/i;
   if (localPrefix.test(match)) return 'redact';
   if (/^\/[a-zA-Z0-9._-]+$/.test(match)) return 'redact';
@@ -268,6 +275,8 @@ const ACTION_LABELS: Record<string, Record<PresentationLocale, string>> = {
   search_library: { en: 'Search the research library', zh: '搜索资料库' },
   search_papers: { en: 'Search for research literature', zh: '检索研究文献' },
   arxiv_search: { en: 'Search arXiv', zh: '检索 arXiv 文献' },
+  journal_directory_search: { en: 'Search journal directories', zh: '检索期刊目录' },
+  journal_directory_detail: { en: 'Look up journal submission details', zh: '查询期刊投稿详情' },
   fulltext_search: { en: 'Search document text', zh: '检索文档全文' },
   read_pdf: { en: 'Read a PDF document', zh: '读取 PDF 文档' },
   import_papers: { en: 'Import research literature', zh: '导入研究文献' },
@@ -287,6 +296,7 @@ const ACTION_LABELS: Record<string, Record<PresentationLocale, string>> = {
   claim_manifest_update: { en: 'Update a research claim', zh: '更新研究论断' },
   'agent.window_renewed': { en: 'Turn window limit reached; context auto-compressed and the run continues in a new window', zh: '已自动压缩上下文并继续执行（新的回合窗口）' },
   'agent.provider_failed': { en: 'Model service unreachable after repeated failures; stopped honestly', zh: '模型服务连续失败，已如实停止' },
+  'agent.agent_run_active': { en: 'A research task is already running. Wait for it to finish (or cancel it on the task card) before starting a new one.', zh: '已有研究任务正在执行。请等待其完成（或在任务卡片上取消）后再发起新任务。' },
 };
 
 const SECRET_KEY_SOURCE = String.raw`[a-z0-9]*?(?:api[_-]?key|access[_-]?key(?:[_-]?id)?|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|token|password|passwd|passphrase|client[_-]?secret|secret|private[_-]?key|signing[_-]?key|credential)`;
@@ -498,6 +508,18 @@ export function presentExecutionError(
   }
 
   const lower = sanitized.toLowerCase();
+  if (lower.includes('agent_run_active') || lower.includes('已有研究任务正在执行')) {
+    return locale === 'zh'
+      ? '已有研究任务正在执行。请等待其完成（或在任务卡片上取消）后再发起新任务。'
+      : 'A research task is already running. Wait for it to finish (or cancel it on the task card) before starting a new one.';
+  }
+  if (lower.includes('no_active_run')) {
+    // 2026-08-29 刘总报告「中断之后直接无法继续」：应用重启后内存运行注册
+    // 表为空，实时引导不可用；此时正确动作是从断点恢复，而不是报错。
+    return locale === 'zh'
+      ? '当前没有正在执行的运行（应用可能刚重启）。重新发送消息即可从断点继续。'
+      : 'No run is currently active (the app may have just restarted). Send the message again to resume from the checkpoint.';
+  }
   if (
     lower.includes('api key')
     || lower.includes('unauthorized')

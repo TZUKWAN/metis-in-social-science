@@ -28,7 +28,7 @@
   padding: 0.375rem 0.625rem;
   border: 1px solid var(--border-color, var(--border-light));
   border-radius: 0.375rem;
-  background: var(--surface, #fff);
+  background: var(--surface);
   color: var(--text, var(--bg-code-block));
   font-size: 0.8125rem;
   line-height: 1.25;
@@ -47,21 +47,21 @@
 }
 
 .artifact-version-review-actions__btn--approve {
-  border-color: var(--success-border, #38a169);
-  color: var(--success-text, #22543d);
-  background: var(--success-bg, #f0fff4);
+  border-color: var(--success-border);
+  color: var(--success-text);
+  background: var(--success-bg);
 }
 
 .artifact-version-review-actions__btn--reject {
-  border-color: var(--danger-border, #e53e3e);
-  color: var(--danger-text, #742a2a);
+  border-color: var(--danger-border);
+  color: var(--danger-text);
   background: var(--danger-bg, var(--bg-danger-hover));
 }
 
 .artifact-version-review-actions__btn--request {
-  border-color: var(--warning-border, #d69e2e);
-  color: var(--warning-text, #744210);
-  background: var(--warning-bg, #fffaf0);
+  border-color: var(--warning-border);
+  color: var(--warning-text);
+  background: var(--warning-bg);
 }
 
 .artifact-version-review-actions__spinner {

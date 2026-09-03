@@ -26,10 +26,14 @@ let root: string;
 let store: PersistenceStore;
 let repository: PersonalizationRepository;
 
+// 运行记录完整性签名（PersonalizationRepository 硬化后必传）：保存与校验
+// 场景运行记录需要密钥，测试用固定密钥与 ScenarioWorkflowService.test 一致。
+const INTEGRITY_SECRET = Buffer.alloc(32, 21);
+
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'metis-run-progression-'));
   store = new PersistenceStore(path.join(root, 'progression.db'));
-  repository = new PersonalizationRepository(store.raw);
+  repository = new PersonalizationRepository(store.raw, INTEGRITY_SECRET);
 });
 
 afterEach(() => {

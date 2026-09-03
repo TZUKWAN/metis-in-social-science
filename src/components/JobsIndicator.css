@@ -89,8 +89,8 @@
   color: var(--text-muted);
 }
 
-.jobs-indicator__item--done .jobs-indicator__status { color: var(--success, #2e7d32); }
-.jobs-indicator__item--failed .jobs-indicator__status { color: var(--status-danger, #b3261e); }
+.jobs-indicator__item--done .jobs-indicator__status { color: var(--success); }
+.jobs-indicator__item--failed .jobs-indicator__status { color: var(--status-danger); }
 
 .jobs-indicator__progress {
   margin-top: 5px;
@@ -109,7 +109,7 @@
 
 .jobs-indicator__error {
   margin-top: 4px;
-  color: var(--status-danger, #b3261e);
+  color: var(--status-danger);
   font-size: 10.5px;
   overflow-wrap: anywhere;
 }

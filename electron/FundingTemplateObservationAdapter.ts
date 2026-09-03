@@ -799,6 +799,234 @@ function inspectDocxArchive(bytes: Buffer): FundingDocxStructureSummary {
   };
 }
 
+/**
+ * DOCX 申报书观察：Word 没有可信的最终渲染坐标，因此这里按单列文档流合成
+ * 确定性的顺序布局（x/宽度取页边距，y 按段落高度累加、溢出换页）。坐标只用于
+ * 满足引擎契约与保持块顺序，不代表渲染位置；文本、样式与表格结构均为真实解析。
+ */
+function observeDocx(
+  bytes: Buffer,
+  request: FundingTemplateObservationFileRequest,
+): FundingTemplateObservationDocument {
+  if (bytes.length < 4 || bytes.readUInt32LE(0) !== LOCAL_SIGNATURE) {
+    throw new AdapterFailure('invalid_docx', 'DOCX ZIP signature is invalid');
+  }
+  const entries = parseZipEntries(bytes);
+  const extracted = new Map<string, Buffer>();
+  for (const entry of entries) {
+    if (entry.name.endsWith('/')) continue;
+    if (/^(?:word\/vbaProject\.bin|word\/activeX\/|word\/embeddings\/)/iu.test(entry.name)) {
+      throw new AdapterFailure('unsafe_archive', 'DOCX active or embedded content is rejected');
+    }
+    if (entry.name === '[Content_Types].xml' || entry.name === 'word/document.xml' || entry.name === 'word/styles.xml' || entry.name.endsWith('.rels')) {
+      extracted.set(entry.name, extractZipEntry(bytes, entry));
+    }
+  }
+  const contentTypesBytes = extracted.get('[Content_Types].xml');
+  const documentBytes = extracted.get('word/document.xml');
+  if (!contentTypesBytes || !documentBytes) {
+    throw new AdapterFailure('invalid_docx', 'DOCX required document parts are missing');
+  }
+  ensureRelationshipsAreInternal(extracted);
+  const contentTypes = decodeXmlText(safeXml(contentTypesBytes, 'DOCX content types'));
+  if (/macroEnabled|vnd\.ms-office\.vbaProject/iu.test(contentTypes)) {
+    throw new AdapterFailure('unsafe_archive', 'Macro-enabled Word packages are rejected');
+  }
+  if (!/wordprocessingml\.document\.main\+xml/iu.test(contentTypes)) {
+    throw new AdapterFailure('invalid_docx', 'DOCX main document content type is invalid');
+  }
+  const documentXml = safeXml(documentBytes, 'DOCX main document');
+  const stylesBytes = extracted.get('word/styles.xml');
+  const stylesXml = stylesBytes ? safeXml(stylesBytes, 'DOCX styles') : null;
+  const inspection = inspectDocx(documentXml, stylesXml);
+  const docStyles = inspection.styles;
+  const widthPt = inspection.pageSetup?.widthPt ?? 595;
+  const heightPt = inspection.pageSetup?.heightPt ?? 842;
+  const marginsPt = inspection.pageSetup?.marginsPt ?? { top: 72, right: 72, bottom: 72, left: 72 };
+  if (marginsPt.left + marginsPt.right >= widthPt || marginsPt.top + marginsPt.bottom >= heightPt) {
+    throw new AdapterFailure('observation_invalid', 'DOCX page setup margins exceed the page');
+  }
+
+  const styleIdFor = (docStyleId: string | null): string | null => {
+    if (!docStyleId) return null;
+    return `docx-style-${sha256(docStyleId).slice(0, 24)}`;
+  };
+  const styleMap = new Map<string, FundingStyleObservation>();
+  const styleByIdHash = new Map<string, FundingStyleObservation>();
+  for (const style of docStyles) {
+    const safeId = styleIdFor(style.styleId) ?? `docx-style-${sha256(style.styleId).slice(0, 24)}`;
+    styleMap.set(safeId, { ...style, styleId: safeId });
+    styleByIdHash.set(style.styleId, styleMap.get(safeId)!);
+  }
+  const fontSizeFor = (docStyleId: string | null): number => styleByIdHash.get(docStyleId ?? '')?.fontSizePt ?? 12;
+
+  const contentWidth = Math.max(40, widthPt - marginsPt.left - marginsPt.right);
+  const contentBottom = heightPt - marginsPt.bottom;
+  const pages: FundingTemplateObservationDocument['pages'] = [
+    { pageNumber: 1, widthPt, heightPt, observedMarginsPt: marginsPt },
+  ];
+  const blocks: FundingTemplateObservationDocument['blocks'] = [];
+  let pageNumber = 1;
+  let cursorY = marginsPt.top;
+  let ordinal = 0;
+  let blockCount = 0;
+
+  const advancePage = (): void => {
+    pageNumber += 1;
+    if (pageNumber > FUNDING_TEMPLATE_LIMITS.pages) {
+      throw new AdapterFailure('pdf_limit_exceeded', 'DOCX layout exceeds the observation page boundary');
+    }
+    pages.push({ pageNumber, widthPt, heightPt, observedMarginsPt: marginsPt });
+    cursorY = marginsPt.top;
+  };
+  const pushParagraph = (text: string, docStyleId: string | null, fontSizePt: number, breaksPage: boolean): void => {
+    if (breaksPage && cursorY > marginsPt.top) advancePage();
+    const lineHeight = Math.max(14, fontSizePt * 1.5);
+    const lines = Math.max(1, Math.ceil(text.length / 42));
+    let height = lineHeight * lines;
+    if (cursorY + height > contentBottom && cursorY > marginsPt.top) {
+      // 块高于整页时截断到本页（不虚构跨页坐标），其余内容继续流式布局。
+      height = Math.max(lineHeight, contentBottom - cursorY);
+    }
+    const bounds = safeBounds(marginsPt.left, cursorY, contentWidth, height, widthPt, heightPt);
+    if (!bounds) return;
+    cursorY = bounds.y + bounds.height;
+    const styleId = styleIdFor(docStyleId);
+    blocks.push({
+      kind: 'paragraph',
+      blockId: `docx-p${pageNumber}-${ordinal + 1}`,
+      pageNumber,
+      ordinal,
+      bounds,
+      text: text.slice(0, FUNDING_TEMPLATE_LIMITS.textCharsPerBlock),
+      contentRole: inferContentRole(text, fontSizePt, 12),
+      styleId,
+    });
+    ordinal += 1;
+    blockCount += 1;
+    if (blockCount > FUNDING_TEMPLATE_LIMITS.blocks) {
+      throw new AdapterFailure('pdf_limit_exceeded', 'DOCX block count exceeds the observation boundary');
+    }
+  };
+
+  // 单遍扫描 document.xml 的顶层段落与表格，保持文档顺序。
+  const body = outerXmlSection(documentXml, 'w:body');
+  let cursor = body ? body.indexOf('>') + 1 : 0;
+  const bodyEnd = body ? body.lastIndexOf('</w:body>') : 0;
+  while (cursor > 0 && cursor < bodyEnd) {
+    const next = body!.indexOf('<w:', cursor);
+    if (next < 0 || next >= bodyEnd) break;
+    const name = body!.slice(next).match(/^<w:(p|tbl)\b/u)?.[1];
+    if (!name) {
+      const tagEnd = body!.indexOf('>', next);
+      cursor = tagEnd < 0 ? bodyEnd : tagEnd + 1;
+      continue;
+    }
+    const end = xmlElementEnd(body!, next, `w:${name}`);
+    if (end < 0) break;
+    const elementXml = body!.slice(next, end);
+    cursor = end;
+    if (name === 'p') {
+      const text = extractText(elementXml);
+      if (text.length === 0) continue;
+      const docStyleId = attribute(elementXml.match(/<w:pStyle\b[^>]*\/?\s*>/iu)?.[0] ?? '', 'val');
+      const fontSizePt = fontSizeFor(docStyleId);
+      const breaksPage = /<w:br\b[^>]*w:type\s*=\s*["']page["']/iu.test(elementXml);
+      pushParagraph(text, docStyleId, fontSizePt, breaksPage);
+      continue;
+    }
+    // 表格：真实解析行列与单元格文本，坐标按行高合成，单元格 bounds 置空（契约允许）。
+    const rows = [...elementXml.matchAll(/<w:tr\b[^>]*>([\s\S]*?)<\/w:tr>/giu)];
+    if (rows.length === 0) continue;
+    interface PendingCell { rowIndex: number; columnIndex: number; text: string; docStyleId: string | null }
+    const pendingCells: PendingCell[] = [];
+    let columnCount = 0;
+    rows.forEach((rowMatch, rowIndex) => {
+      const cells = [...(rowMatch[1] ?? '').matchAll(/<w:tc\b[^>]*>([\s\S]*?)<\/w:tc>/giu)];
+      columnCount = Math.max(columnCount, cells.length);
+      cells.forEach((cellMatch, columnIndex) => {
+        const cellXml = cellMatch[1] ?? '';
+        const text = extractText(cellXml);
+        const docStyleId = attribute(cellXml.match(/<w:pStyle\b[^>]*\/?\s*>/iu)?.[0] ?? '', 'val');
+        pendingCells.push({ rowIndex, columnIndex, text, docStyleId });
+      });
+    });
+    if (pendingCells.length === 0 || pendingCells.length > FUNDING_TEMPLATE_LIMITS.cellsPerTable) continue;
+    if (cursorY + rows.length * 24 > contentBottom && cursorY > marginsPt.top) advancePage();
+    const tableHeight = Math.min(rows.length * 24, Math.max(24, contentBottom - cursorY));
+    const tableBounds = safeBounds(marginsPt.left, cursorY, contentWidth, tableHeight, widthPt, heightPt);
+    if (!tableBounds) continue;
+    cursorY = tableBounds.y + tableBounds.height;
+    blocks.push({
+      kind: 'table',
+      blockId: `docx-t${pageNumber}-${ordinal + 1}`,
+      pageNumber,
+      ordinal,
+      bounds: tableBounds,
+      rowCount: rows.length,
+      columnCount: Math.max(1, columnCount),
+      cells: pendingCells.map((cell) => ({
+        rowIndex: cell.rowIndex,
+        columnIndex: cell.columnIndex,
+        rowSpan: 1,
+        columnSpan: 1,
+        text: cell.text.slice(0, FUNDING_TEMPLATE_LIMITS.textCharsPerBlock),
+        contentRole: inferContentRole(cell.text, fontSizeFor(cell.docStyleId), 12),
+        styleId: styleIdFor(cell.docStyleId),
+        bounds: null,
+      })),
+    });
+    ordinal += 1;
+    blockCount += 1;
+    if (blockCount > FUNDING_TEMPLATE_LIMITS.blocks) {
+      throw new AdapterFailure('pdf_limit_exceeded', 'DOCX block count exceeds the observation boundary');
+    }
+  }
+
+  if (blocks.length === 0) {
+    throw new AdapterFailure('insufficient_observations', 'DOCX contains no observable text blocks');
+  }
+  const candidate: FundingTemplateObservationDocument = {
+    contractVersion: 1,
+    documentId: request.documentId,
+    sourceFormat: 'docx',
+    sourceDigest: sha256(bytes),
+    extractedAt: request.extractedAt,
+    extractor: { name: 'metis-docx-observation-adapter', version: ADAPTER_VERSION },
+    pageCount: pageNumber,
+    pages,
+    styles: [...styleMap.values()],
+    blocks,
+  };
+  const parsed = FundingTemplateObservationDocumentSchema.safeParse(candidate);
+  if (!parsed.success) throw new AdapterFailure('observation_invalid', 'DOCX observations do not satisfy the engine contract');
+  return parsed.data;
+}
+
+/** 取 xml 中 name 元素的完整外层片段（自 start 起），找不到返回 null。 */
+function outerXmlSection(xml: string, name: string): string | null {
+  const start = xml.indexOf(`<${name}`);
+  if (start < 0) return null;
+  const end = xmlElementEnd(xml, start, name);
+  return end < 0 ? null : xml.slice(start, end);
+}
+
+/** 自 start 起找到 name 元素的闭合位置（含闭合标签），容错自闭合与嵌套。 */
+function xmlElementEnd(xml: string, start: number, name: string): number {
+  const matcher = new RegExp(`<${name}\\b[^>]*?(?:/>|>)|</${name}>`, 'gu');
+  matcher.lastIndex = start;
+  let depth = 0;
+  for (let match = matcher.exec(xml); match; match = matcher.exec(xml)) {
+    if (match[0].startsWith(`</${name}`)) {
+      depth -= 1;
+      if (depth === 0) return matcher.lastIndex;
+    } else if (!/\/>$/u.test(match[0])) {
+      depth += 1;
+    }
+  }
+  return -1;
+}
+
 export async function observeFundingTemplateFile(
   rawRequest: unknown,
 ): Promise<FundingTemplateObservationAdapterResult> {
@@ -813,11 +1041,13 @@ export async function observeFundingTemplateFile(
       const document = await observePdf(stable.bytes, request);
       return { ok: true, document };
     }
-    const summary = inspectDocxArchive(stable.bytes);
+    if (stable.extension === '.docx') {
+      const document = observeDocx(stable.bytes, request);
+      return { ok: true, document };
+    }
     throw new AdapterFailure(
       'docx_layout_unobservable',
-      'DOCX structure was safely inspected, but final block coordinates are not observable without trusted rendering',
-      summary,
+      'Unsupported template extension',
     );
   } catch (error) {
     if (error instanceof AdapterFailure) {

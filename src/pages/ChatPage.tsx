@@ -1,16 +1,11 @@
-import { useState, useRef, useEffect, useCallback, useMemo, type ReactNode } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo, useLayoutEffect, memo, type ReactNode } from 'react';
+import type { Components } from 'react-markdown';
 import { useMetisStore } from '../store';
 import { autoResizeTextarea } from '../lib/textareaAutosize.js';
 import ModelThinkingSelector from '../components/ModelThinkingSelector';
 import { matchSlashCommand, SLASH_COMMANDS, filterSlashCommands } from '../lib/slashCommands';
-import Prism from 'prismjs';
-import 'prismjs/components/prism-typescript';
-import 'prismjs/components/prism-javascript';
-import 'prismjs/components/prism-python';
-import 'prismjs/components/prism-bash';
-import 'prismjs/components/prism-json';
-import 'prismjs/components/prism-markdown';
-import 'prismjs/components/prism-latex';
+import { CodeBlock } from '../components/CodeBlock';
+import { ScenarioStepCard, parseScenarioStepCard } from '../components/ScenarioStepCard';
 import { useTranslation } from '../i18n';
 import { researchWorkspaceStore, useResearchWorkspaceStore } from '../research/researchWorkspaceStore';
 import {
@@ -19,7 +14,7 @@ import {
   peekPendingChatIntent,
 } from '../lib/chatIntent.js';
 import { PaperclipIcon, TerminalIcon, BrainIcon, TagIcon, ClockIcon } from '../components/Icons';
-import GoalCardInline, { type GoalCardData } from '../components/GoalCardInline';
+import GoalCardInline, { isInternalExecutionCopy, type GoalCardData } from '../components/GoalCardInline';
 import AgentActivityTimeline, {
   type AgentActivityEvent,
   type AgentActivityStatus,
@@ -36,6 +31,7 @@ import {
 } from '../lib/assistantMessagePartsReducer';
 import TerminalPanel from '../components/TerminalPanel';
 import RightPanel, { type RightPanelTab } from '../components/RightPanel';
+import ArtifactPreviewPane from '../components/ArtifactPreviewPane';
 import { getDiagnosticMode, type UIMode } from '../../engine/capabilities/DiagnosticMode';
 import {
   presentDiagnosticText,
@@ -47,6 +43,8 @@ import {
   presentSafeMarkdownText,
   type SafeMarkdownMode,
 } from '../presentation/SafeMarkdown';
+import { StreamingMarkdown } from '../presentation/StreamingMarkdown';
+import { useFollowScroll } from '../hooks/useFollowScroll';
 import { extractDoiCitations } from '../../engine/core/Citation.js';
 import { toggleForkActive, loadForkMap, saveForkMap, type ForkRecord } from '../../engine/core/MessageFork.js';
 import {
@@ -83,6 +81,8 @@ import type { ScenarioDefinition } from '../../engine/runtime/PersonalizationRun
 type ChatMessageRole = 'user' | 'assistant' | 'system' | 'tool' | 'goal';
 
 interface ChatMessage {
+  /** Stable render id, assigned when the message enters state (React key). */
+  id?: string;
   role: ChatMessageRole;
   content: string;
   timestamp: number;
@@ -250,12 +250,6 @@ function isAgentRunStatus(value: unknown): value is AgentActivityStatus {
 
 type Session = SessionListItem;
 
-const CHAT_NEAR_BOTTOM_PX = 72;
-
-function isChatNearBottom(element: HTMLElement): boolean {
-  return element.scrollHeight - element.scrollTop - element.clientHeight <= CHAT_NEAR_BOTTOM_PX;
-}
-
 function chatPrefersReducedMotion(): boolean {
   return typeof window !== 'undefined'
     && typeof window.matchMedia === 'function'
@@ -263,6 +257,14 @@ function chatPrefersReducedMotion(): boolean {
 }
 
 type ArtifactItemType = 'pdf' | 'docx' | 'xlsx' | 'pptx' | 'md' | 'latex' | 'other';
+type RightPanelTaskStatus = 'pending' | 'running' | 'completed' | 'failed';
+
+function toRightPanelTaskStatus(status: string): RightPanelTaskStatus {
+  return status === 'running' || status === 'completed' || status === 'failed'
+    ? status
+    : 'pending';
+}
+
 interface ArtifactItem {
   id: string;
   name: string;
@@ -459,40 +461,7 @@ const copyIcon = (
   </svg>
 );
 
-// ─── Code Block Component ─────────────────────────────────────
-
-function CodeBlock({ language, code }: { language: string; code: string }) {
-  const ref = useRef<HTMLElement>(null);
-  const [copied, setCopied] = useState(false);
-  const { t } = useTranslation();
-
-  useEffect(() => {
-    if (ref.current) {
-      Prism.highlightElement(ref.current);
-    }
-  }, [code, language]);
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(code).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }).catch(() => {});
-  };
-
-  return (
-    <div className="code-block-wrapper">
-      <div className="code-block-header">
-        <span className="code-language">{language || 'text'}</span>
-        <button className="code-copy-btn" onClick={handleCopy}>
-          {copied ? t('chat.copied') : t('chat.copy')}
-        </button>
-      </div>
-      <pre className="code-pre">
-        <code ref={ref} className={`language-${language || 'text'}`}>{code}</code>
-      </pre>
-    </div>
-  );
-}
+// ─── Code Block Component（共享实现，见 components/CodeBlock）─────────────
 
 // ─── Emoji filter — keeps the UI free of emoji anywhere ─────────
 
@@ -516,7 +485,38 @@ function linkifyDois(content: string): string {
   );
 }
 
-function MarkdownContent({
+/** Shared source transform for both the settled and streaming render paths. */
+function transformChatMarkdown(content: string): string {
+  return linkifyDois(stripEmoji(content));
+}
+
+/**
+ * Module-level code renderer factory so the `code` component keeps a stable
+ * identity across renders (a per-render closure would defeat memoization).
+ * While `streaming` is true, fenced blocks skip Prism highlighting and render
+ * as plain text; the settled path highlights as before.
+ */
+function createChatCodeComponent(streaming: boolean): Components['code'] {
+  return function ChatMarkdownCode({ className, children, ...props }) {
+    const match = /language-([\w-]+)/.exec(className || '');
+    const code = String(children).replace(/\n$/, '');
+    if (match && match[1] === 'metis-step-card') {
+      // 步骤卡（2026-09-01 刘总方案）：场景工作流步骤的结构化卡片，
+      // 解析失败（旧消息/坏数据）降级为普通代码块展示。
+      const card = parseScenarioStepCard(code);
+      if (card) return <ScenarioStepCard card={card} />;
+    }
+    if (match && match[1]) {
+      return <CodeBlock language={match[1]} code={code} streaming={streaming} />;
+    }
+    return <code className="inline-code" {...props}>{children}</code>;
+  };
+}
+
+const settledChatCodeComponent = createChatCodeComponent(false);
+const streamingChatCodeComponent = createChatCodeComponent(true);
+
+const MarkdownContent = memo(function MarkdownContent({
   content,
   uiMode,
   locale,
@@ -529,21 +529,14 @@ function MarkdownContent({
 }) {
   return (
     <SafeMarkdown
-      content={linkifyDois(stripEmoji(content))}
+      content={transformChatMarkdown(content)}
       uiMode={uiMode}
       locale={locale}
       onOpenPaper={onOpenPaper}
-      codeComponent={({ className, children, ...props }) => {
-          const match = /language-(\w+)/.exec(className || '');
-          const code = String(children).replace(/\n$/, '');
-          if (match && match[1]) {
-            return <CodeBlock language={match[1]} code={code} />;
-          }
-          return <code className="inline-code" {...props}>{children}</code>;
-      }}
+      codeComponent={settledChatCodeComponent}
     />
   );
-}
+});
 
 // ─── Tool Call Card ───────────────────────────────────────────
 
@@ -652,8 +645,47 @@ export function ToolCallCard({
 
 // ─── Message Component ────────────────────────────────────────
 
-function ChatMessageItem({
+// Memoized at the module level so a token flush re-renders only the bubble
+// whose message object actually changed.
+const MemoizedAgentActivityTimeline = memo(AgentActivityTimeline);
+
+// Live elapsed timer for the streaming bubble. Isolated in its own component
+// so the 500ms ticker re-renders this span only, not the whole bubble.
+function MessageElapsed({
+  startedAt,
+  durationMs,
+  streaming,
+}: {
+  startedAt?: number;
+  durationMs?: number;
+  streaming?: boolean;
+}) {
+  const [elapsedMs, setElapsedMs] = useState(durationMs ?? 0);
+  useEffect(() => {
+    if (streaming && startedAt) {
+      const timer = window.setInterval(() => {
+        setElapsedMs(Date.now() - (startedAt ?? Date.now()));
+      }, 500);
+      return () => window.clearInterval(timer);
+    }
+    // Settle the timer once streaming stops; deferred so the effect body
+    // stays free of synchronous setState.
+    let cancelled = false;
+    void Promise.resolve().then(() => {
+      if (!cancelled) setElapsedMs(durationMs ?? 0);
+    });
+    return () => { cancelled = true; };
+  }, [streaming, startedAt, durationMs]);
+  return (
+    <span className="message-elapsed" data-testid="message-elapsed">
+      <ClockIcon size={12} /> {(elapsedMs / 1000).toFixed(1)}s
+    </span>
+  );
+}
+
+const ChatMessageItem = memo(function ChatMessageItem({
   msg,
+  index,
   onEdit,
   onRegenerate,
   onSwitchFork,
@@ -662,7 +694,9 @@ function ChatMessageItem({
   onOpenPaper,
 }: {
   msg: ChatMessage;
-  onEdit?: (content: string) => void;
+  /** Source index in the messages array, forwarded to onEdit. */
+  index: number;
+  onEdit?: (index: number, content: string) => void;
   onRegenerate?: () => void;
   /** O16: switch which fork sibling is displayed. */
   onSwitchFork?: (forkId: string, targetIndex: number) => void;
@@ -701,29 +735,10 @@ function ChatMessageItem({
     window.setTimeout(() => setCopied(false), 1500);
   }, [msg.content, msg.reasoning]);
 
-  // Live elapsed timer while the message is still streaming. Date.now() only
-  // runs inside the interval callback (never during render).
-  const [elapsedMs, setElapsedMs] = useState(msg.durationMs ?? 0);
-  useEffect(() => {
-    if (msg.streaming && msg.startedAt) {
-      const timer = window.setInterval(() => {
-        setElapsedMs(Date.now() - (msg.startedAt ?? Date.now()));
-      }, 500);
-      return () => window.clearInterval(timer);
-    }
-    // Settle the timer once streaming stops; deferred so the effect body
-    // stays free of synchronous setState.
-    let cancelled = false;
-    void Promise.resolve().then(() => {
-      if (!cancelled) setElapsedMs(msg.durationMs ?? 0);
-    });
-    return () => { cancelled = true; };
-  }, [msg.streaming, msg.startedAt, msg.durationMs]);
-
   const handleEditSubmit = () => {
     const cleaned = stripEmoji(editValue).trim();
     if (cleaned && onEdit) {
-      onEdit(cleaned);
+      onEdit(index, cleaned);
     }
     setEditing(false);
   };
@@ -736,6 +751,15 @@ function ChatMessageItem({
         ? 'G'
         : 'M';
 
+  // dsh-style live reasoning summary: while streaming a multi-line reasoning
+  // trace, the latest line surfaces next to the label. Single-line traces
+  // skip it so the summary never duplicates the body verbatim.
+  const streamingReasoningLine = (() => {
+    if (!msg.streaming || !msg.reasoning || !msg.reasoning.includes('\n')) return '';
+    const lines = msg.reasoning.split('\n').filter((line) => line.trim());
+    return lines.length > 1 ? lines[lines.length - 1]! : '';
+  })();
+
   return (
     <div className={`chat-message ${msg.role}`}>
       <div className="message-avatar">
@@ -743,7 +767,7 @@ function ChatMessageItem({
       </div>
       <div className="message-body">
         {msg.role === 'assistant' && msg.run && (
-          <AgentActivityTimeline
+          <MemoizedAgentActivityTimeline
             status={msg.run.status}
             events={msg.run.events}
             parts={msg.run.parts}
@@ -790,11 +814,26 @@ function ChatMessageItem({
               <details className="chat-reasoning" open={Boolean(msg.streaming)}>
                 <summary>
                   {msg.streaming ? t('chat.reasoningThinking') : t('chat.reasoningLabel')}
+                  {streamingReasoningLine && (
+                    <span className="chat-reasoning__latest">{streamingReasoningLine}</span>
+                  )}
                 </summary>
                 <div className="chat-reasoning__body">{msg.reasoning}</div>
               </details>
             )}
-            <MarkdownContent content={msg.content} uiMode={messageUIMode} locale={locale} onOpenPaper={onOpenPaper} />
+            {msg.role === 'assistant' && msg.streaming ? (
+              <StreamingMarkdown
+                text={msg.content}
+                streaming
+                uiMode={messageUIMode}
+                locale={locale}
+                onOpenPaper={onOpenPaper}
+                codeComponent={streamingChatCodeComponent}
+                transform={transformChatMarkdown}
+              />
+            ) : (
+              <MarkdownContent content={msg.content} uiMode={messageUIMode} locale={locale} onOpenPaper={onOpenPaper} />
+            )}
             {msg.role === 'assistant' && msg.citations && msg.citations.length > 0 && (
               <div className="chat-citations" data-testid="chat-citations">
                 {msg.citations.map((c) => (
@@ -846,9 +885,7 @@ function ChatMessageItem({
               {new Date(msg.timestamp).toLocaleTimeString()}
             </span>
             {msg.role === 'assistant' && (msg.streaming || msg.durationMs !== undefined) && (
-              <span className="message-elapsed" data-testid="message-elapsed">
-                <ClockIcon size={12} /> {(elapsedMs / 1000).toFixed(1)}s
-              </span>
+              <MessageElapsed startedAt={msg.startedAt} durationMs={msg.durationMs} streaming={msg.streaming} />
             )}
             {msg.role === 'user' && onEdit && (
               <button
@@ -906,7 +943,7 @@ function ChatMessageItem({
       </div>
     </div>
   );
-}
+});
 
 // ─── Session Sidebar ──────────────────────────────────────────
 
@@ -1073,15 +1110,19 @@ export interface ChatPageLayoutSlots {
   leftPanel: ReactNode;
   workspace: ReactNode;
   rightPanel: ReactNode;
+  /** 生成物预览栏（2026-08-31 布局重构）：projects 模式渲染为最右整列。 */
+  previewPanel?: ReactNode;
 }
 
 export interface ChatPageProps {
   renderLayout: (slots: ChatPageLayoutSlots) => ReactNode;
   uiMode?: UIMode;
+  /** pane：预览走独立预览栏（projects 模式）；inline：右栏内联小卡片（其余模式）。 */
+  previewMode?: 'pane' | 'inline';
   intentRevision?: number;
 }
 
-export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: ChatPageProps) {
+export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, previewMode = 'inline' }: ChatPageProps) {
   const { t, locale } = useTranslation();
   const resolvedUIMode = uiMode ?? getDiagnosticMode();
 
@@ -1103,7 +1144,27 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
   // UX-CHAT-003: 低置信度任务表达被直接回答时，提供非阻塞「转为研究任务」建议。
   const [goalSuggestion, setGoalSuggestion] = useState<string | null>(null);
   const [currentSessionId, setCurrentSessionId] = useState<string>('');
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessagesState] = useState<ChatMessage[]>([]);
+  const messageIdRef = useRef(0);
+  const nextMessageId = useCallback(() => {
+    messageIdRef.current += 1;
+    return `msg-${messageIdRef.current}`;
+  }, []);
+  // Central id assignment: every message that enters state gets a stable
+  // render id so the list can key by identity instead of array index.
+  const setMessages: typeof setMessagesState = useCallback((update) => {
+    setMessagesState((prev) => {
+      const next = typeof update === 'function' ? update(prev) : update;
+      let assigned = false;
+      const withIds = next.map((msg) => {
+        if (msg.id) return msg;
+        assigned = true;
+        messageIdRef.current += 1;
+        return { ...msg, id: `msg-${messageIdRef.current}` };
+      });
+      return assigned ? withIds : next;
+    });
+  }, []);
   const [input, setInput] = useState('');
   const [slashActiveIndex, setSlashActiveIndex] = useState(0);
   const [slashMenuDismissed, setSlashMenuDismissed] = useState(false);
@@ -1128,8 +1189,15 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
   const messagesRef = useRef(messages);
-  const isFollowingLatestRef = useRef(true);
-  const [isFollowingLatest, setIsFollowingLatest] = useState(true);
+  const historyReadyRef = useRef(false);
+  // dsh-style scroll ledger: programmatic pins are instant and recorded; any
+  // scroll position deviating from the ledger is attributed to the user.
+  const {
+    atBottom: isFollowingLatest,
+    atBottomRef: isFollowingLatestRef,
+    pinToBottom: pinChatToBottom,
+    engageFollow,
+  } = useFollowScroll({ containerRef: chatMessagesRef, trackingReadyRef: historyReadyRef });
   const streamBatchRef = useRef<{
     content: string;
     reasoning: string;
@@ -1144,6 +1212,9 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
   useEffect(() => {
     if (inputRef.current) autoResizeTextarea(inputRef.current);
   }, [input]);
+  useEffect(() => {
+    historyReadyRef.current = historyReady;
+  }, [historyReady]);
   const activeSessionIdRef = useRef('');
   const sessionGenerationRef = useRef(0);
   const activeChatRequestRef = useRef<{
@@ -1177,12 +1248,17 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
   const activeResearchProjectId = useResearchWorkspaceStore((state) => state.activeProjectId);
   const workspaceProjectsLoading = useResearchWorkspaceStore((state) => state.loading.projects);
   const currentProjectId = activeResearchProjectId ?? 'global';
+  const [projectScenarioRun, setProjectScenarioRun] = useState<{
+    status: string;
+    steps: Array<{ stepId: string; name: string; status: string; prompt?: string }>;
+  } | null>(null);
 
   // Goal integration
   const [activeGoalId, setActiveGoalId] = useState<string | null>(null);
   const activeGoalIdRef = useRef<string | null>(null);
   const goalCardIndexMapRef = useRef<Map<string, number>>(new Map());
   const goalStepElementRefs = useRef<Map<string, HTMLElement>>(new Map());
+  const sendInFlightRef = useRef(false);
   const goalEventSequenceRef = useRef<Map<string, number>>(new Map());
 
   const [terminalVisible, setTerminalVisible] = useState(false);
@@ -1195,6 +1271,29 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
     useState<RightPanelTab>('tasks');
   const [selectionMenu, setSelectionMenu] = useState<{ text: string; x: number; y: number } | null>(null);
 
+
+  useEffect(() => {
+    let alive = true;
+    if (!activeResearchProjectId || !window.metis?.getScenarioRunForProject) {
+      setProjectScenarioRun(null);
+      return () => { alive = false; };
+    }
+    const loadRun = async () => {
+      const result = await window.metis?.getScenarioRunForProject?.(activeResearchProjectId);
+      if (!alive) return;
+      setProjectScenarioRun(result?.ok && result.status && result.steps?.length
+        ? { status: result.status, steps: result.steps }
+        : null);
+    };
+    void loadRun();
+    const interval = window.setInterval(() => { void loadRun(); }, 2_000);
+    return () => {
+      alive = false;
+      window.clearInterval(interval);
+    };
+  }, [activeResearchProjectId]);
+
+  const hasActiveScenarioRun = projectScenarioRun?.status === 'running';
 
   const openPreview = useCallback((
     content: string,
@@ -1227,6 +1326,20 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
   }, []);
 
   /**
+   * Resolve the message index of a goal card. Cards restored from session
+   * history never re-enter goalCardIndexMapRef (only goals launched in this
+   * app session register there), so fall back to scanning the live message
+   * list; otherwise 重试/继续/暂停/取消 on a restored card would silently
+   * no-op after a restart.
+   */
+  const findGoalCardIndex = useCallback((goalId: string): number | undefined => {
+    const mapped = goalCardIndexMapRef.current.get(goalId);
+    if (mapped !== undefined) return mapped;
+    const index = messagesRef.current.findIndex((msg) => msg.goalCard?.goalId === goalId);
+    return index >= 0 ? index : undefined;
+  }, []);
+
+  /**
    * Hydrate the chat card from the persisted Goal/Workflow view. Live IPC
    * events still own subsequent state transitions; this call only prevents a
    * board-to-chat handoff from degrading real step names into button labels.
@@ -1239,8 +1352,13 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
     // The workflow read may finish after the user has opened another session.
     // Indexes are only meaningful for the session/generation that started it.
     if (activeSessionIdRef.current !== ownerSessionId
-      || sessionGenerationRef.current !== ownerGeneration
-      || goalCardIndexMapRef.current.get(goalId) !== index) return;
+      || sessionGenerationRef.current !== ownerGeneration) return;
+    // Restored cards are not in the index map; only reject when a *different*
+    // index is registered, and verify unregistered cards against the message
+    // list so history cards still receive workflow hydration.
+    const registeredIndex = goalCardIndexMapRef.current.get(goalId);
+    if (registeredIndex !== undefined && registeredIndex !== index) return;
+    if (registeredIndex === undefined && messagesRef.current[index]?.goalCard?.goalId !== goalId) return;
     const steps = result.workflow.steps.map((step) => ({
       id: step.id,
       name: step.name,
@@ -1573,8 +1691,17 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
             && definition.provenance.origin !== 'builtin'
           ));
           setScenarios(available);
+          // 项目级场景优先（2026-08-29 刘总要求：新建项目可选择场景）：
+          // 先读 metis:project-scenario:<projectId>，缺失时退回全局偏好。
           let remembered = DEFAULT_SCENARIO_ID;
-          try { remembered = window.localStorage.getItem(ACTIVE_SCENARIO_KEY) ?? DEFAULT_SCENARIO_ID; } catch { /* use factory default */ }
+          try {
+            const projectPreferred = activeResearchProjectId
+              ? window.localStorage.getItem(`metis:project-scenario:${activeResearchProjectId}`)
+              : null;
+            remembered = projectPreferred
+              ?? window.localStorage.getItem(ACTIVE_SCENARIO_KEY)
+              ?? DEFAULT_SCENARIO_ID;
+          } catch { /* use factory default */ }
           setActiveScenarioId(remembered === DEFAULT_SCENARIO_ID
             ? DEFAULT_SCENARIO_ID
             : (available.some((scenario) => scenario.id === remembered)
@@ -1600,7 +1727,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
       cancelled = true;
       if (retryTimer !== undefined) window.clearTimeout(retryTimer);
     };
-  }, [scenarioLoadRevision]);
+  }, [scenarioLoadRevision, activeResearchProjectId]);
 
   // Helper: create a new session (defined before useEffect that calls it).
   // Returns the new session id on success, null on failure — callers that
@@ -1883,9 +2010,24 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
           );
           return run ? { ...message, run } : message;
         }));
+        // 卡片 phase 以引擎真实状态为准（2026-08-29 刘总截图问题）：持久化
+        // 卡片停留在暂停前的 executing，而 checkpoint 步骤状态已是「已暂停」
+        // ——重开会话后「暂停」按钮点下去只会被引擎拒绝，「继续」永远不
+        // 出现。恢复时必须用 getGoal 的真实状态校正 phase，让按钮区与
+        // checkpoint 一致（paused → 显示「继续」）。
+        const goalCorrected = await Promise.all(hydrated.map(async (message) => {
+          if (message.role !== 'goal' || !message.goalCard) return message;
+          try {
+            const goalState = await metis.getGoal?.(message.goalCard.goalId);
+            if (!goalState?.success || !goalState.goal) return message;
+            const phase = goalStatusToCardPhase(goalState.goal.status);
+            if (phase === message.goalCard.phase) return message;
+            return { ...message, goalCard: { ...message.goalCard, phase, pauseRequested: false } };
+          } catch { return message; }
+        }));
         if (!isCurrentSessionGeneration(sessionId, generation)) return;
         setMessages((prev) => {
-          const current = prev.length > 0 ? prev : hydrated;
+          const current = prev.length > 0 ? prev : goalCorrected;
           if (!currentSessionId) return current;
           const forkMap = loadForkMap(currentSessionId, localStorage);
           if (forkMap.size === 0) return current;
@@ -1939,24 +2081,22 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
 
   // Follow the latest message only while the user is near the bottom. Once the
   // user scrolls upward, incoming tokens remain readable instead of hijacking
-  // the viewport; the explicit control below restores the lock.
+  // the viewport; the explicit control below restores the lock. The scroll
+  // listener itself lives in useFollowScroll (ledger-based user attribution).
+
+  // 会话历史就绪后立即定位到最新消息（2026-08-28 刘总要求：进入聊天应看到
+  // 最新的消息在底部，而不是停留在最顶部）。使用瞬时滚动，避免 smooth 动画
+  // 期间触发的 scroll 事件把跟随锁误判为关闭。
   useEffect(() => {
-    const container = chatMessagesRef.current;
-    if (!container) return;
-    const handleScroll = () => {
-      const nearBottom = isChatNearBottom(container);
-      if (nearBottom === isFollowingLatestRef.current) return;
-      isFollowingLatestRef.current = nearBottom;
-      setIsFollowingLatest(nearBottom);
-    };
-    handleScroll();
-    container.addEventListener('scroll', handleScroll, { passive: true });
-    return () => container.removeEventListener('scroll', handleScroll);
-  }, [currentSessionId]);
+    if (!historyReady) return;
+    const element = messagesEndRef.current;
+    if (!element || typeof element.scrollIntoView !== 'function') return;
+    engageFollow();
+    element.scrollIntoView({ behavior: 'auto', block: 'end' });
+  }, [historyReady, currentSessionId, engageFollow]);
 
   const scrollToLatest = useCallback(() => {
-    isFollowingLatestRef.current = true;
-    setIsFollowingLatest(true);
+    engageFollow();
     const element = messagesEndRef.current;
     if (element && typeof element.scrollIntoView === 'function') {
       element.scrollIntoView({
@@ -1964,21 +2104,15 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
         block: 'end',
       });
     }
-  }, []);
+  }, [engageFollow]);
 
-  useEffect(() => {
+  // Streaming follow-scroll: instant pin per committed flow update, only while
+  // the user is pinned to the bottom. Instant (not smooth) so rapid token
+  // frames never restart a smooth-scroll animation mid-flight.
+  useLayoutEffect(() => {
     if (!isFollowingLatestRef.current) return;
-    const element = messagesEndRef.current;
-    if (!element || typeof element.scrollIntoView !== 'function') return;
-    const frame = window.requestAnimationFrame(() => {
-      if (!isFollowingLatestRef.current) return;
-      element.scrollIntoView({
-        behavior: chatPrefersReducedMotion() ? 'auto' : 'smooth',
-        block: 'end',
-      });
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [messages, isLoading, isFollowingLatest]);
+    pinChatToBottom();
+  }, [messages, isLoading, activeRunParts, isFollowingLatestRef, pinChatToBottom]);
 
   // Goal IPC event listeners. Raw model stream events are intentionally not
   // exposed by preload, so renderer code cannot accidentally present them.
@@ -2165,6 +2299,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
         // UX-CHAT-002: empty terminal events must not create an air bubble.
         if (!batch.content && !batch.reasoning) return;
         const message: ChatMessage = {
+          id: nextMessageId(),
           role: 'assistant',
           content: batch.content,
           timestamp: now(),
@@ -2239,7 +2374,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
       streamBatchRef.current = null;
       unsubscribe();
     };
-  }, [isCurrentChatRequest]);
+  }, [isCurrentChatRequest, nextMessageId]);
 
   // Board → chat handoff: focus a goal as an inline card. App navigates to the
   // conversation first; a sessionStorage fallback covers the case where this
@@ -2372,8 +2507,11 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
         if (streamedIndex >= 0) {
           // The stream already rendered the answer live; settle the message
           // with the authoritative payload and the measured elapsed time.
+          // Settle dedupe: when the authoritative answer is byte-identical to
+          // the accumulated stream, keep the content field untouched so the
+          // bubble does not re-parse the full document a second time.
           setMessages((prev) => prev.map((m, i) => i === streamedIndex
-            ? { ...m, content: response.answer, streaming: false, durationMs, run: runActivity(response, response.turnId === request.turnId ? partsForAgentTurn(request.turnId) : createAssistantMessageParts()) }
+            ? { ...m, ...(m.content === response.answer ? {} : { content: response.answer }), streaming: false, durationMs, run: runActivity(response, response.turnId === request.turnId ? partsForAgentTurn(request.turnId) : createAssistantMessageParts()) }
             : m));
         } else {
           const assistantMsg: ChatMessage = {
@@ -2526,7 +2664,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
   /** Controls operate on the same persisted Goal ID as the visible timeline. */
   async function handlePauseGoal(goalId: string) {
     const metis = window.metis;
-    const index = goalCardIndexMapRef.current.get(goalId);
+    const index = findGoalCardIndex(goalId);
     if (!metis?.pauseGoal || index === undefined) return;
     try {
       const result = await metis.pauseGoal(goalId);
@@ -2534,29 +2672,46 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
         // The engine pauses at a Workflow boundary. Until its status event
         // arrives this is intentionally a request receipt, not a fake pause.
         updateGoalCard(index, (card) => ({ ...card, pauseRequested: true }));
+      } else {
+        // 暂停请求被引擎拒绝时必须给出可见回执，不能静默无反应。
+        updateGoalCard(index, (card) => ({
+          ...card,
+          error: locale === 'zh' ? '暂停请求未被执行：任务当前状态不接受暂停。' : 'The pause request was not applied: the task state does not accept a pause.',
+        }));
       }
     } catch {
-      // The authoritative goal state remains unchanged; avoid inventing a UI error.
+      updateGoalCard(index, (card) => ({
+        ...card,
+        error: locale === 'zh' ? '暂停服务暂时不可用，请稍后重试。' : 'The pause service is temporarily unavailable. Try again later.',
+      }));
     }
   }
 
   async function handleCancelGoal(goalId: string) {
     const metis = window.metis;
-    const index = goalCardIndexMapRef.current.get(goalId);
+    const index = findGoalCardIndex(goalId);
     if (!metis?.cancelGoal || index === undefined) return;
     try {
       const result = await metis.cancelGoal(goalId);
       if (result?.success) {
         updateGoalCard(index, (card) => ({ ...card, phase: 'cancelled', pauseRequested: false }));
+      } else {
+        updateGoalCard(index, (card) => ({
+          ...card,
+          error: locale === 'zh' ? '取消请求未被执行：任务可能已经结束。' : 'The cancel request was not applied: the task may have already finished.',
+        }));
       }
     } catch {
-      // The persisted engine result remains the source of truth.
+      updateGoalCard(index, (card) => ({
+        ...card,
+        error: locale === 'zh' ? '取消服务暂时不可用，请稍后重试。' : 'The cancel service is temporarily unavailable. Try again later.',
+      }));
     }
   }
 
   async function handleResumeGoal(goalId: string) {
     const metis = window.metis;
-    const index = goalCardIndexMapRef.current.get(goalId);
+    const index = findGoalCardIndex(goalId);
     if (!metis?.resumeGoal || index === undefined) return;
     setIsLoading(true);
     setActiveGoalId(goalId);
@@ -2571,8 +2726,32 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
         updateGoalCard(index, (card) => ({ ...card, phase: 'paused', pauseRequested: false }));
       } else if (execution.code === 'cancelled') {
         updateGoalCard(index, (card) => ({ ...card, phase: 'cancelled', pauseRequested: false }));
+      } else if (execution.code === 'goal_cancelled' || execution.code === 'goal_not_found') {
+        // 终态目标（已取消/不存在）永远无法恢复——卡片必须转入诚实的终态：
+        // 收起注定失败的重试/继续按钮，清除僵死的“执行中”步骤显示，
+        // 并明确告诉用户需要重新发起，而不是提示“稍后重试”。
+        updateGoalCard(index, (card) => ({
+          ...card,
+          phase: 'cancelled',
+          pauseRequested: false,
+          stepStatuses: Object.fromEntries(Object.entries(card.stepStatuses).map(([stepId, status]) => [
+            stepId,
+            status.status === 'running' ? { ...status, status: 'pending' as const } : status,
+          ])),
+          error: locale === 'zh'
+            ? '该研究任务已被取消，无法继续恢复。请重新发送指令开始新的研究任务。'
+            : 'This research task was cancelled and can no longer be resumed. Send a new instruction to start a fresh task.',
+        }));
       } else {
-        updateGoalCard(index, (card) => ({ ...card, phase: 'failed', error: execution.code ?? 'goal_execution_failed' }));
+        // 恢复失败必须带真实原因（2026-08-29 刘总要求：不再笼统"未能完成"）。
+        const codeText = String(execution.code ?? 'goal_execution_failed');
+        updateGoalCard(index, (card) => ({
+          ...card,
+          phase: codeText === 'goal_cancelled' ? 'cancelled' : 'failed',
+          error: locale === 'zh'
+            ? `恢复未执行（${codeText}）。若任务已取消请重新发起；若仍在运行请稍候重试。`
+            : `Resume did not run (${codeText}). Re-send if cancelled; retry shortly if still running.`,
+        }));
       }
       await syncGoalCardWorkflow(goalId, index);
     } catch {
@@ -2651,7 +2830,11 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
 
   // ─── Send message (router) ────────────────────────────────
 
-  async function handleLiveInstruction(content: string) {
+  async function handleLiveInstruction(
+    content: string,
+    options?: { userBubbleVisible?: boolean; fallback?: () => Promise<void> },
+  ) {
+    const userBubbleVisible = options?.userBubbleVisible ?? false;
     const metis = window.metis;
     if (!metis?.agentControl) {
       setMessages((prev) => [...prev, {
@@ -2669,6 +2852,25 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
       content,
     });
     if (!response.ok) {
+      // 中断恢复（2026-08-29 刘总报告「中断之后直接无法继续」）：应用重启后
+      // 内存运行注册表为空而数据库状态仍是 running，no_active_run 不该报错了
+      // 事——自动降级为正常场景轮，主进程发现内存无 run 且数据库有可恢复
+      // 断点时会自动续跑，而不是把用户堵死在死路上。
+      if (response.code === 'no_active_run' && options?.fallback) {
+        setMessages((prev) => [
+          ...(userBubbleVisible ? [] : [{ role: 'user', content, timestamp: now() } as ChatMessage]),
+          {
+            role: 'system',
+            content: locale === 'zh'
+              ? '检测到运行已中断（应用可能刚重启过），正在从断点恢复…'
+              : 'The run was interrupted (the app may have just restarted); resuming from the checkpoint…',
+            timestamp: now(),
+          },
+        ]);
+        if (!userBubbleVisible) setInput('');
+        await options.fallback();
+        return;
+      }
       setMessages((prev) => [...prev, {
         role: 'system',
         content: presentExecutionError(response.code, locale, resolvedUIMode),
@@ -2677,12 +2879,12 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
       return;
     }
     // Success receipt: confirm to the user that the instruction reached the run.
+    // 用户气泡只在还没显示时补上（调用点可能已把气泡渲染过，避免重复）。
     setMessages((prev) => [
-      ...prev,
-      { role: 'user', content, timestamp: now() },
+      ...(userBubbleVisible ? [] : [{ role: 'user', content, timestamp: now() } as ChatMessage]),
       { role: 'system', content: t('chat.steerReceipt'), timestamp: now() },
     ]);
-    setInput('');
+    if (!userBubbleVisible) setInput('');
   }
 
   async function handleInterrupt() {
@@ -2886,13 +3088,61 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
     }
   }
 
+  // 场景选择持久化兜底（2026-08-29 刘总要求：显示选中就必须走场景）。
+  // React state 恢复是异步的——项目刚打开立刻发送时 state 可能还是空，
+  // 导致明明显示已选场景却静默走了 Goal。这里直接读持久化偏好兜底。
+  function readPersistedScenarioId(): string | null {
+    try {
+      const projectPreferred = activeResearchProjectId
+        ? window.localStorage.getItem(`metis:project-scenario:${activeResearchProjectId}`)
+        : null;
+      return projectPreferred ?? window.localStorage.getItem(ACTIVE_SCENARIO_KEY);
+    } catch { return null; }
+  }
+
   async function handleSend(overrideContent?: string, scenarioOverride?: string) {
     const raw = stripEmoji((overrideContent || input).trim());
     if (!raw) return;
+    // 运行中的消息是实时引导（steering），必须放行；防重入只针对空闲态
+    // 双击（2026-08-29 刘总要求：消灭同秒双发竞态，同时不拦引导）。
+    // 引导若撞上 no_active_run（运行已被中断），降级为断点恢复轮。
     if (isLoading) {
-      await handleLiveInstruction(raw);
+      await handleLiveInstruction(raw, {
+        fallback: () => handleChatFlow(
+          raw,
+          activeScenarioId || readPersistedScenarioId() || DEFAULT_SCENARIO_ID,
+          currentSessionId || undefined,
+        ),
+      });
       return;
     }
+    if (sendInFlightRef.current) return;
+    sendInFlightRef.current = true;
+    try {
+      await runSendTurn(raw, scenarioOverride);
+    } finally {
+      sendInFlightRef.current = false;
+    }
+  }
+
+  // 步骤卡「继续」事件（2026-09-01 刘总方案二期）：ScenarioStepCard 落库成功后
+  // 派发该事件，这里补发「继续」触发断点恢复；跨会话的事件忽略。
+  const handleSendRef = useRef(handleSend);
+  handleSendRef.current = handleSend;
+  const currentSessionIdForContinueRef = useRef(currentSessionId);
+  currentSessionIdForContinueRef.current = currentSessionId;
+  useEffect(() => {
+    const listener = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string }>).detail;
+      if (detail?.sessionId && currentSessionIdForContinueRef.current
+        && detail.sessionId !== currentSessionIdForContinueRef.current) return;
+      void handleSendRef.current('继续');
+    };
+    window.addEventListener('metis:scenario-continue', listener);
+    return () => window.removeEventListener('metis:scenario-continue', listener);
+  }, []);
+
+  async function runSendTurn(raw: string, scenarioOverride?: string) {
 
     // Slash commands: intercept before scenario matching / task detection.
     const slashMatch = matchSlashCommand(raw);
@@ -2948,11 +3198,14 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
     // committed once. Goal-only messages still use appendMessage below.
     const hasActiveGoal = activeGoalId !== null;
 
-    // UX-CHAT-003: 低置信度任务表达 → 直接回答，同时保留非阻塞转任务建议；
-    // 其他输入清空旧建议。
-    setGoalSuggestion(!forceChat && isTaskAmbiguous(content) ? content : null);
+    // UX-CHAT-003（2026-08-29 刘总要求）：已选场景时步骤规定明确，不再建议
+    // "转为研究任务"——任务直接按场景工作流执行；仅无场景时保留 Goal 兜底建议。
+    setGoalSuggestion(!forceChat && !activeScenarioId && isTaskAmbiguous(content) ? content : null);
 
-    const selectedScenarioId = scenarioOverride ?? activeScenarioId;
+    // 场景选择持久化兜底统一走 readPersistedScenarioId（handleSend 的
+    // isLoading 兜底同样需要，2026-08-31 修复作用域断裂）。
+    const persistedScenarioId = readPersistedScenarioId();
+    const selectedScenarioId = scenarioOverride ?? (activeScenarioId || persistedScenarioId || '');
     const matchedScenario = selectedScenarioId ? undefined : matchScenarioTrigger(content, scenarios);
     const scenarioForTurn = selectedScenarioId || matchedScenario?.id || DEFAULT_SCENARIO_ID;
     if (matchedScenario) {
@@ -2961,6 +3214,40 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
     }
 
 
+    void window.metis?.rendererLog?.(`route: user=${JSON.stringify(content.slice(0, 40))} activeScenarioId=${JSON.stringify(activeScenarioId)} persisted=${JSON.stringify(persistedScenarioId ?? null)} selected=${JSON.stringify(selectedScenarioId)} scenarioForTurn=${JSON.stringify(scenarioForTurn)} hasActiveScenarioRun=${hasActiveScenarioRun} hasActiveGoal=${hasActiveGoal} isTaskLike=${isTaskLike(content)} forceChat=${forceChat}`);
+    // 「继续」的系统级语义（2026-08-30 刘总点破：关闭后继续总是重开新任务）：
+    // 场景运行的可恢复断点由主进程自动 resume（场景绑定轮走 handleChatFlow，
+    // getRecoverableScenarioRun 会接上 interrupted/paused/running 的 checkpoint）；
+    // 没有场景运行时，「继续」必须接回最近一个 paused 的研究任务（Goal），
+    // 而不是当作新输入被普通聊天吞掉。
+    if (!hasActiveScenarioRun && !hasActiveGoal && !forceChat && !scenarioForTurn
+      && /^(继续|接着做|接着干|继续执行|continue|resume)[\s!！。.]*$/i.test(content.trim())) {
+      try {
+        const goalsResult = await window.metis?.listGoals?.();
+        // 选择策略与场景恢复同规（系统性教训：不能按列表顺序取第一个）：
+        // 优先当前项目的 paused 任务，再取最近创建的——「继续」必须接上
+        // 用户最可能指的那条工作，而不是任意一条。
+        const pausedGoals = (goalsResult?.goals ?? []).filter((goal) => goal.status === 'paused');
+        const resumableGoal = pausedGoals
+          .filter((goal) => !goal.projectId || goal.projectId === currentProjectId)
+          .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))[0]
+          ?? pausedGoals.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))[0];
+        if (resumableGoal) {
+          await handleResumeGoal(resumableGoal.goalId);
+          return;
+        }
+      } catch { /* goal 列表失败则按普通输入处理 */ }
+    }
+    if (hasActiveScenarioRun && !forceChat) {
+      // 场景工作流执行中（2026-08-29 刘总要求）：随时引导，新消息实时注入
+      // 当前运行，而不是当作新任务被"已有任务在执行"拒绝。若运行其实已被
+      // 中断（应用重启等），no_active_run 会自动降级为断点恢复轮。
+      await handleLiveInstruction(content, {
+        userBubbleVisible: true,
+        fallback: () => handleChatFlow(content, scenarioForTurn, sessionIdForTurn || undefined),
+      });
+      return;
+    }
     if (scenarioForTurn) {
       await handleChatFlow(content, scenarioForTurn, sessionIdForTurn || undefined);
     } else if (!forceChat && !hasActiveGoal && isTaskLike(content)) {
@@ -3140,8 +3427,10 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
         const streamedIndex = streamingIndexRef.current;
         const durationMs = Date.now() - request.startedAt;
         if (streamedIndex >= 0) {
+          // Settle dedupe identical to handleChatFlow: skip the content
+          // replacement when the authoritative answer matches the stream.
           setMessages((prev) => prev.map((m, i) => i === streamedIndex
-            ? { ...m, content: response.answer, streaming: false, durationMs, run: runActivity(response, response.turnId === request.turnId ? partsForAgentTurn(request.turnId) : createAssistantMessageParts()) }
+            ? { ...m, ...(m.content === response.answer ? {} : { content: response.answer }), streaming: false, durationMs, run: runActivity(response, response.turnId === request.turnId ? partsForAgentTurn(request.turnId) : createAssistantMessageParts()) }
             : m));
         } else {
           const assistantMsg: ChatMessage = {
@@ -3243,6 +3532,25 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
     }, 0);
   }
 
+  // Referentially stable per-message callbacks for the memoized
+  // ChatMessageItem: the refs always point at the latest closures, so memo
+  // comparison never sees a fresh function identity per render.
+  const editMessageHandlerRef = useRef<(index: number, content: string) => void>(() => {});
+  editMessageHandlerRef.current = (index, content) => handleEditMessage(index, content);
+  const handleEditMessageAtIndex = useCallback((index: number, content: string) => {
+    editMessageHandlerRef.current(index, content);
+  }, []);
+  const regenerateHandlerRef = useRef<() => void>(() => {});
+  regenerateHandlerRef.current = () => { void handleRegenerate(); };
+  const stableRegenerate = useCallback(() => {
+    regenerateHandlerRef.current();
+  }, []);
+  const switchForkHandlerRef = useRef<(forkId: string, targetIndex: number) => void>(() => {});
+  switchForkHandlerRef.current = (forkId, targetIndex) => handleSwitchFork(forkId, targetIndex);
+  const stableSwitchFork = useCallback((forkId: string, targetIndex: number) => {
+    switchForkHandlerRef.current(forkId, targetIndex);
+  }, []);
+
   const slashSuggestions = (() => {
     if (slashMenuDismissed || !input.startsWith('/') || input.length > 80 || /\s/.test(input.slice(1))) return [];
     return filterSlashCommands(input.slice(1));
@@ -3303,32 +3611,174 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
 
   // Build right-panel task list from active goal card if any
   const activeGoalCard = messages.find((m) => m.role === 'goal' && m.goalCard)?.goalCard;
-  const rightPanelTasks = activeGoalCard
-    ? activeGoalCard.steps.map((step, index) => {
-        const rawStatus = activeGoalCard.stepStatuses[step.id]?.status;
-        const status: 'pending' | 'running' | 'completed' | 'failed' =
-          rawStatus === 'running' || rawStatus === 'completed' || rawStatus === 'failed'
-            ? rawStatus
-            : 'pending';
-        return {
-          id: step.id,
-          title: diagnosticMode ? step.name : t('rightPanel.researchStep', { number: index + 1 }),
-          status,
-          progress: activeGoalCard.progress && activeGoalCard.progress.total > 0
-            ? Math.round((activeGoalCard.progress.completed / activeGoalCard.progress.total) * 100)
-            : undefined,
-        };
-      })
-    : [];
+  const rightPanelTasks = projectScenarioRun?.steps.length
+    ? projectScenarioRun.steps.map((step) => ({
+        id: step.stepId,
+        title: step.name,
+        status: toRightPanelTaskStatus(step.status),
+        progress: undefined,
+        // 步骤提示词随清单下发（2026-08-29 刘总要求：点击可展开查看）。
+        detail: step.prompt || undefined,
+      }))
+    : activeGoalCard
+      ? activeGoalCard.steps.map((step, index) => {
+          const rawStatus = activeGoalCard.stepStatuses[step.id]?.status;
+          const status = toRightPanelTaskStatus(rawStatus ?? 'pending');
+          // 隐私边界与 GoalCardInline 同规则（pages.test「Runtime Tool Step」
+          // 泄露断言）：内部执行文案（AgentLoop/MCP/Runtime 等）在普通模式
+          // 回退为「研究步骤 N」，真实业务步骤名照常显示。
+          const internalName = isInternalExecutionCopy(step.name);
+          const internalDetail = isInternalExecutionCopy(step.description);
+          return {
+            id: step.id,
+            // 具体步骤名（2026-08-29 刘总要求）：不再用"研究步骤N"遮挡真实标题。
+            title: step.name && !internalName
+              ? step.name
+              : t('rightPanel.researchStep', { number: index + 1 }),
+            status,
+            progress: activeGoalCard.progress && activeGoalCard.progress.total > 0
+              ? Math.round((activeGoalCard.progress.completed / activeGoalCard.progress.total) * 100)
+              : undefined,
+            detail: step.description && !internalDetail ? step.description : undefined,
+          };
+        })
+      : [];
 
-  const rightPanelArtifacts = artifacts;
+  const [projectOutcomes, setProjectOutcomes] = useState<Array<{
+    id: string;
+    title: string;
+    type: ArtifactItemType;
+    updatedAt: number;
+  }>>([]);
+
+  useEffect(() => {
+    let alive = true;
+    if (!activeResearchProjectId || !window.metis?.listOutcomes) {
+      setProjectOutcomes([]);
+      return () => { alive = false; };
+    }
+    void window.metis.listOutcomes({ projectId: activeResearchProjectId, query: '' }).then((items: Array<{
+      id: string;
+      title: string;
+      kind: string;
+      updatedAt: number;
+    }>) => {
+      if (!alive) return;
+      setProjectOutcomes(items.map((item) => ({
+        id: item.id,
+        title: item.title,
+        type: item.kind === 'word' ? 'docx'
+          : item.kind === 'ppt' ? 'pptx'
+            : item.kind === 'spreadsheet' ? 'xlsx'
+              : item.kind === 'pdf' ? 'pdf'
+                : item.kind === 'other' ? 'other'
+                  : 'other',
+        updatedAt: item.updatedAt,
+      })));
+    }).catch(() => {
+      if (alive) setProjectOutcomes([]);
+    });
+    return () => { alive = false; };
+  }, [activeResearchProjectId, isLoading]);
+
+  const rightPanelArtifacts = [
+    ...projectOutcomes.map((outcome) => ({
+      id: `outcome:${outcome.id}`,
+      name: outcome.title,
+      type: outcome.type,
+      createdAt: outcome.updatedAt,
+      contentAvailable: true,
+    })),
+    ...artifacts.filter((artifact) => !projectOutcomes.some((outcome) => outcome.title === artifact.name)),
+  ];
+
+  /**
+   * 结构化成果文档 → 可内嵌预览的 Markdown（2026-08-28 刘总要求：生成物点击
+   * 即刻预览）。Word/PPT 提取文本；PDF/表格等二进制文档返回 null，交给
+   * Metis Office 打开。
+   */
+  function outcomeDocumentToPreviewMarkdown(content: unknown): string | null {
+    if (!content || typeof content !== 'object') return null;
+    const doc = content as { type?: string };
+    if (doc.type === 'word') {
+      const word = content as {
+        type: 'word';
+        blocks?: Array<{ kind?: string; text?: string; level?: number; rows?: string[][] }>;
+        header?: string;
+        footer?: string;
+      };
+      const lines: string[] = [];
+      for (const block of word.blocks ?? []) {
+        if (block.kind === 'table' && Array.isArray(block.rows)) {
+          const [head, ...rest] = block.rows;
+          if (head?.length) {
+            lines.push(`| ${head.join(' | ')} |`, `| ${head.map(() => '---').join(' | ')} |`);
+            for (const row of rest) lines.push(`| ${(row ?? []).join(' | ')} |`);
+          }
+          continue;
+        }
+        const text = (block.text ?? '').trim();
+        if (!text) continue;
+        if (block.kind === 'heading') lines.push(`${'#'.repeat(Math.min(6, Math.max(1, block.level ?? 1)))} ${text}`);
+        else lines.push(text);
+      }
+      return lines.length > 0 ? lines.join('\n\n') : null;
+    }
+    if (doc.type === 'ppt') {
+      const ppt = content as {
+        type: 'ppt';
+        pages?: Array<{ title?: string; elements?: Array<{ type?: string; props?: Record<string, unknown> }> }>;
+      };
+      const lines: string[] = [];
+      (ppt.pages ?? []).forEach((page, index) => {
+        const title = (page.title ?? '').trim();
+        lines.push(`## ${index + 1}. ${title || (locale === 'zh' ? '未命名页' : 'Untitled page')}`);
+        for (const element of page.elements ?? []) {
+          if (element.type !== 'text') continue;
+          const text = String(element.props?.text ?? '').trim();
+          if (text) lines.push(text);
+        }
+      });
+      return lines.length > 0 ? lines.join('\n\n') : null;
+    }
+    return null;
+  }
 
   async function handleArtifactClick(
     item: Pick<ArtifactItem, 'id' | 'name' | 'contentAvailable'>,
   ) {
-    if (!item.contentAvailable) return;
     const sessionId = activeSessionIdRef.current;
     const generation = sessionGenerationRef.current;
+    // 项目成果：点击立即预览。文本型文档内嵌渲染；PDF/表格用 Metis Office 打开。
+    if (item.id.startsWith('outcome:')) {
+      const outcomeId = item.id.slice('outcome:'.length);
+      const getOutcome = window.metis?.getOutcome;
+      if (!activeResearchProjectId || !getOutcome) return;
+      setArtifactError('');
+      try {
+        const detail = await getOutcome({ projectId: activeResearchProjectId, outcomeId });
+        if (!detail) {
+          setArtifactError(locale === 'zh' ? '无法打开这个成果，请稍后重试。' : 'This outcome could not be opened. Please try again.');
+          return;
+        }
+        const content = (detail as { version?: { content?: unknown } }).version?.content;
+        const markdown = outcomeDocumentToPreviewMarkdown(content);
+        if (markdown) {
+          openPreview(markdown, item.name);
+          return;
+        }
+        const openExternal = window.metis?.openOutcomeInGenoffice;
+        if (openExternal) {
+          const result = await openExternal({ projectId: activeResearchProjectId, outcomeId });
+          if (result?.ok) return;
+        }
+        setArtifactError(locale === 'zh' ? '该成果类型暂不支持内嵌预览，Metis Office 也未能打开。' : 'This outcome type has no inline preview and Metis Office failed to open it.');
+      } catch {
+        setArtifactError(locale === 'zh' ? '无法打开这个成果，请稍后重试。' : 'This outcome could not be opened. Please try again.');
+      }
+      return;
+    }
+    if (!item.contentAvailable) return;
     const getArtifactContent = window.metis?.getArtifactContent;
     if (!sessionId || !getArtifactContent) return;
     setArtifactError('');
@@ -3349,18 +3799,6 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
       setArtifactError(locale === 'zh' ? '无法打开这个生成物，请重新选择或稍后重试。' : 'This artifact could not be opened. Please try again.');
     }
   }
-
-  // Build notes list from global store for the right panel
-  const allNotes = useMetisStore((s) => s.notes);
-  const rightPanelNotes = allNotes
-    .slice(0, 20)
-    .sort((a, b) => b.updatedAt - a.updatedAt)
-    .map((n) => ({
-      id: n.id,
-      title: n.title || t('notes.untitled'),
-      preview: n.content.slice(0, 80),
-      updatedAt: n.updatedAt,
-    }));
 
   const leftPanel = (
     <SessionSidebar
@@ -3395,70 +3833,94 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
 
   const workspace = (
     <div className="chat-main">
-        <div className="chat-scenario-bar" data-testid="chat-scenario-controls">
-          <div className="chat-scenario-bar__identity">
-            <span>{t('chat.scenarioLabel')}</span>
-            <select
-              aria-label={t('chat.activeScenario')}
-              aria-describedby={scenarioLoadState === 'ready' ? undefined : 'chat-scenario-load-status'}
-              disabled={scenarioLoadState !== 'ready'}
-              value={activeScenarioId}
-              onChange={(event) => {
-                const id = event.target.value;
-                setActiveScenarioId(id);
-                try { window.localStorage.setItem(ACTIVE_SCENARIO_KEY, id); } catch { /* preference persistence is best-effort */ }
-              }}
-            >
-              <option value="">
-                {scenarioLoadState === 'loading'
-                  ? t('chat.scenarioLoadingOption')
-                  : scenarioLoadState === 'failed'
-                    ? t('chat.scenarioUnavailableOption')
-                    : t('chat.noCustomScenario')}
-              </option>
-              {scenarios.map((scenario) => <option key={scenario.id} value={scenario.id}>{scenario.name}</option>)}
-            </select>
-            {scenarioLoadState === 'loading' && (
-              <span
-                id="chat-scenario-load-status"
-                className="chat-scenario-bar__status"
-                role="status"
-                aria-live="polite"
+        {/* 项目内多对话切换（2026-08-29 刘总要求）：一个项目支持多个对话，
+            可在此选择进入某个对话或新建对话；协同对话布局另有完整侧栏。 */}
+        {(projectScopedSessions.length > 0 || currentSessionId) && (
+          <div className="chat-session-bar" data-testid="chat-session-bar">
+            <label>
+              <span>{locale === 'zh' ? '对话' : 'Conversation'}</span>
+              <select
+                value={(() => {
+                  const visible = projectScopedSessions.filter((s) => !s.archived);
+                  const index = visible.findIndex((s) => s.id === currentSessionId);
+                  // 隐私边界：会话 id 不得进入 DOM（含属性），下拉用 index 寻址。
+                  return String(index >= 0 ? index : visible.length);
+                })()}
+                onChange={(event) => {
+                  const target = projectScopedSessions.filter((s) => !s.archived)[Number(event.target.value)];
+                  if (target) activateSession(target.id);
+                }}
+                aria-label={locale === 'zh' ? '切换对话' : 'Switch conversation'}
               >
-                {t('chat.scenarioLoading')}
-              </span>
+                {projectScopedSessions.filter((s) => !s.archived).map((s, index) => (
+                  // 隐私边界（pages.test 会话 id 泄露断言）：会话 id 不得出现在
+                  // DOM 文本或属性里；无标题会话显示通用名而不是裸 id。
+                  <option key={s.id} value={String(index)}>{presentSafeMarkdownText(s.title || t('chat.newSessionTitle'), 'normal', locale)}</option>
+                ))}
+                {currentSessionId && projectScopedSessions.filter((s) => !s.archived).every((s) => s.id !== currentSessionId) && (
+                  <option value={String(projectScopedSessions.filter((s) => !s.archived).length)}>{t('chat.newSessionTitle')}</option>
+                )}
+              </select>
+            </label>
+            <button
+              type="button"
+              className="btn-sm btn-secondary"
+              onClick={() => void createNewSession()}
+            >
+              {locale === 'zh' ? '+ 新对话' : '+ New'}
+            </button>
+            {/* 场景选择（2026-08-29 刘总要求）：选定后任务类消息直接按该场景
+                工作流执行；项目级偏好优先，全局偏好兜底。目录加载中禁用、
+                失败后保留交接并给出显式重试（旧场景选择器的语义在新下拉中
+                必须完整保留，2026-08-29 回归修复）。 */}
+            <label>
+              <span>{locale === 'zh' ? '场景' : 'Scenario'}</span>
+              <select
+                value={activeScenarioId}
+                disabled={scenarioLoadState === 'loading' || scenarioLoadState === 'failed'}
+                onChange={(event) => {
+                  const id = event.target.value;
+                  setActiveScenarioId(id);
+                  try {
+                    window.localStorage.setItem(ACTIVE_SCENARIO_KEY, id);
+                    if (activeResearchProjectId) {
+                      if (id) window.localStorage.setItem(`metis:project-scenario:${activeResearchProjectId}`, id);
+                      else window.localStorage.removeItem(`metis:project-scenario:${activeResearchProjectId}`);
+                    }
+                  } catch { /* preference persistence is best-effort */ }
+                }}
+                aria-label={t('chat.activeScenario')}
+              >
+                {scenarioLoadState === 'loading' && (
+                  <option value="">{t('chat.scenarioLoadingOption')}</option>
+                )}
+                {scenarioLoadState === 'failed' && (
+                  <option value="">{t('chat.scenarioUnavailableOption')}</option>
+                )}
+                {scenarioLoadState === 'ready' && (
+                  <option value="">{t('chat.noCustomScenario')}</option>
+                )}
+                {scenarios.map((scenario) => <option key={scenario.id} value={scenario.id}>{scenario.name}</option>)}
+              </select>
+            </label>
+            {scenarioLoadState === 'loading' && (
+              <div role="status" className="chat-scenario-catalog-status">{t('chat.scenarioLoading')}</div>
             )}
             {scenarioLoadState === 'failed' && (
-              <div className="chat-scenario-bar__recovery">
-                <span
-                  id="chat-scenario-load-status"
-                  className="chat-scenario-bar__status"
-                  role="alert"
-                >
-                  {t('chat.scenarioLoadFailed')}
-                </span>
+              <div role="alert" className="chat-scenario-catalog-status">
+                {t('chat.scenarioLoadFailed')}
                 <button
                   type="button"
-                  className="chat-scenario-bar__retry"
-                  onClick={() => setScenarioLoadRevision((revision) => revision + 1)}
+                  className="btn-sm btn-secondary"
                   aria-label={t('chat.retryScenarioLoading')}
+                  onClick={() => setScenarioLoadRevision((revision) => revision + 1)}
                 >
                   {t('chat.retry')}
                 </button>
               </div>
             )}
           </div>
-          <span
-            data-testid="chat-policy-status"
-            className={`chat-scenario-bar__policy ${controlState === 'interrupting' ? 'chat-scenario-bar__policy--interrupting' : ''}`}
-          >
-            {controlState === 'interrupting'
-              ? t('chat.policyInterrupting')
-              : isLoading
-                ? t('chat.policyRunning')
-                : t('chat.policyIdle')}
-          </span>
-        </div>
+        )}
         {diagnosticMode && skills.length > 0 && (
           <div
             data-testid="diagnostic-skill-controls"
@@ -3545,7 +4007,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
             let groupId: string | null = null;
             const renderGoal = (msg: ChatMessage, index: number) => (
               <GoalCardInline
-                key={index}
+                key={msg.id ?? `goal-${index}`}
                 data={msg.goalCard!}
                 uiMode={resolvedUIMode}
                 registerStepElement={(stepId, element) => {
@@ -3578,14 +4040,15 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
             );
             const renderItem = (msg: ChatMessage, index: number) => (
               <ChatMessageItem
-                key={index}
+                key={msg.id ?? index}
                 msg={msg}
+                index={index}
                 isLast={index === messages.length - 1}
                 diagnosticMode={diagnosticMode}
                 onOpenPaper={openPaperByDoi}
-                onEdit={msg.role === 'user' ? (content) => handleEditMessage(index, content) : undefined}
-                onRegenerate={msg.role === 'assistant' ? handleRegenerate : undefined}
-                onSwitchFork={msg.forkId ? handleSwitchFork : undefined}
+                onEdit={msg.role === 'user' ? handleEditMessageAtIndex : undefined}
+                onRegenerate={msg.role === 'assistant' ? stableRegenerate : undefined}
+                onSwitchFork={msg.forkId ? stableSwitchFork : undefined}
               />
             );
             const flushGroup = () => {
@@ -3631,7 +4094,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
             <div className="chat-message assistant chat-run-pending" data-testid="active-run-timeline">
               <div className="message-avatar">M</div>
               <div className="message-body">
-                <AgentActivityTimeline
+                <MemoizedAgentActivityTimeline
                   status="running"
                   events={activeRunParts.run.events}
                   parts={activeRunParts}
@@ -3733,7 +4196,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
             }
           }}
         >
-          {goalSuggestion && (
+          {goalSuggestion && !hasActiveScenarioRun && (
             <div className="chat-goal-suggestion" data-testid="goal-suggestion-bar">
               <span>{locale === 'zh' ? '这个请求适合作为长期研究任务执行。' : 'This request could run as a long-running research task.'}</span>
               <button
@@ -3803,7 +4266,9 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
                   aria-controls={slashMenuOpen ? 'slash-command-listbox' : undefined}
                   aria-activedescendant={slashMenuOpen ? `slash-command-option-${activeSlashIndex}` : undefined}
                   placeholder={isLoading
-                    ? (locale === 'zh' ? '输入新指令，实时引导当前任务…' : 'Send a new instruction to steer the active run…')
+                    ? (activeScenarioId
+                      ? (locale === 'zh' ? '场景执行中 · 直接输入将实时引导当前步骤…' : 'Scenario running · type to steer the current step…')
+                      : (locale === 'zh' ? '输入新指令，实时引导当前任务…' : 'Send a new instruction to steer the active run…'))
                     : t('chat.placeholder')}
                   className="chat-textarea"
                   rows={1}
@@ -3864,24 +4329,44 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0 }: C
       onActiveTabChange={setActiveRightPanelTab}
       tasks={rightPanelTasks}
       artifacts={rightPanelArtifacts}
-      notes={rightPanelNotes}
       previewContent={previewContent}
       previewTitle={previewContent ? previewTitle : undefined}
       artifactError={artifactError}
       uiMode={resolvedUIMode}
       embedded
+      suppressInlinePreview={previewMode === 'pane'}
       onArtifactClick={(item) => void handleArtifactClick(item)}
       onTaskClick={(id) => {
         if (!activeGoalCard) return;
-        const el = goalStepElementRefs.current.get(`${activeGoalCard.goalId}\u0000${id}`);
+        const el = goalStepElementRefs.current.get(`${activeGoalCard.goalId} ${id}`);
         el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }}
     />
   );
 
+  // 预览栏（2026-08-31 刘总布局重构）：projects 模式下预览内容以独立整列
+  // 呈现在最右侧，由 ProjectsPage 做布局联动；其余模式仍走右栏内联预览。
+  const previewPanel = previewMode === 'pane' && previewContent ? (
+    <ArtifactPreviewPane
+      title={previewTitle}
+      content={previewContent}
+      uiMode={resolvedUIMode}
+      locale={locale}
+      onClose={() => setPreviewContent('')}
+      onExportDocx={async () => {
+        const result = await window.metis?.exportMarkdownAsDocx?.({
+          title: previewTitle || (locale === 'zh' ? '生成物' : 'Artifact'),
+          markdown: previewContent,
+        });
+        return result ?? { ok: false, message: 'export unavailable' };
+      }}
+    />
+  ) : null;
+
   return renderLayout({
     leftPanel,
     workspace,
     rightPanel,
+    previewPanel,
   });
 }

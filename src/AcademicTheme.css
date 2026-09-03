@@ -1,254 +1,387 @@
 /**
- * Academic Research Cockpit — global design tokens (DESIGN-METIS-403).
+ * METIS — global design tokens (Rational / Technological / Professional).
  *
- * Visual direction: rational, restrained research instrument.
- * Light mode: cool paper white / graphite ink / deep ink navy accent.
- * Dark mode: obsidian + low-saturation steel blue.
- * Typography: 宋体 (Song) carries academic content; neutral sans for chrome.
+ * Visual direction: Linear, Raycast, Cursor, ChatGPT Desktop. Elite, minimal,
+ * high-density desktop productivity. Color is restrained; hierarchy comes from
+ * typography, spacing, alignment, and neutral surfaces.
  *
  * This file is the single source of truth for theme variables. Component
- * styles should reference these custom properties; hardcoded accent colors
- * and blue fallbacks are not allowed.
+ * styles must reference these custom properties; hardcoded colors and arbitrary
+ * spacing are not allowed.
  */
 
 /* ─── Light Theme ───────────────────────────────────── */
 
 :root {
+  color-scheme: light;
+
   /* Layout */
   --sidebar-width: 220px;
   --chat-sidebar-width: 240px;
   --right-panel-width: 260px;
 
-  /* Radii — small and precise, no large decorative rounding */
-  --radius: 3px;
-  --radius-sm: 2px;
-  --radius-md: 4px;
-  --radius-lg: 4px;
+  /* Radii — strict scale */
+  --radius: 10px;        /* Modal / Sheet */
+  --radius-sm: 6px;      /* Button / Input / Small container */
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-card: 8px;    /* Panel / Card */
+  --radius-pill: 9999px; /* Badge / Status / Tag only */
 
   /* Typography */
-  /* Academic UI baseline: Atkinson Hyperlegible for chrome, Crimson Pro for scholarly text. */
-  --font-sans: "Source Han Sans SC", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", "Atkinson Hyperlegible", system-ui, sans-serif;
+  --font-sans: Inter, "Noto Sans SC", "PingFang SC", system-ui, sans-serif;
   --font-serif: "STSong", "SimSun", "Songti SC", "Source Han Serif SC", "Noto Serif CJK SC", "Crimson Pro", Georgia, serif;
-  --font-mono: "JetBrains Mono", "Source Code Pro", Consolas, monospace;
-  --font-size-xs: 11px;
-  --font-size-sm: 12px;
-  --font-size-base: 14px;
-  --font-size-lg: 17px;
-  --line-height: 1.6;
+  --font-mono: "JetBrains Mono", "SF Mono", "Source Code Pro", Consolas, monospace;
+  --font-size-xs: 11px;  /* Caption */
+  --font-size-sm: 12px;  /* Label */
+  --font-size-base: 14px; /* Body / Secondary / Sub Title */
+  --font-size-lg: 16px;  /* Section Title */
+  --line-height: 1.5;
   --line-height-tight: 1.35;
-  --line-height-relaxed: 1.72;
+  --line-height-relaxed: 1.65;
 
-  /* Spacing */
+  /* Spacing — 4px grid */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
-  --space-5: 20px;
-  --space-6: 24px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
   --space-xs: var(--space-1);
   --space-sm: var(--space-2);
   --space-md: var(--space-3);
   --space-lg: var(--space-5);
 
-  /* Surfaces — warm paper (anthropic-inspired evolution of DESIGN-METIS-403) */
-  --bg-main: #faf9f5;                 /* warm paper */
+  /* Surfaces */
+  --bg-main: #F7F8FA;
   --bg-body: var(--bg-main);
-  --bg-card: #fffefa;
-  --bg-sidebar: #f4f2ec;
-  --bg-inspector: #fffefa;
-  --bg-hover: #f1efe7;
-  --bg-active: #eae7dc;               /* ink 6%, warmed */
-  --bg-input: #fffefc;
-  --bg-input-disabled: #f3f1ea;
-  --bg-code-header: #f3f1ea;
-  --bg-code-block: #201e19;
-  --bg-modal-overlay: rgba(23, 21, 16, 0.45);
-  --bg-modal: #fffefa;
-  --bg-danger-hover: #faf0ec;
-  --bg-secondary: #f4f2eb;
-  --search-highlight-bg: #ede4d2;
+  --bg-card: #FFFFFF;
+  --bg-secondary: #FAFAFB;
+  --bg-sidebar: #F7F8FA;
+  --bg-inspector: #FAFAFB;
+  --bg-hover: rgba(0, 0, 0, 0.04);
+  --bg-active: rgba(0, 0, 0, 0.06);
+  --bg-input: #FFFFFF;
+  --bg-input-disabled: #F7F8FA;
+  --bg-code-header: #F7F8FA;
+  --bg-code-block: #1d1f24;
+  --bg-modal-overlay: rgba(0, 0, 0, 0.4);
+  --bg-modal: #FFFFFF;
+  --bg-danger-hover: #FEF2F2;
+  --bg-secondary: #FAFAFB;
+  --search-highlight-bg: #FFFBEB;
 
-  /* Accent — deep ink navy (single source of emphasis) */
-  --accent: #263a59;
-  --accent-hover: #1c2c45;
-  --accent-soft: color-mix(in srgb, var(--accent) 10%, transparent);
-  --accent-warm: #b0562f;             /* restrained clay */
-  --accent-warm-soft: color-mix(in srgb, var(--accent-warm) 12%, transparent);
+  /* Accent — reserved for primary actions, focus, active/selected states */
+  --accent: #2563EB;
+  --accent-hover: #1F5ED0;
+  --accent-soft: #EEF4FF;
+  --accent-warm: #B45309;             /* restrained amber */
+  --accent-warm-soft: #FEF3C7;
 
-  /* Legacy primary alias for old App.css classes */
+  /* Legacy primary alias */
   --primary: var(--accent);
   --primary-hover: var(--accent-hover);
   --primary-soft: var(--accent-soft);
 
-  /* Text — graphite hierarchy */
-  --text-heading: #171512;
+  /* Text hierarchy */
+  --text-heading: #17191D;
   --text-primary: var(--text-heading);
-  --text-body: #2e2c26;
-  --text-secondary: #514d43;
-  --text-muted: #6b6659;
-  --text-on-accent: #ffffff;
+  --text-body: #17191D;
+  --text-secondary: #606772;
+  --text-muted: #6B7280;
+  --text-on-accent: #FFFFFF;
   --text-on-primary: var(--text-on-accent);
   --text-on-sidebar: var(--text-secondary);
   --text-on-sidebar-muted: var(--text-muted);
   --text-on-sidebar-hover: var(--text-heading);
   --text-link: var(--accent);
 
-  /* Borders — warm hairline */
-  --border: #e5e1d6;
-  --border-light: #eae6dc;
-  --border-danger: #e53e3e;
+  /* Borders */
+  --border: #E4E7EB;
+  --border-light: #ECEEF1;
+  --border-danger: #EF4444;
 
-  /* Shadows — nearly absent; hairline borders carry structure */
+  /* Shadows — only for floating layers */
   --shadow-card: none;
-  --shadow-raised: 0 3px 12px rgba(23, 21, 16, 0.08);
-  --shadow-modal: 0 12px 40px rgba(23, 21, 16, 0.16);
-  --transition-fast: 150ms ease;
-  --transition-standard: 220ms ease;
+  --shadow-raised: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-modal: 0 24px 48px rgba(0, 0, 0, 0.16);
+  --shadow-dropdown: 0 10px 38px rgba(0, 0, 0, 0.12);
+  --shadow-tooltip: 0 4px 12px rgba(0, 0, 0, 0.12);
+  --transition-fast: 120ms ease;
+  --transition-standard: 180ms ease;
 
-  /* Status — semantic colors only */
-  --status-read-bg: #e8f5ee;
-  --status-read-text: #276749;
-  --status-reading-bg: #eef4fb;
-  --status-reading-text: #2b6cb0;
-  --status-skimmed-bg: #faf6ed;
-  --status-skimmed-text: #744210;
-  --status-unread-bg: #f7f8fa;
-  --status-unread-text: #4a5568;
+  /* Status — semantic colors */
+  --status-read-bg: #F0FDF4;
+  --status-read-text: #166534;
+  --status-reading-bg: #EFF6FF;
+  --status-reading-text: #1D4ED8;
+  --status-skimmed-bg: #FFFBEB;
+  --status-skimmed-text: #92400E;
+  --status-unread-bg: #F7F8FA;
+  --status-unread-text: #606772;
   --status-running: var(--accent);
   --status-running-bg: var(--accent-soft);
-  --status-completed: #2f855a;
-  --status-completed-bg: #e8f5ee;
-  --status-failed: #c53030;
-  --status-failed-bg: #fff5f5;
-  --status-danger: #c53030;
+  --status-completed: #16A34A;
+  --status-completed-bg: #F0FDF4;
+  --status-failed: #DC2626;
+  --status-failed-bg: #FEF2F2;
+  --status-danger: #DC2626;
   --danger: var(--status-failed);
   --success: var(--status-completed);
 
   /* Evidence status */
-  --evidence-verified: #2f855a;
-  --evidence-pending: #b7791f;
-  --evidence-contested: #b7791f;
-  --evidence-stale: #718096;
-  --evidence-refuted: #c53030;
+  --evidence-verified: #16A34A;
+  --evidence-pending: #D97706;
+  --evidence-contested: #D97706;
+  --evidence-stale: #71717A;
+  --evidence-refuted: #DC2626;
 
   /* Chart palette — low-saturation, colorblind-aware */
-  --chart-1: #263a59;
-  --chart-2: #2f855a;
-  --chart-3: #718096;
-  --chart-4: #4d7a9e;
-  --chart-5: #c53030;
-  --chart-6: #b8922e;
-  --chart-7: #6b7280;
-  --chart-8: #8c7b70;
+  --chart-1: #2563EB;
+  --chart-2: #16A34A;
+  --chart-3: #71717A;
+  --chart-4: #4F7396;
+  --chart-5: #DC2626;
+  --chart-6: #CA8A04;
+  --chart-7: #64748B;
+  --chart-8: #8C7B70;
 
-  /* Focus ring (a11y): color is valid in outline; shadow is valid in box-shadow. */
-  --focus-ring-color: rgba(30, 58, 95, 0.78);
-  --focus-ring-shadow: 0 0 0 2px rgba(38, 58, 89, 0.4);
-  --focus-ring: 0 0 0 2px rgba(38, 58, 89, 0.72);
+  /* Focus ring */
+  --focus-ring-color: rgba(37, 99, 235, 0.78);
+  --focus-ring-shadow: 0 0 0 2px rgba(37, 99, 235, 0.28);
+  --focus-ring: 0 0 0 2px rgba(37, 99, 235, 0.4);
 
-  /* Tag / legacy accents retain semantic roles. */
+  /* Tag / legacy accents */
   --tag-bg: var(--accent-soft);
   --tag-text: var(--accent);
   --accent-cool: var(--text-muted);
   --accent-purple: var(--text-muted);
+
+  /* Typographic discipline */
+  --tracking-display: -0.01em;
+  --tracking-heading: -0.005em;
+  --tracking-label: 0.01em;
+  --leading-display: 1.25;
+  --leading-tight-data: 1.4;
+  --weight-heading: 600;
+  --weight-medium: 500;
+
+  /* Aurora / glass / glow — disabled by default in the new rational system.
+     Tokens remain so existing references do not break, but they render inert. */
+  --aurora-opacity: 0;
+  --aurora-1: transparent;
+  --aurora-2: transparent;
+  --aurora-3: transparent;
+  --glass-surface: var(--bg-card);
+  --glass-surface-strong: var(--bg-card);
+  --glass-blur: 0px;
+  --glass-blur-strong: 0px;
+  --glass-saturate: 100%;
+  --glass-edge: var(--border-light);
+  --bg-card-glass: var(--bg-card);
+  --accent-gradient: none;
+  --accent-gradient-soft: none;
+  --glow-accent: none;
+  --glow-accent-soft: none;
+  --title-gradient: none;
 }
 
 /* ─── Dark Theme ────────────────────────────────────── */
 
 [data-theme="dark"] {
-  --bg-main: #131211;                 /* warm charcoal */
+  color-scheme: dark;
+  --bg-main: #0A0A0B;
   --bg-body: var(--bg-main);
-  --bg-card: #1b1a16;
-  --bg-sidebar: #100f0d;
-  --bg-inspector: #1b1a16;
-  --bg-hover: #26231d;
-  --bg-active: #22201a;
-  --bg-input: #1b1a16;
-  --bg-input-disabled: #131211;
-  --bg-code-header: #1b1a16;
-  --bg-code-block: #171613;
-  --bg-modal-overlay: rgba(0, 0, 0, 0.65);
-  --bg-modal: #1b1a16;
-  --bg-danger-hover: rgba(197, 48, 48, 0.1);
-  --bg-secondary: #1b1a16;
-  --search-highlight-bg: #3a352a;
+  --bg-card: #18181B;
+  --bg-secondary: #121214;
+  --bg-sidebar: #0A0A0B;
+  --bg-inspector: #121214;
+  --bg-hover: rgba(255, 255, 255, 0.05);
+  --bg-active: rgba(255, 255, 255, 0.08);
+  --bg-input: #18181B;
+  --bg-input-disabled: #0A0A0B;
+  --bg-code-header: #27272A;
+  --bg-code-block: #121214;
+  --bg-modal-overlay: rgba(0, 0, 0, 0.6);
+  --bg-modal: #18181B;
+  --bg-danger-hover: rgba(220, 38, 38, 0.1);
+  --bg-secondary: #121214;
+  --search-highlight-bg: #3F3818;
 
-  --accent: #d3c6a6;                  /* aged parchment — low-saturation warm */
-  --accent-hover: #e2d8bf;
-  --accent-soft: rgb(211 198 166 / 13%);
-  --accent-warm: #d99a71;
-  --accent-warm-soft: rgb(217 154 113 / 15%);
+  --accent: #3B82F6;
+  --accent-hover: #60A5FA;
+  --accent-soft: rgba(59, 130, 246, 0.16);
+  --accent-warm: #F59E0B;
+  --accent-warm-soft: rgba(245, 158, 11, 0.16);
 
   --primary: var(--accent);
   --primary-hover: var(--accent-hover);
   --primary-soft: var(--accent-soft);
 
-  --text-heading: #e8e4da;
+  --text-heading: #FAFAFA;
   --text-primary: var(--text-heading);
-  --text-body: #d1ccc0;
-  --text-secondary: #a39e90;
-  --text-muted: #99937f;
-  --text-on-accent: #0a0d12;
+  --text-body: #E4E4E7;
+  --text-secondary: #A1A1AA;
+  --text-muted: #A1A1AA;
+  --text-on-accent: #000000;
+  --text-on-primary: var(--text-on-accent);
   --text-on-sidebar: var(--text-secondary);
   --text-on-sidebar-muted: var(--text-muted);
   --text-on-sidebar-hover: var(--text-heading);
   --text-link: var(--accent);
 
-  --border: #34302a;
-  --border-light: #34302a;
-  --border-danger: #fc8181;
+  --border: rgba(255, 255, 255, 0.1);
+  --border-light: rgba(255, 255, 255, 0.06);
+  --border-danger: #F87171;
 
   --shadow-card: none;
-  --shadow-modal: 0 12px 40px rgba(0, 0, 0, 0.5);
+  --shadow-raised: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-modal: 0 24px 48px rgba(0, 0, 0, 0.4);
+  --shadow-dropdown: 0 10px 38px rgba(0, 0, 0, 0.3);
+  --shadow-tooltip: 0 4px 12px rgba(0, 0, 0, 0.3);
 
-  --status-read-bg: rgba(56, 161, 105, 0.12);
-  --status-read-text: #68d391;
-  --status-reading-bg: rgba(49, 130, 206, 0.12);
-  --status-reading-text: #63b3ed;
-  --status-skimmed-bg: rgba(183, 121, 31, 0.12);
-  --status-skimmed-text: #ecc94b;
-  --status-unread-bg: rgba(113, 128, 150, 0.12);
-  --status-unread-text: #a0aec0;
+  --status-read-bg: rgba(22, 163, 74, 0.12);
+  --status-read-text: #4ADE80;
+  --status-reading-bg: rgba(59, 130, 246, 0.14);
+  --status-reading-text: #93C5FD;
+  --status-skimmed-bg: rgba(217, 119, 6, 0.12);
+  --status-skimmed-text: #FCD34D;
+  --status-unread-bg: rgba(113, 113, 122, 0.12);
+  --status-unread-text: #A1A1AA;
   --status-running: var(--accent);
   --status-running-bg: var(--accent-soft);
-  --status-completed: #68d391;
-  --status-completed-bg: rgba(56, 161, 105, 0.12);
-  --status-failed: #fc8181;
-  --status-failed-bg: rgba(252, 129, 129, 0.12);
-  --status-danger: #fc8181;
+  --status-completed: #4ADE80;
+  --status-completed-bg: rgba(22, 163, 74, 0.12);
+  --status-failed: #F87171;
+  --status-failed-bg: rgba(248, 113, 113, 0.12);
+  --status-danger: #F87171;
   --danger: var(--status-failed);
   --success: var(--status-completed);
 
-  --evidence-verified: #68d391;
-  --evidence-pending: #f0bd84;
-  --evidence-contested: #f0bd84;
-  --evidence-stale: #a0aec0;
-  --evidence-refuted: #fc8181;
+  --evidence-verified: #4ADE80;
+  --evidence-pending: #FCD34D;
+  --evidence-contested: #FCD34D;
+  --evidence-stale: #A1A1AA;
+  --evidence-refuted: #F87171;
 
-  --chart-1: #d3c6a6;
-  --chart-2: #68d391;
-  --chart-3: #a0aec0;
-  --chart-4: #7aa2d4;
-  --chart-5: #fc8181;
-  --chart-6: #ecc94b;
-  --chart-7: #94a3b8;
-  --chart-8: #a8a29e;
+  --chart-1: #3B82F6;
+  --chart-2: #4ADE80;
+  --chart-3: #A1A1AA;
+  --chart-4: #7FAAD4;
+  --chart-5: #F87171;
+  --chart-6: #FCD34D;
+  --chart-7: #94A3B8;
+  --chart-8: #A8A29E;
 
-  --focus-ring-color: rgba(211, 198, 166, 0.82);
-  --focus-ring-shadow: 0 0 0 2px rgba(211, 198, 166, 0.5);
-  --focus-ring: 0 0 0 2px rgba(211, 198, 166, 0.82);
+  --focus-ring-color: rgba(59, 130, 246, 0.82);
+  --focus-ring-shadow: 0 0 0 2px rgba(59, 130, 246, 0.35);
+  --focus-ring: 0 0 0 2px rgba(59, 130, 246, 0.5);
 
   --tag-bg: var(--accent-soft);
   --tag-text: var(--accent);
   --accent-cool: var(--text-muted);
   --accent-purple: var(--text-muted);
+
+  --aurora-opacity: 0;
+  --aurora-1: transparent;
+  --aurora-2: transparent;
+  --aurora-3: transparent;
+  --glass-surface: var(--bg-card);
+  --glass-surface-strong: var(--bg-card);
+  --glass-blur: 0px;
+  --glass-blur-strong: 0px;
+  --glass-saturate: 100%;
+  --glass-edge: var(--border-light);
+  --bg-card-glass: var(--bg-card);
+  --accent-gradient: none;
+  --accent-gradient-soft: none;
+  --glow-accent: none;
+  --glow-accent-soft: none;
+  --title-gradient: none;
+}
+
+/* ─── Accent themes ───────────────────────────────────── */
+
+[data-accent="blue"] {
+  --accent: #2563EB;
+  --accent-hover: #1F5ED0;
+  --accent-soft: #EEF4FF;
+  --focus-ring-color: rgba(37, 99, 235, 0.78);
+  --focus-ring-shadow: 0 0 0 2px rgba(37, 99, 235, 0.28);
+  --focus-ring: 0 0 0 2px rgba(37, 99, 235, 0.4);
+}
+
+[data-theme="dark"][data-accent="blue"] {
+  --accent: #3B82F6;
+  --accent-hover: #60A5FA;
+  --accent-soft: rgba(59, 130, 246, 0.16);
+  --focus-ring-color: rgba(59, 130, 246, 0.82);
+  --focus-ring-shadow: 0 0 0 2px rgba(59, 130, 246, 0.35);
+  --focus-ring: 0 0 0 2px rgba(59, 130, 246, 0.5);
+}
+
+[data-accent="gold"] {
+  --accent: #A16207;
+  --accent-hover: #854D0E;
+  --accent-soft: #FEF3C7;
+  --focus-ring-color: rgba(161, 98, 7, 0.78);
+  --focus-ring-shadow: 0 0 0 2px rgba(161, 98, 7, 0.28);
+  --focus-ring: 0 0 0 2px rgba(161, 98, 7, 0.4);
+}
+
+[data-theme="dark"][data-accent="gold"] {
+  --accent: #D97706;
+  --accent-hover: #F59E0B;
+  --accent-soft: rgba(217, 119, 6, 0.16);
+  --text-on-accent: #000000;
+  --text-on-primary: #000000;
+  --focus-ring-color: rgba(217, 119, 6, 0.82);
+  --focus-ring-shadow: 0 0 0 2px rgba(217, 119, 6, 0.35);
+  --focus-ring: 0 0 0 2px rgba(217, 119, 6, 0.5);
+}
+
+[data-accent="green"] {
+  --accent: #15803D;
+  --accent-hover: #166534;
+  --accent-soft: #DCFCE7;
+  --focus-ring-color: rgba(21, 128, 61, 0.78);
+  --focus-ring-shadow: 0 0 0 2px rgba(21, 128, 61, 0.28);
+  --focus-ring: 0 0 0 2px rgba(21, 128, 61, 0.4);
+}
+
+[data-theme="dark"][data-accent="green"] {
+  --accent: #22C55E;
+  --accent-hover: #4ADE80;
+  --accent-soft: rgba(34, 197, 94, 0.16);
+  --focus-ring-color: rgba(34, 197, 94, 0.82);
+  --focus-ring-shadow: 0 0 0 2px rgba(34, 197, 94, 0.35);
+  --focus-ring: 0 0 0 2px rgba(34, 197, 94, 0.5);
+}
+
+[data-accent="gray"] {
+  --accent: #52525B;
+  --accent-hover: #3F3F46;
+  --accent-soft: #F4F4F5;
+  --focus-ring-color: rgba(82, 82, 91, 0.78);
+  --focus-ring-shadow: 0 0 0 2px rgba(82, 82, 91, 0.28);
+  --focus-ring: 0 0 0 2px rgba(82, 82, 91, 0.4);
+}
+
+[data-theme="dark"][data-accent="gray"] {
+  --accent: #A1A1AA;
+  --accent-hover: #D4D4D8;
+  --accent-soft: rgba(161, 161, 170, 0.16);
+  --focus-ring-color: rgba(161, 161, 170, 0.82);
+  --focus-ring-shadow: 0 0 0 2px rgba(161, 161, 170, 0.35);
+  --focus-ring: 0 0 0 2px rgba(161, 161, 170, 0.5);
 }
 
 /* ─── Focus-visible (a11y) ─────────────────────────────── */
 
 :focus-visible {
   outline: 2px solid var(--focus-ring-color);
-  outline-offset: 3px;
+  outline-offset: 2px;
   box-shadow: var(--focus-ring-shadow);
 }
 
@@ -268,7 +401,7 @@ a {
 }
 
 [data-theme="dark"] :focus-visible {
-  outline-color: rgba(211, 198, 166, 0.82);
+  outline-color: var(--focus-ring-color);
 }
 
 /* ─── Reduced motion ───────────────────────────────────── */
@@ -312,6 +445,18 @@ a {
     --bg-sidebar: Canvas;
     --bg-inspector: Canvas;
     --bg-input: Canvas;
+    --aurora-opacity: 0;
+    --aurora-1: transparent;
+    --aurora-2: transparent;
+    --aurora-3: transparent;
+    --glass-surface: Canvas;
+    --glass-surface-strong: Canvas;
+    --bg-card-glass: Canvas;
+    --accent-gradient: none;
+    --accent-gradient-soft: none;
+    --glow-accent: none;
+    --glow-accent-soft: none;
+    --title-gradient: none;
   }
   [data-theme="dark"] {
     --border: ButtonBorder;
@@ -322,26 +467,56 @@ a {
     --bg-main: Canvas;
     --bg-card: Canvas;
   }
+  [data-accent] {
+    --accent: Highlight;
+    --accent-hover: Highlight;
+    --focus-ring-color: Highlight;
+    --focus-ring-shadow: 0 0 0 2px Highlight;
+    --focus-ring: 0 0 0 2px Highlight;
+  }
+  [data-theme="dark"][data-accent] {
+    --accent: Highlight;
+    --accent-hover: Highlight;
+    --focus-ring-color: Highlight;
+    --focus-ring-shadow: 0 0 0 2px Highlight;
+    --focus-ring: 0 0 0 2px Highlight;
+  }
   :focus-visible {
     outline: 3px solid Highlight;
     outline-offset: 2px;
   }
 }
 
-/* ─── 统一浮层层级（L2）：所有 z-index 必须引用这里，禁止散落硬编码 ───
- * 数值必须随档位递增：sticky < sidebar < inpage < dropdown < overlay
- *   < overlay-top < modal < modal-top < approval < toast。
- * toast(1500) 高于 approval(1200)：语义为“全局通知永远在最上层”，
- * 不能被审批弹窗或任何模态盖住。 */
+/* ─── z-index scale ────────────────────────────────────── */
 :root {
-  --z-sticky: 3;         /* 页内吸顶元素（运行时间线横幅等） */
-  --z-sidebar: 30;       /* 顶栏/侧栏等常驻框架层及其内部下拉 */
-  --z-inpage: 40;        /* 页内局部浮层（页内弹出菜单、页内面板、局部控件） */
-  --z-dropdown: 80;      /* 全局下拉/指示面板（JobsIndicator 等） */
-  --z-overlay: 89;       /* 常规模态浮层（方法库/投稿/引导 tour 遮罩等） */
-  --z-overlay-top: 90;   /* 需要浮在常规浮层之上（内嵌浏览原文/tour 聚光目标） */
-  --z-modal: 100;        /* 全局模态（命令面板/导入对话框/工作区大模态） */
-  --z-modal-top: 1000;   /* 浮在模态之上（审批弹窗/选中询问按钮/SCAI 对话框） */
-  --z-approval: 1200;    /* 主进程审批 Hook 推送的场景步骤审批，压过普通模态 */
-  --z-toast: 1500;       /* 全局通知，永远最上（高于 approval） */
+  --z-sticky: 3;
+  --z-sidebar: 30;
+  --z-inpage: 40;
+  --z-dropdown: 80;
+  --z-overlay: 89;
+  --z-overlay-top: 90;
+  --z-modal: 100;
+  --z-modal-top: 1000;
+  --z-approval: 1200;
+  --z-toast: 1500;
+}
+
+/* ─── Form controls base ───────────────────────────────── */
+textarea,
+select,
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]) {
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+}
+
+textarea::placeholder,
+input::placeholder {
+  color: var(--text-muted);
+}
+
+textarea:focus-visible,
+select:focus-visible,
+input:focus-visible {
+  border-color: var(--accent);
 }

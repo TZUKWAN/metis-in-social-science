@@ -28,8 +28,8 @@
   animation: toast-host-in 180ms ease;
 }
 
-.toast-host__item--success { border-left-color: var(--success, #2e7d32); }
-.toast-host__item--error { border-left-color: var(--status-danger, #b3261e); }
+.toast-host__item--success { border-left-color: var(--success); }
+.toast-host__item--error { border-left-color: var(--status-danger); }
 
 @keyframes toast-host-in {
   from { opacity: 0; transform: translateY(6px); }

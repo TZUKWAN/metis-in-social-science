@@ -133,7 +133,7 @@ function extractFirstJsonObjectTolerant(text: string): unknown | undefined {
   }
 
   // Pass 2: repair a truncated fragment (close open string/array/object).
-  let repaired = text.slice(start);
+  const repaired = text.slice(start);
   inString = false;
   escaped = false;
   const openStack: string[] = [];

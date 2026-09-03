@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import Database from 'better-sqlite3';
 import { PersonalizationRepository, TRASH_RETENTION_MS } from '../../engine/personalization/PersonalizationRepository.js';
 import { buildBuiltinPersonalizationDefinitions } from '../fixtures/personalization/legacyBuiltinDefinitions.js';
@@ -17,6 +20,7 @@ import {
 } from '../../engine/runtime/PersonalizationRuntimeContract.js';
 
 const NOW = 1_785_394_400_000;
+const INTEGRITY_SECRET = Buffer.alloc(32, 17);
 
 function provenance(origin: 'builtin' | 'user' = 'user') {
   return {
@@ -147,7 +151,7 @@ describe('PersonalizationRepository', () => {
   beforeEach(() => {
     db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
-    repository = new PersonalizationRepository(db);
+    repository = new PersonalizationRepository(db, INTEGRITY_SECRET);
   });
 
   afterEach(() => db?.close());
@@ -192,6 +196,123 @@ describe('PersonalizationRepository', () => {
       .toEqual({ ok: false, code: 'revision_conflict', currentRevision: 2 });
     expect(repository.listVersions(first.id).map((view) => view.revision)).toEqual([2, 1]);
     expect(repository.listVersions(first.id)[0]?.contentDigest).toMatch(/^[a-f0-9]{64}$/u);
+  });
+
+  it('quarantines a missing current ledger entry and recovers only from verified history', () => {
+    const definition = skill('user:skills/missing-current-version');
+    expect(repository.save({ contractVersion: 1, definition, expectedRevision: 0 }).ok).toBe(true);
+    const second: SkillDefinitionV2 = {
+      ...definition,
+      revision: 2,
+      markdown: '# Changed',
+      provenance: { ...definition.provenance, updatedAt: NOW + 1 },
+    };
+    expect(repository.save({ contractVersion: 1, definition: second, expectedRevision: 1 }).ok).toBe(true);
+    db.prepare('DELETE FROM personalization_versions WHERE id = ? AND revision = ?').run(second.id, second.revision);
+
+    const restarted = new PersonalizationRepository(db, INTEGRITY_SECRET);
+    expect(restarted.get(second.id)).toBeUndefined();
+    expect(restarted.list('skill', true)).not.toContainEqual(second);
+    expect(restarted.listVersions(second.id).map((view) => view.revision)).toEqual([1]);
+    expect(restarted.listIntegrityIssues('skill')).toEqual([{
+      id: second.id,
+      kind: 'skill',
+      archived: false,
+      currentRevision: 2,
+      latestVerifiedRevision: 1,
+      code: 'current_version_missing',
+    }]);
+
+    const recovered = restarted.recoverIntegrityIssue(second.id, 1, 2, NOW + 2);
+    expect(recovered).toEqual(expect.objectContaining({
+      ok: true,
+      code: 'saved',
+      definition: expect.objectContaining({ revision: 3, markdown: definition.markdown }),
+    }));
+    expect(restarted.get(second.id)).toEqual(expect.objectContaining({ revision: 3, markdown: definition.markdown }));
+    expect(restarted.listIntegrityIssues('skill')).toEqual([]);
+    expect(restarted.listVersions(second.id).map((view) => view.revision)).toEqual([3, 1]);
+    expect(db.prepare(`
+      SELECT quarantined_revision, current_json, issue_code FROM personalization_definition_quarantine WHERE id = ?
+    `).get(second.id)).toEqual({
+      quarantined_revision: 2,
+      current_json: expect.any(String),
+      issue_code: 'current_version_missing',
+    });
+  });
+
+  it('does not recover schema-invalid or identity-mismatched current JSON', () => {
+    const definition = skill('user:skills/unrecoverable-current');
+    expect(repository.save({ contractVersion: 1, definition, expectedRevision: 0 }).ok).toBe(true);
+    db.prepare(`
+      UPDATE personalization_definitions SET current_revision = 2, current_json = ? WHERE id = ?
+    `).run('{}', definition.id);
+
+    const restarted = new PersonalizationRepository(db, INTEGRITY_SECRET);
+    expect(restarted.get(definition.id)).toBeUndefined();
+    expect(restarted.listIntegrityIssues('skill')).toEqual([expect.objectContaining({
+      id: definition.id,
+      currentRevision: 2,
+      latestVerifiedRevision: 1,
+      code: 'current_definition_invalid',
+    })]);
+    expect(restarted.recoverIntegrityIssue(definition.id, 1, 1, NOW + 2))
+      .toEqual({ ok: false, code: 'revision_conflict', currentRevision: 2 });
+    expect(restarted.recoverIntegrityIssue(definition.id, 1, 2, NOW + 2)).toEqual(expect.objectContaining({
+      ok: true,
+      code: 'saved',
+      definition: expect.objectContaining({ revision: 3 }),
+    }));
+    expect(restarted.get(definition.id)).toEqual(expect.objectContaining({ revision: 3 }));
+  });
+
+  it('rolls back both the current row and version ledger when version publication fails', () => {
+    const first = skill('user:skills/atomic-publication');
+    expect(repository.save({ contractVersion: 1, definition: first, expectedRevision: 0 }).ok).toBe(true);
+    db.exec(`
+      CREATE TRIGGER reject_personalization_version_two
+      BEFORE INSERT ON personalization_versions
+      WHEN NEW.id = 'user:skills/atomic-publication' AND NEW.revision = 2
+      BEGIN SELECT RAISE(ABORT, 'injected version failure'); END;
+    `);
+    const second: SkillDefinitionV2 = {
+      ...first,
+      revision: 2,
+      markdown: '# Must not publish',
+      provenance: { ...first.provenance, updatedAt: NOW + 1 },
+    };
+    expect(repository.save({ contractVersion: 1, definition: second, expectedRevision: 1 }))
+      .toEqual({ ok: false, code: 'io_error' });
+    expect(repository.get(first.id)).toEqual(first);
+    expect(repository.listVersions(first.id).map((view) => view.revision)).toEqual([1]);
+  });
+
+  it('survives a real file close and reopen with a complete immutable ledger', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'metis-personalization-restart-'));
+    const filePath = path.join(directory, 'personalization.db');
+    const first = skill('user:skills/file-restart');
+    try {
+      const firstDb = new Database(filePath);
+      const firstRepository = new PersonalizationRepository(firstDb, INTEGRITY_SECRET);
+      expect(firstRepository.save({ contractVersion: 1, definition: first, expectedRevision: 0 }).ok).toBe(true);
+      const second: SkillDefinitionV2 = {
+        ...first,
+        revision: 2,
+        markdown: '# Durable after restart',
+        provenance: { ...first.provenance, updatedAt: NOW + 1 },
+      };
+      expect(firstRepository.save({ contractVersion: 1, definition: second, expectedRevision: 1 }).ok).toBe(true);
+      firstDb.close();
+
+      const restartedDb = new Database(filePath);
+      const restarted = new PersonalizationRepository(restartedDb, INTEGRITY_SECRET);
+      expect(restarted.get(first.id)).toEqual(second);
+      expect(restarted.list('skill', true)).toContainEqual(second);
+      expect(restarted.listVersions(first.id).map((version) => version.revision)).toEqual([2, 1]);
+      restartedDb.close();
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it('restores an earlier version by creating a new revision', () => {
@@ -378,6 +499,8 @@ describe('PersonalizationRepository', () => {
     if (!result.ok) return;
     expect(repository.getScenarioRunRecord('durable-run')).toEqual(result.record);
     expect(repository.listScenarioRunRecords('durable-session')).toEqual([result.record]);
+    expect(repository.latestScenarioRunForProject('durable-project')).toEqual(result.record);
+    expect(repository.latestScenarioRunForProject('other-project')).toBeNull();
 
     expect(() => repository.saveScenarioRunRecord({
       ...result.record,
@@ -390,5 +513,11 @@ describe('PersonalizationRepository', () => {
       updatedAt: result.record.updatedAt + 1,
     })).toThrow(/Terminal scenario run records are immutable/u);
     expect(repository.getScenarioRunRecord('durable-run')).toEqual(result.record);
+
+    db.prepare('UPDATE personalization_scenario_runs SET record_json = ? WHERE run_id = ?').run(
+      JSON.stringify({ ...result.record, updatedAt: result.record.updatedAt + 1 }),
+      'durable-run',
+    );
+    expect(repository.latestScenarioRunForProject('durable-project')).toBeNull();
   });
 });

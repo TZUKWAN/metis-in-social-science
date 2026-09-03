@@ -321,7 +321,7 @@
 }
 
 .library-mine__star {
-  color: var(--warning, #b8860b);
+  color: var(--warning);
   font-size: 12px;
   flex-shrink: 0;
 }
@@ -367,7 +367,7 @@
 }
 
 .library-status--reading { color: var(--accent); border-color: var(--accent); }
-.library-status--read { color: var(--success, #2e7d32); border-color: var(--success, #2e7d32); }
+.library-status--read { color: var(--success); border-color: var(--success); }
 
 .library-mine__empty {
   padding: 32px 0;

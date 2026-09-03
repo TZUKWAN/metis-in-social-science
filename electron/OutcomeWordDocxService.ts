@@ -1,4 +1,4 @@
-/**
+﻿/**
  * DOCX codec for the Outcomes Word editor.
  *
  * The codec intentionally has one editable representation: WordDocument. It
@@ -11,6 +11,11 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { inflateRawSync } from 'node:zlib';
 import { ZipWriter } from '../engine/export/renderers/ZipWriter.js';
 import { WordDocumentSchema, type OutcomeWordDocxImportPreview, type OutcomeWordDocxWarning, type WordDocument } from '../engine/runtime/OutcomeRuntimeContract.js';
+import { importDocxViaGenoffice, exportDocxViaGenoffice, readGenofficeSnapshot, extractGenofficeImagesByRef, GENOFFICE_IMAGE_REF_PREFIX } from './office/genofficeBridge.js';
+
+const OFFICE_ENGINE_ENV = (process.env.METIS_OFFICE_ENGINE ?? 'genoffice').toLowerCase();
+export const GENOFFICE_ENABLED = OFFICE_ENGINE_ENV !== 'legacy';
+const ORIGINAL_ARCHIVE_KEY = '_originalArchiveMediaId';
 
 const W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const R_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
@@ -39,7 +44,15 @@ type DocxImagePersisted = { id: string; mediaType: DocxImageType; displayName: s
 
 export type OutcomeWordDocxExport = { bytes: Buffer; warnings: OutcomeWordDocxWarning[] };
 export type OutcomeWordDocxImport = { document: WordDocument; preview: OutcomeWordDocxImportPreview; warnings: OutcomeWordDocxWarning[] };
-export type OutcomeWordDocxServiceOptions = { resolveManagedImage?: (mediaId: string) => Promise<DocxManagedImage | undefined> };
+export type OutcomeWordDocxServiceOptions = {
+  /** Explicit test/rollback selector. Production defaults to GenOffice. */
+  engine?: 'genoffice' | 'legacy';
+  resolveManagedImage?: (mediaId: string) => Promise<DocxManagedImage | undefined>;
+  /** Reads the persisted original package for byte-preserving export (project/outcome/media scoped). */
+  resolveOriginalArchive?: (mediaId: string) => Promise<Buffer | undefined>;
+  /** Persists a freshly imported original package so later exports can stay byte-preserving. */
+  persistOriginalArchive?: (archive: Buffer, displayName: string) => Promise<string | undefined>;
+};
 export type OutcomeWordDocxMediaPersist = (image: DocxImage) => Promise<DocxImagePersisted | undefined>;
 export type OutcomeWordDocxMediaRollback = (mediaIds: readonly string[]) => Promise<void>;
 
@@ -357,6 +370,10 @@ function parseWordDocument(entries: Map<string, Buffer>): OutcomeWordDocxImport 
 
 export class OutcomeWordDocxService {
   constructor(private readonly options: OutcomeWordDocxServiceOptions = {}) {}
+  private useGenoffice(): boolean {
+    if (this.options.engine) return this.options.engine === 'genoffice';
+    return GENOFFICE_ENABLED && process.env.NODE_ENV !== 'test';
+  }
   private encode(document: WordDocument, warnings: OutcomeWordDocxWarning[], imageParts: ReadonlyMap<string, DocxImagePart> = new Map()): OutcomeWordDocxExport {
     const zip = new ZipWriter(); for (const [name, bytes] of packageParts(document, imageParts)) zip.addFile(name, bytes); const bytes = zip.toBuffer();
     if (bytes.length < 22 || bytes.readUInt32LE(0) !== 0x04034b50 || bytes.readUInt32LE(bytes.length - 22) !== EOCD_SIGNATURE) throw new Error('docx_zip_write_invalid');
@@ -368,6 +385,30 @@ export class OutcomeWordDocxService {
     return this.encode(parsed, warnings);
   }
   async exportManagedDocument(document: WordDocument): Promise<OutcomeWordDocxExport> {
+    if (this.useGenoffice() && this.options.resolveOriginalArchive) {
+      const archiveMediaId = (document.page as Style)[ORIGINAL_ARCHIVE_KEY];
+      if (typeof archiveMediaId === 'string' && archiveMediaId) {
+        const original = await this.options.resolveOriginalArchive(archiveMediaId).catch(() => undefined);
+        if (original) {
+          const snapshot = readGenofficeSnapshot(document);
+          const liveState = JSON.stringify({ header: document.header, footer: document.footer, page: Object.fromEntries(Object.entries(document.page as Style).filter(([key]) => key !== ORIGINAL_ARCHIVE_KEY && key !== '_genofficeSnapshot')) });
+          const drifted = snapshot === undefined ? true : snapshot !== liveState;
+          if (!drifted) {
+            const resolveImage = this.options.resolveManagedImage
+              ? async (mediaId: string) => {
+                  const resolved = await this.options.resolveManagedImage!(mediaId).catch(() => undefined);
+                  if (!resolved) return undefined;
+                  return { bytes: resolved.bytes, mediaType: resolved.mediaType, displayName: resolved.displayName };
+                }
+              : undefined;
+            const result = await exportDocxViaGenoffice(document, original, resolveImage);
+            return { bytes: Buffer.from(result.bytes), warnings: result.warnings };
+          }
+          // header/footer/page drifted from the import snapshot: fall through to
+          // the legacy full-generation codec (correct output, not byte-preserving).
+        }
+      }
+    }
     const parsed = WordDocumentSchema.parse(document); const warnings: OutcomeWordDocxWarning[] = []; const resolve = this.options.resolveManagedImage;
     if (!resolve) return this.exportDocument(parsed);
     const imageParts = new Map<string, DocxImagePart>();
@@ -385,11 +426,59 @@ export class OutcomeWordDocxService {
     }
     return this.encode(parsed, warnings, imageParts);
   }
-  async exportFile(filePath: string, document: WordDocument): Promise<OutcomeWordDocxExport> { const result = this.options.resolveManagedImage ? await this.exportManagedDocument(document) : this.exportDocument(document); await writeFile(filePath, result.bytes); return result; }
+  async exportFile(filePath: string, document: WordDocument): Promise<OutcomeWordDocxExport> { const result = this.options.resolveManagedImage || this.options.resolveOriginalArchive ? await this.exportManagedDocument(document) : this.exportDocument(document); await writeFile(filePath, result.bytes); return result; }
   importBuffer(archive: Buffer): OutcomeWordDocxImport { return parseWordDocument(readEntries(archive)); }
-  async importFile(filePath: string): Promise<OutcomeWordDocxImport> { return this.importBuffer(await readFile(filePath)); }
+  async importFile(filePath: string): Promise<OutcomeWordDocxImport> { return this.importBufferV2(await readFile(filePath)); }
+  /**
+   * Engine-dispatched import. GenOffice path (default): full Block tree import
+   * with per-block patch anchors and the original package kept for
+   * byte-preserving export. Falls back to the legacy codec on any parse error.
+   */
+  async importBufferV2(archive: Buffer): Promise<OutcomeWordDocxImport> {
+    if (this.useGenoffice()) {
+      try {
+        const result = await importDocxViaGenoffice(archive);
+        const document = result.document;
+        if (this.options.persistOriginalArchive) {
+          const mediaId = await this.options.persistOriginalArchive(archive, 'original.docx').catch(() => undefined);
+          if (mediaId) (document.page as Style)[ORIGINAL_ARCHIVE_KEY] = mediaId;
+        }
+        const preview = {
+          images: result.images.map((image) => ({
+            blockId: image.blockId,
+            mediaType: image.mediaType,
+            displayName: image.displayName,
+            byteLength: image.bytes.length,
+          })),
+        } satisfies OutcomeWordDocxImportPreview;
+        return { document, preview, warnings: result.warnings };
+      } catch {
+        // GenOffice could not parse this package — fall through to the legacy codec.
+      }
+    }
+    return this.importBuffer(archive);
+  }
   /** Save-time-only bridge: resolves imported inline PNG/JPEG bytes and never writes by itself. */
   async commitImportedMedia(archive: Buffer, document: WordDocument, persist: OutcomeWordDocxMediaPersist, rollback: OutcomeWordDocxMediaRollback): Promise<WordDocument> {
+    const hasGenofficeImages = document.blocks.some((block) => block.kind === 'image' && block.imageRef?.startsWith(GENOFFICE_IMAGE_REF_PREFIX));
+    if (this.useGenoffice() && hasGenofficeImages) {
+      const parsed = WordDocumentSchema.parse(document);
+      const imageMap = await extractGenofficeImagesByRef(archive);
+      const created: string[] = [];
+      try {
+        const blocks: WordDocument['blocks'] = [];
+        for (const block of parsed.blocks) {
+          if (block.kind !== 'image' || !block.imageRef?.startsWith(GENOFFICE_IMAGE_REF_PREFIX)) { blocks.push(block); continue; }
+          const image = imageMap.get(block.imageRef);
+          if (!image) throw new Error('docx_media_source_missing');
+          const managed = await persist({ order: 0, imageRef: block.imageRef, mediaPath: image.imageRef, mediaType: image.mediaType, displayName: image.displayName, bytes: image.bytes });
+          if (!managed) throw new Error('docx_media_persist_failed');
+          created.push(managed.id);
+          blocks.push({ ...block, imageRef: managed.id, mediaType: managed.mediaType, displayName: managed.displayName });
+        }
+        return { ...parsed, blocks };
+      } catch (error) { await rollback(created); throw error; }
+    }
     const entries = readEntries(archive); const parsed = WordDocumentSchema.parse(document); const documentXml = entries.get('word/document.xml')?.toString('utf8'); const rels = entries.get('word/_rels/document.xml.rels')?.toString('utf8') ?? '';
     if (!documentXml) throw new Error('docx_document_missing');
     const sourceImages: DocxImage[] = []; for (const item of directBodyBlocks(documentXml)) if (item.kind === 'p') { const image = extractParagraphImage(item.xml, entries, rels, sourceImages.length + 1); if (image) sourceImages.push(image); }

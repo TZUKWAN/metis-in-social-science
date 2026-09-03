@@ -27,6 +27,8 @@ export interface LiteratureSearchItem {
   tags: string[];
   /** 中文：CSSCI/北大核心/CSCD；英文：SCI/SSCI。 */
   core: boolean;
+  /** OpenAlex 来源 ISSN-L（英文刊；中文库无此字段）。用于投稿匹配的索引层级核验。 */
+  issn?: string;
 }
 
 export interface LiteratureSearchSuccess {
@@ -215,6 +217,7 @@ async function searchOpenAlex(query: string, page: number, pageSize: number, cor
       citationCount: typeof work.cited_by_count === 'number' ? work.cited_by_count : undefined,
       tags: [],
       core,
+      issn: issnL || issnList[0] || undefined,
     });
   }
   return { items, total };

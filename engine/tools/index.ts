@@ -28,6 +28,7 @@ import { TRUST_TOOL_SPECS, getTrustToolHandlers } from './builtin/trust-tools.js
 import { RESEARCH_CODING_TOOL_SPECS, createResearchCodingToolHandlers } from './builtin/research-coding-tools.js';
 import { WRITING_TOOL_SPECS, getWritingToolHandlers } from './builtin/writing-tools.js';
 import { STATISTICS_TOOL_SPECS, getStatisticsToolHandlers } from './builtin/statistics-tools.js';
+import { JOURNAL_CATALOG_TOOL_SPECS, journalDirectorySearchHandler, journalDirectoryDetailHandler } from './builtin/journal-catalog-tools.js';
 import { RESEARCH_NETWORK_TOOL_SPECS, getResearchNetworkToolHandlers } from './builtin/research-network-tools.js';
 import { NOTES_TOOL_SPECS, getNotesToolHandlers } from './builtin/notes-tools.js';
 import {
@@ -146,6 +147,7 @@ export function registerBuiltinTools(
     ...getSearchToolSpecs(),
     ...getShellToolSpecs(),
     ...ACADEMIC_TOOL_SPECS,
+    ...JOURNAL_CATALOG_TOOL_SPECS,
     SEARCH_PAPER_TEXT_TOOL,
     ...TRUST_TOOL_SPECS,
     ...WRITING_TOOL_SPECS,
@@ -212,6 +214,8 @@ export function registerBuiltinTools(
     ['browser_collect', browserCollectHandler],
     ['crossref_lookup', crossrefLookupHandler],
     ['openalex_lookup', openAlexLookupHandler],
+    ['journal_directory_search', journalDirectorySearchHandler],
+    ['journal_directory_detail', journalDirectoryDetailHandler],
     ['writing_stage_check', writingStageCheckHandler],
     ['style_calibration', styleCalibrationHandler],
     ['search_library', searchLibraryHandler],

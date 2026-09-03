@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
+import { AlertTriangle } from 'lucide-react';
 import { useTranslation } from '../i18n';
+import { Button, Checkbox } from './ui';
 import type { UIMode } from '../../engine/capabilities/DiagnosticMode';
 import type { ApprovalAction, ApprovalRequestView } from '../../engine/runtime/ApprovalRuntimeContract';
 
@@ -49,7 +51,7 @@ export default function ApprovalModal({
         }}
       >
         <div className="approval-modal-header">
-          <span className="approval-modal-icon" aria-hidden="true">!</span>
+          <AlertTriangle size={18} aria-hidden="true" />
           <h3 id="approval-modal-title">{t('approval.title')}</h3>
         </div>
 
@@ -69,20 +71,19 @@ export default function ApprovalModal({
 
         <div className="approval-modal-footer">
           <label className="approval-remember">
-            <input
-              type="checkbox"
+            <Checkbox
               checked={remember}
               onChange={(event) => setRemember(event.target.checked)}
             />
             {t('approval.remember')}
           </label>
           <div className="approval-actions">
-            <button className="btn-secondary" onClick={() => onReject(request.requestId, remember)}>
+            <Button variant="secondary" onClick={() => onReject(request.requestId, remember)}>
               {t('approval.reject')}
-            </button>
-            <button className="btn-primary" onClick={() => onApprove(request.requestId, remember)}>
+            </Button>
+            <Button variant="primary" onClick={() => onApprove(request.requestId, remember)}>
               {t('approval.approve')}
-            </button>
+            </Button>
           </div>
         </div>
       </div>

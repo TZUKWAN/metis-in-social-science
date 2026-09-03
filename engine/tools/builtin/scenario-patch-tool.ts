@@ -18,12 +18,66 @@ import type { ToolSpec } from '../../core/types.js';
 import type { ToolHandler } from '../ToolDispatcher.js';
 import {
   ScenarioDefinitionSchema,
+  WorkflowStepBindingSchema,
   type ScenarioDefinition,
 } from '../../runtime/PersonalizationRuntimeContract.js';
 import { normalizeScenarioHarness } from '../../personalization/ScenarioHarness.js';
 
 /** Identity/provenance fields the model must never control. */
 const PROTECTED_FIELDS = new Set(['contractVersion', 'id', 'kind', 'revision', 'provenance']);
+
+/** Workflow step fields the strict schema accepts (kept in sync with the contract). */
+const WORKFLOW_STEP_KEYS = new Set(Object.keys(WorkflowStepBindingSchema.shape));
+/** Deliverable section fields accepted by DeliverableSectionSchema (strict). */
+const SECTION_KEYS = new Set([
+  'id', 'title', 'kind', 'status', 'condition', 'purpose', 'requirements',
+  'optionalContent', 'forbidden', 'lengthTarget', 'method', 'evidence', 'aiAdjust', 'children',
+]);
+
+/**
+ * 源头净化（2026-08-28 刘总要求：场景构建不再因残留缺陷报错）：
+ * 模型经 scenario_apply_update 写入的字段名语义合理（title=名称、
+ * step.prompt=指引），但严格 schema 只认规范键；此前这些未知键会一路
+ * 留到最终自检，审计修不完就整体作废。现在在写入点直接剥离未知键，
+ * 并把放错槽位的引用（如 agents/* 塞进 skillIds）归位——草稿永远合法。
+ */
+function sanitizeScenarioDraft(draft: ScenarioDefinition): ScenarioDefinition {
+  const clean = JSON.parse(JSON.stringify(draft)) as ScenarioDefinition;
+  let movedRefs = 0;
+  for (const step of clean.workflow ?? []) {
+    for (const key of Object.keys(step)) {
+      if (!WORKFLOW_STEP_KEYS.has(key)) delete (step as Record<string, unknown>)[key];
+    }
+    const misplaced = (step.skillIds ?? []).filter((id) => /(^|:|\/)agents(\/|:)/.test(id));
+    if (misplaced.length > 0) {
+      step.skillIds = (step.skillIds ?? []).filter((id) => !misplaced.includes(id));
+      clean.agentIds = [...new Set([...(clean.agentIds ?? []), ...misplaced])];
+      movedRefs += misplaced.length;
+    }
+  }
+  const stripSections = (sections: unknown): void => {
+    if (!Array.isArray(sections)) return;
+    for (const section of sections) {
+      if (!section || typeof section !== 'object') continue;
+      for (const key of Object.keys(section)) {
+        if (!SECTION_KEYS.has(key)) delete (section as Record<string, unknown>)[key];
+      }
+      stripSections((section as { children?: unknown }).children);
+    }
+  };
+  const capability = clean.capability;
+  if (capability && typeof capability === 'object') {
+    for (const deliverable of (capability as { deliverables?: Array<{ sections?: unknown }> }).deliverables ?? []) {
+      stripSections(deliverable?.sections);
+    }
+  }
+  const legacyDeliverable = (clean as unknown as { deliverable?: { sections?: unknown } }).deliverable;
+  if (legacyDeliverable) stripSections(legacyDeliverable.sections);
+  if (movedRefs > 0) {
+    console.info(`[scenario-patch] sanitized draft: moved ${movedRefs} agent reference(s) into agentIds`);
+  }
+  return clean;
+}
 
 /**
  * 最小单元增量构建（2026-08-24 刘总方案 C）：不再限制单次提交数量——模型
@@ -165,7 +219,7 @@ export class ScenarioPatchSession {
   private readonly summaries: string[] = [];
   private readonly zh: boolean;
   /** 设计轮（2026-08-24 刘总方案 C）：AI 先提交的大纲，主进程据此逐条驱动填写轮。 */
-  private readonly plannedWorkflow: Array<{ id: string; name: string }> = [];
+  private readonly plannedWorkflow: Array<{ id: string; name: string; kind: 'step' | 'substep' }> = [];
   private readonly plannedSections: Array<{ id: string; title: string }> = [];
   /** 每应用一个最小单元（单个步骤/单个章节）触发一次，用于逐步广播快照。 */
   onStepApplied?: (draft: ScenarioDefinition) => void = undefined;
@@ -185,7 +239,7 @@ export class ScenarioPatchSession {
     return [...this.summaries];
   }
 
-  getPlannedWorkflow(): ReadonlyArray<{ id: string; name: string }> {
+  getPlannedWorkflow(): ReadonlyArray<{ id: string; name: string; kind: 'step' | 'substep' }> {
     return [...this.plannedWorkflow];
   }
 
@@ -194,57 +248,103 @@ export class ScenarioPatchSession {
   }
 
   /**
-   * 设计轮：只登记步骤大纲（id+名称+依赖），骨架立即写入草稿并逐步广播，
-   * 具体内容（prompt/completionCriteria/绑定）留给后续填写轮逐条补全。
+   * 设计轮（2026-08-25 刘总细粒度规格）：登记步骤大纲，**每个顶层步骤必须
+   * 携带子步骤**（如：查找文献→构建行文逻辑→撰写→审查），骨架逐个立即
+   * 上屏；填写轮按 parent→subStep 顺序逐条驱动补全细节。
    */
   planWorkflow(steps: unknown): { ok: true; overview: string } | { ok: false; issues: string[] } {
     if (!Array.isArray(steps) || steps.length === 0) {
-      return { ok: false, issues: ['steps 必须是非空数组，每项含唯一 id 与 name。'] };
+      return { ok: false, issues: ['steps 必须是非空数组，每项含唯一 id、name 与 subSteps（子步骤）。'] };
     }
     const seen = new Set<string>();
+    interface PlannedStep { id: string; name: string; dependsOn?: string[]; subSteps: Array<{ id: string; name: string }> }
+    const normalized: PlannedStep[] = [];
     for (const step of steps) {
       if (!isPlainObject(step) || typeof step.id !== 'string' || !step.id.trim() || typeof step.name !== 'string' || !step.name.trim()) {
         return { ok: false, issues: ['每个步骤都必须有非空的 id 和 name。'] };
       }
       if (seen.has(step.id)) return { ok: false, issues: [`步骤 id 重复：${step.id}`] };
       seen.add(step.id);
+      const subSteps: Array<{ id: string; name: string }> = [];
+      if (Array.isArray(step.subSteps)) {
+        for (const sub of step.subSteps) {
+          if (!isPlainObject(sub) || typeof sub.id !== 'string' || !sub.id.trim() || typeof sub.name !== 'string' || !sub.name.trim()) {
+            return { ok: false, issues: [`步骤 ${step.id} 的子步骤必须有非空的 id 和 name。`] };
+          }
+          if (seen.has(sub.id)) return { ok: false, issues: [`子步骤 id 重复：${sub.id}`] };
+          seen.add(sub.id);
+          subSteps.push({ id: sub.id, name: sub.name });
+        }
+      }
+      normalized.push({
+        id: step.id,
+        name: step.name,
+        dependsOn: Array.isArray(step.dependsOn) ? step.dependsOn.filter((d): d is string => typeof d === 'string') : undefined,
+        subSteps,
+      });
     }
-    for (const step of steps) {
-      const applied = this.apply({ workflow: [{
-        id: step.id as string,
-        name: step.name as string,
-        ...(Array.isArray(step.dependsOn) ? { dependsOn: step.dependsOn as string[] } : {}),
-      }] });
+    let previousTailId: string | null = null;
+    for (const item of normalized) {
+      const dependsOn = item.dependsOn ?? (previousTailId ? [previousTailId] : []);
+      const applied = this.apply({ workflow: [{ id: item.id, name: item.name, dependsOn }] });
       if (!applied.ok) return applied;
-      this.plannedWorkflow.push({ id: step.id as string, name: step.name as string });
+      this.plannedWorkflow.push({ id: item.id, name: item.name, kind: 'step' });
       this.onStepApplied?.(JSON.parse(JSON.stringify(this.draft)) as ScenarioDefinition);
+      let previousId = item.id;
+      for (const sub of item.subSteps) {
+        const appliedSub = this.apply({ workflow: [{ id: sub.id, name: sub.name, parentStepId: item.id, dependsOn: [previousId] }] });
+        if (!appliedSub.ok) return appliedSub;
+        this.plannedWorkflow.push({ id: sub.id, name: `${item.name} / ${sub.name}`, kind: 'substep' });
+        this.onStepApplied?.(JSON.parse(JSON.stringify(this.draft)) as ScenarioDefinition);
+        previousId = sub.id;
+      }
+      previousTailId = item.subSteps.length > 0 ? item.subSteps[item.subSteps.length - 1]!.id : item.id;
     }
     return { ok: true, overview: scenarioOverview(this.draft, this.zh) };
   }
 
-  /** 设计轮（交付物章节）：登记章节大纲，骨架逐步写入并广播。 */
+  /** 设计轮（交付物章节）：登记章节大纲（含二级小节 children），骨架逐步写入并广播。 */
   planSections(sections: unknown): { ok: true; overview: string } | { ok: false; issues: string[] } {
     if (!Array.isArray(sections) || sections.length === 0) {
       return { ok: false, issues: ['sections 必须是非空数组，每项含唯一 id 与 title。'] };
     }
     const seen = new Set<string>();
+    interface PlannedSection { id: string; title: string; children: Array<{ id: string; title: string }> }
+    const normalized: PlannedSection[] = [];
     for (const section of sections) {
       if (!isPlainObject(section) || typeof section.id !== 'string' || !section.id.trim() || typeof section.title !== 'string' || !section.title.trim()) {
         return { ok: false, issues: ['每个章节都必须有非空的 id 和 title。'] };
       }
       if (seen.has(section.id)) return { ok: false, issues: [`章节 id 重复：${section.id}`] };
       seen.add(section.id);
+      const children: Array<{ id: string; title: string }> = [];
+      if (Array.isArray(section.children)) {
+        for (const child of section.children) {
+          if (!isPlainObject(child) || typeof child.id !== 'string' || !child.id.trim() || typeof child.title !== 'string' || !child.title.trim()) {
+            return { ok: false, issues: [`章节 ${section.id} 的小节必须有非空的 id 和 title。`] };
+          }
+          if (seen.has(child.id)) return { ok: false, issues: [`小节 id 重复：${child.id}`] };
+          seen.add(child.id);
+          children.push({ id: child.id, title: child.title });
+        }
+      }
+      // 二级章节硬校验（2026-08-28 刘总要求）：空壳章节大纲在这里直接拒收，
+      // 让模型下一轮立即补齐，而不是等到门禁/审计阶段。
+      if (children.length === 0) {
+        return { ok: false, issues: [`章节 ${section.id}（${section.title}）缺少 children：每章必须规划 3-5 个二级小节（至少 1 个），请补齐后重新提交完整大纲。`] };
+      }
+      normalized.push({ id: section.id, title: section.title, children });
     }
-    for (const section of sections) {
+    for (const section of normalized) {
       const applied = this.apply({ deliverable: { sections: [{
-        id: section.id as string,
-        title: section.title as string,
+        id: section.id,
+        title: section.title,
         kind: 'section',
         status: 'required',
-        children: [],
+        children: section.children.map((child) => ({ id: child.id, title: child.title, kind: 'section', status: 'required', children: [] })),
       }] } });
       if (!applied.ok) return applied;
-      this.plannedSections.push({ id: section.id as string, title: section.title as string });
+      this.plannedSections.push({ id: section.id, title: section.title });
       this.onStepApplied?.(JSON.parse(JSON.stringify(this.draft)) as ScenarioDefinition);
     }
     return { ok: true, overview: scenarioOverview(this.draft, this.zh) };
@@ -271,13 +371,35 @@ export class ScenarioPatchSession {
   /**
    * Apply one part to the working draft.
    *
-   * Validation layering (deliberate): intermediate states of an incremental
-   * build are naturally incomplete, so apply() only enforces structural
-   * sanity through normalizeScenarioHarness (plus engine defaults). The strict
-   * scenario schema is enforced once at the end by the compiler's final gate,
-   * which feeds any remaining violations back to the model for repair.
+   * Validation layering (2026-08-29 刘总要求：每写完一步就必须可保存):
+   * apply() enforces normalize + engine defaults AND the strict scenario
+   * schema at every write, so the draft is always in a savable state —
+   * violations (unknown keys, wrong types) go back to the model immediately
+   * instead of accumulating into an unsavable draft. Content completeness
+   * remains a phase-gate/design hint only and never blocks saving.
    */
   apply(rawFields: unknown): { ok: true; overview: string } | { ok: false; issues: string[] } {
+    // 容错（2026-08-25 刘总现场日志）：模型偶发把 fields 发成 JSON 字符串
+    // （双重编码）——先解包再走正常路径。
+    if (typeof rawFields === 'string') {
+      try {
+        rawFields = JSON.parse(rawFields);
+      } catch { /* 保持原值，走下方拒绝分支 */ }
+    }
+    // 容错：模型偶发把 fields 发成对象数组（把多个补丁打包成列表）——
+    // 逐个应用每个对象元素，而不是整单拒绝。
+    if (Array.isArray(rawFields)) {
+      const parts = rawFields.filter((item) => isPlainObject(item) && Object.keys(item).length > 0);
+      if (parts.length === 0) {
+        return { ok: false, issues: ['fields 必须是一个 JSON 对象（场景顶层字段的子集），收到的是不含有效对象的数组。'] };
+      }
+      for (const part of parts) {
+        const applied = this.apply(part);
+        if (!applied.ok) return applied;
+        this.onStepApplied?.(JSON.parse(JSON.stringify(this.draft)) as ScenarioDefinition);
+      }
+      return { ok: true, overview: scenarioOverview(this.draft, this.zh) };
+    }
     if (!isPlainObject(rawFields)) {
       return { ok: false, issues: ['fields 必须是一个 JSON 对象（场景顶层字段的子集）。'] };
     }
@@ -332,20 +454,23 @@ export class ScenarioPatchSession {
       if (PROTECTED_FIELDS.has(key)) continue; // silently ignore protected identity
       if (key === 'workflow' && Array.isArray(value)) {
         // 增量工作流合并（2026-08-22 刘总要求）：按 id upsert——同 id 替换、
-        // 新 id 追加。模型每轮只需提交 1-2 个步骤，避免整组重传被输出上限截断。
+        // 新 id 追加。同名步骤（2026-08-25 追加）：id 不同但名称相同的视为
+        // 同一步骤合并（保留原 id），杜绝模型换 id 造成的重复步骤。
         const existing = Array.isArray(candidate.workflow) ? (candidate.workflow as unknown[]) : [];
         const merged = [...existing];
         for (const step of value) {
           if (!isPlainObject(step) || typeof step.id !== 'string') continue;
-          // 模型常只提交部分字段（id/name/prompt）；补齐结构默认值，
-          // 否则 normalize 的 trim/数组操作会在中间态崩溃。
           const completed = {
             description: '', goal: '', prompt: '', inputs: [], outputs: [],
             completionCriteria: [], condition: null, agentId: undefined,
             skillIds: [], mcpIds: [], toolIds: [], dependsOn: [], maxTurns: 12,
             ...step,
           };
-          const index = merged.findIndex((item) => isPlainObject(item) && item.id === step.id);
+          let index = merged.findIndex((item) => isPlainObject(item) && item.id === step.id);
+          if (index < 0 && typeof step.name === 'string' && step.name.trim()) {
+            const stepName = step.name.trim();
+            index = merged.findIndex((item) => isPlainObject(item) && typeof item.name === 'string' && item.name.trim() === stepName);
+          }
           if (index >= 0) merged[index] = deepMergeScenarioField(merged[index], completed);
           else merged.push(completed);
         }
@@ -353,13 +478,21 @@ export class ScenarioPatchSession {
         continue;
       }
       if (key === 'deliverable' && isPlainObject(value) && Array.isArray((value as { sections?: unknown }).sections)) {
-        // 章节 upsert（2026-08-24 刘总方案 C）：与 workflow 相同的按 id 合并
-        // 语义——同 id 替换、新 id 追加，分批提交不再互相覆盖。
+        // 章节 upsert：按 id 合并；**同名章节（title 相同）也合并**（保留原 id）
+        // ——模型在填写轮换 id 重发同一章时不再产生重复章节（2026-08-25）。
         const deliverableCandidate = isPlainObject(candidate.deliverable) ? { ...candidate.deliverable } as Record<string, unknown> : { ...value } as Record<string, unknown>;
         const existingSections = Array.isArray(deliverableCandidate.sections) ? [...deliverableCandidate.sections as unknown[]] : [];
         for (const section of (value as { sections: unknown[] }).sections) {
-          if (!isPlainObject(section) || typeof section.id !== 'string') continue;
-          const index = existingSections.findIndex((item) => isPlainObject(item) && (item as { id?: unknown }).id === section.id);
+          if (!isPlainObject(section)) continue;
+          let index = -1;
+          if (typeof section.id === 'string' && section.id) {
+            index = existingSections.findIndex((item) => isPlainObject(item) && (item as { id?: unknown }).id === section.id);
+          }
+          if (index < 0 && typeof section.title === 'string' && section.title.trim()) {
+            const sectionTitle = section.title.trim();
+            index = existingSections.findIndex((item) => isPlainObject(item) && typeof (item as { title?: unknown }).title === 'string' && (item as { title: string }).title.trim() === sectionTitle);
+          }
+          if (index < 0 && typeof section.id !== 'string') continue;
           if (index >= 0) existingSections[index] = deepMergeScenarioField(existingSections[index], section);
           else existingSections.push(section);
         }
@@ -382,7 +515,10 @@ export class ScenarioPatchSession {
       const normalized = normalizeScenarioHarness(withIdentity as unknown as ScenarioDefinition);
       ensureSingleTerminalStep(normalized);
       ensurePrimaryDeliverableTitle(normalized);
-      this.draft = normalized;
+      this.draft = sanitizeScenarioDraft(normalized);
+      // 写入点不拒绝（2026-08-29 刘总要求：每写完一步就处于可保存状态）。
+      // 未知字段等偏差由保存路径的宽松净化统一剔除；内容完整性是设计提示，
+      // 与保存无关。
     } catch (error) {
       let issues: string[];
       const zodIssues = (error as { issues?: Array<{ path: (string | number)[]; message: string }> }).issues;
@@ -398,6 +534,10 @@ export class ScenarioPatchSession {
   }
 }
 
+export interface ScenarioDraftUpdatedListener {
+  (update: { sessionId: string; scenario: ScenarioDefinition; summaries: readonly string[] }): void;
+}
+
 export interface ScenarioPatchRouter {
   spec: ToolSpec;
   handler: ToolHandler;
@@ -410,11 +550,10 @@ export interface ScenarioPatchRouter {
   close(sessionId: string): void;
   /** Diagnostic peek; production flow relies on getDraft via open/close pairs. */
   activeSession(sessionId: string): ScenarioPatchSession | undefined;
-  /**
-   * 增量可见回调（2026-08-23 刘总要求）：每次 apply 成功后触发，
-   * 载荷是当前草稿快照与步骤摘要；主进程用它把中间态实时推送到渲染端。
-   */
-  onDraftUpdated?: (update: { sessionId: string; scenario: ScenarioDefinition; summaries: readonly string[] }) => void;
+  /** Register the live draft listener for exactly one compile session. */
+  setDraftUpdatedListener(sessionId: string, listener: ScenarioDraftUpdatedListener): void;
+  /** Remove a listener only if this compile still owns the session slot. */
+  removeDraftUpdatedListener(sessionId: string, listener: ScenarioDraftUpdatedListener): void;
 }
 
 export const SCENARIO_APPLY_UPDATE_TOOL_NAME = 'scenario_apply_update';
@@ -439,10 +578,10 @@ const SCENARIO_APPLY_UPDATE_PARAMETERS = {
 /** One shared router instance survives provider-profile runtime rebuilds. */
 export function createScenarioPatchRouter(zh = true): ScenarioPatchRouter {
   const sessions = new Map<string, ScenarioPatchSession>();
-  let draftUpdatedListener: ScenarioPatchRouter['onDraftUpdated'] | undefined;
+  const draftUpdatedListeners = new Map<string, ScenarioDraftUpdatedListener>();
   const broadcast = (sessionId: string, session: ScenarioPatchSession) => {
     try {
-      draftUpdatedListener?.({
+      draftUpdatedListeners.get(sessionId)?.({
         sessionId,
         scenario: JSON.parse(JSON.stringify(session.getDraft())) as ScenarioDefinition,
         summaries: session.getSummaries(),
@@ -483,7 +622,11 @@ export function createScenarioPatchRouter(zh = true): ScenarioPatchRouter {
   // ── 设计轮工具（2026-08-24 刘总方案 C）：只出大纲，骨架立即上屏 ──
   const planWorkflowSpec: ToolSpec = {
     name: SCENARIO_PLAN_WORKFLOW_TOOL_NAME,
-    description: 'PLANNING TURN ONLY: register the workflow OUTLINE — one entry per step with a stable unique id, a concise name, and dependsOn order. Do NOT write prompts/criteria here; the driver will ask for each step\u2019s details separately.',
+    description: [
+      'PLANNING TURN ONLY: register the workflow OUTLINE — one entry per top-level step, and EVERY step MUST carry subSteps (fine-grained sub-steps with parentStepId semantics).',
+      'Canonical sub-step pattern for a content-producing step: research/gather materials (bind search MCP/skills) → build the writing logic/outline → draft the content → review the draft. Adapt to the step\u2019s nature; minimum 2 sub-steps per step.',
+      'Do NOT write prompts/criteria here; the driver will ask for the parent and each sub-step\u2019s details separately.',
+    ].join(' '),
     parameters: {
       type: 'object',
       properties: {
@@ -492,11 +635,23 @@ export function createScenarioPatchRouter(zh = true): ScenarioPatchRouter {
           items: {
             type: 'object',
             properties: {
-              id: { type: 'string', description: 'Stable unique step id, e.g. "step-lit-review".' },
-              name: { type: 'string', description: 'Concise step name.' },
+              id: { type: 'string', description: 'Stable unique step id, e.g. "step-topic-rationale".' },
+              name: { type: 'string', description: 'Concise step name, e.g. "选题依据（限1000字）".' },
               dependsOn: { type: 'array', items: { type: 'string' }, description: 'Ids of prerequisite steps (empty for the first step).' },
+              subSteps: {
+                type: 'array',
+                description: 'MANDATORY fine-grained sub-steps of this step (minimum 2). Executed in order under the parent.',
+                items: {
+                  type: 'object',
+                  properties: {
+                    id: { type: 'string', description: 'Stable unique sub-step id, e.g. "step-topic-rationale-search".' },
+                    name: { type: 'string', description: 'Concise sub-step name, e.g. "查找文献".' },
+                  },
+                  required: ['id', 'name'],
+                },
+              },
             },
-            required: ['id', 'name'],
+            required: ['id', 'name', 'subSteps'],
           },
         },
       },
@@ -519,7 +674,10 @@ export function createScenarioPatchRouter(zh = true): ScenarioPatchRouter {
 
   const planSectionsSpec: ToolSpec = {
     name: SCENARIO_PLAN_SECTIONS_TOOL_NAME,
-    description: 'PLANNING TURN ONLY: register the deliverable section OUTLINE — one entry per top-level section with a stable unique id and title. Do NOT write section prompts here; the driver will ask for each section\u2019s details separately.',
+    description: [
+      'PLANNING TURN ONLY: register the deliverable section OUTLINE — one entry per top-level section with a stable unique id, title, and its children (second-level sub-sections with word limits when the user specifies them).',
+      'Do NOT write section prompts here; the driver will ask for each section\u2019s details separately.',
+    ].join(' '),
     parameters: {
       type: 'object',
       properties: {
@@ -529,7 +687,19 @@ export function createScenarioPatchRouter(zh = true): ScenarioPatchRouter {
             type: 'object',
             properties: {
               id: { type: 'string', description: 'Stable unique section id.' },
-              title: { type: 'string', description: 'Section title.' },
+              title: { type: 'string', description: 'Section title, including the word limit when specified, e.g. "选题依据（限1000字）".' },
+              children: {
+                type: 'array',
+                description: 'Second-level sub-sections of this chapter (from the user\u2019s deliverable breakdown).',
+                items: {
+                  type: 'object',
+                  properties: {
+                    id: { type: 'string', description: 'Stable unique sub-section id.' },
+                    title: { type: 'string', description: 'Sub-section title.' },
+                  },
+                  required: ['id', 'title'],
+                },
+              },
             },
             required: ['id', 'title'],
           },
@@ -561,18 +731,24 @@ export function createScenarioPatchRouter(zh = true): ScenarioPatchRouter {
     planSectionsHandler,
     open: (sessionId: string, current: ScenarioDefinition) => {
       const session = new ScenarioPatchSession(current, zh);
-      // 逐个应用回调 → 复用同一广播通道，最小单元逐个上屏。
+      // 逐个应用回调 → 复用同一会话广播通道，最小单元逐个上屏。
       session.onStepApplied = (draft) => {
         try {
-          draftUpdatedListener?.({ sessionId, scenario: draft, summaries: session.getSummaries() });
+          draftUpdatedListeners.get(sessionId)?.({ sessionId, scenario: draft, summaries: session.getSummaries() });
         } catch { /* 通知失败不影响应用 */ }
       };
       sessions.set(sessionId, session);
     },
-    close: (sessionId: string) => { sessions.delete(sessionId); },
+    close: (sessionId: string) => {
+      sessions.delete(sessionId);
+    },
     activeSession: (sessionId: string) => sessions.get(sessionId),
-    set onDraftUpdated(listener: ScenarioPatchRouter['onDraftUpdated']) { draftUpdatedListener = listener; },
-    get onDraftUpdated() { return draftUpdatedListener; },
+    setDraftUpdatedListener: (sessionId: string, listener: ScenarioDraftUpdatedListener) => {
+      draftUpdatedListeners.set(sessionId, listener);
+    },
+    removeDraftUpdatedListener: (sessionId: string, listener: ScenarioDraftUpdatedListener) => {
+      if (draftUpdatedListeners.get(sessionId) === listener) draftUpdatedListeners.delete(sessionId);
+    },
   };
 }
 

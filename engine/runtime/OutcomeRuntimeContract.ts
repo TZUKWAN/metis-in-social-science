@@ -7,6 +7,14 @@ export const OUTCOME_LIMITS = Object.freeze({
   sourceCount: 64, categoryCount: 500, outcomes: 2_000, versions: 1_000,
   messages: 2_000, templateBytes: 1_000_000,
 } as const);
+
+export function serializeOutcomeTemplateDefinition(definition: Record<string, unknown>): string {
+  const serialized = JSON.stringify(definition);
+  if (typeof serialized !== 'string' || new TextEncoder().encode(serialized).byteLength > OUTCOME_LIMITS.templateBytes) {
+    throw new Error('outcome_template_definition_too_large');
+  }
+  return serialized;
+}
 // eslint-disable-next-line no-control-regex -- rejects non-printing control code points at the contract boundary.
 const unsafeControls = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u;
 const text = (max: number) => z.string().max(max).refine((value) => !unsafeControls.test(value));
@@ -14,7 +22,7 @@ export const OutcomeIdSchema = z.string().min(1).max(OUTCOME_LIMITS.idChars).reg
 const timestamp = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const version = z.number().int().min(1).max(1_000_000_000);
 
-export const OutcomeKindSchema = z.enum(['word', 'ppt', 'pdf', 'image', 'chart', 'other']);
+export const OutcomeKindSchema = z.enum(['word', 'ppt', 'spreadsheet', 'pdf', 'image', 'chart', 'other']);
 export type OutcomeKind = z.infer<typeof OutcomeKindSchema>;
 export const OutcomeStatusSchema = z.enum(['draft', 'final', 'archived']);
 export type OutcomeStatus = z.infer<typeof OutcomeStatusSchema>;
@@ -58,14 +66,91 @@ export const PptDocumentSchema = z.strictObject({
   theme: z.record(z.string(), z.unknown()).default({}), templateId: OutcomeIdSchema.nullable().default(null), generationSkillId: OutcomeIdSchema.nullable().default(null),
   pages: z.array(PptPageSchema).max(500),
 });
-export const OutcomeMediaTypeSchema = z.enum(['application/pdf','image/png','image/jpeg','image/svg+xml']);
+export const OutcomeMediaTypeSchema = z.enum(['application/pdf','image/png','image/jpeg','image/svg+xml','application/vnd.openxmlformats-officedocument.wordprocessingml.document','application/vnd.openxmlformats-officedocument.presentationml.presentation','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet']);
 export const OutcomeMediaSchema = z.strictObject({ id: OutcomeIdSchema, mediaType: OutcomeMediaTypeSchema, displayName: text(OUTCOME_LIMITS.titleChars), byteLength: z.number().int().positive().max(20 * 1024 * 1024) });
 export type OutcomeMedia = z.infer<typeof OutcomeMediaSchema>;
 export const OtherDocumentSchema = z.strictObject({ type: z.literal('other'), text: text(OUTCOME_LIMITS.textChars).default(''), media: OutcomeMediaSchema.nullable().default(null) });
-export const OutcomeDocumentSchema = z.union([WordDocumentSchema, PptDocumentSchema, OtherDocumentSchema]);
+export const SpreadsheetCellSchema = z.strictObject({
+  value: z.union([text(100_000), z.number().finite(), z.boolean(), z.null()]),
+  formula: text(8_192).optional(),
+  type: text(32).optional(),
+});
+export type SpreadsheetCell = z.infer<typeof SpreadsheetCellSchema>;
+export const SpreadsheetWorkbookSchema = z.strictObject({
+  sheetNames: z.array(text(OUTCOME_LIMITS.titleChars)).max(500).default([]),
+  activeSheet: text(OUTCOME_LIMITS.titleChars).nullable().default(null),
+  activeCell: text(128).nullable().default(null),
+  cells: z.record(z.string(), SpreadsheetCellSchema).default({}).refine((value) => Object.keys(value).length <= 20_000, 'spreadsheet_cell_limit_exceeded'),
+});
+export type SpreadsheetWorkbook = z.infer<typeof SpreadsheetWorkbookSchema>;
+export const SpreadsheetDocumentSchema = z.strictObject({
+  type: z.literal('spreadsheet'),
+  media: OutcomeMediaSchema.nullable().default(null),
+  originalArchiveMediaId: OutcomeIdSchema.nullable().default(null),
+  workbook: SpreadsheetWorkbookSchema.default({ sheetNames: [], activeSheet: null, activeCell: null, cells: {} }),
+});
+export type SpreadsheetDocument = z.infer<typeof SpreadsheetDocumentSchema>;
+export const PdfDocumentSchema = z.strictObject({
+  type: z.literal('pdf'),
+  media: OutcomeMediaSchema.nullable().default(null),
+  originalArchiveMediaId: OutcomeIdSchema.nullable().default(null),
+  pageCount: z.number().int().min(0).max(100_000).nullable().default(null),
+  activePage: z.number().int().min(1).max(100_000).nullable().default(null),
+});
+export type PdfDocument = z.infer<typeof PdfDocumentSchema>;
+export const OutcomeDocumentSchema = z.union([WordDocumentSchema, PptDocumentSchema, SpreadsheetDocumentSchema, PdfDocumentSchema, OtherDocumentSchema]);
 export type OutcomeDocument = z.infer<typeof OutcomeDocumentSchema>;
 export type WordDocument = z.infer<typeof WordDocumentSchema>;
 export type PptDocument = z.infer<typeof PptDocumentSchema>;
+
+
+/** Validate template pages beyond the basic transport schema: a usable Grid
+ * document must contain at least one page, unique IDs, and elements that stay
+ * within the ratio-specific canvas. */
+export function decodePptTemplatePages(input: unknown, ratio: PptDocument['ratio']): PptPage[] | undefined {
+  const parsed = z.array(PptPageSchema).max(500).safeParse(input);
+  if (!parsed.success || parsed.data.length === 0) return undefined;
+  const gridWidth = ratio === '4:3' ? 24 : 32;
+  const pageIds = new Set<string>();
+  const elementIds = new Set<string>();
+  for (const page of parsed.data) {
+    if (pageIds.has(page.id)) return undefined;
+    pageIds.add(page.id);
+    for (const element of page.elements) {
+      if (elementIds.has(element.id) || element.x + element.width > gridWidth || element.y + element.height > 18) return undefined;
+      elementIds.add(element.id);
+    }
+  }
+  return parsed.data;
+}
+
+export type DecodedPptTemplateDefinition = Readonly<{
+  ratio?: PptDocument['ratio'];
+  theme?: Record<string, unknown>;
+  pages?: PptPage[];
+}>;
+
+/** Decode the supported visual PPT template fields once for all persistence/application paths. */
+export function decodePptTemplateDefinition(input: unknown, fallbackRatio: PptDocument['ratio']): DecodedPptTemplateDefinition | undefined {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const definition = input as Record<string, unknown>;
+  const ratioValue = definition.ratio;
+  if (ratioValue !== undefined && ratioValue !== '16:9' && ratioValue !== '4:3') return undefined;
+  const ratio = ratioValue as PptDocument['ratio'] | undefined;
+  const themeValue = definition.theme;
+  if (themeValue !== undefined && (themeValue === null || typeof themeValue !== 'object' || Array.isArray(themeValue))) return undefined;
+  const theme = themeValue as Record<string, unknown> | undefined;
+  const pagesValue = definition.pages;
+  if (pagesValue !== undefined && !Array.isArray(pagesValue)) return undefined;
+  const pages = pagesValue === undefined ? undefined : decodePptTemplatePages(pagesValue, ratio ?? fallbackRatio);
+  if (pagesValue !== undefined && !pages) return undefined;
+  if (ratio === undefined && theme === undefined && pages === undefined) return undefined;
+  return {
+    ...(ratio !== undefined ? { ratio } : {}),
+    ...(theme !== undefined ? { theme } : {}),
+    ...(pages !== undefined ? { pages } : {}),
+  };
+}
 
 export const OutcomeSummarySchema = z.strictObject({
   id: OutcomeIdSchema, projectId: OutcomeIdSchema, categoryId: OutcomeIdSchema.nullable(), title: text(OUTCOME_LIMITS.titleChars),
@@ -79,6 +164,34 @@ export const OutcomeVersionSchema = z.strictObject({
 export type OutcomeVersion = z.infer<typeof OutcomeVersionSchema>;
 export const OutcomeDetailSchema = z.strictObject({ outcome: OutcomeSummarySchema, version: OutcomeVersionSchema });
 export type OutcomeDetail = z.infer<typeof OutcomeDetailSchema>;
+export const OutcomeExternalEditorKindSchema = z.enum(['word', 'ppt', 'spreadsheet', 'pdf']);
+export type OutcomeExternalEditorKind = z.infer<typeof OutcomeExternalEditorKindSchema>;
+export const OutcomeExternalEditorOpenRequestSchema = z.strictObject({ projectId: OutcomeIdSchema, outcomeId: OutcomeIdSchema, version: version.optional(), embedded: z.boolean().optional() });
+export type OutcomeExternalEditorOpenRequest = z.infer<typeof OutcomeExternalEditorOpenRequestSchema>;
+export const OutcomeExternalEditorSessionSchema = z.strictObject({ token: OutcomeIdSchema, kind: OutcomeExternalEditorKindSchema, fileName: text(OUTCOME_LIMITS.titleChars) });
+export type OutcomeExternalEditorSession = z.infer<typeof OutcomeExternalEditorSessionSchema>;
+export const OutcomeExternalEditorOpenResultSchema = z.discriminatedUnion('ok', [
+  z.strictObject({ ok: z.literal(true), session: OutcomeExternalEditorSessionSchema, webContentsId: z.number().optional() }),
+  z.strictObject({ ok: z.literal(false), code: z.enum(['invalid_request', 'outcomes_unavailable', 'project_not_found', 'outcome_not_found', 'outcome_kind_mismatch', 'external_editor_version_conflict', 'genoffice_unavailable', 'genoffice_open_failed']), message: text(OUTCOME_LIMITS.noteChars) }),
+]);
+export type OutcomeExternalEditorOpenResult = z.infer<typeof OutcomeExternalEditorOpenResultSchema>;
+export const OutcomeExternalEditorSyncRequestSchema = z.strictObject({ projectId: OutcomeIdSchema, outcomeId: OutcomeIdSchema, token: OutcomeIdSchema });
+export type OutcomeExternalEditorSyncRequest = z.infer<typeof OutcomeExternalEditorSyncRequestSchema>;
+export const OutcomeExternalEditorCloseRequestSchema = z.strictObject({ projectId: OutcomeIdSchema, outcomeId: OutcomeIdSchema, token: OutcomeIdSchema });
+export type OutcomeExternalEditorCloseRequest = z.infer<typeof OutcomeExternalEditorCloseRequestSchema>;
+export const OutcomeExternalEditorStateRequestSchema = z.strictObject({ projectId: OutcomeIdSchema, outcomeId: OutcomeIdSchema });
+export type OutcomeExternalEditorStateRequest = z.infer<typeof OutcomeExternalEditorStateRequestSchema>;
+export const OutcomeExternalEditorStateSchema = z.strictObject({
+  exists: z.boolean(),
+  changed: z.boolean(),
+  session: OutcomeExternalEditorSessionSchema.nullable(),
+});
+export type OutcomeExternalEditorState = z.infer<typeof OutcomeExternalEditorStateSchema>;
+export const OutcomeExternalEditorSyncResultSchema = z.discriminatedUnion('ok', [
+  z.strictObject({ ok: z.literal(true), detail: OutcomeDetailSchema, warning: text(OUTCOME_LIMITS.noteChars).optional() }),
+  z.strictObject({ ok: z.literal(false), code: z.enum(['invalid_request', 'outcomes_unavailable', 'project_not_found', 'outcome_not_found', 'external_editor_scope_denied', 'external_editor_version_conflict', 'external_editor_not_changed', 'external_editor_file_missing', 'external_editor_file_invalid', 'genoffice_archive_persist_failed', 'genoffice_close_failed', 'genoffice_close_timeout', 'genoffice_import_failed', 'outcome_save_failed', 'pdf_signature_invalid', 'pdf_structure_invalid', 'spreadsheet_workbook_missing']), message: text(OUTCOME_LIMITS.noteChars) }),
+]);
+export type OutcomeExternalEditorSyncResult = z.infer<typeof OutcomeExternalEditorSyncResultSchema>;
 export const OutcomeCategorySchema = z.strictObject({ id: OutcomeIdSchema, name: text(OUTCOME_LIMITS.titleChars), sortOrder: z.number().int(), createdAt: timestamp, updatedAt: timestamp });
 export type OutcomeCategory = z.infer<typeof OutcomeCategorySchema>;
 /** 回收站条目：软删除的成果 + 删除时间与到期彻底删除时间（7 天保留期）。 */
@@ -175,7 +288,7 @@ export const OutcomePptxExportResultSchema = z.discriminatedUnion('ok', [
   z.strictObject({ ok: z.literal(false), code: z.enum(['invalid_request', 'cancelled', 'outcomes_unavailable', 'project_not_found', 'outcome_not_found', 'outcome_not_ppt', 'pptx_write_failed']), message: text(OUTCOME_LIMITS.noteChars), warnings: z.array(OutcomePptxWarningSchema).max(64) }),
 ]);
 export type OutcomePptxExportResult = z.infer<typeof OutcomePptxExportResultSchema>;
-export const OutcomeCreateRequestSchema = z.strictObject({ projectId: OutcomeIdSchema, outcomeId: OutcomeIdSchema.optional(), categoryId: OutcomeIdSchema.nullable().default(null), title: text(OUTCOME_LIMITS.titleChars).min(1), kind: OutcomeKindSchema, content: OutcomeDocumentSchema, note: text(OUTCOME_LIMITS.noteChars).default(''), actor: OutcomeActorSchema.default('human'), importToken: OutcomeIdSchema.optional() });
+export const OutcomeCreateRequestSchema = z.strictObject({ projectId: OutcomeIdSchema, outcomeId: OutcomeIdSchema.optional(), categoryId: OutcomeIdSchema.nullable().default(null), title: text(OUTCOME_LIMITS.titleChars).min(1), kind: OutcomeKindSchema, content: OutcomeDocumentSchema, note: text(OUTCOME_LIMITS.noteChars).default(''), actor: OutcomeActorSchema.default('human'), importToken: OutcomeIdSchema.optional(), applyDefaultTemplate: z.boolean().default(true) });
 export const OutcomeSaveRequestSchema = z.strictObject({ projectId: OutcomeIdSchema, outcomeId: OutcomeIdSchema, baseVersion: version, content: OutcomeDocumentSchema, note: text(OUTCOME_LIMITS.noteChars).default(''), actor: OutcomeActorSchema, sources: z.array(OutcomeSourceSchema).max(OUTCOME_LIMITS.sourceCount).default([]), importToken: OutcomeIdSchema.optional() });
 export const OutcomeRestoreRequestSchema = z.strictObject({ projectId: OutcomeIdSchema, outcomeId: OutcomeIdSchema, version, note: text(OUTCOME_LIMITS.noteChars).default('') });
 export const OutcomeMoveRequestSchema = z.strictObject({ projectId: OutcomeIdSchema, outcomeId: OutcomeIdSchema, categoryId: OutcomeIdSchema.nullable() });
@@ -202,7 +315,63 @@ export const ScopedConversationUnitSchema = z.strictObject({ id: OutcomeIdSchema
 export type ScopedConversationUnit = z.infer<typeof ScopedConversationUnitSchema>;
 export const PptTemplateSchema = z.strictObject({ id: OutcomeIdSchema, name: text(OUTCOME_LIMITS.titleChars), definition: z.record(z.string(), z.unknown()), createdAt: timestamp, updatedAt: timestamp });
 export type PptTemplate = z.infer<typeof PptTemplateSchema>;
-export const PptTemplateSaveRequestSchema = z.strictObject({ name: text(OUTCOME_LIMITS.titleChars).min(1), definition: z.record(z.string(), z.unknown()) });
+export const PptTemplateSaveRequestSchema = z.strictObject({ name: z.string().trim().min(1).max(OUTCOME_LIMITS.titleChars), definition: z.record(z.string(), z.unknown()) });
+export type PptTemplateSaveRequest = z.infer<typeof PptTemplateSaveRequestSchema>;
+
+export const OUTCOME_TEMPLATE_KINDS = ['ppt', 'word_formatting'] as const;
+export const OutcomeTemplateKindSchema = z.enum(OUTCOME_TEMPLATE_KINDS);
+export type OutcomeTemplateKind = z.infer<typeof OutcomeTemplateKindSchema>;
+export const OutcomeTemplateSaveRequestSchema = z.strictObject({
+  kind: OutcomeTemplateKindSchema,
+  name: z.string().trim().min(1).max(OUTCOME_LIMITS.titleChars),
+  definition: z.record(z.string(), z.unknown()),
+});
+export type OutcomeTemplateSaveRequest = z.infer<typeof OutcomeTemplateSaveRequestSchema>;
+export const OutcomeTemplateDefaultGetRequestSchema = z.strictObject({ kind: OutcomeTemplateKindSchema });
+export type OutcomeTemplateDefaultGetRequest = z.infer<typeof OutcomeTemplateDefaultGetRequestSchema>;
+const alignValue = z.enum(['left', 'center', 'right', 'justify']);
+const headingStyleSchema = z.strictObject({
+  fontFamily: z.string().trim().min(1).max(128).optional(),
+  fontSizePt: z.number().finite().min(6).max(96).optional(),
+  color: z.string().regex(/^#[0-9a-f]{6}$/iu).optional(),
+  align: alignValue.optional(),
+  lineSpacing: z.number().finite().min(0.5).max(4).optional(),
+  spaceBeforePt: z.number().finite().min(0).max(240).optional(),
+  spaceAfterPt: z.number().finite().min(0).max(240).optional(),
+});
+export const WordFormattingConfigSchema = z.strictObject({
+  page: z.strictObject({
+    paper: z.enum(['A4', 'Letter', 'custom']).optional(),
+    marginTopCm: z.number().finite().min(0).max(10).optional(),
+    marginBottomCm: z.number().finite().min(0).max(10).optional(),
+    marginLeftCm: z.number().finite().min(0).max(10).optional(),
+    marginRightCm: z.number().finite().min(0).max(10).optional(),
+  }).optional(),
+  body: headingStyleSchema.extend({ firstLineIndentChars: z.number().finite().min(0).max(16).optional() }).optional(),
+  headings: z.record(z.enum(['1', '2', '3', '4', '5', '6']), headingStyleSchema).optional(),
+  captions: z.strictObject({
+    fontFamily: z.string().trim().min(1).max(128).optional(),
+    fontSizePt: z.number().finite().min(6).max(96).optional(),
+    align: alignValue.optional(),
+  }).optional(),
+});
+export type WordFormattingConfigContract = z.infer<typeof WordFormattingConfigSchema>;
+export const WordFormattingTemplateDefinitionSchema = z.strictObject({
+  config: WordFormattingConfigSchema,
+  header: text(200).default(''),
+  footer: text(200).default(''),
+  pageNumber: z.boolean().default(false),
+});
+export type WordFormattingTemplateDefinition = z.infer<typeof WordFormattingTemplateDefinitionSchema>;
+export const outcomeTemplateRecordSchema = z.strictObject({ id: OutcomeIdSchema, name: text(OUTCOME_LIMITS.titleChars), definition: z.record(z.string(), z.unknown()), createdAt: timestamp, updatedAt: timestamp });
+export const OutcomeTemplateUpdateRequestSchema = z.strictObject({ id: OutcomeIdSchema, kind: OutcomeTemplateKindSchema, name: z.string().trim().min(1).max(OUTCOME_LIMITS.titleChars).optional(), definition: z.record(z.string(), z.unknown()).optional() }).refine((request) => request.name !== undefined || request.definition !== undefined, { message: 'template update must change name or definition' });
+export type OutcomeTemplateUpdateRequest = z.infer<typeof OutcomeTemplateUpdateRequestSchema>;
+export const OutcomeTemplateDeleteRequestSchema = z.strictObject({ id: OutcomeIdSchema, kind: OutcomeTemplateKindSchema });
+export type OutcomeTemplateDeleteRequest = z.infer<typeof OutcomeTemplateDeleteRequestSchema>;
+export const OutcomeTemplateListRequestSchema = z.strictObject({ kind: OutcomeTemplateKindSchema });
+export type OutcomeTemplateListRequest = z.infer<typeof OutcomeTemplateListRequestSchema>;
+export const OutcomeDefaultTemplateSetRequestSchema = z.strictObject({ kind: OutcomeTemplateKindSchema, templateId: OutcomeIdSchema.nullable() });
+export type OutcomeDefaultTemplateSetRequest = z.infer<typeof OutcomeDefaultTemplateSetRequestSchema>;
 /** Design policy is deliberately independent from a visual PPT template. */
 export const PptGenerationSkillSchema = z.strictObject({ id: OutcomeIdSchema, name: text(OUTCOME_LIMITS.titleChars), narrative: z.enum(['problem_solution','argument_evidence','timeline','comparison','minimal_report']), contentDensity: z.enum(['sparse','balanced','dense']), audience: text(OUTCOME_LIMITS.titleChars).default(''), instructions: text(OUTCOME_LIMITS.noteChars).default('') });
 export type PptGenerationSkill = z.infer<typeof PptGenerationSkillSchema>;

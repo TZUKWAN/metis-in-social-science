@@ -12,6 +12,33 @@
         try {
           var theme = localStorage.getItem('metis-theme') || 'light';
           document.documentElement.dataset.theme = theme;
+          var accent = localStorage.getItem('metis-accent');
+          if (accent) {
+            if (/^#[0-9a-fA-F]{6}$/.test(accent)) {
+              // Custom palette color: derive tokens inline (mirrors store.ts
+              // applyCustomAccent) so the first paint already uses it.
+              var dark = theme === 'dark' || (theme === 'system' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+              var n = parseInt(accent.slice(1), 16);
+              var r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+              var cl = function(v) { return Math.max(0, Math.min(255, Math.round(v))); };
+              var mx = function(c, t, a) { return cl(c + (t - c) * a); };
+              var ar = dark ? mx(r, 255, 0.35) : r, ag = dark ? mx(g, 255, 0.35) : g, ab = dark ? mx(b, 255, 0.35) : b;
+              var hr = dark ? mx(r, 255, 0.55) : mx(r, 0, 0.12), hg = dark ? mx(g, 255, 0.55) : mx(g, 0, 0.12), hb = dark ? mx(b, 255, 0.55) : mx(b, 0, 0.12);
+              var soft = dark ? 'rgba(' + r + ',' + g + ',' + b + ',0.16)' : 'rgba(' + r + ',' + g + ',' + b + ',0.10)';
+              var ring = dark ? 'rgba(' + ar + ',' + ag + ',' + ab : 'rgba(' + r + ',' + g + ',' + b;
+              var style = document.documentElement.style;
+              style.setProperty('--accent', 'rgb(' + ar + ',' + ag + ',' + ab + ')');
+              style.setProperty('--accent-hover', 'rgb(' + hr + ',' + hg + ',' + hb + ')');
+              style.setProperty('--accent-soft', soft);
+              style.setProperty('--text-on-accent', (0.2126 * ar + 0.7152 * ag + 0.0722 * ab) / 255 > 0.6 ? '#000000' : '#FFFFFF');
+              style.setProperty('--focus-ring-color', ring + (dark ? ',0.82)' : ',0.78)'));
+              style.setProperty('--focus-ring-shadow', '0 0 0 2px ' + ring + (dark ? ',0.35)' : ',0.28)'));
+              style.setProperty('--focus-ring', '0 0 0 2px ' + ring + (dark ? ',0.5)' : ',0.4)'));
+              document.documentElement.dataset.accent = 'custom';
+            } else {
+              document.documentElement.dataset.accent = accent;
+            }
+          }
         } catch (e) {}
       })();
     </script>

@@ -3,6 +3,8 @@
  */
 
 import type { CSSProperties } from 'react';
+import { X } from 'lucide-react';
+import { Input } from './ui';
 import { useSearchFocus } from '../hooks/useSearchFocus';
 
 interface SearchInputProps {
@@ -23,7 +25,7 @@ export default function SearchInput({ value, onChange, placeholder, className, s
 
   return (
     <div style={{ position: 'relative', display: 'flex', flex: '1 1 auto', ...style }}>
-      <input
+      <Input
         ref={inputRef}
         type="text"
         className={className}
@@ -49,9 +51,10 @@ export default function SearchInput({ value, onChange, placeholder, className, s
             color: 'var(--text-muted)',
             lineHeight: 1,
             padding: 2,
+            borderRadius: 'var(--radius-sm)',
           }}
         >
-          ×
+          <X size={14} />
         </button>
       )}
     </div>
