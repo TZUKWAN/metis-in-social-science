@@ -148,8 +148,10 @@ SBOM 与 fail-closed 构建溯源。**你的研究数据只属于你。**
 
 块级 Word 编辑器：分页预览、跨段/跨页自由选中、选区 AI 改写（保留/放弃确认）、
 引文插入、排版模板（支持**导入外部 DOCX 模板读取其排版规则**）、版本链与恢复。
+需要原生排版能力时一键进入 **Metis Office**（Ribbon 完整的原生编辑套件），
+保存并关闭后自动同步回 METIS 生成新版本。
 
-![成果工作台](docs/screenshots/outcomes-page.png)
+![成果工作台——Word 编辑器 + Metis Office + AI 成果助手](docs/screenshots/outcome-word-editor.png)
 
 ### 🏛️ 投稿工作区——共享浏览器的投稿参谋 ★
 
