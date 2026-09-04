@@ -106,6 +106,7 @@ describe('App', () => {
     expect(primaryItems.map((button) => button.getAttribute('data-nav-id'))).toEqual([
       'converse',
       'projects',
+      'topics',
       'outcomes',
       'submissions',
       'settings',
@@ -114,6 +115,7 @@ describe('App', () => {
     expect(primaryItems.map((button) => button.textContent?.trim())).toEqual([
       '协同对话',
       '科研项目',
+      '选题',
       '成果',
       '投稿',
       '设置',
@@ -122,6 +124,7 @@ describe('App', () => {
     expect(primaryItems.map((button) => button.getAttribute('aria-label'))).toEqual([
       '协同对话',
       '科研项目',
+      '选题',
       '成果',
       '投稿',
       '设置',
@@ -133,6 +136,7 @@ describe('App', () => {
     expect(primaryItems.map((button) => button.getAttribute('title'))).toEqual([
       '与其他 AI（豆包/Kimi/GLM/ChatGPT/Claude/DeepSeek）分屏协同：左边交流思路，右边让 Metis 干活。',
       '科研项目工作台：左侧项目列表，内含聊天、任务看板、资料与研究成果。',
+      '从一个研究兴趣出发:真实检索、研究版图、候选论证,确定选题后一路进入场景与项目',
       '管理当前项目的论文、PPT、报告与其他正式交付物。',
       '从成果出发完成选刊、投稿、返修到录用的完整投稿生命周期。',
       '配置模型连接、外观、备份与偏好。',
@@ -148,6 +152,7 @@ describe('App', () => {
     expect(primaryItems.map((button) => button.getAttribute('aria-label'))).toEqual([
       'AI Collab',
       'Research Projects',
+      'Topic Selection',
       'Outcomes',
       'Submissions',
       'Settings',

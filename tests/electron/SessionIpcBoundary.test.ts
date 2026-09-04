@@ -36,14 +36,14 @@ describe('session IPC main-process boundary', () => {
 
   it('lists only explicitly presented legacy fields and uses fixed recovery', () => {
     const source = sessionHandlerSource('session:list');
-    expect(source).toContain('decodeLegacySessionList(store.listSessions())');
+    expect(source).toContain('const filter = decoded.value.projectId');
     expect(source).toContain('createSessionListRecovery()');
     expect(source).not.toContain('return store.listSessions()');
   });
 
   it('updates only the decoded title/archive metadata patch', () => {
     const source = sessionHandlerSource('session:update');
-    expect(source).toContain('metadata: decoded.value.patch');
+    expect(source).toContain('const { scenarioId, activeArtifactIds, ...legacyPatch } = decoded.value.patch');
     expect(source).not.toContain('lastActivity:');
     expect(source).not.toContain('messageCount:');
     expect(source).not.toContain('rawRequest as');

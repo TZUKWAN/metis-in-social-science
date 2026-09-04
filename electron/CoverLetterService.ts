@@ -54,6 +54,8 @@ export interface CoverLetterServiceOptions {
   agentLoop?: Pick<AgentLoop, 'run'>;
   /** 可选 provider 路由凭据（随 agentLoop 生效）。 */
   providerProfileBinding?: ProviderProfileBinding;
+  /** 成果提示词工程(任务4):行为段 Override 解析。 */
+  resolveBehaviorPrompt?: (promptId: string) => string | null;
 }
 
 /**
@@ -246,8 +248,12 @@ export class CoverLetterService {
       '【稿件章节标题】',
       context.headings.join('、') || '（无）',
     ].filter((line) => line !== '').join('\n');
+    // 成果提示词工程(任务4):行为段首行支持 Override;事实禁令与占位协议保持系统控制。
+    const coverLetterBehavior = this.options.resolveBehaviorPrompt?.('document.cover_letter') ?? null;
     const skillPrompt = [
+      ...(coverLetterBehavior ? coverLetterBehavior.split('\n').filter((line) => line.trim().length > 0) : [
       '你是学术投稿信（Cover Letter）撰写助手。根据用户给出的稿件与期刊上下文，撰写一封投稿信正文。',
+      ]),
       `硬性禁令：以下事实一律不得编造——${COVER_LETTER_FACT_PLACEHOLDERS.join('、')}；`,
       `凡涉及这些事实的位置必须使用占位符（形如 ${placeholder('作者姓名')}），与上下文无关的信息不要虚构。`,
       '可以如实陈述的：稿件标题、目标期刊名、文章类型、从摘要中提取的研究主题与贡献。',

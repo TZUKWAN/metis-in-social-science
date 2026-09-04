@@ -56,6 +56,8 @@ export class OutcomeImageService {
     /** 内容规范·绘图段（2026-09-01）：按项目解析后注入生成 prompt。 */
     fetchImpl?: typeof fetch;
     now?: () => number;
+    /** 成果提示词工程(任务4):绘图行为规范 Override。 */
+    resolveBehaviorPrompt?: (promptId: string) => string | null;
   }) {}
 
   getSettings(): OutcomeImageSettingsGetResult {
@@ -121,7 +123,11 @@ export class OutcomeImageService {
     const userPrompt = request.visualContext
       ? `${request.prompt}\nVisual context: ${request.visualContext}`
       : request.prompt;
-    const prompt = userPrompt;
+    // 成果提示词工程(任务4):科研绘图行为规范前置(Override;空=不附加,与升级前行为一致)。
+    const figureBehavior = this.options.resolveBehaviorPrompt?.('image.generation') ?? null;
+    const prompt = figureBehavior && figureBehavior.trim()
+      ? `${figureBehavior.trim()}\n\n${userPrompt}`
+      : userPrompt;
     let response: Response;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 60_000);

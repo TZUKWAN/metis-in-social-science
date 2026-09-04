@@ -43,6 +43,8 @@ export interface OutcomeAssistantServiceOptions {
   isRuntimeCurrent?: () => boolean;
   /** Cooperative cancellation owned by the main-process shutdown coordinator. */
   signal?: AbortSignal;
+  /** 成果提示词工程(任务4):行为段 Override 解析。 */
+  resolveBehaviorPrompt?: (promptId: string) => string | null;
 }
 
 interface ResolvedSelection {
@@ -357,13 +359,23 @@ function assistantPrompt(input: {
   selection?: ResolvedSelection;
   historyTruncated: boolean;
   projectContext: OutcomeProjectContext;
+  /** 成果提示词工程(任务4):行为段 Override 解析(未注入时用出厂默认)。 */
+  resolveBehaviorPrompt?: (promptId: string) => string | null;
 }): string {
   const scope = input.selection
     ? `\n${input.selection.prompt}\n`
     : '\n没有显式选区；如需要直接修改，请使用当前成果中的真实 blockId/pageId。\n';
+  // 成果提示词工程(2026-09-05,任务4):行为段支持用户 Override(只替换行为规范,
+  // 编辑协议 JSON 与上下文注入保持系统控制)。
+  const behaviorPrompt = input.resolveBehaviorPrompt?.('outcome.assistant') ?? null;
+  const behaviorLines = behaviorPrompt
+    ? behaviorPrompt.split('\n').filter((line) => line.trim().length > 0)
+    : [
+        '你是 METIS 成果协同助手。只根据本提示中提供的当前成果、当前项目内成果协同历史、当前选区和明确列出的项目上下文回答。',
+        '不要声称使用了没有提供的文件、资料、联网信息或来源；不要调用工具。',
+      ];
   return [
-    '你是 METIS 成果协同助手。只根据本提示中提供的当前成果、当前项目内成果协同历史、当前选区和明确列出的项目上下文回答。',
-    '不要声称使用了没有提供的文件、资料、联网信息或来源；不要调用工具。',
+    ...behaviorLines,
     `当前成果：${input.title}；类型：${input.kind}；当前版本：v${input.currentVersion}。`,
     input.historyTruncated ? `仅提供最近 ${MAX_HISTORY_MESSAGES} 条成果协同历史；更早历史未被本轮模型读取。` : '已提供全部当前成果协同历史。',
     '必须只输出一个 JSON 对象：',
@@ -465,6 +477,7 @@ export class OutcomeAssistantService {
         selection,
         historyTruncated: history.length > MAX_HISTORY_MESSAGES,
         projectContext,
+        resolveBehaviorPrompt: this.options.resolveBehaviorPrompt,
       }),
     });
     if (response.status === 'cancelled') {

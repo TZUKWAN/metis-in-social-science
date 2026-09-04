@@ -1023,3 +1023,29 @@
 .projects-page__conversation-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .projects-page__conversation-meta { flex: 0 0 auto; font-size: 11px; color: var(--text-secondary); }
 .projects-page__conversation-empty { font-size: 11.5px; color: var(--text-secondary); padding: 4px 8px; }
+
+/* ── 成果提示词工程 Settings(任务4)── */
+.settings-outcome-prompts h3 { font-size: 14px; margin: 0 0 4px; }
+.settings-outcome-prompts__desc { font-size: 12px; color: var(--text-secondary); margin: 0 0 10px; }
+.settings-outcome-prompts__toolbar { display: flex; gap: 8px; margin-bottom: 10px; }
+.settings-outcome-prompts__layout { display: grid; grid-template-columns: 220px 1fr; gap: 12px; align-items: start; }
+.settings-outcome-prompts__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.settings-outcome-prompts__list button { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; padding: 7px 9px; border: none; border-radius: var(--radius-sm, 6px); background: transparent; color: var(--text-primary); cursor: pointer; text-align: left; }
+.settings-outcome-prompts__list button:hover { background: var(--bg-hover, rgba(0,0,0,.04)); }
+.settings-outcome-prompts__list button.active { background: var(--bg-active, rgba(0,0,0,.08)); }
+.settings-outcome-prompts__list small { color: var(--text-secondary); font-size: 11px; }
+.settings-outcome-prompts__editor { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.settings-outcome-prompts__head { display: flex; align-items: center; gap: 8px; }
+.settings-outcome-prompts__status { font-size: 11px; padding: 1px 8px; border: 1px solid var(--border); border-radius: 999px; color: var(--text-secondary); }
+.settings-outcome-prompts__scope { font-size: 12px; color: var(--text-secondary); margin: 0; }
+.settings-outcome-prompts__scope em { color: var(--text-muted, var(--text-secondary)); }
+.settings-outcome-prompts__editor textarea { font-family: inherit; font-size: 13px; line-height: 1.6; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm, 6px); background: var(--bg-input, transparent); color: var(--text-primary); resize: vertical; width: 100%; box-sizing: border-box; }
+.settings-outcome-prompts__actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.settings-outcome-prompts__assistant { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px dashed var(--border); border-radius: var(--radius-sm, 6px); }
+.settings-outcome-prompts__assistant input { font-family: inherit; font-size: 13px; padding: 7px 9px; border: 1px solid var(--border); border-radius: var(--radius-sm, 6px); background: var(--bg-input, transparent); color: var(--text-primary); }
+.settings-outcome-prompts__suggestion { display: flex; flex-direction: column; gap: 6px; }
+.settings-outcome-prompts__revisions summary { font-size: 12px; cursor: pointer; color: var(--text-secondary); }
+.settings-outcome-prompts__revisions ul { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-secondary); }
+.settings-outcome-prompts__revisions li { display: flex; align-items: center; gap: 8px; }
+.settings-outcome-prompts__notice { font-size: 12px; color: var(--text-secondary); margin: 0; }
+.settings-outcome-prompts__empty { font-size: 12px; color: var(--text-secondary); }

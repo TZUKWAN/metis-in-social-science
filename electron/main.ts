@@ -108,6 +108,7 @@ import {
 import { ResearchRepository } from '../engine/persistence/ResearchRepository.js';
 import { OutcomeRepository } from './OutcomeRepository.js';
 import { TopicRepository } from './TopicRepository.js';
+import { ArtifactPromptService } from './ArtifactPromptService.js';
 import { TopicService, TOPIC_SEARCH_TOOLS } from './TopicService.js';
 import {
   TopicChatRequestSchema,
@@ -659,6 +660,7 @@ let lastUpdateEvent: { type: string; version?: string; percent?: number; message
 let researchRepository: ResearchRepository | null = null;
 let outcomeRepository: OutcomeRepository | null = null;
 let topicRepositoryInstance: TopicRepository | null = null;
+let artifactPromptService: ArtifactPromptService | null = null;
 let topicServiceSingleton: TopicService | null = null;
 function ensureTopicService(): TopicService {
   if (!topicServiceSingleton) {
@@ -4073,6 +4075,7 @@ function setupIPC(): void {
         modelName: runtime.binding.model,
         providerProfileBinding: runtime.binding,
         projectContext: new OutcomeProjectContextService(outcomeRepository, { read: readOutcomeProjectMetis }),
+        resolveBehaviorPrompt: (promptId) => artifactPromptService?.resolve(promptId) ?? null,
       });
       return await new SubmissionOptimizationService({
         submissionRepository,
@@ -5198,6 +5201,7 @@ function setupIPC(): void {
         skill,
         template,
         signal: tracked.signal,
+        resolveBehaviorPrompt: (promptId) => artifactPromptService?.resolve(promptId) ?? null,
         isRuntimeCurrent: () => runtimeGeneration === requestRuntimeGeneration
           && agentLoop === requestAgentLoop
           && provider === requestProvider,
@@ -10318,6 +10322,108 @@ function buildFundingTemplateDigest(pkg: { source?: { sourceFormat?: string; pag
   });
   // ── 项目默认场景(2026-09-04 多对话架构):正式持久化于 project.metadata.defaultScenarioId;
   // 仅作为「新建对话默认推荐值」,不锁定项目;legacy localStorage 键在首次读取时迁移进来。──
+  // ── 成果提示词工程(2026-09-05 刘总要求,任务4)──
+  ipcMain.handle('outcomePrompt:list', (event) => {
+    try { requireRendererMainFrame(event); return artifactPromptService?.listViews() ?? []; } catch { return []; }
+  });
+  ipcMain.handle('outcomePrompt:get', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ promptId: z.string().min(1).max(80) }).safeParse(raw);
+      if (!parsed.success) return null;
+      return artifactPromptService?.getView(parsed.data.promptId) ?? null;
+    } catch { return null; }
+  });
+  ipcMain.handle('outcomePrompt:saveOverride', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({
+        promptId: z.string().min(1).max(80),
+        content: z.string().max(20_000),
+        enabled: z.boolean().optional(),
+        note: z.string().max(300).optional(),
+      }).safeParse(raw);
+      if (!parsed.success) return { ok: false, code: 'invalid_request' };
+      return artifactPromptService?.saveOverride({ ...parsed.data, source: 'manual' as const }) ?? { ok: false, code: 'persistence_unavailable' };
+    } catch { return { ok: false, code: 'save_failed' }; }
+  });
+  ipcMain.handle('outcomePrompt:setEnabled', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ promptId: z.string().min(1).max(80), enabled: z.boolean() }).safeParse(raw);
+      if (!parsed.success) return { ok: false, code: 'invalid_request' };
+      return artifactPromptService?.setEnabled(parsed.data.promptId, parsed.data.enabled) ?? { ok: false, code: 'persistence_unavailable' };
+    } catch { return { ok: false, code: 'failed' }; }
+  });
+  ipcMain.handle('outcomePrompt:reset', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ promptId: z.string().min(1).max(80) }).safeParse(raw);
+      if (!parsed.success) return { ok: false, code: 'invalid_request' };
+      return artifactPromptService?.resetOverride(parsed.data.promptId) ?? { ok: false, code: 'persistence_unavailable' };
+    } catch { return { ok: false, code: 'failed' }; }
+  });
+  ipcMain.handle('outcomePrompt:listRevisions', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ promptId: z.string().min(1).max(80) }).safeParse(raw);
+      if (!parsed.success) return [];
+      return artifactPromptService?.listRevisions(parsed.data.promptId) ?? [];
+    } catch { return []; }
+  });
+  ipcMain.handle('outcomePrompt:restoreRevision', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ promptId: z.string().min(1).max(80), revisionId: z.string().min(1).max(80) }).safeParse(raw);
+      if (!parsed.success) return { ok: false, code: 'invalid_request' };
+      return artifactPromptService?.restoreRevision(parsed.data.promptId, parsed.data.revisionId) ?? { ok: false, code: 'persistence_unavailable' };
+    } catch { return { ok: false, code: 'failed' }; }
+  });
+  ipcMain.handle('outcomePrompt:export', (event) => {
+    try { requireRendererMainFrame(event); return artifactPromptService?.exportPack() ?? null; } catch { return null; }
+  });
+  ipcMain.handle('outcomePrompt:import', (event, raw: unknown) => {
+    try { requireRendererMainFrame(event); return artifactPromptService?.importPack(raw) ?? { ok: false, code: 'persistence_unavailable' }; } catch { return { ok: false, code: 'failed' }; }
+  });
+  ipcMain.handle('outcomePrompt:assist', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ promptId: z.string().min(1).max(80), instruction: z.string().min(1).max(4000) }).safeParse(raw);
+      if (!parsed.success) return { ok: false as const, code: 'invalid_request' };
+      if (!agentLoop) return { ok: false as const, code: 'agent_unavailable' };
+      const definition = artifactPromptService?.getView(parsed.data.promptId);
+      if (!definition) return { ok: false as const, code: 'unknown_prompt' };
+      const tracked = trackEphemeralOperation(runtimeShutdown, {
+        id: `outcomePrompt:assist:${Date.now().toString(36)}`,
+        rejection: { ok: false as const, code: 'application_shutting_down' },
+      });
+      if (!tracked.admitted) return tracked.rejection;
+      const answer = await runEphemeralChatTurn({
+        agentLoop,
+        sessionId: `outcome-prompt-assist-${Date.now().toString(36)}`,
+        requestId: `outcome_prompt_assist_${Date.now().toString(36)}`,
+        messages: [{ role: 'user', content: [
+          `当前「${definition.definition.name}」提示词:`,
+          '<<<CURRENT',
+          definition.effectiveContent,
+          'CURRENT>>>',
+          `用户要求:${parsed.data.instruction}`,
+          '请输出修改后的完整提示词(只输出提示词正文,不要解释、不要代码围栏)。保持提示词与「' + definition.definition.scopeNote + '」的范围一致,不要包含工具协议或 JSON 输出契约。',
+        ].join('\n') }],
+        maxTurns: 1,
+        allowedTools: [],
+        acceptUnverified: true,
+        signal: tracked.signal,
+      });
+      if (answer.status !== 'completed') return { ok: false as const, code: answer.status, message: 'AI 建议生成未完成,可重试。' };
+      let suggestion = answer.answer.trim();
+      const fence = suggestion.match(/```[\s\S]*?```/u);
+      if (fence) suggestion = fence[0].replace(/```(?:json|text)?\s*/u, '').replace(/\s*```$/u, '').trim();
+      return { ok: true as const, suggestion };
+    } catch (error) {
+      return { ok: false as const, code: 'assist_failed', message: error instanceof Error ? error.message.slice(0, 200) : undefined };
+    }
+  });
   ipcMain.handle('projects:getDefaultScenario', (event, rawRequest: unknown) => {
     try {
       requireRendererMainFrame(event);
@@ -12956,6 +13062,7 @@ app.whenReady().then(async () => {
     }
     outcomeRepository = new OutcomeRepository(store.raw);
     topicRepositoryInstance = new TopicRepository(store.raw);
+    artifactPromptService = new ArtifactPromptService(store.raw);
     submissionRepository = new SubmissionRepository(store.raw);
     journalProfileRepository = new JournalProfileRepository(store.raw);
     // ── Submission P2 服务（投稿预检 / 投稿包 / Cover Letter）──
@@ -12980,6 +13087,7 @@ app.whenReady().then(async () => {
       journalRepository: journalProfileRepository,
       outcomeRepository,
       packageRepository: submissionPackageRepository,
+      resolveBehaviorPrompt: (promptId) => artifactPromptService?.resolve(promptId) ?? null,
     });
     // ── Submission P4 服务（审稿轮次 / Decision Letter 拆解 / Response Letter）──
     submissionReviewRepository = new SubmissionReviewRepository(store.raw);
@@ -13125,6 +13233,7 @@ app.whenReady().then(async () => {
       repository: outcomeRepository,
       media: outcomeMedia,
       secretVault: personalizationSecretVault,
+      resolveBehaviorPrompt: (promptId) => artifactPromptService?.resolve(promptId) ?? null,
     });
     researchRepository = new ResearchRepository(store.raw, (manifest, content) => {
       if (!researchRepository || !citationTruthReceipts) {

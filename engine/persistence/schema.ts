@@ -4,7 +4,7 @@
  *         papers, notes, experiments.
  */
 
-export const SCHEMA_VERSION = 15;
+export const SCHEMA_VERSION = 16;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS sessions (
@@ -499,6 +499,9 @@ CREATE TABLE IF NOT EXISTS topic_candidates (id TEXT PRIMARY KEY, session_id TEX
 CREATE TABLE IF NOT EXISTS topic_messages (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_topic_candidates_session ON topic_candidates(session_id, status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_topic_messages_session ON topic_messages(session_id, created_at ASC);
+CREATE TABLE IF NOT EXISTS outcome_prompt_overrides (prompt_id TEXT PRIMARY KEY, content TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, base_version INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS outcome_prompt_revisions (id TEXT PRIMARY KEY, prompt_id TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL, source TEXT NOT NULL DEFAULT 'manual', note TEXT NOT NULL DEFAULT '');
+CREATE INDEX IF NOT EXISTS idx_outcome_prompt_revisions ON outcome_prompt_revisions(prompt_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_outcome_media_owner ON outcome_media(project_id, outcome_id, created_at DESC);
 
 -- ─── Submission domain (投稿生命周期：Series → Case → Events) ───────────

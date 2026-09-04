@@ -247,6 +247,10 @@ describe('Personalization persisted UI-to-runtime happy paths', () => {
     fireEvent.change(nameInput, { target: { value: 'Durable custom conversation' } });
     fireEvent.change(screen.getByTestId('sw-config-length'), { target: { value: '12000 words' } });
     fireEvent.change(screen.getByTestId('sw-chapter-count'), { target: { value: '1' } });
+    // 任务1(2026-09-04):Deliverable 完整性门要求总体成文要求。
+    fireEvent.change(screen.getByTestId('sw-config-global-instructions'), {
+      target: { value: 'Academic register throughout; keep terminology consistent and arguments continuous.' },
+    });
     fireEvent.change(screen.getByTestId('sw-workflow-prompt'), {
       target: { value: 'Pass each verified result into the next step until the deliverable is complete.' },
     });
@@ -256,6 +260,22 @@ describe('Personalization persisted UI-to-runtime happy paths', () => {
     // 绑定资源只存在于具体步骤；所有可见编辑区均来自四段式场景编辑器。
     fireEvent.click(screen.getByTestId('sw-workflow-add'));
     await screen.findByTestId('sw-workflow-step');
+    // 任务1(2026-09-04):蓝图编辑器中展开章节并填写必填内容规范。
+    const blueprintToggle = document.querySelector('[data-testid^="blueprint-section-"] .scenario-blueprint__toggle') as HTMLElement;
+    fireEvent.click(blueprintToggle);
+    const blueprintSectionId = (document.querySelector('[data-testid^="blueprint-section-"]') as HTMLElement).getAttribute('data-testid')!.replace('blueprint-section-', '');
+    fireEvent.change(document.querySelector(`[data-testid="blueprint-purpose-${blueprintSectionId}"]`) as HTMLElement, {
+      target: { value: 'Produce the requested deliverable.' },
+    });
+    fireEvent.change(document.querySelector(`[data-testid="blueprint-instructions-${blueprintSectionId}"]`) as HTMLElement, {
+      target: { value: 'Organize by research question with evidence-linked sections.' },
+    });
+    fireEvent.change(document.querySelector(`[data-testid="blueprint-requirements-${blueprintSectionId}"]`) as HTMLElement, {
+      target: { value: 'Answer the research question' },
+    });
+    fireEvent.change(document.querySelector(`[data-testid="blueprint-length-${blueprintSectionId}"]`) as HTMLElement, {
+      target: { value: '8000 words' },
+    });
     fireEvent.change(screen.getByTestId('sw-step-prompt'), {
       target: { value: 'Produce the requested deliverable from the supplied evidence.' },
     });
@@ -282,10 +302,10 @@ describe('Personalization persisted UI-to-runtime happy paths', () => {
       skillIds: [CUSTOM_SKILL_ID],
       workflowPrompt: 'Pass each verified result into the next step until the deliverable is complete.',
       scenarioMetis: { markdown: expect.stringContaining('Preserve verifiable evidence') },
-      deliverable: { globalLength: '12000 words' },
+      deliverable: { globalLength: '12000 words', globalInstructions: 'Academic register throughout; keep terminology consistent and arguments continuous.' },
     }));
     expect(initial.repository.get(CUSTOM_SCENARIO_ID)?.workflow.length).toBe(1);
-    const selector = await screen.findByRole('combobox', { name: 'Select execution scenario' }, { timeout: 5000 }) as HTMLSelectElement;
+    const selector = await screen.findByRole('combobox', { name: 'Active scenario' }, { timeout: 5000 }) as HTMLSelectElement;
     await waitFor(() => expect(selector.value).toBe(CUSTOM_SCENARIO_ID));
     fireEvent.change(screen.getByPlaceholderText('Ask a research question...'), {
       target: { value: '/chat Prove this saved scenario reaches the runtime.' },
@@ -328,7 +348,7 @@ describe('Personalization persisted UI-to-runtime happy paths', () => {
     installRuntimeBridge(restarted);
     const restartedApp = render(<App />);
     const restartedSelector = await screen.findByRole('combobox', {
-      name: 'Select execution scenario',
+      name: 'Active scenario',
     }) as HTMLSelectElement;
     await waitFor(() => expect(restartedSelector.value).toBe(CUSTOM_SCENARIO_ID));
     expect(restarted.repository.get(CUSTOM_SCENARIO_ID)).toMatchObject({

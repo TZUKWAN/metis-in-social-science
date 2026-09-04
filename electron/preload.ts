@@ -859,6 +859,34 @@ const api = {
   deleteProject: async (projectId: string) => ipcRenderer.invoke('research:deleteProject', projectId) as Promise<{ ok: boolean }>,
   openDirectoryDialog: async () => ipcRenderer.invoke('dialog:openDirectory') as Promise<string | null>,
   setProjectDir: async (projectId: string, projectDir: string) => ipcRenderer.invoke('research:setProjectDir', { projectId, projectDir }) as Promise<{ ok: boolean }>,
+  // ---- 成果提示词工程(2026-09-05 刘总要求,任务4)----
+  outcomePromptList: async () => (
+    ipcRenderer.invoke('outcomePrompt:list') as Promise<Array<{ definition: { id: string; name: string; description: string; category: string; action: string; defaultPrompt: string; scopeNote: string; editable: boolean; version: number }; override: { promptId: string; content: string; enabled: boolean; baseVersion: number; createdAt: number; updatedAt: number } | null; effectiveContent: string; defaultUpgraded: boolean; status: string }>>
+  ),
+  outcomePromptSave: async (request: { promptId: string; content: string; enabled?: boolean; note?: string }) => (
+    ipcRenderer.invoke('outcomePrompt:saveOverride', request) as Promise<{ ok: boolean; code?: string; view?: Record<string, unknown> }>
+  ),
+  outcomePromptSetEnabled: async (request: { promptId: string; enabled: boolean }) => (
+    ipcRenderer.invoke('outcomePrompt:setEnabled', request) as Promise<{ ok: boolean; code?: string }>
+  ),
+  outcomePromptReset: async (promptId: string) => (
+    ipcRenderer.invoke('outcomePrompt:reset', { promptId }) as Promise<{ ok: boolean; code?: string }>
+  ),
+  outcomePromptListRevisions: async (promptId: string) => (
+    ipcRenderer.invoke('outcomePrompt:listRevisions', { promptId }) as Promise<Array<{ id: string; content: string; createdAt: number; source: string; note: string }>>
+  ),
+  outcomePromptRestoreRevision: async (request: { promptId: string; revisionId: string }) => (
+    ipcRenderer.invoke('outcomePrompt:restoreRevision', request) as Promise<{ ok: boolean; code?: string }>
+  ),
+  outcomePromptExport: async () => (
+    ipcRenderer.invoke('outcomePrompt:export') as Promise<{ schemaVersion: number; createdAt: number; prompts: Array<{ promptId: string; content: string; baseVersion: number; enabled: boolean }> } | null>
+  ),
+  outcomePromptImport: async (pack: unknown) => (
+    ipcRenderer.invoke('outcomePrompt:import', pack) as Promise<{ ok: boolean; code?: string; applied?: string[]; unknownIds?: string[] }>
+  ),
+  outcomePromptAssist: async (request: { promptId: string; instruction: string }) => (
+    ipcRenderer.invoke('outcomePrompt:assist', request) as Promise<{ ok: boolean; code?: string; suggestion?: string; message?: string }>
+  ),
   getDefaultScenario: async (projectId: string) => (
     ipcRenderer.invoke('projects:getDefaultScenario', { projectId }) as Promise<{ scenarioId: string | null }>
   ),

@@ -47,6 +47,8 @@ export interface OutcomePptGenerationServiceOptions {
   isRuntimeCurrent?: () => boolean;
   /** Cooperative cancellation owned by the main-process shutdown coordinator. */
   signal?: AbortSignal;
+  /** 成果提示词工程(任务4):行为段 Override 解析。 */
+  resolveBehaviorPrompt?: (promptId: string) => string | null;
 }
 
 function diagnostic(code: PptGenerationDiagnostic['code'], message: string): PptGenerationDiagnostic {
@@ -238,10 +240,17 @@ export class OutcomePptGenerationService {
     // 版式由 ZoneLayoutEngine 确定性渲染并机器自检——版式质量不再是模型运气。
     const zoneEngine = this.options.skill.layoutEngine === 'zone';
     const themeProfile = getPptThemeProfile(this.options.skill.themeProfileId);
-    const systemPrompt = zoneEngine
-      ? [
+    // 成果提示词工程(任务4):行为段支持用户 Override(版式协议与源文档注入保持系统控制)。
+    const generationBehavior = this.options.resolveBehaviorPrompt?.('presentation.generation') ?? null;
+    const zoneBehaviorLines = generationBehavior
+      ? generationBehavior.split('\n').filter((line) => line.trim().length > 0)
+      : [
           '你是 METIS PPT 大纲设计师（zone 版式体系）。把源文档的要点组织为大纲 JSON；版式由引擎渲染，你不需要描述颜色与坐标。',
           '不能使用未给出的资料、图片、数据、模板资产或外部来源；不要调用工具。',
+        ];
+    const systemPrompt = zoneEngine
+      ? [
+          ...zoneBehaviorLines,
           `当前成果：${detail.outcome.title}；当前不可覆盖版本：v${detail.version.version}。`,
           `生成技能：${JSON.stringify(this.options.skill)}。`,
           `主题风格：${themeProfile.name}（主色 ${themeProfile.colors.primary}、点缀 ${themeProfile.colors.accent}、强调 ${themeProfile.colors.emphasis}）。`,

@@ -174,7 +174,7 @@ function SectionRow(props: {
           )}
           <label>
             <span>{FIELD_LABELS.purpose[zh ? 'zh' : 'en']}{requiredFields.includes('purpose') ? ' *' : ''}</span>
-            <textarea rows={2} value={section.purpose ?? ''} onChange={(event) => update(section.id, { purpose: event.target.value || undefined })} disabled={busy} />
+            <textarea rows={2} value={section.purpose ?? ''} onChange={(event) => update(section.id, { purpose: event.target.value || undefined })} disabled={busy} data-testid={`blueprint-purpose-${section.id}`} />
           </label>
           <label>
             <span>{FIELD_LABELS.instructions[zh ? 'zh' : 'en']}{requiredFields.includes('instructions') ? ' *' : ''}</span>
@@ -189,7 +189,7 @@ function SectionRow(props: {
           </label>
           <label>
             <span>{FIELD_LABELS.requirements[zh ? 'zh' : 'en']}{requiredFields.includes('requirements') ? ' *' : ''}</span>
-            <textarea rows={3} value={(section.requirements ?? []).join('\n')} onChange={(event) => update(section.id, { requirements: lineValues(event.target.value) })} disabled={busy} />
+            <textarea rows={3} value={(section.requirements ?? []).join('\n')} onChange={(event) => update(section.id, { requirements: lineValues(event.target.value) })} disabled={busy} data-testid={`blueprint-requirements-${section.id}`} />
           </label>
           <label>
             <span>{FIELD_LABELS.forbidden[zh ? 'zh' : 'en']}</span>
@@ -198,7 +198,7 @@ function SectionRow(props: {
           <div className="scenario-blueprint__detail-grid">
             <label>
               <span>{FIELD_LABELS.lengthTarget[zh ? 'zh' : 'en']}{requiredFields.includes('lengthTarget') ? ' *' : ''}</span>
-              <input value={section.lengthTarget ?? ''} onChange={(event) => update(section.id, { lengthTarget: event.target.value || undefined })} disabled={busy} />
+              <input value={section.lengthTarget ?? ''} onChange={(event) => update(section.id, { lengthTarget: event.target.value || undefined })} disabled={busy} data-testid={`blueprint-length-${section.id}`} />
             </label>
             {showMethodEvidence && (
               <label>

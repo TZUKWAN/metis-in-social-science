@@ -15,6 +15,7 @@ import SettingsProjectArchiveSection from './SettingsProjectArchiveSection';
 import SettingsStorageSection from './SettingsStorageSection';
 import SettingsWeChatBotSection from './SettingsWeChatBotSection';
 import SettingsImageGenerationSection from './SettingsImageGenerationSection';
+import SettingsOutcomePromptsSection from './SettingsOutcomePromptsSection';
 import ProviderProfilesSection from './ProviderProfilesSection';
 import SettingsAdvancedDialog from './SettingsAdvancedDialog';
 
@@ -151,6 +152,7 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
 
       {/* Outcome image generation (dedicated provider settings + encrypted API key) */}
       <SettingsImageGenerationSection />
+        <SettingsOutcomePromptsSection />
 
       {/* Diagnostic mode toggle */}
       <div className="settings-group">
