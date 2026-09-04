@@ -109,6 +109,7 @@ import { ResearchRepository } from '../engine/persistence/ResearchRepository.js'
 import { OutcomeRepository } from './OutcomeRepository.js';
 import { TopicRepository } from './TopicRepository.js';
 import { ArtifactPromptService } from './ArtifactPromptService.js';
+import { OfficePromptProfileService } from './OfficePromptProfileService.js';
 import { TopicService, TOPIC_SEARCH_TOOLS } from './TopicService.js';
 import {
   TopicChatRequestSchema,
@@ -661,6 +662,7 @@ let researchRepository: ResearchRepository | null = null;
 let outcomeRepository: OutcomeRepository | null = null;
 let topicRepositoryInstance: TopicRepository | null = null;
 let artifactPromptService: ArtifactPromptService | null = null;
+let officePromptProfileService: OfficePromptProfileService | null = null;
 let topicServiceSingleton: TopicService | null = null;
 function ensureTopicService(): TopicService {
   if (!topicServiceSingleton) {
@@ -4075,7 +4077,7 @@ function setupIPC(): void {
         modelName: runtime.binding.model,
         providerProfileBinding: runtime.binding,
         projectContext: new OutcomeProjectContextService(outcomeRepository, { read: readOutcomeProjectMetis }),
-        resolveBehaviorPrompt: (promptId) => artifactPromptService?.resolve(promptId) ?? null,
+        resolveBehaviorPrompt: (promptId, outcomeId) => officePromptProfileService?.resolveForBasePrompt(promptId, outcomeId ?? null) ?? artifactPromptService?.resolve(promptId) ?? null,
       });
       return await new SubmissionOptimizationService({
         submissionRepository,
@@ -5201,7 +5203,7 @@ function setupIPC(): void {
         skill,
         template,
         signal: tracked.signal,
-        resolveBehaviorPrompt: (promptId) => artifactPromptService?.resolve(promptId) ?? null,
+        resolveBehaviorPrompt: (promptId, outcomeId) => officePromptProfileService?.resolveForBasePrompt(promptId, outcomeId ?? null) ?? artifactPromptService?.resolve(promptId) ?? null,
         isRuntimeCurrent: () => runtimeGeneration === requestRuntimeGeneration
           && agentLoop === requestAgentLoop
           && provider === requestProvider,
@@ -10385,6 +10387,85 @@ function buildFundingTemplateDigest(pkg: { source?: { sourceFormat?: string; pag
   ipcMain.handle('outcomePrompt:import', (event, raw: unknown) => {
     try { requireRendererMainFrame(event); return artifactPromptService?.importPack(raw) ?? { ok: false, code: 'persistence_unavailable' }; } catch { return { ok: false, code: 'failed' }; }
   });
+  // ── METIS Office Prompt Profiles(2026-09-05 刘总要求,任务5)──
+  ipcMain.handle('officePrompt:capabilities', (event) => {
+    try { requireRendererMainFrame(event); return officePromptProfileService?.listCapabilitySummaries() ?? []; } catch { return []; }
+  });
+  ipcMain.handle('officePrompt:profiles', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ officeKind: z.string().min(1).max(40) }).safeParse(raw);
+      if (!parsed.success) return [];
+      return officePromptProfileService?.listProfiles(parsed.data.officeKind) ?? [];
+    } catch { return []; }
+  });
+  ipcMain.handle('officePrompt:createProfile', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ officeKind: z.string().min(1).max(40), name: z.string().max(120), description: z.string().max(500).optional(), fromProfileId: z.string().max(80).optional() }).safeParse(raw);
+      if (!parsed.success) return { ok: false, code: 'invalid_request' };
+      return officePromptProfileService?.createProfile(parsed.data) ?? { ok: false, code: 'persistence_unavailable' };
+    } catch { return { ok: false, code: 'failed' }; }
+  });
+  ipcMain.handle('officePrompt:updateProfile', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ profileId: z.string().min(1).max(80), name: z.string().max(120).optional(), description: z.string().max(500).optional() }).safeParse(raw);
+      if (!parsed.success) return null;
+      return officePromptProfileService?.updateProfile(parsed.data.profileId, parsed.data) ?? null;
+    } catch { return null; }
+  });
+  ipcMain.handle('officePrompt:deleteProfile', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ profileId: z.string().min(1).max(80) }).safeParse(raw);
+      if (!parsed.success) return false;
+      return officePromptProfileService?.deleteProfile(parsed.data.profileId) ?? false;
+    } catch { return false; }
+  });
+  ipcMain.handle('officePrompt:restoreProfile', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ profileId: z.string().min(1).max(80) }).safeParse(raw);
+      if (!parsed.success) return null;
+      return officePromptProfileService?.restoreProfile(parsed.data.profileId) ?? null;
+    } catch { return null; }
+  });
+  ipcMain.handle('officePrompt:setSlot', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ profileId: z.string().min(1).max(80), slotId: z.string().min(1).max(80), content: z.string().max(20_000) }).safeParse(raw);
+      if (!parsed.success) return { ok: false, code: 'invalid_request' };
+      return officePromptProfileService?.setSlot(parsed.data.profileId, parsed.data.slotId, parsed.data.content) ?? { ok: false, code: 'persistence_unavailable' };
+    } catch { return { ok: false, code: 'failed' }; }
+  });
+  ipcMain.handle('officePrompt:setDefault', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ officeKind: z.string().min(1).max(40), profileId: z.string().min(1).max(80) }).safeParse(raw);
+      if (!parsed.success) return { ok: false, code: 'invalid_request' };
+      return officePromptProfileService?.setDefaultProfile(parsed.data.officeKind, parsed.data.profileId) ?? { ok: false, code: 'persistence_unavailable' };
+    } catch { return { ok: false, code: 'failed' }; }
+  });
+  ipcMain.handle('officePrompt:bindOutcome', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ outcomeId: z.string().min(1).max(160), profileId: z.string().max(80).nullable() }).safeParse(raw);
+      if (!parsed.success) return { ok: false };
+      if (!officePromptProfileService) return { ok: false };
+      if (parsed.data.profileId) return officePromptProfileService.bindOutcome(parsed.data.outcomeId, parsed.data.profileId);
+      officePromptProfileService.unbindOutcome(parsed.data.outcomeId);
+      return { ok: true };
+    } catch { return { ok: false }; }
+  });
+  ipcMain.handle('officePrompt:resolveSlot', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ officeKind: z.string().min(1).max(40), outcomeId: z.string().max(160).nullable().optional(), slotId: z.string().min(1).max(80) }).safeParse(raw);
+      if (!parsed.success) return null;
+      return { content: officePromptProfileService?.resolveSlot(parsed.data.officeKind, parsed.data.outcomeId ?? null, parsed.data.slotId) ?? null };
+    } catch { return null; }
+  });
   ipcMain.handle('outcomePrompt:assist', async (event, raw: unknown) => {
     try {
       requireRendererMainFrame(event);
@@ -13063,6 +13144,8 @@ app.whenReady().then(async () => {
     outcomeRepository = new OutcomeRepository(store.raw);
     topicRepositoryInstance = new TopicRepository(store.raw);
     artifactPromptService = new ArtifactPromptService(store.raw);
+    officePromptProfileService = new OfficePromptProfileService(store.raw);
+    officePromptProfileService.ensureBuiltinProfiles();
     submissionRepository = new SubmissionRepository(store.raw);
     journalProfileRepository = new JournalProfileRepository(store.raw);
     // ── Submission P2 服务（投稿预检 / 投稿包 / Cover Letter）──
@@ -13087,7 +13170,7 @@ app.whenReady().then(async () => {
       journalRepository: journalProfileRepository,
       outcomeRepository,
       packageRepository: submissionPackageRepository,
-      resolveBehaviorPrompt: (promptId) => artifactPromptService?.resolve(promptId) ?? null,
+      resolveBehaviorPrompt: (promptId, outcomeId) => officePromptProfileService?.resolveForBasePrompt(promptId, outcomeId ?? null) ?? artifactPromptService?.resolve(promptId) ?? null,
     });
     // ── Submission P4 服务（审稿轮次 / Decision Letter 拆解 / Response Letter）──
     submissionReviewRepository = new SubmissionReviewRepository(store.raw);
@@ -13233,7 +13316,7 @@ app.whenReady().then(async () => {
       repository: outcomeRepository,
       media: outcomeMedia,
       secretVault: personalizationSecretVault,
-      resolveBehaviorPrompt: (promptId) => artifactPromptService?.resolve(promptId) ?? null,
+      resolveBehaviorPrompt: (promptId, outcomeId) => officePromptProfileService?.resolveForBasePrompt(promptId, outcomeId ?? null) ?? artifactPromptService?.resolve(promptId) ?? null,
     });
     researchRepository = new ResearchRepository(store.raw, (manifest, content) => {
       if (!researchRepository || !citationTruthReceipts) {

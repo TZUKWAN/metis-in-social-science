@@ -44,7 +44,7 @@ export interface OutcomeAssistantServiceOptions {
   /** Cooperative cancellation owned by the main-process shutdown coordinator. */
   signal?: AbortSignal;
   /** 成果提示词工程(任务4):行为段 Override 解析。 */
-  resolveBehaviorPrompt?: (promptId: string) => string | null;
+  resolveBehaviorPrompt?: (promptId: string, outcomeId?: string | null) => string | null;
 }
 
 interface ResolvedSelection {
@@ -354,20 +354,21 @@ function answerFromModel(raw: string): { answer: string; edit: OutcomeAssistantE
 function assistantPrompt(input: {
   title: string;
   kind: string;
+  outcomeId?: string | null;
   currentVersion: number;
   document: OutcomeDocument;
   selection?: ResolvedSelection;
   historyTruncated: boolean;
   projectContext: OutcomeProjectContext;
-  /** 成果提示词工程(任务4):行为段 Override 解析(未注入时用出厂默认)。 */
-  resolveBehaviorPrompt?: (promptId: string) => string | null;
+  /** 成果提示词工程(任务4/5):行为段 Override 解析(带 outcomeId)。 */
+  resolveBehaviorPrompt?: (promptId: string, outcomeId?: string | null) => string | null;
 }): string {
   const scope = input.selection
     ? `\n${input.selection.prompt}\n`
     : '\n没有显式选区；如需要直接修改，请使用当前成果中的真实 blockId/pageId。\n';
   // 成果提示词工程(2026-09-05,任务4):行为段支持用户 Override(只替换行为规范,
   // 编辑协议 JSON 与上下文注入保持系统控制)。
-  const behaviorPrompt = input.resolveBehaviorPrompt?.('outcome.assistant') ?? null;
+  const behaviorPrompt = input.resolveBehaviorPrompt?.('outcome.assistant', input.outcomeId) ?? null;
   const behaviorLines = behaviorPrompt
     ? behaviorPrompt.split('\n').filter((line) => line.trim().length > 0)
     : [
@@ -472,6 +473,7 @@ export class OutcomeAssistantService {
       skillPrompt: assistantPrompt({
         title: detail.outcome.title,
         kind: detail.outcome.kind,
+        outcomeId: detail.outcome.id,
         currentVersion: detail.version.version,
         document: detail.version.content,
         selection,

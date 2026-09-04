@@ -56,8 +56,8 @@ export class OutcomeImageService {
     /** 内容规范·绘图段（2026-09-01）：按项目解析后注入生成 prompt。 */
     fetchImpl?: typeof fetch;
     now?: () => number;
-    /** 成果提示词工程(任务4):绘图行为规范 Override。 */
-    resolveBehaviorPrompt?: (promptId: string) => string | null;
+    /** 成果提示词工程(任务4/5):绘图行为规范 Override。 */
+    resolveBehaviorPrompt?: (promptId: string, outcomeId?: string | null) => string | null;
   }) {}
 
   getSettings(): OutcomeImageSettingsGetResult {

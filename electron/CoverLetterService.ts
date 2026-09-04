@@ -54,8 +54,8 @@ export interface CoverLetterServiceOptions {
   agentLoop?: Pick<AgentLoop, 'run'>;
   /** 可选 provider 路由凭据（随 agentLoop 生效）。 */
   providerProfileBinding?: ProviderProfileBinding;
-  /** 成果提示词工程(任务4):行为段 Override 解析。 */
-  resolveBehaviorPrompt?: (promptId: string) => string | null;
+  /** 成果提示词工程(任务4/5):行为段 Override 解析。 */
+  resolveBehaviorPrompt?: (promptId: string, outcomeId?: string | null) => string | null;
 }
 
 /**

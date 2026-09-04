@@ -1116,12 +1116,34 @@ function LocalWordAssistantPopover({ projectId, outcomeId, selection, anchor, ha
       setNotice('局部 AI 请求没有完成，成果内容没有被修改。');
     } finally { setIsSending(false); }
   };
-  const actions = [
-    ['改写', '请在不改变含义的前提下改写所选文本，使其更清晰、准确。'],
-    ['压缩', '请压缩所选文本，保留事实、论点与必要限定。'],
-    ['扩写', '请在不虚构事实的前提下扩写所选文本，补足衔接与论证。'],
-    ['格式', '请优化所选文本的段落格式与表达层次。'],
-  ] as const;
+  // 任务5(2026-09-05):四个局部动作的指令可被 Office Profile slot 覆盖
+  // (word.selection.rewrite/compress/expand/format);解析失败回退出厂默认。
+  const [resolvedActions, setResolvedActions] = useState<Array<{ label: string; prompt: string }> | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const defaults: Array<{ label: string; slotId: string; prompt: string }> = [
+      { label: '改写', slotId: 'word.selection.rewrite', prompt: '请在不改变含义的前提下改写所选文本，使其更清晰、准确。' },
+      { label: '压缩', slotId: 'word.selection.compress', prompt: '请压缩所选文本，保留事实、论点与必要限定。' },
+      { label: '扩写', slotId: 'word.selection.expand', prompt: '请在不虚构事实的前提下扩写所选文本，补足衔接与论证。' },
+      { label: '格式', slotId: 'word.selection.format', prompt: '请优化所选文本的段落格式与表达层次。' },
+    ];
+    void (async () => {
+      const resolved = await Promise.all(defaults.map(async (item) => {
+        try {
+          const response = await window.metis?.officePromptResolveSlot?.({ officeKind: 'word', outcomeId, slotId: item.slotId });
+          return { label: item.label, prompt: response?.content?.trim() ? response.content : item.prompt };
+        } catch { return { label: item.label, prompt: item.prompt }; }
+      }));
+      if (alive) setResolvedActions(resolved);
+    })();
+    return () => { alive = false; };
+  }, [outcomeId]);
+  const actions = (resolvedActions ?? [
+    { label: '改写', prompt: '请在不改变含义的前提下改写所选文本，使其更清晰、准确。' },
+    { label: '压缩', prompt: '请压缩所选文本，保留事实、论点与必要限定。' },
+    { label: '扩写', prompt: '请在不虚构事实的前提下扩写所选文本，补足衔接与论证。' },
+    { label: '格式', prompt: '请优化所选文本的段落格式与表达层次。' },
+  ]).map((item) => [item.label, item.prompt] as const);
   return <section ref={popoverRef} className="word-local-ai" role="dialog" aria-label="所选文本 AI 操作" style={{ left: placement.left, top: placement.top }}><header><div><strong>AI 局部编辑</strong><small>已选 {selection.text.length} 个字符</small></div><button type="button" onClick={close} aria-label="关闭局部 AI 操作" title="关闭（Esc）"><X size={14} /></button></header><div className="word-local-ai__actions">{actions.map(([label, prompt]) => <button key={label} type="button" onClick={() => void send(prompt)} disabled={hasUnsavedChanges || isSending}>{label}</button>)}</div><label className="word-local-ai__instruction">补充指令<textarea aria-label="局部 AI 指令" value={instruction} onChange={(event) => setInstruction(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void send(instruction); } }} placeholder="例如：保留术语，语气更严谨" disabled={hasUnsavedChanges || isSending} /></label>{hasUnsavedChanges && <p className="word-local-ai__notice" role="status">当前草稿未保存。请先保存版本，再使用局部 AI。</p>}{notice && <p className="word-local-ai__notice" role="status">{notice}</p>}<footer><span>Ctrl / ⌘ + Enter 发送</span><button className="primary" type="button" onClick={() => void send(instruction)} disabled={hasUnsavedChanges || isSending || !instruction.trim()}>{isSending ? <LoaderCircle size={14} className="spin" /> : <Send size={14} />}发送</button></footer></section>;
 }
 

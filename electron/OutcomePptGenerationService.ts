@@ -47,8 +47,8 @@ export interface OutcomePptGenerationServiceOptions {
   isRuntimeCurrent?: () => boolean;
   /** Cooperative cancellation owned by the main-process shutdown coordinator. */
   signal?: AbortSignal;
-  /** 成果提示词工程(任务4):行为段 Override 解析。 */
-  resolveBehaviorPrompt?: (promptId: string) => string | null;
+  /** 成果提示词工程(任务4/5):行为段 Override 解析(带 outcomeId 以支持 Profile 绑定)。 */
+  resolveBehaviorPrompt?: (promptId: string, outcomeId?: string | null) => string | null;
 }
 
 function diagnostic(code: PptGenerationDiagnostic['code'], message: string): PptGenerationDiagnostic {
@@ -241,7 +241,7 @@ export class OutcomePptGenerationService {
     const zoneEngine = this.options.skill.layoutEngine === 'zone';
     const themeProfile = getPptThemeProfile(this.options.skill.themeProfileId);
     // 成果提示词工程(任务4):行为段支持用户 Override(版式协议与源文档注入保持系统控制)。
-    const generationBehavior = this.options.resolveBehaviorPrompt?.('presentation.generation') ?? null;
+    const generationBehavior = this.options.resolveBehaviorPrompt?.('presentation.generation', request.outcomeId) ?? null;
     const zoneBehaviorLines = generationBehavior
       ? generationBehavior.split('\n').filter((line) => line.trim().length > 0)
       : [
@@ -261,7 +261,17 @@ export class OutcomePptGenerationService {
           `当前 PPT 文档 JSON（现状）：\n${serializeDocument(detail.version.content)}`,
           projectContext.prompt,
         ].filter(Boolean).join('\n')
-      : prompt({ title: detail.outcome.title, version: detail.version.version, document: detail.version.content, skill: this.options.skill, template: this.options.template, instruction: request.instruction, historyTruncated: history.length > MAX_HISTORY_MESSAGES, projectContext });
+      : (this.options.resolveBehaviorPrompt?.('presentation.generation', request.outcomeId)
+          ? [
+              this.options.resolveBehaviorPrompt('presentation.generation', request.outcomeId)!,
+              `当前成果：${detail.outcome.title}；当前不可覆盖版本：v${detail.version.version}。`,
+              `生成技能：${JSON.stringify(this.options.skill)}。`,
+              `用户生成要求：${request.instruction}`,
+              this.options.template ? `当前模板：${this.options.template.name}。` : '',
+              `当前 PPT 文档 JSON（现状）：\n${serializeDocument(detail.version.content)}`,
+              projectContext.prompt,
+            ].filter(Boolean).join('\n')
+          : prompt({ title: detail.outcome.title, version: detail.version.version, document: detail.version.content, skill: this.options.skill, template: this.options.template, instruction: request.instruction, historyTruncated: history.length > MAX_HISTORY_MESSAGES, projectContext }));
     const response = await runEphemeralChatTurn({
       agentLoop: this.options.agentLoop,
       sessionId: `outcome-ppt-generation-${randomUUID()}`,

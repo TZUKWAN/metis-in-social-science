@@ -4,7 +4,7 @@
  *         papers, notes, experiments.
  */
 
-export const SCHEMA_VERSION = 16;
+export const SCHEMA_VERSION = 17;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS sessions (
@@ -502,6 +502,11 @@ CREATE INDEX IF NOT EXISTS idx_topic_messages_session ON topic_messages(session_
 CREATE TABLE IF NOT EXISTS outcome_prompt_overrides (prompt_id TEXT PRIMARY KEY, content TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, base_version INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS outcome_prompt_revisions (id TEXT PRIMARY KEY, prompt_id TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL, source TEXT NOT NULL DEFAULT 'manual', note TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS idx_outcome_prompt_revisions ON outcome_prompt_revisions(prompt_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS office_prompt_profiles (id TEXT PRIMARY KEY, office_kind TEXT NOT NULL, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', builtin INTEGER NOT NULL DEFAULT 0, slots_json TEXT NOT NULL DEFAULT '{}', deleted_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS office_prompt_profile_revisions (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, slot_id TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL, source TEXT NOT NULL DEFAULT 'manual');
+CREATE INDEX IF NOT EXISTS idx_office_prompt_profiles_kind ON office_prompt_profiles(office_kind, deleted_at, updated_at DESC);
+CREATE TABLE IF NOT EXISTS office_prompt_profile_defaults (office_kind TEXT PRIMARY KEY, profile_id TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS office_prompt_outcome_bindings (outcome_id TEXT PRIMARY KEY, profile_id TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_outcome_media_owner ON outcome_media(project_id, outcome_id, created_at DESC);
 
 -- ─── Submission domain (投稿生命周期：Series → Case → Events) ───────────

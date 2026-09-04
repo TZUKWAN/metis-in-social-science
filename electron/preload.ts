@@ -884,6 +884,37 @@ const api = {
   outcomePromptImport: async (pack: unknown) => (
     ipcRenderer.invoke('outcomePrompt:import', pack) as Promise<{ ok: boolean; code?: string; applied?: string[]; unknownIds?: string[] }>
   ),
+  // ---- METIS Office Prompt Profiles(2026-09-05,任务5)----
+  officePromptCapabilities: async () => (
+    ipcRenderer.invoke('officePrompt:capabilities') as Promise<Array<{ kind: string; label: string; profileCount: number; defaultProfileId: string | null; aiEnabled: boolean }>>
+  ),
+  officePromptProfiles: async (officeKind: string) => (
+    ipcRenderer.invoke('officePrompt:profiles', { officeKind }) as Promise<Array<{ id: string; officeKind: string; name: string; description: string; builtin: boolean; slots: Record<string, string>; deletedAt: number | null; createdAt: number; updatedAt: number }>>
+  ),
+  officePromptCreateProfile: async (request: { officeKind: string; name: string; description?: string; fromProfileId?: string }) => (
+    ipcRenderer.invoke('officePrompt:createProfile', request) as Promise<{ ok: boolean; code?: string; profile?: Record<string, unknown> }>
+  ),
+  officePromptUpdateProfile: async (request: { profileId: string; name?: string; description?: string }) => (
+    ipcRenderer.invoke('officePrompt:updateProfile', request) as Promise<Record<string, unknown> | null>
+  ),
+  officePromptDeleteProfile: async (profileId: string) => (
+    ipcRenderer.invoke('officePrompt:deleteProfile', { profileId }) as Promise<boolean>
+  ),
+  officePromptRestoreProfile: async (profileId: string) => (
+    ipcRenderer.invoke('officePrompt:restoreProfile', { profileId }) as Promise<Record<string, unknown> | null>
+  ),
+  officePromptSetSlot: async (request: { profileId: string; slotId: string; content: string }) => (
+    ipcRenderer.invoke('officePrompt:setSlot', request) as Promise<{ ok: boolean; code?: string }>
+  ),
+  officePromptSetDefault: async (request: { officeKind: string; profileId: string }) => (
+    ipcRenderer.invoke('officePrompt:setDefault', request) as Promise<{ ok: boolean; code?: string }>
+  ),
+  officePromptBindOutcome: async (request: { outcomeId: string; profileId: string | null }) => (
+    ipcRenderer.invoke('officePrompt:bindOutcome', request) as Promise<{ ok: boolean }>
+  ),
+  officePromptResolveSlot: async (request: { officeKind: string; outcomeId?: string | null; slotId: string }) => (
+    ipcRenderer.invoke('officePrompt:resolveSlot', request) as Promise<{ content: string | null }>
+  ),
   outcomePromptAssist: async (request: { promptId: string; instruction: string }) => (
     ipcRenderer.invoke('outcomePrompt:assist', request) as Promise<{ ok: boolean; code?: string; suggestion?: string; message?: string }>
   ),

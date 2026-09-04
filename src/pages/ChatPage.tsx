@@ -1247,6 +1247,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
   // 目录重试计数跨 effect 重跑保持(多对话架构 2026-09-05)。
   const catalogAttemptRef = useRef(0);
   const revisionTokenRef = useRef(-1);
+  const catalogLastOutcomeRef = useRef<'loading' | 'failed' | 'ready' | null>(null);
   const [activeScenarioId, setActiveScenarioId] = useState(DEFAULT_SCENARIO_ID);
   const activeResearchProjectId = useResearchWorkspaceStore((state) => state.activeProjectId);
   const workspaceProjectsLoading = useResearchWorkspaceStore((state) => state.loading.projects);
@@ -1677,6 +1678,13 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
     let cancelled = false;
     let retryTimer: number | undefined;
     const metis = window.metis;
+    // 多对话架构(2026-09-05):同一 revision 下重试已耗尽的 failed 态跨 effect
+    // 重跑保持(会话切换重解析不再把失败态冲回 loading,交接提示不闪失)。
+    if (revisionTokenRef.current === scenarioLoadRevision && catalogLastOutcomeRef.current === 'failed') {
+      setScenarios([]);
+      setScenarioLoadState('failed');
+      return () => { cancelled = true; };
+    }
     setScenarioLoadState('loading');
     if (!metis?.listPersonalization) {
       setScenarios([]);
@@ -1730,6 +1738,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
                 ? remembered
                 : DEFAULT_SCENARIO_ID));
           catalogAttemptRef.current = 0;
+          catalogLastOutcomeRef.current = 'ready';
           setScenarioLoadState('ready');
         })
         .catch(() => {
@@ -1742,6 +1751,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
             return;
           }
           catalogAttemptRef.current = attempt;
+          catalogLastOutcomeRef.current = 'failed';
           setScenarios([]);
           setScenarioLoadState('failed');
         });
