@@ -120,3 +120,40 @@ export function expandSourceSkills(source: CapabilitySourceSpec, files: RepoSkil
   }
   return manifests;
 }
+
+// ── GitHub 真实拉取管线(任务7 7B:端到端展开导入)──
+
+export interface GitHubFetcher {
+  /** GET a raw text file at ref (default branch). */
+  (url: string): Promise<string>;
+}
+
+const GITHUB_API = 'https://api.github.com';
+
+/**
+ * 拉取一个来源仓库的全部 SKILL.md 并逐 Skill 展开。
+ * fetcher 注入:传 undici 封装(GitHub API 需要可选 token)或测试 stub。
+ * 任一网络失败即抛出,由调用方如实报告(不伪造 0 结果)。
+ */
+export async function fetchAndExpandSource(
+  source: CapabilitySourceSpec,
+  fetcher: GitHubFetcher,
+  token?: string,
+): Promise<ExpandedCapabilityManifest[]> {
+  void token; // token 由注入的 fetcher 自行携带(GitHub API 限流时可传)。
+  const branchRes = await fetcher(`${GITHUB_API}/repos/${source.repo}`);
+  const branch = JSON.parse(branchRes) as { default_branch?: string };
+  const ref = branch.default_branch || 'main';
+  const treeRes = await fetcher(`${GITHUB_API}/repos/${source.repo}/git/trees/${ref}?recursive=1`);
+  const tree = JSON.parse(treeRes) as { tree?: Array<{ path: string; type: string }> };
+  const skillPaths = (tree.tree ?? [])
+    .filter((entry) => entry.type === 'blob' && entry.path.toLowerCase().endsWith('skill.md'))
+    .map((entry) => entry.path)
+    .slice(0, 60);
+  const files: RepoSkillFile[] = [];
+  for (const path of skillPaths) {
+    const raw = await fetcher(`https://raw.githubusercontent.com/${source.repo}/${ref}/${path}`);
+    files.push({ path, content: raw });
+  }
+  return expandSourceSkills(source, files);
+}

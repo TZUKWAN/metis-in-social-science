@@ -86,9 +86,54 @@ export function SkillStudioPanel({ zh, onSave }: { zh: boolean; onSave: (draft: 
             onChange={(event) => setExperience(event.target.value)}
             data-testid="skill-studio-experience"
           />
-          <button type="button" className="btn-primary btn-sm" disabled={busy || !experience.trim()} onClick={() => void generate()} data-testid="skill-studio-generate">
-            {zh ? 'AI 萃取为结构化技能' : 'Extract structured skill'}
-          </button>
+          <div className="skill-studio__sources">
+            <button type="button" className="btn-primary btn-sm" disabled={busy || !experience.trim()} onClick={() => void generate()} data-testid="skill-studio-generate">
+              {zh ? 'AI 萃取为结构化技能' : 'Extract structured skill'}
+            </button>
+            {/* from_files(2026-09-05 补全):读取本地文本文件作为经验材料 */}
+            <label className="btn-secondary btn-sm" style={{ cursor: 'pointer' }}>
+              {zh ? '从文件导入' : 'From files'}
+              <input
+                type="file"
+                accept=".md,.markdown,.txt,.json"
+                style={{ display: 'none' }}
+                onChange={async (event) => {
+                  const file = event.target.files?.[0];
+                  if (!file) return;
+                  try {
+                    const text = await file.text();
+                    setExperience((current) => (current ? `${current}
+
+[来自文件 ${file.name}]
+${text.slice(0, 18000)}` : `[来自文件 ${file.name}]
+${text.slice(0, 18000)}`));
+                  } catch { setNotice(zh ? '文件读取失败。' : 'Failed to read file.'); }
+                  event.target.value = '';
+                }}
+                data-testid="skill-studio-file-input"
+              />
+            </label>
+            {/* from_session(2026-09-05 补全):粘贴会话历史作为经验材料 */}
+            <button type="button" className="btn-secondary btn-sm" disabled={busy} onClick={async () => {
+              try {
+                const sessions = await window.metis?.listSessions?.();
+                const first = Array.isArray(sessions) ? sessions[0] : undefined;
+                if (!first?.id || !window.metis?.getMessages) { setNotice(zh ? '没有可读取的会话。' : 'No session to read.'); return; }
+                const history = await window.metis.getMessages(first.id);
+                const NL = String.fromCharCode(10);
+                const texts = (Array.isArray(history) ? history : [])
+                  .map((message) => message as { role?: string; content?: string })
+                  .filter((message) => message.role === 'user' || message.role === 'assistant')
+                  .map((message) => `${message.role}: ${message.content ?? ''}`)
+                  .join(NL);
+                if (!texts) { setNotice(zh ? '该会话没有可提取的消息。' : 'No messages to extract.'); return; }
+                setExperience((current) => (current ? `${current}${NL}${NL}[来自会话]${NL}${texts.slice(0, 18000)}` : `[来自会话]${NL}${texts.slice(0, 18000)}`));
+                setNotice(zh ? '已读取最近会话内容作为经验材料。' : 'Session history appended.');
+              } catch { setNotice(zh ? '会话读取失败。' : 'Failed to read session.'); }
+            }} data-testid="skill-studio-from-session">
+              {zh ? '从最近会话导入' : 'From session'}
+            </button>
+          </div>
           {skill && (
             <div className="skill-studio__result" data-testid="skill-studio-result">
               <strong>{skill.name}</strong>

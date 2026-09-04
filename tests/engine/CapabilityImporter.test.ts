@@ -48,3 +48,28 @@ describe('Capability 展开导入器(2026-09-05 任务7 7B)', () => {
     expect(contentDigest('abc')).not.toBe(contentDigest('abd'));
   });
 });
+
+describe('GitHub 真实拉取管线(任务7 7B)', () => {
+  it('fetchAndExpandSource walks the repo tree and expands per skill', async () => {
+    const { fetchAndExpandSource } = await import('../../engine/capabilities/CapabilityImporter.js');
+    const calls: string[] = [];
+    const fetcher = async (url: string): Promise<string> => {
+      calls.push(url);
+      if (url.includes('/git/trees/')) {
+        return JSON.stringify({ tree: [
+          { path: 'skills/a/SKILL.md', type: 'blob' },
+          { path: 'README.md', type: 'blob' },
+        ] });
+      }
+      if (url.startsWith('https://raw.githubusercontent.com/')) {
+        return '---\nname: skill-a\ndescription: 测试技能 A 的描述,长度足够通过内容门槛。\n---\n\n# skill-a\n\n这是一段足够长的真实技能正文内容,用于通过最小内容长度检查,包含具体的方法步骤与判断规则说明,并要求在证据不足时如实报告而不是编造结论,完成后需要自查引用与数据的可追溯性。';
+      }
+      return '{}';
+    };
+    const manifests = await fetchAndExpandSource(CAPABILITY_SOURCES[0]!, fetcher);
+    expect(calls.some((call) => call.includes('/git/trees/'))).toBe(true);
+    expect(manifests).toHaveLength(1);
+    expect(manifests[0]!.included).toBe(true);
+    expect(manifests[0]!.sourceRepo).toBe(CAPABILITY_SOURCES[0]!.repo);
+  });
+});
