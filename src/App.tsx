@@ -60,6 +60,7 @@ const ResearchInspectorPanels = lazy(() => import('./research/ResearchInspectorP
 const ResearchExportCenter = lazy(() => import('./export/ResearchExportCenter'));
 const ScenarioLauncher = lazy(() => import('./research/ScenarioLauncher'));
 const PersonalizationCenter = lazy(() => import('./personalization/PersonalizationCenter'));
+const TopicWorkspacePage = lazy(() => import('./pages/TopicWorkspacePage'));
 import SettingsPanel from './components/SettingsPanel';
 
 // ─── Theme Toggle Component ───
@@ -136,7 +137,7 @@ function legacyPageToEntry(page: Page): { entry: TopLevelEntry; mode: WorkspaceM
 
 // ─── Evals Page ───
 
-type StandalonePage = 'dashboard' | 'goal' | 'timeline' | 'latex' | 'experiments' | 'evals' | 'kanban' | 'outcomes' | 'submissions';
+type StandalonePage = 'dashboard' | 'goal' | 'timeline' | 'latex' | 'experiments' | 'evals' | 'kanban' | 'outcomes' | 'submissions' | 'topics';
 
 function resolveStandalonePage(page: Page, diagnosticMode: boolean): StandalonePage | null {
   switch (page) {
@@ -155,6 +156,8 @@ function resolveStandalonePage(page: Page, diagnosticMode: boolean): StandaloneP
       return 'outcomes';
     case 'submissions':
       return 'submissions';
+    case 'topics':
+      return 'topics';
     case 'evals':
       return diagnosticMode ? page : null;
     default:
@@ -634,6 +637,14 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
     window.addEventListener('metis:open-project', handleOpenProject);
     window.addEventListener('metis:open-paper', handleOpenPaper);
     window.addEventListener('metis:navigate-projects', handleNavigateProjects);
+  // 选题 → 场景 handoff:从选题页一键打开场景中心(场景工作台自行消费 pendingScenarioHandoff)。
+  const handleOpenPersonalization = () => {
+    leavePersonalizationGuard(() => {
+      setStandalonePage(null);
+      setPersonalizationOpen(true);
+    });
+  };
+  window.addEventListener('metis:open-personalization', handleOpenPersonalization);
     function handleOpenBrowserUrl(event: Event) {
       // 浏览器页已移除：外链统一走系统浏览器。
       const url = (event as CustomEvent<{ url?: string }>).detail?.url;
@@ -654,6 +665,7 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
       window.removeEventListener('metis:open-project', handleOpenProject);
       window.removeEventListener('metis:open-paper', handleOpenPaper);
       window.removeEventListener('metis:navigate-projects', handleNavigateProjects);
+      window.removeEventListener('metis:open-personalization', handleOpenPersonalization);
       window.removeEventListener('metis:open-browser-url', handleOpenBrowserUrl);
       window.removeEventListener('metis:open-external-url', handleOpenExternalUrl);
       window.removeEventListener('metis:open-mcp-installer', handleOpenMcpInstaller);
@@ -772,6 +784,7 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
       case 'kanban': return <TaskBoardPage />;
       case 'outcomes': return <OutcomesPage onNavigateToSubmissions={() => navigateLegacy('submissions')} />;
       case 'submissions': return <SubmissionsPage />;
+      case 'topics': return <TopicWorkspacePage />;
       case 'evals': return uiMode === 'diagnostic' ? <EvalsPage /> : null;
       default: return null;
     }
@@ -925,6 +938,7 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
     { id: 'goto-converse', label: t('nav.converse'), description: t('cmdbar.gotoWorkspace'), group: 'nav', onExecute: () => navigateWorkspaceMode('converse'), keywords: ['chat', '对话'] },
     { id: 'goto-projects', label: t('nav.projects'), description: t('cmdbar.gotoWorkspace'), group: 'nav', onExecute: () => navigateWorkspaceMode('projects'), keywords: ['project', '项目', '科研', '看板'] },
     { id: 'goto-outcomes', label: t('nav.outcomes'), description: t('nav.outcomesDesc'), group: 'nav', onExecute: () => navigateLegacy('outcomes'), keywords: ['成果', '论文', 'PPT', '报告'] },
+    { id: 'goto-topics', label: t('nav.topics'), description: t('nav.topicsDesc'), group: 'nav', onExecute: () => navigateLegacy('topics'), keywords: ['topic', '选题', '研究方向', '题目'] },
     { id: 'goto-submissions', label: t('nav.submissions'), description: t('nav.submissionsDesc'), group: 'nav', onExecute: () => navigateLegacy('submissions'), keywords: ['投稿', '期刊', '审稿', 'submission', 'journal'] },
     { id: 'goto-kanban', label: t('nav.kanban'), description: t('cmdbar.gotoResearch'), group: 'nav', onExecute: () => navigateLegacy('kanban'), keywords: ['board', '看板', '任务'] },
     { id: 'goto-materials', label: t('projects.modeMaterials'), description: t('nav.projectsDesc'), group: 'nav', onExecute: () => leavePersonalizationGuard(() => { setPersonalizationOpen(false); setStandalonePage(null); setCurrentEntry('projects'); setWorkspaceMode('projects'); setProjectViewMode('materials'); }), keywords: ['papers', '文献', '资料', 'library'] },

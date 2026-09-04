@@ -76,6 +76,8 @@ export function getPrimaryWorkspaceNav(): NavEntry[] {
 /** Standalone research destinations promoted into the visible top bar. */
 export function getPrimaryResearchNav(): NavEntry[] {
   return [
+    // 选题(2026-09-04 刘总要求):一级目的地,先于成果/投稿(科研链条起点)。
+    { id: 'topics', labelKey: 'nav.topics', descriptionKey: 'nav.topicsDesc', isTopLevel: true },
     { id: 'outcomes', labelKey: 'nav.outcomes', descriptionKey: 'nav.outcomesDesc', isTopLevel: true },
     { id: 'submissions', labelKey: 'nav.submissions', descriptionKey: 'nav.submissionsDesc', isTopLevel: true },
   ];

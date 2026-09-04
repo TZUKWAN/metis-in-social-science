@@ -14,6 +14,7 @@ import type {
   WorkflowStepBinding,
 } from '../../engine/runtime/PersonalizationRuntimeContract.js';
 import { assessScenarioHarness, normalizeScenarioHarness } from '../../engine/personalization/ScenarioHarness.js';
+import { consumePendingScenarioHandoff } from '../topic/scenarioHandoff.js';
 import { availableUserId, cloneDefinition } from './personalizationLib.js';
 import { setScenarioDirtyGuard } from '../lib/scenarioDirtyGuard.js';
 import { isScenarioCompileActive, getScenarioCompileState, onScenarioCompileUpdate, trackScenarioCompile } from '../lib/scenarioCompileCoordinator.js';
@@ -600,6 +601,34 @@ ${identity.fundingStructureText}
     setAiUndoStack(nextUndoStack);
     setNotice(zh ? '已撤销上一次 AI 对场景草稿的修改。' : 'The last AI change to the scenario draft was undone.');
   }, [zh]);
+
+  // 选题 → 场景 typed handoff(2026-09-04 刘总要求):用户在选题页点「基于选题构建
+  // 场景」后,这里一次性消费 pendingScenarioHandoff,自动发起完整场景编译;无草稿时
+  // 先创建新草稿。禁止 DOM 模拟输入——直接调用 compile 指令通道。
+  const handoffConsumedRef = React.useRef(false);
+  React.useEffect(() => {
+    if (handoffConsumedRef.current) return;
+    handoffConsumedRef.current = true;
+    const handoff = consumePendingScenarioHandoff();
+    if (!handoff) return;
+    const startBuild = async () => {
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        if (draftRef.current) break;
+        if (attempt === 0 && !selectedId) {
+          try { createScenario(); } catch { /* 创建失败由下方提示 */ }
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+      }
+      if (draftRef.current) {
+        setNotice(zh ? `来自选题「${handoff.title}」:正在基于选题研究包构建场景……` : `From topic "${handoff.title}": building scenario from the research brief...`);
+        await compile(handoff.instruction);
+      } else {
+        setNotice(zh ? '已收到选题研究包,但没有可构建的场景草稿。请先新建场景,再在左侧助手粘贴构建指令。' : 'Received the topic brief but there is no scenario draft; create one first.');
+      }
+    };
+    void startBuild();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot handoff consumption on mount
+  }, []);
 
   const activateScenario = useCallback(async () => {
     const current = draftRef.current;

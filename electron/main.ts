@@ -107,6 +107,15 @@ import {
 } from './StorageLocation.js';
 import { ResearchRepository } from '../engine/persistence/ResearchRepository.js';
 import { OutcomeRepository } from './OutcomeRepository.js';
+import { TopicRepository } from './TopicRepository.js';
+import { TopicService, TOPIC_SEARCH_TOOLS } from './TopicService.js';
+import {
+  TopicChatRequestSchema,
+  TopicSessionCreateRequestSchema,
+  TopicSessionUpdatePatchSchema,
+  TopicCandidateUpsertSchema,
+  type TopicCandidateDto,
+} from '../engine/runtime/TopicRuntimeContract.js';
 import { SubmissionRepository } from './SubmissionRepository.js';
 import {
   SUBMISSION_STATUSES,
@@ -649,6 +658,32 @@ let autoUpdaterService: AutoUpdaterService | null = null;
 let lastUpdateEvent: { type: string; version?: string; percent?: number; message?: string } = { type: 'idle' };
 let researchRepository: ResearchRepository | null = null;
 let outcomeRepository: OutcomeRepository | null = null;
+let topicRepositoryInstance: TopicRepository | null = null;
+let topicServiceSingleton: TopicService | null = null;
+function ensureTopicService(): TopicService {
+  if (!topicServiceSingleton) {
+    topicServiceSingleton = new TopicService({
+      repository: () => topicRepositoryInstance,
+      runTurn: async (options) => {
+        if (!agentLoop) return { status: 'agent_unavailable', answer: '' };
+        const response = await runEphemeralChatTurn({
+          agentLoop,
+          sessionId: options.sessionId,
+          messages: options.messages,
+          requestId: `topic_chat_${Date.now().toString(36)}`,
+          skillPrompt: options.skillPrompt,
+          allowedTools: options.allowedTools ? [...options.allowedTools] : [...TOPIC_SEARCH_TOOLS],
+          maxTurns: options.maxTurns,
+          signal: options.signal,
+          projectId: options.projectId,
+          acceptUnverified: true,
+        });
+        return { status: response.status, answer: response.answer, diagnostics: response.diagnostics as Array<{ code?: string; message?: string }> | undefined };
+      },
+    });
+  }
+  return topicServiceSingleton;
+}
 let outcomeTemplateService: OutcomeTemplateService | null = null;
 let submissionRepository: import('./SubmissionRepository.js').SubmissionRepository | null = null;
 let journalProfileRepository: JournalProfileRepository | null = null;
@@ -4760,6 +4795,133 @@ function setupIPC(): void {
   ipcMain.handle('scenario:conversation:delete', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=ScopedConversationRefSchema.safeParse(raw); return p.success && outcomeRepository ? outcomeRepository.deleteConversation(p.data) : false; } catch { return false; } });
   ipcMain.handle('scenario:conversation:messages', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=ScopedConversationRefSchema.safeParse(raw); return p.success && outcomeRepository ? outcomeRepository.listMessagesByConversation(p.data) : []; } catch { return []; } });
   ipcMain.handle('scenario:conversation:append', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=ScopedConversationAppendToSchema.safeParse(raw); if (!p.success || !outcomeRepository) return null; return outcomeRepository.appendToConversation(p.data); } catch { return null; } });
+
+  // ── 选题 Topic(2026-09-04 刘总要求:选题一级功能)──
+  ipcMain.handle('topic:sessions:create', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = TopicSessionCreateRequestSchema.safeParse(raw ?? {});
+      if (!parsed.success) return { ok: false as const, code: 'invalid_request' };
+      const session = ensureTopicService().createSession(parsed.data);
+      return { ok: true as const, session };
+    } catch (error) {
+      return { ok: false as const, code: error instanceof Error && error.message === 'topic_persistence_unavailable' ? 'persistence_unavailable' : 'create_failed' };
+    }
+  });
+  ipcMain.handle('topic:sessions:list', (event) => {
+    try {
+      requireRendererMainFrame(event);
+      return ensureTopicService().listSessions();
+    } catch { return []; }
+  });
+  ipcMain.handle('topic:sessions:get', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ sessionId: z.string().min(1).max(160) }).safeParse(raw);
+      if (!parsed.success) return null;
+      return ensureTopicService().getSessionDetail(parsed.data.sessionId);
+    } catch { return null; }
+  });
+  ipcMain.handle('topic:sessions:update', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ sessionId: z.string().min(1).max(160), patch: TopicSessionUpdatePatchSchema }).safeParse(raw);
+      if (!parsed.success) return null;
+      return ensureTopicService().updateSession(parsed.data.sessionId, parsed.data.patch);
+    } catch { return null; }
+  });
+  ipcMain.handle('topic:sessions:delete', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ sessionId: z.string().min(1).max(160) }).safeParse(raw);
+      if (!parsed.success) return false;
+      return ensureTopicService().deleteSession(parsed.data.sessionId);
+    } catch { return false; }
+  });
+  ipcMain.handle('topic:candidates:update', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({
+        sessionId: z.string().min(1).max(160),
+        candidateId: z.string().min(1).max(160),
+        patch: TopicCandidateUpsertSchema.partial(),
+      }).safeParse(raw);
+      if (!parsed.success) return null;
+      return ensureTopicService().updateCandidate(parsed.data.sessionId, parsed.data.candidateId, parsed.data.patch as Partial<TopicCandidateDto>);
+    } catch { return null; }
+  });
+  ipcMain.handle('topic:select', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ sessionId: z.string().min(1).max(160), candidateId: z.string().min(1).max(160) }).safeParse(raw);
+      if (!parsed.success) return { ok: false as const, code: 'invalid_request' };
+      return ensureTopicService().selectCandidate(parsed.data.sessionId, parsed.data.candidateId);
+    } catch (error) {
+      return { ok: false as const, code: error instanceof Error && error.message === 'topic_persistence_unavailable' ? 'persistence_unavailable' : 'select_failed' };
+    }
+  });
+  ipcMain.handle('topic:markConverted', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({
+        candidateId: z.string().min(1).max(160),
+        projectId: z.string().max(160).optional(),
+        scenarioId: z.string().max(160).optional(),
+      }).safeParse(raw);
+      if (!parsed.success) return null;
+      return ensureTopicService().markConverted(parsed.data.candidateId, parsed.data);
+    } catch { return null; }
+  });
+  ipcMain.handle('topic:brief', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ sessionId: z.string().min(1).max(160) }).safeParse(raw);
+      if (!parsed.success) return null;
+      return ensureTopicService().getBrief(parsed.data.sessionId);
+    } catch { return null; }
+  });
+  ipcMain.handle('topic:chat', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = TopicChatRequestSchema.safeParse(raw);
+      if (!parsed.success) return { ok: false as const, code: 'invalid_request' };
+      if (!agentLoop) return { ok: false as const, code: 'agent_unavailable', message: 'AI 运行时尚未就绪,请稍后重试。' };
+      const tracked = trackEphemeralOperation(runtimeShutdown, {
+        id: `topic:chat:${parsed.data.sessionId}:${Date.now().toString(36)}`,
+        rejection: { ok: false as const, code: 'application_shutting_down' },
+      });
+      if (!tracked.admitted) return tracked.rejection;
+      // token 级流式转发(按 topic 会话 id 隔离,防跨会话泄漏)。
+      const topicStreamHookName = `topic-stream-forward:${parsed.data.sessionId}`;
+      const forwardTopicStream = (ctx: import('../engine/core/HookBus.js').HookContext): import('../engine/core/HookBus.js').HookContext => {
+        const payload = ctx as unknown as { sessionId?: unknown; content?: unknown; reasoning?: unknown; isFinished?: unknown };
+        if (payload.sessionId !== `topic_${parsed.data.sessionId}`) return ctx;
+        try {
+          if (!event.sender.isDestroyed()) {
+            event.sender.send('topic:stream-chunk', {
+              sessionId: parsed.data.sessionId,
+              content: typeof payload.content === 'string' ? payload.content : '',
+              reasoning: typeof payload.reasoning === 'string' ? payload.reasoning : undefined,
+              isFinished: payload.isFinished === true,
+            });
+          }
+        } catch { /* 流转发绝不中断对话 */ }
+        return ctx;
+      };
+      agentLoop.registerHook('model.stream_chunk', forwardTopicStream, { name: topicStreamHookName });
+      try {
+        return await ensureTopicService().chat({
+          sessionId: parsed.data.sessionId,
+          message: parsed.data.message,
+          signal: tracked.signal,
+        });
+      } finally {
+        agentLoop.unregisterHook('model.stream_chunk', topicStreamHookName);
+      }
+    } catch (error) {
+      return { ok: false as const, code: error instanceof Error && error.message === 'topic_persistence_unavailable' ? 'persistence_unavailable' : 'chat_failed', message: error instanceof Error ? error.message.slice(0, 300) : undefined };
+    }
+  });
   // ---- 免费模型中心 IPC（2026-08-23）----
   ipcMain.handle('freeModel:listSources', (event) => {
     try { requireRendererMainFrame(event); return freeModelService?.listSources() ?? []; } catch { return []; }
@@ -12752,6 +12914,7 @@ app.whenReady().then(async () => {
       }
     }
     outcomeRepository = new OutcomeRepository(store.raw);
+    topicRepositoryInstance = new TopicRepository(store.raw);
     submissionRepository = new SubmissionRepository(store.raw);
     journalProfileRepository = new JournalProfileRepository(store.raw);
     // ── Submission P2 服务（投稿预检 / 投稿包 / Cover Letter）──

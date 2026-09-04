@@ -4,7 +4,7 @@
  *         papers, notes, experiments.
  */
 
-export const SCHEMA_VERSION = 14;
+export const SCHEMA_VERSION = 15;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS sessions (
@@ -494,6 +494,11 @@ CREATE INDEX IF NOT EXISTS idx_outcome_versions_outcome ON outcome_versions(outc
 CREATE INDEX IF NOT EXISTS idx_outcome_changes_outcome ON outcome_changes(outcome_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_scoped_conversations_scope ON scoped_conversations(project_id, scope_kind, scenario_id, outcome_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_scoped_conversation_messages ON scoped_conversation_messages(conversation_id, created_at ASC);
+CREATE TABLE IF NOT EXISTS topic_sessions (id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '', initial_intent TEXT NOT NULL DEFAULT '', source_project_id TEXT, discipline TEXT NOT NULL DEFAULT '', constraints_json TEXT, status TEXT NOT NULL DEFAULT 'exploring', selected_candidate_id TEXT, research_brief TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS topic_candidates (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, title TEXT NOT NULL, research_question TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', rationale TEXT NOT NULL DEFAULT '', existing_research TEXT NOT NULL DEFAULT '', research_gap TEXT NOT NULL DEFAULT '', theoretical_angles_json TEXT NOT NULL DEFAULT '[]', method_options_json TEXT NOT NULL DEFAULT '[]', data_options_json TEXT NOT NULL DEFAULT '[]', novelty_analysis TEXT NOT NULL DEFAULT '', feasibility_analysis TEXT NOT NULL DEFAULT '', risks_json TEXT NOT NULL DEFAULT '[]', closest_studies_json TEXT NOT NULL DEFAULT '[]', evidence_refs_json TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'candidate', project_id TEXT, scenario_id TEXT, converted_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS topic_messages (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_topic_candidates_session ON topic_candidates(session_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_topic_messages_session ON topic_messages(session_id, created_at ASC);
 CREATE INDEX IF NOT EXISTS idx_outcome_media_owner ON outcome_media(project_id, outcome_id, created_at DESC);
 
 -- ─── Submission domain (投稿生命周期：Series → Case → Events) ───────────

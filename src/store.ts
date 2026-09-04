@@ -93,7 +93,7 @@ function clearCustomAccent(): void {
   }
 }
 export type TopLevelEntry = 'projects' | 'settings';
-export type Page = TopLevelEntry | 'dashboard' | 'chat' | 'goal' | 'graph' | 'timeline' | 'latex' | 'pdf' | 'notes' | 'experiments' | 'evals' | 'artifacts' | 'kanban' | 'autonomous' | 'outcomes' | 'submissions';
+export type Page = TopLevelEntry | 'dashboard' | 'chat' | 'goal' | 'graph' | 'timeline' | 'latex' | 'pdf' | 'notes' | 'experiments' | 'evals' | 'artifacts' | 'kanban' | 'autonomous' | 'outcomes' | 'submissions' | 'topics';
 
 export interface NoteItem {
   id: string;

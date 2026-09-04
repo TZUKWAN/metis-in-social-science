@@ -102,6 +102,8 @@ export function createToolPresenterRegistry(
 const AUTHORED_CONTENT_TOOLS = new Set([
   'search_papers',
   'arxiv_search',
+  'web_search',
+  'ncpssd_search',
   'fulltext_search',
   'crossref_lookup',
   'openalex_lookup',
@@ -868,6 +870,91 @@ function formatJournalIntegrityStats(result: JournalIntegrityStats): string {
 
 // ─── Per-tool authored-content decoders ─────────────────────────
 
+// ─── web_search / ncpssd_search(2026-09-04 修复:此前无 decoder,检索结果被
+// 抑制为 "Tool completed",模型看不到任何检索内容——直接破坏选题模块
+// 「真实检索」要求。宽松 passthrough schema + 只读格式化,不放宽安全边界)。───
+
+const WebSearchFeedbackSchema = z.object({
+  ok: z.boolean(),
+  error: z.string().optional(),
+  offline: z.boolean().optional(),
+  result: z.record(z.string(), z.unknown()).optional(),
+}).passthrough();
+
+const NcpssdSearchFeedbackSchema = z.object({
+  ok: z.boolean().optional(),
+  code: z.string().optional(),
+  note: z.string().optional(),
+  query: z.string().optional(),
+  total: z.number().optional(),
+  papers: z.array(z.record(z.string(), z.unknown())).optional(),
+}).passthrough();
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+
+const decodeWebSearch = buildStructuredDecoder(
+  'web_search',
+  'Web search results',
+  WebSearchFeedbackSchema,
+  (r) => {
+    if (!r.ok) return `web_search failed${r.offline ? ' (offline)' : ''}: ${r.error ?? 'unknown error'}`;
+    const result = asRecord(r.result);
+    const lines: string[] = [`Source: ${String(result.source ?? 'web')} | query: ${String(result.query ?? '')}`];
+    for (const key of ['answer', 'abstract', 'abstractUrl'] as const) {
+      const value = result[key];
+      if (typeof value === 'string' && value) lines.push(`${key}: ${value}`);
+    }
+    if (Array.isArray(result.relatedTopics)) {
+      for (const topic of result.relatedTopics) {
+        const record = asRecord(topic);
+        const text = typeof record.text === 'string' ? record.text : '';
+        const url = typeof record.url === 'string' ? record.url : '';
+        if (text) lines.push(`- ${text}${url ? ` (${url})` : ''}`);
+      }
+    }
+    if (Array.isArray(result.results)) {
+      for (const item of result.results) {
+        const record = asRecord(item);
+        const title = typeof record.title === 'string' ? record.title : '';
+        const url = typeof record.url === 'string' ? record.url : '';
+        const snippet = typeof record.snippet === 'string' ? record.snippet : '';
+        if (title) lines.push(`- ${title}${url ? ` (${url})` : ''}${snippet ? `\n  ${snippet}` : ''}`);
+      }
+    }
+    return lines.join('\n');
+  },
+);
+
+const decodeNcpssdSearch = buildStructuredDecoder(
+  'ncpssd_search',
+  'NCPSSD 中文文献检索结果',
+  NcpssdSearchFeedbackSchema,
+  (r) => {
+    if (r.ok === false) {
+      return `ncpssd_search 失败(code=${r.code ?? 'unknown'})。注意:来源本轮不可用不等于「0 结果」,请如实告知用户并尝试其他来源。${r.note ? ` ${r.note}` : ''}`;
+    }
+    const papers = r.papers ?? [];
+    if (papers.length === 0) return `ncpssd_search:0 条结果(query: ${r.query ?? ''})。这是真实检索后的空结果。`;
+    const lines = [`ncpssd_search 共 ${r.total ?? papers.length} 条(query: ${r.query ?? ''},仅核心刊: ${r.coreOnly !== false}):`];
+    for (const paper of papers) {
+      const title = typeof paper.title === 'string' ? paper.title : '';
+      const authors = asStringArray(paper.authors).join(', ');
+      const year = typeof paper.year === 'number' ? paper.year : '';
+      const venue = typeof paper.venue === 'string' ? paper.venue : '';
+      const url = typeof paper.url === 'string' && paper.url ? ` URL: ${paper.url}` : '';
+      const abstract = typeof paper.abstract === 'string' && paper.abstract ? `\n  摘要: ${paper.abstract}` : '';
+      lines.push(`- ${title}(${authors}${authors ? ', ' : ''}${year})${venue ? ` ${venue}` : ''}${url}${abstract}`);
+    }
+    return lines.join('\n');
+  },
+);
+
 const decodeSearchPapers = buildStructuredDecoder(
   'search_papers',
   'Paper search results',
@@ -1222,6 +1309,8 @@ export function buildBuiltinDecoders(): Map<string, ToolDecoder> {
   map.set('citation_passport_record', decodeCitationPassportRecord);
   map.set('citation_passport_get', decodeCitationPassportGet);
   map.set('citation_passport_list', decodeCitationPassportList);
+  map.set('web_search', decodeWebSearch);
+  map.set('ncpssd_search', decodeNcpssdSearch);
   map.set('citation_passport_add_signal', decodeCitationPassportAddSignal);
   map.set('citation_passport_scan', decodeCitationPassportScan);
 

@@ -1227,6 +1227,10 @@ const SAFE_ACADEMIC_OUTPUT = 'We observe a significant effect (p < 0.01) across 
 const STRUCTURED_AUTHORED_TOOLS = new Set([
   'search_papers',
   'arxiv_search',
+  'web_search',
+  'ncpssd_search',
+  'journal_directory_search',
+  'journal_directory_detail',
   'fulltext_search',
   'crossref_lookup',
   'openalex_lookup',
@@ -1497,6 +1501,27 @@ function makeJournalIntegrityStats(text: string): string {
 
 function makeStructuredInput(toolName: string, text: string): string {
   switch (toolName) {
+    case 'journal_directory_search':
+      return JSON.stringify({
+        source: 'letpub', keyword: 'test query', page: 1,
+        journals: [{ source: 'letpub', id: 'j-1', name: 'Example Journal ' + text, categoryTags: ['社会学'], detailUrl: 'https://example.com/j' }],
+      });
+    case 'journal_directory_detail':
+      return JSON.stringify({
+        source: 'letpub', id: 'j-1', name: 'Example Journal', detailUrl: 'https://example.com/j',
+        submissionEmails: [], indexingTags: [], submissionNotice: text,
+      });
+    case 'web_search':
+      return JSON.stringify({
+        ok: true,
+        result: { source: 'bing_cn', query: 'test query', results: [{ title: 'Example Result', url: 'https://example.com/a', snippet: text.slice(0, 300) }] },
+      });
+    case 'ncpssd_search':
+      return JSON.stringify({
+        query: 'test query',
+        total: 1,
+        papers: [{ title: 'Example Paper', authors: ['A. Author'], year: 2024, venue: '社科期刊', abstract: text.slice(0, 300), url: null, source: 'ncpssd' }],
+      });
     case 'read_pdf':
       return JSON.stringify({
         title: 'Test PDF',
@@ -1742,8 +1767,9 @@ describe('AgentLoop ProviderBoundary 443', () => {
 describe('AgentLoop builtin presenter matrix (102 cases)', () => {
   const builtinDecoders = buildBuiltinDecoders();
 
-  it('has 42 built-in decoders registered', () => {
-    expect(builtinDecoders.size).toBe(42);
+  it('has 46 built-in decoders registered', () => {
+    // 2026-09-04 +2:web_search / ncpssd_search 结构化 decoder(选题模块要求模型真实读取检索结果)。
+    expect(builtinDecoders.size).toBe(46);
   });
 
   for (const [toolName, decoder] of builtinDecoders) {

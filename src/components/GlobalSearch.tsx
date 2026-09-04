@@ -42,6 +42,7 @@ const RESEARCH_PAGES: Page[] = [
   'kanban',
   'outcomes',
   'submissions',
+  'topics',
   'settings',
 ];
 
@@ -57,6 +58,7 @@ const PAGE_LABEL_KEYS: Record<Page, string> = {
   autonomous: 'autonomous.title',
   outcomes: 'nav.outcomes',
   submissions: 'nav.submissions',
+  topics: 'nav.topics',
   timeline: 'nav.timeline',
   latex: 'nav.latexEditor',
   pdf: 'nav.pdfReader',

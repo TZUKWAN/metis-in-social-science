@@ -135,6 +135,8 @@ const zh: Locale = {
     autonomousDesc: '把研究目标交给 AI 拆解并逐步执行，全程可干预。',
     outcomesDesc: '管理当前项目的论文、PPT、报告与其他正式交付物。',
     submissions: '投稿',
+    topics: '选题',
+    topicsDesc: '从一个研究兴趣出发:真实检索、研究版图、候选论证,确定选题后一路进入场景与项目',
     submissionsDesc: '从成果出发完成选刊、投稿、返修到录用的完整投稿生命周期。',
     kanbanDesc: '用看板跟踪研究任务、实验与进度。',
     personalizationDesc: '场景中心、个性化偏好与外观定制。',

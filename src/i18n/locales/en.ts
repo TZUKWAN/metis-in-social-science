@@ -133,6 +133,8 @@ const en = {
     autonomousDesc: 'Hand a research goal to AI to decompose and execute step by step.',
     outcomesDesc: 'Manage this project’s papers, slides, reports, and other formal deliverables.',
     submissions: 'Submissions',
+    topics: 'Topic Selection',
+    topicsDesc: 'Start from a research interest: real search, research landscape, candidate debate, then straight into scenario and project',
     submissionsDesc: 'Run the full submission lifecycle from an outcome: journal targeting to acceptance.',
     kanbanDesc: 'Track research tasks, experiments and progress on a board.',
     personalizationDesc: 'Scenario center, personalization and appearance.',
