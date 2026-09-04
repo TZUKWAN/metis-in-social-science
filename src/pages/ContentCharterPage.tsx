@@ -79,6 +79,19 @@ function joinTerms(entries: Array<{ term: string; standardForm: string }>): stri
   return entries.map((entry) => `${entry.term}→${entry.standardForm}`).join('\n');
 }
 
+
+function summarize(charter: CharterRow): string {
+  const parts: string[] = [];
+  if (charter.writing.tone.trim()) parts.push(`语气：${charter.writing.tone.slice(0, 24)}`);
+  if (charter.writing.bannedPhrases.length > 0) parts.push(`${charter.writing.bannedPhrases.length} 条禁用表述`);
+  if (charter.writing.terminology.length > 0) parts.push(`${charter.writing.terminology.length} 条术语`);
+  const themeLabel = THEME_OPTIONS.find((option) => option.id === charter.presentation.themeProfileId)?.label ?? charter.presentation.themeProfileId;
+  parts.push(themeLabel.replace(/（.*）/u, ''));
+  if (charter.figure.style !== 'clean') parts.push(charter.figure.style === 'dense' ? '高密度绘图' : '示意图');
+  if (charter.quality.thresholds.length > 0) parts.push(`${charter.quality.thresholds.length} 项阈值`);
+  return parts.length > 0 ? parts.join(' · ') : '未配置细则（按内置缺省生效）';
+}
+
 export default function ContentCharterPage() {
   const [charters, setCharters] = useState<CharterRow[]>([]);
   const [activeGlobalId, setActiveGlobalId] = useState<string | null>(null);
@@ -169,25 +182,26 @@ export default function ContentCharterPage() {
   return (
     <div className="content-charter-page" data-testid="content-charter-page">
       <header className="content-charter-page__head">
-        <h2>内容规范</h2>
-        <p>跨场景通用的表达规范层：场景管「做什么」（步骤与流程），内容规范管「产出长什么样、什么质量」。支持多套并存——例如理论阐释一套、实证研究一套，一键切换激活，所有场景与对话即时生效。</p>
+        <div>
+          <h2>内容规范</h2>
+          <p>场景管「做什么」，内容规范管「产出长什么样」——写作语气、PPT 主题、绘图风格、质量阈值，全场景通用。支持多套并存：理论阐释一套、实证研究一套，一键切换即生效。</p>
+        </div>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button type="button" className="btn-sm btn-secondary" onClick={() => setEditing(blankDraft())}>新建规范</button>
+          <label className="btn-sm btn-secondary" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+            导入
+            <input type="file" accept=".json" style={{ display: 'none' }} onChange={(event) => { const file = event.target.files?.[0]; if (file) importCharter(file); event.target.value = ''; }} />
+          </label>
+        </div>
       </header>
-      <h3>内容规范</h3>
-      <p>写作语气、禁用表述、术语统一、引用格式、演示主题与配色、绘图风格、质量阈值——一套章程，全场景通用：场景管步骤，本规范管产出。</p>
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
-        <button type="button" className="btn-sm btn-secondary" onClick={() => setEditing(blankDraft())}>新建章程</button>
-        <label className="btn-sm btn-secondary" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
-          导入章程包
-          <input type="file" accept=".json" style={{ display: 'none' }} onChange={(event) => { const file = event.target.files?.[0]; if (file) importCharter(file); event.target.value = ''; }} />
-        </label>
-      </div>
       <ul className="content-charter__list">
         {charters.map((charter) => (
-          <li key={charter.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', borderRadius: 6, background: charter.id === activeGlobalId ? 'var(--bg-active, #e2e9f0)' : 'transparent' }}>
-            <strong style={{ fontSize: 12 }}>{charter.name}</strong>
-            <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{charter.scope === 'global' ? '全局' : `项目 ${charter.projectId ?? ''}`}</span>
-            {charter.id === activeGlobalId && <span style={{ fontSize: 10, color: 'var(--primary, #2563eb)' }}>已激活</span>}
-            <span style={{ flex: 1 }} />
+          <li key={charter.id} className={charter.id === activeGlobalId ? 'active' : ''}>
+            <div className="content-charter__row-main">
+              <strong>{charter.name}</strong>
+              <span className="content-charter__summary">{summarize(charter)}</span>
+            </div>
+            {charter.id === activeGlobalId && <span className="content-charter__active-badge">已激活</span>}
             {charter.id !== activeGlobalId && <button type="button" className="btn-sm btn-secondary" onClick={() => void activate(charter.id)}>激活</button>}
             <button type="button" className="btn-sm btn-secondary" onClick={() => setEditing({
               id: charter.id, name: charter.name, scope: charter.scope, projectId: charter.projectId,

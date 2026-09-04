@@ -10191,6 +10191,19 @@ function buildFundingTemplateDigest(pkg: { source?: { sourceFormat?: string; pag
       return parsed.success ? ensureContentCharterService().setActive(parsed.data.id, parsed.data.projectId ?? null) : false;
     } catch { return false; }
   });
+  // 项目内容规范绑定（2026-09-01 刘总要求）：写入项目 metadata.charterId（真实绑定）。
+  ipcMain.handle('projects:updateMetadata', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ projectId: z.string().min(1), key: z.string().min(1).max(60), value: z.unknown() }).safeParse(rawRequest);
+      if (!parsed.success || !researchRepository) return { ok: false };
+      const project = researchRepository.getProject(parsed.data.projectId, false);
+      if (!project) return { ok: false };
+      const metadata = typeof project.metadata === 'object' && project.metadata ? { ...project.metadata, [parsed.data.key]: parsed.data.value } : { [parsed.data.key]: parsed.data.value };
+      // ResearchRepository 的 update 通道（项目元数据原子写入）。
+      return { ok: researchRepository.updateProject(parsed.data.projectId, { metadata }) !== null };
+    } catch { return { ok: false }; }
+  });
   ipcMain.handle('content:charter:resolveActive', (event, rawRequest: unknown) => {
     try {
       requireRendererMainFrame(event);
