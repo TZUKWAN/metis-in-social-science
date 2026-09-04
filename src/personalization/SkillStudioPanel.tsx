@@ -1,0 +1,115 @@
+import React from 'react';
+import { Sparkles } from 'lucide-react';
+
+/**
+ * Skill Studio 面板(2026-09-05 刘总要求,任务7)。
+ * 入口:技能库「技能工坊」。用户粘贴经验/工作描述 → AI 萃取为结构化 SKILL
+ * (Decision Rules 为核心)→ 以 SKILL.md 产出交由上层保存进 Personalization
+ * 技能库(进入库 ≠ 注册给普通 Agent,遵守任务7零可见)。
+ */
+
+export interface SkillStudioDraft {
+  name: string;
+  systemPrompt: string;
+}
+
+export function SkillStudioPanel({ zh, onSave }: { zh: boolean; onSave: (draft: SkillStudioDraft) => Promise<void> }) {
+  const [open, setOpen] = React.useState(false);
+  const [experience, setExperience] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+  const [notice, setNotice] = React.useState('');
+  const [skill, setSkill] = React.useState<{ name?: string; purpose?: string; whenToUse?: string; whenNotToUse?: string; steps?: string[]; decisionRules?: Array<{ when: string; then: string; doNot?: string }>; evidenceRequirements?: string; qualityCriteria?: string[] } | null>(null);
+  const [testMessage, setTestMessage] = React.useState('');
+  const [testAnswer, setTestAnswer] = React.useState<string | null>(null);
+
+  const generate = async () => {
+    if (!experience.trim() || busy) return;
+    setBusy(true);
+    setNotice('');
+    try {
+      const result = await window.metis?.skillStudioGenerate?.({ experience: experience.trim(), source: 'from_experience' });
+      if (result?.ok && result.skill) {
+        setSkill(result.skill as typeof skill);
+        setNotice(zh ? 'AI 已萃取结构化技能。请核对判断规则后保存。' : 'Structured skill extracted. Review the decision rules and save.');
+      } else {
+        setNotice(result?.message ?? result?.code ?? (zh ? '生成未完成,可重试。' : 'Generation did not finish.'));
+      }
+    } catch {
+      setNotice(zh ? '生成请求未完成,可重试。' : 'Generation request failed; retry.');
+    } finally { setBusy(false); }
+  };
+
+  const renderSkillMarkdown = (): string => {
+    if (!skill) return '';
+    const lines: string[] = [`# Skill: ${skill.name ?? ''}`, '', `## 用途\n${skill.purpose ?? ''}`, '', `## 激活条件\n何时使用: ${skill.whenToUse ?? ''}${skill.whenNotToUse ? `\n何时不使用: ${skill.whenNotToUse}` : ''}`];
+    if (skill.steps && skill.steps.length > 0) {
+      lines.push(`## 方法步骤\n${skill.steps.map((step, index) => `${index + 1}. ${step}`).join('\n')}`);
+    }
+    if (skill.decisionRules && skill.decisionRules.length > 0) {
+      lines.push(`## 判断规则 (Decision Rules)\n${skill.decisionRules.map((rule, index) => `${index + 1}. IF: ${rule.when}\n   THEN: ${rule.then}${rule.doNot ? `\n   DO NOT: ${rule.doNot}` : ''}`).join('\n')}`);
+    }
+    if (skill.evidenceRequirements) lines.push(`## 证据要求\n${skill.evidenceRequirements}`);
+    if (skill.qualityCriteria && skill.qualityCriteria.length > 0) {
+      lines.push(`## 完成标准\n${skill.qualityCriteria.map((item, index) => `${index + 1}. ${item}`).join('\n')}`);
+    }
+    return lines.join('\n');
+  };
+
+  const runTest = async () => {
+    if (!skill || !testMessage.trim() || busy) return;
+    setBusy(true);
+    try {
+      const result = await window.metis?.skillStudioTestRun?.({ systemPrompt: renderSkillMarkdown(), allowedTools: ['web_search', 'web_fetch'], message: testMessage.trim() });
+      setTestAnswer(result?.answer ?? (zh ? '测试未完成,可重试。' : 'Test did not finish.'));
+    } finally { setBusy(false); }
+  };
+
+  const save = async () => {
+    if (!skill) return;
+    await onSave({ name: skill.name ?? '技能工坊技能', systemPrompt: renderSkillMarkdown() });
+    setNotice(zh ? '已保存到技能库(进入库≠注册给普通 Agent;可被场景编排选用)。' : 'Saved to the skill library.');
+    setSkill(null);
+    setExperience('');
+  };
+
+  return (
+    <div className="skill-studio" data-testid="skill-studio-panel">
+      <button type="button" className="btn-toggle" onClick={() => setOpen((value) => !value)} data-testid="skill-studio-toggle">
+        <Sparkles size={14} /> {zh ? '技能工坊:把经验变成技能' : 'Skill Studio: turn experience into skills'}
+      </button>
+      {open && (
+        <div className="skill-studio__body">
+          <textarea
+            rows={5}
+            value={experience}
+            placeholder={zh ? '描述你的经验/方法/一次工作过程。例如:我做 CSSCI 论文选题时,一般先判断现实矛盾,再看现有研究回答到哪一步……' : 'Describe your research experience or a recent working session.'}
+            onChange={(event) => setExperience(event.target.value)}
+            data-testid="skill-studio-experience"
+          />
+          <button type="button" className="btn-primary btn-sm" disabled={busy || !experience.trim()} onClick={() => void generate()} data-testid="skill-studio-generate">
+            {zh ? 'AI 萃取为结构化技能' : 'Extract structured skill'}
+          </button>
+          {skill && (
+            <div className="skill-studio__result" data-testid="skill-studio-result">
+              <strong>{skill.name}</strong>
+              {skill.purpose && <p>{skill.purpose}</p>}
+              {skill.decisionRules && skill.decisionRules.length > 0 && (
+                <div>
+                  <strong>{zh ? '判断规则' : 'Decision rules'}</strong>
+                  <ul>{skill.decisionRules.map((rule, index) => <li key={index}>IF {rule.when} → THEN {rule.then}{rule.doNot ? ` / DO NOT: ${rule.doNot}` : ''}</li>)}</ul>
+                </div>
+              )}
+              <label className="skill-studio__test-label">{zh ? '测试运行(沙箱)' : 'Test run (sandbox)'}
+                <input value={testMessage} placeholder={zh ? '给一个真实案例' : 'Give a real case'} onChange={(event) => setTestMessage(event.target.value)} data-testid="skill-studio-test-input" />
+              </label>
+              <button type="button" className="btn-secondary btn-sm" disabled={busy || !testMessage.trim()} onClick={() => void runTest()} data-testid="skill-studio-test-run">{zh ? '测试技能' : 'Test skill'}</button>
+              {testAnswer && <pre className="skill-studio__test-answer">{testAnswer}</pre>}
+              <button type="button" className="btn-primary btn-sm" onClick={() => void save()} data-testid="skill-studio-save">{zh ? '保存到技能库' : 'Save to library'}</button>
+            </div>
+          )}
+          {notice && <p className="skill-studio__notice" role="status">{notice}</p>}
+        </div>
+      )}
+    </div>
+  );
+}

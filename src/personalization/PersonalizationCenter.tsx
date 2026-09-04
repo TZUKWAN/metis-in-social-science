@@ -20,6 +20,7 @@ import McpActivationPanel, {
 } from './McpActivationPanel';
 import ProjectMetisRulesEditor from './ProjectMetisRulesEditor';
 import { BuiltinSkillBrowserPanel } from './BuiltinSkillBrowserPanel';
+import { SkillStudioPanel } from './SkillStudioPanel';
 import SplitHandle from '../components/SplitHandle';
 import { availableUserId, createDefinition } from './personalizationLib.js';
 import ScenarioWorkbench from './ScenarioWorkbench.js';
@@ -2277,6 +2278,25 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
                 {browseBuiltinOpen ? t('personalization.browseBuiltinHide') : t('personalization.browseBuiltinShow')}
               </button>
               {browseBuiltinOpen && <BuiltinSkillBrowserPanel />}
+              <SkillStudioPanel zh={zh} onSave={async (draft) => {
+                await window.metis?.savePersonalization({
+                  contractVersion: 1,
+                  kind: 'skill',
+                  name: draft.name,
+                  description: (zh ? '技能工坊沉淀' : 'Skill Studio capture'),
+                  enabled: true,
+                  tags: ['skill-studio'],
+                  sourceMode: 'markdown',
+                  markdown: draft.systemPrompt,
+                  systemPrompt: draft.systemPrompt,
+                  toolIds: [],
+                  mcpIds: [],
+                  maxTurns: 10,
+                  inputSchema: null,
+                  outputSchema: null,
+                  packageEntry: null,
+                } as never);
+              }} />
             </>
           )}
           {(kind === 'skill' || kind === 'mcp') && (
