@@ -98,3 +98,4 @@ release2/
 # 本地打包输出（2026-09-01）：安装包与解包目录不入库
 /release2/
 /release3/
+scripts/tmp-*.py
