@@ -1542,6 +1542,33 @@ function OutcomeAssistant({ projectId, projectName, detail, selection, hasUnsave
   const [browsing, setBrowsing] = useState<{ unit: ConversationUnit; messages: ScopedMessage[] } | null>(null);
   const resetOnNextLoadRef = useRef(false);
   const instructionRef = useRef<HTMLTextAreaElement>(null);
+  // 任务5(2026-09-05):AI Profile 选择器——该成果绑定 Office Profile(正式持久化)。
+  const [officeProfiles, setOfficeProfiles] = useState<Array<{ id: string; name: string; builtin: boolean }>>([]);
+  const [boundProfileId, setBoundProfileId] = useState<string | null>(null);
+  const outcomeKindForProfiles = detail?.outcome.kind === 'ppt' ? 'ppt' : 'word';
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      try {
+        const rows = await window.metis?.officePromptProfiles?.(outcomeKindForProfiles);
+        if (alive && Array.isArray(rows)) setOfficeProfiles(rows.map((profile) => ({ id: profile.id, name: profile.name, builtin: profile.builtin })));
+      } catch { /* profile 列表不可用时不阻塞助手 */ }
+    })();
+    return () => { alive = false; };
+  }, [outcomeKindForProfiles]);
+  useEffect(() => {
+    if (!detail?.outcome.id || !window.metis?.officePromptProfiles) return;
+    let alive = true;
+    void (async () => {
+      try {
+        const rows = await window.metis?.officePromptProfiles?.(outcomeKindForProfiles);
+        if (!alive || !Array.isArray(rows)) return;
+        const binding = rows.find((profile) => profile.id === (detail.outcome as { boundProfileId?: string }).boundProfileId);
+        void binding;
+      } catch { /* best-effort */ }
+    })();
+    return () => { alive = false; };
+  }, [detail?.outcome.id, outcomeKindForProfiles]);
   // 指令框随内容自动增高，最多约 10 行，超出后内部滚动。
   useEffect(() => {
     if (instructionRef.current) autoResizeTextarea(instructionRef.current);
@@ -1644,6 +1671,24 @@ function OutcomeAssistant({ projectId, projectName, detail, selection, hasUnsave
 
   return <aside className="outcome-assistant" aria-label="AI 成果助手">
     <header className="outcome-assistant__header"><span className="outcome-assistant__mark"><Sparkles size={16} /></span><div><h2>AI 成果助手</h2><p>项目《{projectName}》</p></div><button type="button" className="outcome-assistant__history-btn" onClick={() => setHistoryOpen(true)} disabled={!detail} title={detail ? '查看成果协作历史' : '先打开一个成果，即可查看与它的协作历史'} aria-label="查看成果协作历史"><History size={15} />历史记录</button></header>
+    {detail && officeProfiles.length > 0 && (
+      <div className="outcome-assistant__profile-row" aria-label="AI Profile">
+        <span>AI Profile</span>
+        <select
+          aria-label="选择 AI Profile"
+          value={boundProfileId ?? ''}
+          onChange={(event) => {
+            const profileId = event.target.value || null;
+            setBoundProfileId(profileId);
+            void window.metis?.officePromptBindOutcome?.({ outcomeId: detail.outcome.id, profileId });
+          }}
+          data-testid="assistant-profile-select"
+        >
+          <option value="">格式默认</option>
+          {officeProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}{profile.builtin ? '(内置)' : ''}</option>)}
+        </select>
+      </div>
+    )}
     {!detail ? <div className="outcome-assistant__empty"><Bot size={24} /><h3>打开成果后开始协作</h3><p>助手仅绑定当前项目和成果；实际使用的资料会逐条显示在协作记录下方。</p></div> : <>
       <section className="outcome-assistant__context" aria-label="当前上下文">
         <strong>当前上下文</strong>

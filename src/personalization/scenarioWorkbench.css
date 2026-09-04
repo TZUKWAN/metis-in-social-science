@@ -1049,3 +1049,27 @@
 .settings-outcome-prompts__revisions li { display: flex; align-items: center; gap: 8px; }
 .settings-outcome-prompts__notice { font-size: 12px; color: var(--text-secondary); margin: 0; }
 .settings-outcome-prompts__empty { font-size: 12px; color: var(--text-secondary); }
+
+/* ── Settings Metis Office Profiles(任务5)── */
+.settings-office-profiles { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
+.settings-office-profiles h3 { font-size: 14px; margin: 0 0 4px; }
+.settings-office-profiles__desc { font-size: 12px; color: var(--text-secondary); margin: 0 0 10px; }
+.settings-office-profiles__layout { display: grid; grid-template-columns: 180px 1fr; gap: 12px; align-items: start; }
+.settings-office-profiles__kinds { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.settings-office-profiles__kinds button { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; padding: 6px 9px; border: none; border-radius: var(--radius-sm, 6px); background: transparent; color: var(--text-primary); cursor: pointer; text-align: left; }
+.settings-office-profiles__kinds button:hover { background: var(--bg-hover, rgba(0,0,0,.04)); }
+.settings-office-profiles__kinds button.active { background: var(--bg-active, rgba(0,0,0,.08)); }
+.settings-office-profiles__kinds small { color: var(--text-secondary); font-size: 11px; }
+.settings-office-profiles__main { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.settings-office-profiles__profile-bar { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.settings-office-profiles__profile-bar select { font-size: 12.5px; padding: 4px 6px; border: 1px solid var(--border); border-radius: var(--radius-sm, 6px); background: var(--bg-input, transparent); color: var(--text-primary); }
+.settings-office-profiles__slots { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.settings-office-profiles__slots button { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; padding: 6px 8px; border: none; border-radius: var(--radius-sm, 6px); background: transparent; color: var(--text-primary); cursor: pointer; text-align: left; }
+.settings-office-profiles__slots button:hover, .settings-office-profiles__slots button.active { background: var(--bg-active, rgba(0,0,0,.06)); }
+.settings-office-profiles__slots small { color: var(--text-secondary); font-size: 11px; }
+.settings-office-profiles__editor { display: flex; flex-direction: column; gap: 6px; padding: 10px; border: 1px dashed var(--border); border-radius: var(--radius-sm, 6px); }
+.settings-office-profiles__editor textarea { font-family: inherit; font-size: 13px; line-height: 1.6; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm, 6px); background: var(--bg-input, transparent); color: var(--text-primary); resize: vertical; }
+.settings-office-profiles__actions { display: flex; gap: 8px; }
+.settings-office-profiles__danger { color: var(--danger, #b3261e); }
+.settings-office-profiles__notice { font-size: 12px; color: var(--text-secondary); margin: 0; }
+.settings-office-profiles__empty { font-size: 12px; color: var(--text-secondary); }

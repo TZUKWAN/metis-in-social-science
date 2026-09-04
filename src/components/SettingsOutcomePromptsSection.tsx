@@ -1,3 +1,4 @@
+import SettingsOfficeProfilesSection from './SettingsOfficeProfilesSection';
 import React from 'react';
 import { RotateCcw, Sparkles } from 'lucide-react';
 import type { ArtifactPromptDefinition } from '../../engine/artifacts/prompts/ArtifactPromptRegistry.js';
@@ -227,6 +228,7 @@ export default function SettingsOutcomePromptsSection() {
           )}
         </div>
       </div>
+      <SettingsOfficeProfilesSection />
     </div>
   );
 }
