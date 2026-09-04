@@ -156,6 +156,8 @@ import { OutcomeWordDocxService, GENOFFICE_ENABLED } from './OutcomeWordDocxServ
 import { parseWordTemplateStyle } from './WordTemplateStyleParser.js';
 import { createSubmissionBrowserTools } from './SubmissionBrowserTools.js';
 import { SubmissionAssistantService } from './SubmissionAssistantService.js';
+import { ContentCharterService } from './ContentCharterService.js';
+import { ContentCharterSchema, figureCharterPrompt } from '../engine/content-charter/ContentCharterContract.js';
 import { parseGuidelineFormatting, type MutableFormattingDraft, type MutableFormattingSlot } from '../engine/outcomes/GuidelineFormatting.js';
 import { buildFundingTemplateSeed } from '../engine/personalization/FundingTemplateSeed.js';
 import type { WordFormattingConfig } from '../engine/outcomes/WordDocumentFormatting.js';
@@ -944,6 +946,12 @@ function ensureCollabService(): CollabService | null {
 
 // 内置文献检索服务（无状态，直接实例化）。
 const literatureSearchService = new LiteratureSearchService();
+// 内容规范（2026-09-01 刘总定名）：全局/项目两级表达章程，产出型动作统一注入。
+let contentCharterService: ContentCharterService | null = null;
+function ensureContentCharterService(): ContentCharterService {
+  if (!contentCharterService) contentCharterService = new ContentCharterService(store!.raw);
+  return contentCharterService;
+}
 
 // Agent-visible browser bridge (kimi-bridge style control for chat/strategy runs).
 setBrowserControlBridge({
@@ -5028,6 +5036,7 @@ function setupIPC(): void {
     try {
       return await new OutcomePptGenerationService({
         repository: requestRepository,
+        getCharter: (pid) => ensureContentCharterService().resolveActive(pid),
         agentLoop: projectRuntime.agentLoop,
         modelName: projectRuntime.binding.model,
         providerProfileBinding: projectRuntime.binding,
@@ -7277,6 +7286,11 @@ function setupIPC(): void {
         if (stageBlock.length > 0) {
           skillPrompt = [stageBlock.join('\n'), skillPrompt].filter(Boolean).join('\n\n');
         }
+                // 内容规范·写作（2026-09-01 刘总）：所有产出型对话自动遵守激活章程。
+                try {
+                  const charterPrompt = ensureContentCharterService().resolveWritingPrompt(projectId ?? undefined);
+                  if (charterPrompt) skillPrompt = [skillPrompt, charterPrompt].filter(Boolean).join('\n\n');
+                } catch { /* 章程注入失败不阻断对话 */ }
       }
     } catch { /* 阶段上下文必须不破坏对话 */ }
 
@@ -7573,6 +7587,7 @@ function setupIPC(): void {
               cancelSignal: activeRun.scenarioCancel.signal,
               liveSteering: liveSteeringQueue,
               projectId: scenarioRuntime.manifest.projectId ?? projectId,
+              writingCharterPrompt: ensureContentCharterService().resolveWritingPrompt(scenarioRuntime.manifest.projectId ?? projectId) ?? undefined,
               researchRepository: researchRepository ?? undefined,
               literatureBridge: getScenarioLiteratureBridge(),
               isCurrentRuntime: () => runtimeGeneration === requestRuntimeGeneration,
@@ -10138,6 +10153,51 @@ function buildFundingTemplateDigest(pkg: { source?: { sourceFormat?: string; pag
       return { ok: true, definition: null };
     }
   });
+  // ── 内容规范（Content Charter，2026-09-01 刘总定名）：列表/保存/删除/激活/解析 ──
+  ipcMain.handle('content:charter:list', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ scope: z.enum(['global', 'project']).optional(), projectId: z.string().optional() }).safeParse(rawRequest ?? {});
+      if (!parsed.success) return [];
+      return ensureContentCharterService().list(parsed.data.scope, parsed.data.projectId ?? null);
+    } catch { return []; }
+  });
+  ipcMain.handle('content:charter:get', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ id: z.string().min(1) }).safeParse(rawRequest);
+      return parsed.success ? ensureContentCharterService().get(parsed.data.id) : null;
+    } catch { return null; }
+  });
+  ipcMain.handle('content:charter:save', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = ContentCharterSchema.safeParse(rawRequest);
+      if (!parsed.success) return null;
+      return ensureContentCharterService().save(parsed.data);
+    } catch { return null; }
+  });
+  ipcMain.handle('content:charter:delete', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ id: z.string().min(1) }).safeParse(rawRequest);
+      return parsed.success ? ensureContentCharterService().delete(parsed.data.id) : false;
+    } catch { return false; }
+  });
+  ipcMain.handle('content:charter:setActive', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ id: z.string().min(1), projectId: z.string().nullable().optional() }).safeParse(rawRequest);
+      return parsed.success ? ensureContentCharterService().setActive(parsed.data.id, parsed.data.projectId ?? null) : false;
+    } catch { return false; }
+  });
+  ipcMain.handle('content:charter:resolveActive', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ projectId: z.string().nullable().optional() }).safeParse(rawRequest ?? {});
+      return parsed.success ? ensureContentCharterService().resolveActive(parsed.data.projectId ?? null) : null;
+    } catch { return null; }
+  });
   ipcMain.handle('personalization:save', (event, rawRequest: unknown) => {
     try {
       requireRendererMainFrame(event);
@@ -12366,6 +12426,7 @@ app.whenReady().then(async () => {
           mode: 'send',
           signal,
           projectId: manifest.projectId,
+          writingCharterPrompt: ensureContentCharterService().resolveWritingPrompt(manifest.projectId) ?? undefined,
           researchRepository: researchRepository ?? undefined,
           literatureBridge: getScenarioLiteratureBridge(),
           hookEvent: (hookEvent) => {
@@ -12830,6 +12891,12 @@ app.whenReady().then(async () => {
       repository: outcomeRepository,
       media: outcomeMedia,
       secretVault: personalizationSecretVault,
+      getFigureCharterPrompt: (projectId) => {
+        try {
+          const charter = ensureContentCharterService().resolveActive(projectId);
+          return charter ? figureCharterPrompt(charter.figure) : null;
+        } catch { return null; }
+      },
     });
     researchRepository = new ResearchRepository(store.raw, (manifest, content) => {
       if (!researchRepository || !citationTruthReceipts) {

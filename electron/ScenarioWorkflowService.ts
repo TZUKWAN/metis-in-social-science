@@ -982,7 +982,9 @@ export async function runPersistedScenarioWorkflow({
   isCurrentRuntime,
   hookApproval,
   hookEvent,
-}: RunPersistedScenarioWorkflowOptions): Promise<AgentResponse> {
+  /** 内容规范·写作段（2026-09-01 刘总）：主进程按项目解析后传入，步骤产出必须遵守。 */
+  writingCharterPrompt,
+}: RunPersistedScenarioWorkflowOptions & { writingCharterPrompt?: string }): Promise<AgentResponse> {
   const turnId = safeTurnId(requestId);
   const userMessage = latestUserMessage(messages);
   console.log(`[ScenarioRun] start: session=${sessionId.slice(0, 40)} manifestSession=${manifest.sessionId.slice(0, 40)} workflow=${manifest.workflow.length} hooks=${manifest.hooks?.length ?? 0}`);
@@ -1169,7 +1171,7 @@ export async function runPersistedScenarioWorkflow({
           taskContractHash: input.executionKey,
           promptStackHash: input.manifestDigest,
           resumeFromCheckpoint: false,
-          skillPrompt: `${composeManifestSystemPrompt(manifest, input.step)}${literatureDiscipline}`,
+          skillPrompt: `${composeManifestSystemPrompt(manifest, input.step)}${literatureDiscipline}${writingCharterPrompt ? `\n\n${writingCharterPrompt}` : ''}`,
           fullAccess: manifest.fullAccess,
           signal,
           liveSteering,

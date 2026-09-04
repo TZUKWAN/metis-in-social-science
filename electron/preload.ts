@@ -1550,6 +1550,19 @@ const api = {
     ipcRenderer.invoke('scenario:material:delete', { id }) as Promise<{ ok: boolean; error?: string }>,
   projectMaterialSetCategory: async (request: { id: string; category: string }) =>
     ipcRenderer.invoke('scenario:material:setCategory', request) as Promise<{ ok: boolean; error?: string }>,
+  // 内容规范（Content Charter，2026-09-01 刘总定名）：列表/读写/删除/激活/解析。
+  contentCharterList: async (request?: { scope?: 'global' | 'project'; projectId?: string }) =>
+    ipcRenderer.invoke('content:charter:list', request ?? {}) as Promise<Array<Record<string, unknown>>>,
+  contentCharterGet: async (id: string) =>
+    ipcRenderer.invoke('content:charter:get', { id }) as Promise<Record<string, unknown> | null>,
+  contentCharterSave: async (charter: Record<string, unknown>) =>
+    ipcRenderer.invoke('content:charter:save', charter) as Promise<Record<string, unknown> | null>,
+  contentCharterDelete: async (id: string) =>
+    ipcRenderer.invoke('content:charter:delete', { id }) as Promise<boolean>,
+  contentCharterSetActive: async (request: { id: string; projectId?: string | null }) =>
+    ipcRenderer.invoke('content:charter:setActive', request) as Promise<boolean>,
+  contentCharterResolveActive: async (projectId?: string | null) =>
+    ipcRenderer.invoke('content:charter:resolveActive', { projectId }) as Promise<Record<string, unknown> | null>,
   // 投稿参谋（2026-09-01 刘总规格）：共享浏览器+成果上下文的编排对话。
   submissionAssistantChat: async (request: { projectId: string; outcomeId: string; instruction: string; thinkingLevel?: string; intent?: Record<string, unknown>; shortlist?: Array<{ name: string; source?: string }> }) =>
     ipcRenderer.invoke('submission:assistant:chat', request) as Promise<{ ok: boolean; answer?: string; error?: string }>,
