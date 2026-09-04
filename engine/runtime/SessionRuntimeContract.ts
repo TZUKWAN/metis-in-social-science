@@ -46,7 +46,12 @@ export const SessionCreateRequestSchema = z.strictObject({
   projectId: RuntimeIdSchema.optional(),
 });
 
-export const SessionListRequestSchema = z.strictObject({});
+export const SessionListRequestSchema = z.strictObject({
+  /** 项目内会话查询(2026-09-04 多对话架构):按 projectId 过滤;缺省返回全部。 */
+  projectId: RuntimeIdSchema.optional(),
+  /** 归档会话默认不返回。 */
+  includeArchived: z.boolean().optional(),
+});
 
 export const SessionDeleteRequestSchema = z.strictObject({
   sessionId: SessionIdSchema,
@@ -55,9 +60,14 @@ export const SessionDeleteRequestSchema = z.strictObject({
 export const SessionUpdatePatchSchema = z.strictObject({
   title: SessionTitleSchema.optional(),
   archived: z.boolean().optional(),
-}).refine((value) => value.title !== undefined || value.archived !== undefined, {
-  message: 'Session update patch cannot be empty',
-});
+  /** 当前工作线程使用的场景(2026-09-04 多对话架构):null 表示无场景普通对话。 */
+  scenarioId: z.string().max(160).nullable().optional(),
+  /** 当前工作对象(项目级成果引用;数组支持多对象比较/组合)。 */
+  activeArtifactIds: z.array(RuntimeIdSchema).max(24).optional(),
+}).refine(
+  (value) => value.title !== undefined || value.archived !== undefined || value.scenarioId !== undefined || value.activeArtifactIds !== undefined,
+  { message: 'Session update patch cannot be empty' },
+);
 
 export const SessionUpdateRequestSchema = z.strictObject({
   sessionId: SessionIdSchema,
@@ -146,6 +156,8 @@ export const SessionListItemSchema = z.strictObject({
   messageCount: z.number().int().min(0).max(SESSION_RUNTIME_LIMITS.messageCount),
   archived: z.boolean(),
   projectId: RuntimeIdSchema.optional(),
+  scenarioId: z.string().max(160).nullable().optional(),
+  activeArtifactIds: z.array(RuntimeIdSchema).max(24).optional(),
 }).refine((value) => value.lastActivity >= value.createdAt, {
   message: 'Session activity cannot predate session creation',
   path: ['lastActivity'],
@@ -162,6 +174,8 @@ const LegacySessionRecordSchema = z.strictObject({
   archived: z.unknown().optional(),
   metadata: z.unknown().optional(),
   projectId: RuntimeIdSchema.optional(),
+  scenarioId: z.string().max(160).nullable().optional(),
+  activeArtifactIds: z.array(RuntimeIdSchema).max(24).optional(),
 }).refine((value) => value.lastActivity >= value.createdAt, {
   message: 'Session activity cannot predate session creation',
   path: ['lastActivity'],
@@ -227,6 +241,8 @@ export function decodeLegacySessionRecord(input: unknown): SessionRecordDecodeRe
     messageCount: record.messageCount,
     archived: metadata.archived || record.archived === true,
     ...(record.projectId === undefined ? {} : { projectId: record.projectId }),
+    ...(record.scenarioId === undefined ? {} : { scenarioId: record.scenarioId }),
+    ...(record.activeArtifactIds === undefined ? {} : { activeArtifactIds: record.activeArtifactIds }),
   };
   const value = parseWithoutThrow(SessionListItemSchema, presentation);
   return value === undefined

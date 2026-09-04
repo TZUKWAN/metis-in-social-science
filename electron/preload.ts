@@ -858,6 +858,12 @@ const api = {
   deleteProject: async (projectId: string) => ipcRenderer.invoke('research:deleteProject', projectId) as Promise<{ ok: boolean }>,
   openDirectoryDialog: async () => ipcRenderer.invoke('dialog:openDirectory') as Promise<string | null>,
   setProjectDir: async (projectId: string, projectDir: string) => ipcRenderer.invoke('research:setProjectDir', { projectId, projectDir }) as Promise<{ ok: boolean }>,
+  getDefaultScenario: async (projectId: string) => (
+    ipcRenderer.invoke('projects:getDefaultScenario', { projectId }) as Promise<{ scenarioId: string | null }>
+  ),
+  setDefaultScenario: async (projectId: string, scenarioId: string | null) => (
+    ipcRenderer.invoke('projects:setDefaultScenario', { projectId, scenarioId }) as Promise<{ ok: boolean }>
+  ),
   detectStage: async (projectId: string) => ipcRenderer.invoke('research:detectStage', projectId) as Promise<{ stage: string; rationale: string[] } | null>,
   // ── Method library (T4): reusable research workflows ──
   listMethods: async () => ipcRenderer.invoke('methods:list') as Promise<Array<{

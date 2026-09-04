@@ -18,6 +18,9 @@ export interface SessionRecord {
   metadata: Record<string, unknown>;
   /** Owning project id (conversations can be exported with their project). */
   projectId?: string;
+  /** 多对话架构(2026-09-04):当前工作线程的场景与工作对象,正式列存储。 */
+  scenarioId?: string | null;
+  activeArtifactIds?: string[];
 }
 
 export interface MessageRecord {
@@ -251,6 +254,7 @@ export class PersistenceStore {
     this.migratePaperProjectLinks();
     this.migrateNoteScopes();
     this.migrateSessionsProjectId();
+    this.migrateSessionsScenarioColumns();
     this.migrateSubmissionTargeting();
     this.migrateSubmissionCorrespondenceAttachments();
     this.migrateCollections();
@@ -424,6 +428,19 @@ export class PersistenceStore {
     }
   }
 
+  /** 多对话架构(2026-09-04 刘总要求):scenarioId/activeArtifactIds 正式列。 */
+  private migrateSessionsScenarioColumns(): void {
+    const cols = new Set(
+      (this.db.prepare("SELECT name FROM pragma_table_info('sessions')").all() as Array<{ name: string }>).map((row) => row.name),
+    );
+    if (!cols.has('scenario_id')) {
+      this.db.exec('ALTER TABLE sessions ADD COLUMN scenario_id TEXT;');
+    }
+    if (!cols.has('active_artifact_ids')) {
+      this.db.exec('ALTER TABLE sessions ADD COLUMN active_artifact_ids TEXT;');
+    }
+  }
+
   /** Idempotent: submission_cases gained targeting_json (投稿选刊前置条件). */
   private migrateSubmissionTargeting(): void {
     const tables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='submission_cases'").all() as Array<{ name: string }>;
@@ -509,6 +526,17 @@ export class PersistenceStore {
   getSession(sessionId: string): SessionRecord | undefined {
     const row = this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId) as Record<string, unknown> | undefined;
     if (!row) return undefined;
+    return this.mapSessionRow(row);
+  }
+
+  private mapSessionRow(row: Record<string, unknown>): SessionRecord {
+    let activeArtifactIds: string[] | undefined;
+    if (typeof row.active_artifact_ids === 'string' && row.active_artifact_ids) {
+      try {
+        const parsed = JSON.parse(row.active_artifact_ids) as unknown;
+        if (Array.isArray(parsed)) activeArtifactIds = parsed.filter((item): item is string => typeof item === 'string');
+      } catch { activeArtifactIds = undefined; }
+    }
     return {
       id: row.id as string,
       createdAt: row.created_at as number,
@@ -516,36 +544,44 @@ export class PersistenceStore {
       messageCount: row.message_count as number,
       metadata: JSON.parse((row.metadata as string) || '{}'),
       projectId: (row.project_id as string | null) ?? undefined,
+      scenarioId: (row.scenario_id as string | null | undefined) ?? undefined,
+      activeArtifactIds,
     };
   }
 
-  listSessions(limit = 50, offset = 0): SessionRecord[] {
+  listSessions(limit = 50, offset = 0, filter?: { projectId?: string; includeArchived?: boolean }): SessionRecord[] {
+    // 多对话架构(2026-09-04):支持按 projectId 过滤;归档默认隐藏(title/archived 在 metadata JSON)。
+    const conditions: string[] = [];
+    const params: Array<string | number> = [];
+    if (filter?.projectId) {
+      conditions.push('project_id = ?');
+      params.push(filter.projectId);
+    }
+    if (!filter?.includeArchived) {
+      conditions.push("COALESCE(json_extract(metadata, '$.archived'), 0) = 0");
+    }
+    const where = conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
     const rows = this.db.prepare(
-      'SELECT * FROM sessions ORDER BY last_activity DESC LIMIT ? OFFSET ?',
-    ).all(limit, offset) as Record<string, unknown>[];
-    return rows.map((row) => ({
-      id: row.id as string,
-      createdAt: row.created_at as number,
-      lastActivity: row.last_activity as number,
-      messageCount: row.message_count as number,
-      metadata: JSON.parse((row.metadata as string) || '{}'),
-      projectId: (row.project_id as string | null) ?? undefined,
-    }));
+      `SELECT * FROM sessions${where} ORDER BY last_activity DESC LIMIT ? OFFSET ?`,
+    ).all(...params, limit, offset) as Record<string, unknown>[];
+    return rows.map((row) => this.mapSessionRow(row));
   }
 
   touchSession(sessionId: string): void {
     this.db.prepare('UPDATE sessions SET last_activity = ? WHERE id = ?').run(Date.now(), sessionId);
   }
 
-  updateSession(sessionId: string, patch: Partial<Pick<SessionRecord, 'lastActivity' | 'messageCount'> & { metadata: Record<string, unknown> }>): void {
+  updateSession(sessionId: string, patch: Partial<Pick<SessionRecord, 'lastActivity' | 'messageCount' | 'scenarioId' | 'activeArtifactIds'> & { metadata: Record<string, unknown> }>): void {
     const existing = this.getSession(sessionId);
     if (!existing) return;
     const metadata = { ...existing.metadata, ...(patch.metadata ?? {}) };
     const lastActivity = patch.lastActivity ?? existing.lastActivity;
     const messageCount = patch.messageCount ?? existing.messageCount;
+    const scenarioId = patch.scenarioId !== undefined ? patch.scenarioId : existing.scenarioId ?? null;
+    const activeArtifactIds = patch.activeArtifactIds !== undefined ? JSON.stringify(patch.activeArtifactIds) : (existing.activeArtifactIds ? JSON.stringify(existing.activeArtifactIds) : null);
     this.db.prepare(
-      'UPDATE sessions SET last_activity = ?, message_count = ?, metadata = ? WHERE id = ?',
-    ).run(lastActivity, messageCount, JSON.stringify(metadata), sessionId);
+      'UPDATE sessions SET last_activity = ?, message_count = ?, metadata = ?, scenario_id = ?, active_artifact_ids = ? WHERE id = ?',
+    ).run(lastActivity, messageCount, JSON.stringify(metadata), scenarioId, activeArtifactIds, sessionId);
   }
 
   deleteSession(sessionId: string): void {

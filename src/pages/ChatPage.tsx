@@ -1682,7 +1682,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
     }
     const loadCatalog = (attempt: number) => {
       void metis.listPersonalization({ contractVersion: 1, kind: 'scenario', includeDisabled: false })
-        .then((response) => {
+        .then(async (response) => {
           if (cancelled) return;
           const available = response.definitions.filter((definition): definition is ScenarioDefinition => (
             definition.kind === 'scenario'
@@ -1695,12 +1695,31 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
           // 先读 metis:project-scenario:<projectId>，缺失时退回全局偏好。
           let remembered = DEFAULT_SCENARIO_ID;
           try {
-            const projectPreferred = activeResearchProjectId
-              ? window.localStorage.getItem(`metis:project-scenario:${activeResearchProjectId}`)
-              : null;
-            remembered = projectPreferred
-              ?? window.localStorage.getItem(ACTIVE_SCENARIO_KEY)
-              ?? DEFAULT_SCENARIO_ID;
+            // 多对话架构(2026-09-04 刘总要求):解析优先级
+            // 当前会话的 scenarioId(正式持久化) > 项目默认场景(Project.defaultScenarioId)
+            // > legacy localStorage(首次读取即迁移进正式层) > 无场景。
+            const currentSession = currentSessionId
+              ? projectScopedSessions.find((item) => item.id === currentSessionId) ?? sessions.find((item) => item.id === currentSessionId)
+              : undefined;
+            if (currentSession?.scenarioId && available.some((scenario) => scenario.id === currentSession.scenarioId)) {
+              remembered = currentSession.scenarioId;
+            } else if (activeResearchProjectId) {
+              let projectDefault: string | null = null;
+              try {
+                const response = await window.metis?.getDefaultScenario?.(activeResearchProjectId);
+                projectDefault = response?.scenarioId ?? null;
+              } catch { projectDefault = null; }
+              const legacyProject = window.localStorage.getItem(`metis:project-scenario:${activeResearchProjectId}`);
+              const legacyValue = projectDefault ?? legacyProject;
+              if (legacyValue && available.some((scenario) => scenario.id === legacyValue)) {
+                remembered = legacyValue;
+                // legacy 迁移:写入正式层后清理旧键(此后以正式持久化为唯一真源)。
+                void window.metis?.setDefaultScenario?.(activeResearchProjectId, legacyValue);
+                window.localStorage.removeItem(`metis:project-scenario:${activeResearchProjectId}`);
+              }
+            } else {
+              remembered = window.localStorage.getItem(ACTIVE_SCENARIO_KEY) ?? DEFAULT_SCENARIO_ID;
+            }
           } catch { /* use factory default */ }
           setActiveScenarioId(remembered === DEFAULT_SCENARIO_ID
             ? DEFAULT_SCENARIO_ID
@@ -1727,7 +1746,8 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
       cancelled = true;
       if (retryTimer !== undefined) window.clearTimeout(retryTimer);
     };
-  }, [scenarioLoadRevision, activeResearchProjectId]);
+  // currentSessionId 入依赖:切换对话时按该会话正式绑定的 scenarioId 恢复场景选择(2026-09-04 多对话架构)。
+  }, [scenarioLoadRevision, activeResearchProjectId, currentSessionId, sessions]);
 
   // Helper: create a new session (defined before useEffect that calls it).
   // Returns the new session id on success, null on failure — callers that
@@ -1745,6 +1765,19 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
     if (metis?.createSession) {
       const result = await metis.createSession(id, request.value.projectId).catch(() => null);
       if (!result?.success) return null;
+    }
+    // 多对话架构(2026-09-04 刘总要求):新对话默认绑定项目默认场景(defaultScenarioId
+    // 只是推荐值,用户可在对话中单独更换;不影响其他对话)。
+    if (metis?.updateSession) {
+      let defaultScenario: string | null = null;
+      if (activeResearchProjectId) {
+        try {
+          const response = await metis.getDefaultScenario?.(activeResearchProjectId);
+          defaultScenario = response?.scenarioId ?? null;
+        } catch { defaultScenario = null; }
+      }
+      const patch: { scenarioId?: string | null } = { scenarioId: defaultScenario };
+      await metis.updateSession(id, patch).catch(() => undefined);
     }
     activateSession(id);
     setSessions((prev) => [
@@ -3093,6 +3126,11 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
   // 导致明明显示已选场景却静默走了 Goal。这里直接读持久化偏好兜底。
   function readPersistedScenarioId(): string | null {
     try {
+      // 多对话架构(2026-09-04):当前会话正式绑定的场景优先(随会话切换恢复)。
+      const currentSession = currentSessionId
+        ? projectScopedSessions.find((item) => item.id === currentSessionId) ?? sessions.find((item) => item.id === currentSessionId)
+        : undefined;
+      if (currentSession?.scenarioId) return currentSession.scenarioId;
       const projectPreferred = activeResearchProjectId
         ? window.localStorage.getItem(`metis:project-scenario:${activeResearchProjectId}`)
         : null;
@@ -3879,12 +3917,16 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
                 value={activeScenarioId}
                 disabled={scenarioLoadState === 'loading' || scenarioLoadState === 'failed'}
                 onChange={(event) => {
-                  const id = event.target.value;
-                  setActiveScenarioId(id);
+                  const scenarioId = event.target.value;
+                  setActiveScenarioId(scenarioId);
+                  // 多对话架构(2026-09-04):场景绑定当前会话,正式持久化;切换对话互不影响。
+                  if (currentSessionId) {
+                    void window.metis?.updateSession?.(currentSessionId, { scenarioId: scenarioId || null });
+                  }
                   try {
-                    window.localStorage.setItem(ACTIVE_SCENARIO_KEY, id);
+                    window.localStorage.setItem(ACTIVE_SCENARIO_KEY, scenarioId);
                     if (activeResearchProjectId) {
-                      if (id) window.localStorage.setItem(`metis:project-scenario:${activeResearchProjectId}`, id);
+                      if (scenarioId) window.localStorage.setItem(`metis:project-scenario:${activeResearchProjectId}`, scenarioId);
                       else window.localStorage.removeItem(`metis:project-scenario:${activeResearchProjectId}`);
                     }
                   } catch { /* preference persistence is best-effort */ }

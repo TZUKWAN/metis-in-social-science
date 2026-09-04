@@ -5767,7 +5767,13 @@ function setupIPC(): void {
       requireRendererMainFrame(event);
       const decoded = decodeSessionListRequest(rawRequest);
       if (!decoded.ok || !store) return createSessionListRecovery();
-      return decodeLegacySessionList(store.listSessions());
+      // 多对话架构(2026-09-04):按 projectId 过滤,归档默认隐藏。
+      const filter = decoded.value.projectId
+        ? { projectId: decoded.value.projectId, includeArchived: decoded.value.includeArchived === true }
+        : decoded.value.includeArchived === true
+          ? { includeArchived: true }
+          : undefined;
+      return decodeLegacySessionList(store.listSessions(200, 0, filter));
     } catch {
       return createSessionListRecovery();
     }
@@ -5796,9 +5802,18 @@ function setupIPC(): void {
       if (!store.getSession(decoded.value.sessionId)) {
         return decodeSessionMutationResult({ success: false, code: 'not_found' });
       }
-      store.updateSession(decoded.value.sessionId, {
-        metadata: decoded.value.patch,
-      });
+      const { scenarioId, activeArtifactIds, ...legacyPatch } = decoded.value.patch;
+      // 多对话架构(2026-09-04):scenarioId/activeArtifactIds 走正式列;title/archived 维持 metadata 兼容通道。
+      const metadataPatch = legacyPatch as Record<string, unknown>;
+      if (scenarioId === undefined && activeArtifactIds === undefined) {
+        store.updateSession(decoded.value.sessionId, { metadata: metadataPatch });
+      } else {
+        store.updateSession(decoded.value.sessionId, {
+          metadata: metadataPatch,
+          ...(scenarioId !== undefined ? { scenarioId } : {}),
+          ...(activeArtifactIds !== undefined ? { activeArtifactIds } : {}),
+        });
+      }
       return decodeSessionMutationResult({ success: true, code: 'updated' });
     } catch {
       return decodeSessionMutationResult(null);
@@ -10299,6 +10314,31 @@ function buildFundingTemplateDigest(pkg: { source?: { sourceFormat?: string; pag
     } catch {
       return { ok: true, definition: null };
     }
+  });
+  // ── 项目默认场景(2026-09-04 多对话架构):正式持久化于 project.metadata.defaultScenarioId;
+  // 仅作为「新建对话默认推荐值」,不锁定项目;legacy localStorage 键在首次读取时迁移进来。──
+  ipcMain.handle('projects:getDefaultScenario', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ projectId: z.string().min(1).max(160) }).safeParse(rawRequest);
+      if (!parsed.success || !researchRepository) return { scenarioId: null };
+      const project = researchRepository.getProject(parsed.data.projectId, false);
+      const value = project && typeof project.metadata === 'object' && project.metadata ? project.metadata.defaultScenarioId : null;
+      return { scenarioId: typeof value === 'string' && value ? value : null };
+    } catch { return { scenarioId: null }; }
+  });
+  ipcMain.handle('projects:setDefaultScenario', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ projectId: z.string().min(1).max(160), scenarioId: z.string().max(160).nullable() }).safeParse(rawRequest);
+      if (!parsed.success || !researchRepository) return { ok: false };
+      const project = researchRepository.getProject(parsed.data.projectId, false);
+      if (!project) return { ok: false };
+      const metadata = typeof project.metadata === 'object' && project.metadata ? { ...project.metadata } : {};
+      if (parsed.data.scenarioId) metadata.defaultScenarioId = parsed.data.scenarioId;
+      else delete metadata.defaultScenarioId;
+      return { ok: researchRepository.updateProject(parsed.data.projectId, { metadata }) !== null };
+    } catch { return { ok: false }; }
   });
   ipcMain.handle('projects:updateMetadata', (event, rawRequest: unknown) => {
     try {

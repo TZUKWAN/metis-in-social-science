@@ -225,6 +225,11 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
     }
     const newProjectId = result.success ? result.resourceId : null;
     if (result.success && createScenarioId && newProjectId) {
+      // 多对话架构(2026-09-04):默认场景正式持久化到项目(defaultScenarioId);
+      // legacy localStorage 仅作兼容残留(读取路径会自动迁移并清理)。
+      if (createScenarioId) {
+        await window.metis?.setDefaultScenario?.(newProjectId, createScenarioId);
+      }
       try {
         window.localStorage.setItem('metis:active-scenario-id', createScenarioId);
         window.localStorage.setItem(`metis:project-scenario:${newProjectId}`, createScenarioId);

@@ -363,3 +363,60 @@ describe('session presentation and mutation schemas', () => {
     }
   });
 });
+
+describe('Session 多对话扩展(2026-09-04 刘总要求)', () => {
+  it('decodeLegacySessionRecord passes scenarioId/activeArtifactIds through for new sessions', () => {
+    const decoded = decodeLegacySessionRecord({
+      id: 'session_multi1',
+      createdAt: 100,
+      lastActivity: 200,
+      messageCount: 2,
+      projectId: 'proj-1',
+      scenarioId: 'user:scenario/cssci',
+      activeArtifactIds: ['artifact-a', 'artifact-b'],
+    });
+    expect(decoded.ok).toBe(true);
+    if (decoded.ok) {
+      expect(decoded.value.scenarioId).toBe('user:scenario/cssci');
+      expect(decoded.value.activeArtifactIds).toEqual(['artifact-a', 'artifact-b']);
+    }
+  });
+
+  it('legacy sessions without the new fields decode with them absent (backward compatible)', () => {
+    const decoded = decodeLegacySessionRecord({
+      id: 'session_legacy1',
+      createdAt: 100,
+      lastActivity: 200,
+      messageCount: 0,
+    });
+    expect(decoded.ok).toBe(true);
+    if (decoded.ok) {
+      expect(decoded.value.scenarioId).toBeUndefined();
+      expect(decoded.value.activeArtifactIds).toBeUndefined();
+    }
+  });
+
+  it('SessionUpdatePatch accepts scenarioId-only and scenarioId+artifact patches', () => {
+    expect(decodeSessionUpdateRequest({
+      sessionId: 'session_multi1',
+      patch: { scenarioId: null },
+    }).ok).toBe(true);
+    expect(decodeSessionUpdateRequest({
+      sessionId: 'session_multi1',
+      patch: { scenarioId: 'user:scenario/x', activeArtifactIds: ['a1'] },
+    }).ok).toBe(true);
+    expect(decodeSessionUpdateRequest({
+      sessionId: 'session_multi1',
+      patch: {},
+    }).ok).toBe(false);
+  });
+
+  it('SessionListRequest supports projectId filter', () => {
+    const decoded = decodeSessionListRequest({ projectId: 'proj-1' });
+    expect(decoded.ok).toBe(true);
+    if (decoded.ok) {
+      expect(decoded.value.projectId).toBe('proj-1');
+      expect(decoded.value.includeArchived).toBeUndefined();
+    }
+  });
+});
