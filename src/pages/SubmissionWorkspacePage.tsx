@@ -59,6 +59,17 @@ export default function SubmissionWorkspacePage() {
   const [sending, setSending] = useState(false);
   const [intent, setIntent] = useState<Record<string, unknown>>({});
   const [shortlist, setShortlist] = useState<Array<{ name: string; source?: string }>>([]);
+  // 任务6(2026-09-05):短名单正式持久化(SQLite submission_shortlists),重启恢复。
+  useEffect(() => {
+    let alive = true;
+    if (!projectId || !window.metis?.submissionShortlistList) return () => { alive = false; };
+    void window.metis.submissionShortlistList(projectId).then((rows) => {
+      if (alive && Array.isArray(rows)) {
+        setShortlist(rows.map((row) => ({ name: String(row.name), source: String(row.source || '') })));
+      }
+    }).catch(() => undefined);
+    return () => { alive = false; };
+  }, [projectId]);
 
   const activeOutcome = useMemo(() => outcomes.find((item) => item.id === activeOutcomeId) ?? null, [outcomes, activeOutcomeId]);
 
@@ -186,11 +197,16 @@ export default function SubmissionWorkspacePage() {
     try {
       let thinkingLevel: string | undefined;
       try { thinkingLevel = localStorage.getItem('metis:thinking-level') ?? undefined; } catch { /* 隐私模式下不传 */ }
+      // 任务6:回传最近 12 条对话作为参谋记忆(连续会话,不再每轮失忆)。
+      const history = messages.slice(-12)
+        .filter((message) => message.role === 'user' || message.role === 'assistant')
+        .map((message) => ({ role: message.role as 'user' | 'assistant', content: message.content }));
       const result = await metis.submissionAssistantChat({
         projectId, outcomeId: activeOutcomeId, instruction,
         ...(thinkingLevel ? { thinkingLevel } : {}),
         intent: Object.keys(intent).length > 0 ? intent : undefined,
         shortlist: shortlist.length > 0 ? shortlist : undefined,
+        history: history.length > 0 ? history : undefined,
       });
       setMessages((current) => [...current, { id: `ai-${Date.now()}`, role: 'assistant', content: result && result.ok && result.answer ? result.answer : (result?.error ?? '本轮参谋未完成，请重试。') }]);
     } catch {
@@ -201,8 +217,12 @@ export default function SubmissionWorkspacePage() {
   }, [activeOutcomeId, intent, projectId, sending, shortlist, zh]);
 
   const addToShortlist = useCallback((name: string, source?: string) => {
-    setShortlist((current) => (current.some((item) => item.name === name) ? current : [...current, { name, source }]));
-  }, []);
+    setShortlist((current) => {
+      if (current.some((item) => item.name === name)) return current;
+      void window.metis?.submissionShortlistAdd?.({ projectId: projectId ?? '', name, source });
+      return [...current, { name, source }];
+    });
+  }, [projectId]);
 
   const createSubmissionCase = useCallback(async (card: SubmissionCardData) => {
     const metis = window.metis;

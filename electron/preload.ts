@@ -1624,7 +1624,17 @@ const api = {
   projectMaterialSetCategory: async (request: { id: string; category: string }) =>
     ipcRenderer.invoke('scenario:material:setCategory', request) as Promise<{ ok: boolean; error?: string }>,
   // 投稿参谋（2026-09-01 刘总规格）：共享浏览器+成果上下文的编排对话。
-  submissionAssistantChat: async (request: { projectId: string; outcomeId: string; instruction: string; thinkingLevel?: string; intent?: Record<string, unknown>; shortlist?: Array<{ name: string; source?: string }> }) =>
+  // ---- 投稿 Browser Workspace(2026-09-05,任务6)----
+  submissionShortlistList: async (projectId: string) => (
+    ipcRenderer.invoke('submission:shortlist:list', { projectId }) as Promise<Array<{ id: string; name: string; source: string; url: string; note: string; created_at: number }>>
+  ),
+  submissionShortlistAdd: async (request: { projectId: string; name: string; source?: string; url?: string; note?: string }) => (
+    ipcRenderer.invoke('submission:shortlist:add', request) as Promise<{ ok: boolean }>
+  ),
+  submissionShortlistRemove: async (request: { projectId: string; name: string }) => (
+    ipcRenderer.invoke('submission:shortlist:remove', request) as Promise<{ ok: boolean }>
+  ),
+  submissionAssistantChat: async (request: { projectId: string; outcomeId: string; instruction: string; thinkingLevel?: string; intent?: Record<string, unknown>; shortlist?: Array<{ name: string; source?: string }>; history?: Array<{ role: 'user' | 'assistant'; content: string }> }) =>
     ipcRenderer.invoke('submission:assistant:chat', request) as Promise<{ ok: boolean; answer?: string; error?: string }>,
   // 申报书面板「生成填写草稿」（2026-09-01）：已分析模板结构+素材→逐栏草稿 Markdown。
   draftFundingOutline: async (request: { projectId: string; templateId: string; materialText?: string }) =>

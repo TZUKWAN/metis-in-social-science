@@ -25,6 +25,8 @@ export interface SubmissionAssistantRequest {
   thinkingLevel?: string;
   intent?: Record<string, unknown>;
   shortlist?: Array<{ name: string; source?: string }>;
+  /** 任务6(2026-09-05):最近对话(最多16条),让参谋具备连续会话记忆。 */
+  history?: Array<{ role: 'user' | 'assistant'; content: string }>;
 }
 
 export interface SubmissionAssistantResult {
@@ -123,7 +125,10 @@ export class SubmissionAssistantService {
     const response = await runEphemeralChatTurn({
       agentLoop: this.options.agentLoop,
       sessionId: `submission-assistant-${randomUUID()}`,
-      messages: [{ role: 'user', content: `${thinkingPrefix}${request.instruction}` }],
+      messages: [
+        ...(request.history ?? []).map((item) => ({ role: item.role, content: item.content })),
+        { role: 'user' as const, content: `${thinkingPrefix}${request.instruction}` },
+      ],
       requestId: `submission-assistant-${randomUUID()}`,
       maxTurns: 8,
       allowedTools: SUBMISSION_ASSISTANT_TOOLS,

@@ -10272,6 +10272,11 @@ function buildFundingTemplateDigest(pkg: { source?: { sourceFormat?: string; pag
         thinkingLevel: z.string().optional(),
         intent: z.record(z.string(), z.unknown()).optional(),
         shortlist: z.array(z.object({ name: z.string(), source: z.string().optional() })).max(24).optional(),
+        // 任务6(2026-09-05):参谋对话记忆——前端回传最近对话,避免每轮失忆。
+        history: z.array(z.object({
+          role: z.enum(['user', 'assistant']),
+          content: z.string().max(20_000),
+        })).max(16).optional(),
       }).safeParse(raw);
       if (!parsedInput.success) return { ok: false as const, answer: '', error: '请求无效。' };
       const service = new SubmissionAssistantService({
