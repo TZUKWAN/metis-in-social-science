@@ -110,6 +110,7 @@ import { OutcomeRepository } from './OutcomeRepository.js';
 import { TopicRepository } from './TopicRepository.js';
 import { ArtifactPromptService } from './ArtifactPromptService.js';
 import { OfficePromptProfileService } from './OfficePromptProfileService.js';
+import { buildExperienceElicitationPrompt, buildTestRunOptions, type SkillStudioSource } from '../engine/skills/SkillStudio.js';
 import { TopicService, TOPIC_SEARCH_TOOLS } from './TopicService.js';
 import {
   TopicChatRequestSchema,
@@ -10405,6 +10406,83 @@ function buildFundingTemplateDigest(pkg: { source?: { sourceFormat?: string; pag
     try { requireRendererMainFrame(event); return artifactPromptService?.importPack(raw) ?? { ok: false, code: 'persistence_unavailable' }; } catch { return { ok: false, code: 'failed' }; }
   });
   // ── METIS Office Prompt Profiles(2026-09-05 刘总要求,任务5)──
+  // ── Skill Studio(2026-09-05 刘总要求,任务7):经验→结构化技能 → 沙箱测试 ──
+  ipcMain.handle('skillStudio:generate', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({
+        experience: z.string().min(1).max(20_000),
+        source: z.enum(['from_scratch', 'from_experience', 'from_files', 'from_session']),
+      }).safeParse(raw);
+      if (!parsed.success) return { ok: false, code: 'invalid_request' };
+      if (!agentLoop) return { ok: false, code: 'agent_unavailable' };
+      const tracked = trackEphemeralOperation(runtimeShutdown, {
+        id: `skillStudio:generate:${Date.now().toString(36)}`,
+        rejection: { ok: false as const, code: 'application_shutting_down' },
+      });
+      if (!tracked.admitted) return tracked.rejection;
+      const elicitation = buildExperienceElicitationPrompt(parsed.data.experience, parsed.data.source as SkillStudioSource);
+      const answer = await runEphemeralChatTurn({
+        agentLoop,
+        sessionId: `skill-studio-${Date.now().toString(36)}`,
+        requestId: `skill_studio_${Date.now().toString(36)}`,
+        skillPrompt: elicitation.system,
+        messages: [{ role: 'user', content: elicitation.user }],
+        maxTurns: 1,
+        allowedTools: [],
+        acceptUnverified: true,
+        signal: tracked.signal,
+      });
+      if (answer.status !== 'completed') return { ok: false as const, code: 'generation_failed', message: 'AI 萃取未完成,可重试;已有描述已保留。' };
+      const jsonText = answer.answer.slice(answer.answer.indexOf('{'), answer.answer.lastIndexOf('}') + 1);
+      try {
+        const parsedSkill = JSON.parse(jsonText) as Record<string, unknown>;
+        return { ok: true as const, skill: parsedSkill };
+      } catch {
+        return { ok: false as const, code: 'parse_failed', message: 'AI 输出无法解析,可重试。' };
+      }
+    } catch (error) {
+      return { ok: false as const, code: 'failed', message: error instanceof Error ? error.message.slice(0, 200) : undefined };
+    }
+  });
+  ipcMain.handle('skillStudio:testRun', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({
+        systemPrompt: z.string().min(1).max(100_000),
+        allowedTools: z.array(z.string().max(80)).max(24),
+        message: z.string().min(1).max(16_000),
+      }).safeParse(raw);
+      if (!parsed.success) return { ok: false, code: 'invalid_request' };
+      if (!agentLoop) return { ok: false, code: 'agent_unavailable' };
+      const tracked = trackEphemeralOperation(runtimeShutdown, {
+        id: `skillStudio:testRun:${Date.now().toString(36)}`,
+        rejection: { ok: false as const, code: 'application_shutting_down' },
+      });
+      if (!tracked.admitted) return tracked.rejection;
+      // Test Run 沙箱(任务7 文档十九节):只暴露当前 Skill + 测试明确需要的 Native Tool,
+      // 结束即释放(临时会话,不落库,无场景绑定)。
+      const options = buildTestRunOptions({
+        systemPrompt: parsed.data.systemPrompt,
+        allowedTools: parsed.data.allowedTools,
+        message: parsed.data.message,
+      });
+      const answer = await runEphemeralChatTurn({
+        agentLoop,
+        sessionId: options.sessionId,
+        requestId: `skill_studio_test_${Date.now().toString(36)}`,
+        skillPrompt: options.skillPrompt,
+        messages: [{ role: 'user', content: options.message }],
+        maxTurns: options.maxTurns,
+        allowedTools: options.allowedTools,
+        acceptUnverified: true,
+        signal: tracked.signal,
+      });
+      return { ok: answer.status === 'completed', status: answer.status, answer: answer.answer.slice(0, 40_000) };
+    } catch (error) {
+      return { ok: false, code: 'failed', message: error instanceof Error ? error.message.slice(0, 200) : undefined };
+    }
+  });
   ipcMain.handle('officePrompt:capabilities', (event) => {
     try { requireRendererMainFrame(event); return officePromptProfileService?.listCapabilitySummaries() ?? []; } catch { return []; }
   });

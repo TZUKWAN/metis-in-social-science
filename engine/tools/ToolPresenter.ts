@@ -103,6 +103,7 @@ const AUTHORED_CONTENT_TOOLS = new Set([
   'search_papers',
   'arxiv_search',
   'web_search',
+  'web_research_plan',
   'ncpssd_search',
   'fulltext_search',
   'crossref_lookup',
@@ -955,6 +956,36 @@ const decodeNcpssdSearch = buildStructuredDecoder(
   },
 );
 
+const WebResearchPlanFeedbackSchema = z.object({
+  ok: z.boolean(),
+  plan: z.record(z.string(), z.unknown()).optional(),
+  error: z.string().optional(),
+}).passthrough();
+
+const decodeWebResearchPlan = buildStructuredDecoder(
+  'web_research_plan',
+  'Web research plan',
+  WebResearchPlanFeedbackSchema,
+  (r) => {
+    if (!r.ok) return `web_research_plan failed: ${r.error ?? 'unknown error'}`;
+    const plan = asRecord(r.plan);
+    const lines: string[] = [`Search plan for: ${String(plan.originalQuery ?? '')}`];
+    if (Array.isArray(plan.queries)) {
+      for (const query of plan.queries) {
+        const record = asRecord(query);
+        lines.push(`- [${String(record.dimension ?? 'core')}/${String(record.language ?? '')}] ${String(record.query ?? '')}`);
+      }
+    }
+    if (Array.isArray(plan.coverageChecklist)) {
+      lines.push('Coverage checklist:');
+      for (const item of plan.coverageChecklist) {
+        if (typeof item === 'string') lines.push(`  ? ${item}`);
+      }
+    }
+    return lines.join('\n');
+  },
+);
+
 const decodeSearchPapers = buildStructuredDecoder(
   'search_papers',
   'Paper search results',
@@ -1309,6 +1340,7 @@ export function buildBuiltinDecoders(): Map<string, ToolDecoder> {
   map.set('citation_passport_record', decodeCitationPassportRecord);
   map.set('citation_passport_get', decodeCitationPassportGet);
   map.set('citation_passport_list', decodeCitationPassportList);
+  map.set('web_research_plan', decodeWebResearchPlan);
   map.set('web_search', decodeWebSearch);
   map.set('ncpssd_search', decodeNcpssdSearch);
   map.set('citation_passport_add_signal', decodeCitationPassportAddSignal);

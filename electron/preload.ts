@@ -885,6 +885,13 @@ const api = {
     ipcRenderer.invoke('outcomePrompt:import', pack) as Promise<{ ok: boolean; code?: string; applied?: string[]; unknownIds?: string[] }>
   ),
   // ---- METIS Office Prompt Profiles(2026-09-05,任务5)----
+  // ---- Skill Studio(2026-09-05,任务7)----
+  skillStudioGenerate: async (request: { experience: string; source: 'from_scratch' | 'from_experience' | 'from_files' | 'from_session' }) => (
+    ipcRenderer.invoke('skillStudio:generate', request) as Promise<{ ok: boolean; code?: string; message?: string; skill?: Record<string, unknown> }>
+  ),
+  skillStudioTestRun: async (request: { systemPrompt: string; allowedTools: string[]; message: string }) => (
+    ipcRenderer.invoke('skillStudio:testRun', request) as Promise<{ ok: boolean; status?: string; answer?: string; message?: string }>
+  ),
   officePromptCapabilities: async () => (
     ipcRenderer.invoke('officePrompt:capabilities') as Promise<Array<{ kind: string; label: string; profileCount: number; defaultProfileId: string | null; aiEnabled: boolean }>>
   ),

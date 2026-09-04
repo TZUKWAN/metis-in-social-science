@@ -1226,6 +1226,7 @@ const SAFE_ACADEMIC_OUTPUT = 'We observe a significant effect (p < 0.01) across 
 // All other authored-content tools are suppressed by default (fail-closed).
 const STRUCTURED_AUTHORED_TOOLS = new Set([
   'search_papers',
+  'web_research_plan',
   'arxiv_search',
   'web_search',
   'ncpssd_search',
@@ -1516,6 +1517,15 @@ function makeStructuredInput(toolName: string, text: string): string {
         ok: true,
         result: { source: 'bing_cn', query: 'test query', results: [{ title: 'Example Result', url: 'https://example.com/a', snippet: text.slice(0, 300) }] },
       });
+    case 'web_research_plan':
+      return JSON.stringify({
+        ok: true,
+        plan: {
+          originalQuery: 'test query',
+          queries: [{ query: `test query ${text.slice(0, 60)}`, language: 'en', dimension: 'core' }],
+          coverageChecklist: [text.slice(0, 120)],
+        },
+      });
     case 'ncpssd_search':
       return JSON.stringify({
         query: 'test query',
@@ -1767,9 +1777,9 @@ describe('AgentLoop ProviderBoundary 443', () => {
 describe('AgentLoop builtin presenter matrix (102 cases)', () => {
   const builtinDecoders = buildBuiltinDecoders();
 
-  it('has 46 built-in decoders registered', () => {
+  it('has 47 built-in decoders registered', () => {
     // 2026-09-04 +2:web_search / ncpssd_search 结构化 decoder(选题模块要求模型真实读取检索结果)。
-    expect(builtinDecoders.size).toBe(46);
+    expect(builtinDecoders.size).toBe(47);
   });
 
   for (const [toolName, decoder] of builtinDecoders) {

@@ -67,6 +67,11 @@ function isOffline(): boolean {
 
 // ─── DuckDuckGo Search ────────────────────────────────────────
 
+// 任务7 Web Research 3.1(2026-09-05 刘总要求):结构化读取——标题/作者/时间/
+// canonical/JSON-LD/标题层级/段落结构,而非去标签一长串文本。
+import { formatStructuredRead, parseStructuredDocument } from '../../research/StructuredReader.js';
+import { buildSearchPlan } from '../../research/QueryPlanner.js';
+
 export const webSearchSpec: ToolSpec = {
   name: 'web_search',
   description: 'Search the web (DuckDuckGo with automatic cn.bing.com fallback; no API key required). Returns instant answers, related topics, or result titles/links/snippets. Use for current events, facts, definitions, or when you need information beyond the local library.',
@@ -149,6 +154,25 @@ export const webSearchHandler: ToolHandler = async (args) => {
 
 // ─── Web Fetch ────────────────────────────────────────────────
 
+export const webResearchPlanSpec: ToolSpec = {
+  name: 'web_research_plan',
+  description: 'Plan a social-science web research: expand a research question into a multi-source, multi-language query set (Chinese/English core concepts, theory lenses, contrasting views, primary sources) with a coverage checklist. Call web_search for each planned query, then audit coverage before answering.',
+  parameters: {
+    type: 'object',
+    properties: {
+      researchQuestion: { type: 'string', description: 'The research question or topic to plan searches for.' },
+    },
+    required: ['researchQuestion'],
+  },
+};
+
+export const webResearchPlanHandler: ToolHandler = async (args) => {
+  const question = String(args.researchQuestion ?? '').trim();
+  if (!question) return JSON.stringify({ ok: false, error: 'researchQuestion is required' });
+  const plan = buildSearchPlan(question);
+  return JSON.stringify({ ok: true, plan }, null, 2);
+};
+
 export const webFetchSpec: ToolSpec = {
   name: 'web_fetch',
   description: 'Fetch and read the content of a URL (web page, article, API response). HTML is stripped to readable text. Use when you have a specific link to read or an API endpoint to call.',
@@ -191,17 +215,11 @@ export const webFetchHandler: ToolHandler = async (args) => {
     const contentType = response.headers.get('content-type') ?? '';
     let text = await response.text();
 
-    // Strip HTML to readable text unless raw format requested.
+    // Web Research 3.1(任务7):HTML 页面走结构化读取(标题/元数据/层级/段落),
+    // 其余类型保留原文;raw 格式行为不变。
     if (format !== 'raw' && (contentType.includes('html') || text.startsWith('<'))) {
-      text = text
-        .replace(/<script[\s\S]*?<\/script>/gi, '')
-        .replace(/<style[\s\S]*?<\/style>/gi, '')
-        .replace(/<nav[\s\S]*?<\/nav>/gi, '')
-        .replace(/<footer[\s\S]*?<\/footer>/gi, '')
-        .replace(/<header[\s\S]*?<\/header>/gi, '')
-        .replace(/<[^>]+>/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
+      const structured = parseStructuredDocument(text, response.url);
+      text = formatStructuredRead(structured, maxLength);
     }
 
     return JSON.stringify({
@@ -222,12 +240,13 @@ export const webFetchHandler: ToolHandler = async (args) => {
 // ─── Registration ─────────────────────────────────────────────
 
 export function getWebToolSpecs(): ToolSpec[] {
-  return [webSearchSpec, webFetchSpec];
+  return [webSearchSpec, webFetchSpec, webResearchPlanSpec];
 }
 
 export function getWebToolHandlers(): Map<string, ToolHandler> {
   return new Map([
     ['web_search', webSearchHandler],
     ['web_fetch', webFetchHandler],
+    ['web_research_plan', webResearchPlanHandler],
   ]);
 }
