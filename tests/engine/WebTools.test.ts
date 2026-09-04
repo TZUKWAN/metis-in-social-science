@@ -20,12 +20,14 @@ describe('web-tools', () => {
     Object.defineProperty(navigator, 'onLine', { value: true, writable: true, configurable: true });
   });
 
-  it('registers web_search and web_fetch specs', () => {
+  it('registers web_search, web_fetch and web_research_plan specs', () => {
+    // 任务7 Web Research 3.1(2026-09-05):新增检索规划工具。
     const specs = getWebToolSpecs();
-    expect(specs.map((s) => s.name)).toEqual(['web_search', 'web_fetch']);
+    expect(specs.map((s) => s.name)).toEqual(['web_search', 'web_fetch', 'web_research_plan']);
     const handlers = getWebToolHandlers();
     expect(handlers.has('web_search')).toBe(true);
     expect(handlers.has('web_fetch')).toBe(true);
+    expect(handlers.has('web_research_plan')).toBe(true);
   });
 
   it('web_search returns structured JSON with answer and related topics', async () => {
