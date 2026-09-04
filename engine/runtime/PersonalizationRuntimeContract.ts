@@ -364,6 +364,8 @@ export interface DeliverableSectionInput {
   status: z.infer<typeof DeliverableSectionStatusSchema>;
   condition?: string;
   purpose?: string;
+  /** 完整自然语言写作规范（无法拆成 requirements 短句的成文要求整体存放于此）。 */
+  instructions?: string;
   requirements?: string[];
   optionalContent?: string[];
   forbidden?: string[];
@@ -374,13 +376,19 @@ export interface DeliverableSectionInput {
   children?: DeliverableSectionInput[];
 }
 
-export const DeliverableSectionSchema: z.ZodType<DeliverableSectionInput> = z.lazy(() => z.strictObject({
+/**
+ * DeliverableSection 字段形状的唯一来源（2026-09-04 刘总要求：所有合法 section
+ * 字段由一个统一白名单/Schema 来源管理，patch/sanitize/adapt 层从这里的键集
+ * 派生，禁止另行维护第二份不一致的列表）。
+ */
+const deliverableSectionShape = {
   id: PersonalizationLocalIdSchema,
   title: singleLine(PERSONALIZATION_LIMITS.nameChars),
   kind: DeliverableSectionKindSchema,
   status: DeliverableSectionStatusSchema,
   condition: multiline(PERSONALIZATION_LIMITS.descriptionChars).optional(),
   purpose: multiline(PERSONALIZATION_LIMITS.descriptionChars).optional(),
+  instructions: multiline(PERSONALIZATION_LIMITS.descriptionChars).optional(),
   requirements: z.array(singleLine(500)).max(32).refine(uniqueStrings, { message: 'Section requirements must be unique' }).optional(),
   optionalContent: z.array(singleLine(500)).max(32).refine(uniqueStrings, { message: 'Section optional content must be unique' }).optional(),
   forbidden: z.array(singleLine(500)).max(32).refine(uniqueStrings, { message: 'Section forbidden rules must be unique' }).optional(),
@@ -388,6 +396,16 @@ export const DeliverableSectionSchema: z.ZodType<DeliverableSectionInput> = z.la
   method: singleLine(500).optional(),
   evidence: singleLine(500).optional(),
   aiAdjust: SectionAiAdjustSchema.optional(),
+} as const;
+
+/**
+ * DeliverableSection 合法字段白名单（schema 键集直接派生，含 instructions）。
+ * children 在递归 schema 中单独声明，此处显式并入。
+ */
+export const DELIVERABLE_SECTION_FIELD_KEYS: readonly string[] = [...Object.keys(deliverableSectionShape), 'children'];
+
+export const DeliverableSectionSchema: z.ZodType<DeliverableSectionInput> = z.lazy(() => z.strictObject({
+  ...deliverableSectionShape,
   children: z.array(DeliverableSectionSchema).max(24).optional(),
 }));
 
@@ -427,6 +445,8 @@ export const DeliverableSpecSchema = z.strictObject({
   globalLength: singleLine(200).optional(),
   language: z.enum(['zh', 'en']).optional(),
   journalTier: z.enum(['any', 'core', 'general']).optional(),
+  /** 整个最终成果共同遵守的成文/表达要求（全文学术化、术语一致、论证连续等）。 */
+  globalInstructions: multiline(PERSONALIZATION_LIMITS.descriptionChars).optional(),
 }).superRefine((value, context) => {
   let total = 0;
   const visit = (sections: readonly DeliverableSectionInput[], depth: number): void => {

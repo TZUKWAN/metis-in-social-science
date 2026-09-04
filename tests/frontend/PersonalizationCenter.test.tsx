@@ -275,7 +275,11 @@ function runnableScenario(id: string, name: string): Extract<PersonalizationDefi
     deliverable: {
       type: 'survey_report',
       typeLabel: 'Research report',
-      sections: [{ id: 'final-report', title: 'Final report', kind: 'chapter', status: 'required' }],
+      globalInstructions: 'Academic register throughout; keep terminology consistent and arguments continuous.',
+      sections: [{
+        id: 'final-report', title: 'Final report', kind: 'chapter', status: 'required',
+        purpose: 'Deliver the full research report.', instructions: 'Organize by research question with evidence-linked sections.', requirements: ['Answer the research question'], lengthTarget: '8000 words',
+      }],
     },
     workflow: [{
       id: 'compose-report',

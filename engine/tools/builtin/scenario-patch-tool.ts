@@ -17,6 +17,7 @@ import { randomUUID } from 'node:crypto';
 import type { ToolSpec } from '../../core/types.js';
 import type { ToolHandler } from '../ToolDispatcher.js';
 import {
+  DELIVERABLE_SECTION_FIELD_KEYS,
   ScenarioDefinitionSchema,
   WorkflowStepBindingSchema,
   type ScenarioDefinition,
@@ -28,11 +29,13 @@ const PROTECTED_FIELDS = new Set(['contractVersion', 'id', 'kind', 'revision', '
 
 /** Workflow step fields the strict schema accepts (kept in sync with the contract). */
 const WORKFLOW_STEP_KEYS = new Set(Object.keys(WorkflowStepBindingSchema.shape));
-/** Deliverable section fields accepted by DeliverableSectionSchema (strict). */
-const SECTION_KEYS = new Set([
-  'id', 'title', 'kind', 'status', 'condition', 'purpose', 'requirements',
-  'optionalContent', 'forbidden', 'lengthTarget', 'method', 'evidence', 'aiAdjust', 'children',
-]);
+/**
+ * Deliverable section fields accepted by DeliverableSectionSchema (strict).
+ * 单一来源（2026-09-04 刘总要求）：白名单直接从 contract schema 键集派生，
+ * 禁止再维护第二份不一致的手写列表（此前的 adaptCommonStructures 窄白名单
+ * 曾把 purpose/requirements/forbidden/lengthTarget 等合法字段从草稿中剥掉）。
+ */
+const SECTION_KEYS = new Set(DELIVERABLE_SECTION_FIELD_KEYS);
 
 /**
  * 源头净化（2026-08-28 刘总要求：场景构建不再因残留缺陷报错）：
@@ -176,10 +179,13 @@ export function adaptCommonStructures(candidate: Record<string, unknown>): void 
       if (typeof section.status !== 'string' || !SECTION_STATUSES.has(section.status)) section.status = 'required';
       // 顶层条目层级语义：一级章节必须是 "chapter"（模型常把整棵树都写成 "section"）。
       if (section.kind === 'section') section.kind = 'chapter';
-      // 白名单剥键：模型常发明 minLength/required 等未知键，schema 会整体拒绝。
-      const allowedSectionKeys = new Set(['id', 'title', 'kind', 'status', 'children', 'description', 'prompt']);
+      // 白名单剥键（2026-09-04 修正）：与 sanitizeScenarioDraft 共用同一份从
+      // schema 派生的 SECTION_KEYS——此前的窄白名单（id/title/kind/status/
+      // children/description/prompt）会剥掉模型正确给出的 purpose/requirements/
+      // forbidden/lengthTarget/method/evidence/condition/aiAdjust；而它放行的
+      // description/prompt 又是 schema 不认识的键，保存时被宽松净化二次剥除。
       for (const key of Object.keys(section)) {
-        if (!allowedSectionKeys.has(key)) delete section[key];
+        if (!SECTION_KEYS.has(key)) delete section[key];
         else if (key === 'children' && Array.isArray(section.children)) {
           section.children = (section.children as unknown[]).filter((child) => isPlainObject(child));
         }
@@ -220,7 +226,13 @@ export class ScenarioPatchSession {
   private readonly zh: boolean;
   /** 设计轮（2026-08-24 刘总方案 C）：AI 先提交的大纲，主进程据此逐条驱动填写轮。 */
   private readonly plannedWorkflow: Array<{ id: string; name: string; kind: 'step' | 'substep' }> = [];
-  private readonly plannedSections: Array<{ id: string; title: string }> = [];
+  /**
+   * 设计轮登记的全部待填 Deliverable 节点（2026-09-04 升级）：从仅记录顶层
+   * 章节 {id,title} 升级为递归扁平记录每一个节点（含二级 children 与摘要/
+   * 关键词/参考文献等非 chapter 部分），填写轮按此逐节点驱动，杜绝
+   * "骨架上屏但大量节点只有标题"的假完成。
+   */
+  private readonly plannedSections: Array<{ id: string; title: string; kind: string; depth: number }> = [];
   /** 每应用一个最小单元（单个步骤/单个章节）触发一次，用于逐步广播快照。 */
   onStepApplied?: (draft: ScenarioDefinition) => void = undefined;
   /** 无 id 章节的自动编号（跨调用递增，避免拆分后 id 冲突）。 */
@@ -243,7 +255,7 @@ export class ScenarioPatchSession {
     return [...this.plannedWorkflow];
   }
 
-  getPlannedSections(): ReadonlyArray<{ id: string; title: string }> {
+  getPlannedSections(): ReadonlyArray<{ id: string; title: string; kind: string; depth: number }> {
     return [...this.plannedSections];
   }
 
@@ -303,48 +315,69 @@ export class ScenarioPatchSession {
     return { ok: true, overview: scenarioOverview(this.draft, this.zh) };
   }
 
-  /** 设计轮（交付物章节）：登记章节大纲（含二级小节 children），骨架逐步写入并广播。 */
+  /**
+   * 设计轮（交付物章节，2026-09-04 升级）：登记完整成果结构大纲——不仅是一级
+   * 章节 + children，还包括摘要/关键词/参考文献/申报栏目等非 chapter 部分与
+   * 全部二级节点。规划阶段只负责结构（骨架允许暂无详细规范），骨架上屏后由
+   * 填写轮按 plannedSections 逐节点驱动补全内容规范。
+   */
   planSections(sections: unknown): { ok: true; overview: string } | { ok: false; issues: string[] } {
     if (!Array.isArray(sections) || sections.length === 0) {
-      return { ok: false, issues: ['sections 必须是非空数组，每项含唯一 id 与 title。'] };
+      return { ok: false, issues: ['sections 必须是非空数组，每项含唯一 id 与 title。chapter 章节须带 children；摘要/关键词/参考文献等部分也必须一并规划。'] };
     }
+    const SECTION_KINDS = new Set(['title', 'abstract', 'keywords', 'chapter', 'section', 'grant_column', 'attachment', 'references', 'other']);
+    interface PlannedNode { id: string; title: string; kind: string; children: PlannedNode[] }
     const seen = new Set<string>();
-    interface PlannedSection { id: string; title: string; children: Array<{ id: string; title: string }> }
-    const normalized: PlannedSection[] = [];
-    for (const section of sections) {
-      if (!isPlainObject(section) || typeof section.id !== 'string' || !section.id.trim() || typeof section.title !== 'string' || !section.title.trim()) {
-        return { ok: false, issues: ['每个章节都必须有非空的 id 和 title。'] };
-      }
-      if (seen.has(section.id)) return { ok: false, issues: [`章节 id 重复：${section.id}`] };
-      seen.add(section.id);
-      const children: Array<{ id: string; title: string }> = [];
-      if (Array.isArray(section.children)) {
-        for (const child of section.children) {
-          if (!isPlainObject(child) || typeof child.id !== 'string' || !child.id.trim() || typeof child.title !== 'string' || !child.title.trim()) {
-            return { ok: false, issues: [`章节 ${section.id} 的小节必须有非空的 id 和 title。`] };
-          }
-          if (seen.has(child.id)) return { ok: false, issues: [`小节 id 重复：${child.id}`] };
-          seen.add(child.id);
-          children.push({ id: child.id, title: child.title });
+    const issues: string[] = [];
+    const parseNodes = (nodes: unknown[], depth: number): PlannedNode[] | null => {
+      const result: PlannedNode[] = [];
+      for (const node of nodes) {
+        if (!isPlainObject(node) || typeof node.id !== 'string' || !node.id.trim() || typeof node.title !== 'string' || !node.title.trim()) {
+          issues.push('每个部分都必须有非空的 id 和 title。');
+          return null;
         }
+        if (seen.has(node.id)) {
+          issues.push(`部分 id 重复：${node.id}`);
+          return null;
+        }
+        seen.add(node.id);
+        // 无 kind 时按层级默认：顶层=chapter，嵌套=section（与写入语义一致）。
+        let kind = typeof node.kind === 'string' && SECTION_KINDS.has(node.kind) ? node.kind : (depth === 0 ? 'chapter' : 'section');
+        // 顶层条目层级语义：一级章节必须是 "chapter"（模型常把整棵树都写成 "section"）。
+        if (depth === 0 && kind === 'section') kind = 'chapter';
+        const children: PlannedNode[] = [];
+        if (Array.isArray(node.children)) {
+          const parsedChildren = parseNodes(node.children, depth + 1);
+          if (!parsedChildren) return null;
+          children.push(...parsedChildren);
+        }
+        // 二级章节硬校验只针对 chapter（2026-08-28 刘总要求）：空壳章节大纲在
+        // 这里直接拒收，让模型下一轮立即补齐。摘要/参考文献等部分允许无 children。
+        if (kind === 'chapter' && children.length === 0) {
+          issues.push(`章节 ${node.id}（${node.title}）缺少 children：每章必须规划 3-5 个二级小节（至少 1 个），请补齐后重新提交完整大纲。`);
+          return null;
+        }
+        result.push({ id: node.id, title: node.title, kind, children });
       }
-      // 二级章节硬校验（2026-08-28 刘总要求）：空壳章节大纲在这里直接拒收，
-      // 让模型下一轮立即补齐，而不是等到门禁/审计阶段。
-      if (children.length === 0) {
-        return { ok: false, issues: [`章节 ${section.id}（${section.title}）缺少 children：每章必须规划 3-5 个二级小节（至少 1 个），请补齐后重新提交完整大纲。`] };
-      }
-      normalized.push({ id: section.id, title: section.title, children });
-    }
+      return result;
+    };
+    const normalized = parseNodes(sections, 0);
+    if (!normalized) return { ok: false, issues };
+    const toPatch = (node: PlannedNode): Record<string, unknown> => ({
+      id: node.id,
+      title: node.title,
+      kind: node.kind,
+      status: 'required',
+      children: node.children.map((child) => toPatch(child)),
+    });
     for (const section of normalized) {
-      const applied = this.apply({ deliverable: { sections: [{
-        id: section.id,
-        title: section.title,
-        kind: 'section',
-        status: 'required',
-        children: section.children.map((child) => ({ id: child.id, title: child.title, kind: 'section', status: 'required', children: [] })),
-      }] } });
+      const applied = this.apply({ deliverable: { sections: [toPatch(section)] } });
       if (!applied.ok) return applied;
-      this.plannedSections.push({ id: section.id, title: section.title });
+      const record = (node: PlannedNode, depth: number): void => {
+        this.plannedSections.push({ id: node.id, title: node.title, kind: node.kind, depth });
+        for (const child of node.children) record(child, depth + 1);
+      };
+      record(section, 0);
       this.onStepApplied?.(JSON.parse(JSON.stringify(this.draft)) as ScenarioDefinition);
     }
     return { ok: true, overview: scenarioOverview(this.draft, this.zh) };
@@ -675,8 +708,9 @@ export function createScenarioPatchRouter(zh = true): ScenarioPatchRouter {
   const planSectionsSpec: ToolSpec = {
     name: SCENARIO_PLAN_SECTIONS_TOOL_NAME,
     description: [
-      'PLANNING TURN ONLY: register the deliverable section OUTLINE — one entry per top-level section with a stable unique id, title, and its children (second-level sub-sections with word limits when the user specifies them).',
-      'Do NOT write section prompts here; the driver will ask for each section\u2019s details separately.',
+      'PLANNING TURN ONLY: register the COMPLETE deliverable outline — one entry per top-level part with a stable unique id, title, kind, and its children (second-level sub-sections).',
+      'kind must be one of: title/abstract/keywords/chapter/section/grant_column/attachment/references/other (front-matter parts such as abstract/keywords/references MUST be included with their own kind; every chapter needs 3-5 children).',
+      'Do NOT write section instructions here; the driver will ask for each node\u2019s details separately.',
     ].join(' '),
     parameters: {
       type: 'object',
@@ -688,9 +722,10 @@ export function createScenarioPatchRouter(zh = true): ScenarioPatchRouter {
             properties: {
               id: { type: 'string', description: 'Stable unique section id.' },
               title: { type: 'string', description: 'Section title, including the word limit when specified, e.g. "选题依据（限1000字）".' },
+              kind: { type: 'string', description: 'Part kind: title/abstract/keywords/chapter/grant_column/attachment/references/other. Defaults to chapter.' },
               children: {
                 type: 'array',
-                description: 'Second-level sub-sections of this chapter (from the user\u2019s deliverable breakdown).',
+                description: 'Second-level sub-sections of this chapter (from the user\u2019s deliverable breakdown). Required for chapter kind.',
                 items: {
                   type: 'object',
                   properties: {

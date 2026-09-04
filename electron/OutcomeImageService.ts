@@ -54,7 +54,6 @@ export class OutcomeImageService {
     media: OutcomeMediaService;
     secretVault: PersonalizationSecretVault | null;
     /** 内容规范·绘图段（2026-09-01）：按项目解析后注入生成 prompt。 */
-    getFigureCharterPrompt?: (projectId: string) => string | null;
     fetchImpl?: typeof fetch;
     now?: () => number;
   }) {}
@@ -119,12 +118,10 @@ export class OutcomeImageService {
       : undefined;
     if (!row?.provider || !row.model || !row.endpoint || !apiKey) return failure('image_generation_unconfigured');
 
-    // 内容规范·绘图（2026-09-01）：激活章程的绘图段作为约束前置。
-    const charterPrompt = this.options.getFigureCharterPrompt?.(request.projectId) ?? null;
     const userPrompt = request.visualContext
       ? `${request.prompt}\nVisual context: ${request.visualContext}`
       : request.prompt;
-    const prompt = charterPrompt ? `${charterPrompt}\n\n${userPrompt}` : userPrompt;
+    const prompt = userPrompt;
     let response: Response;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 60_000);

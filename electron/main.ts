@@ -156,8 +156,6 @@ import { OutcomeWordDocxService, GENOFFICE_ENABLED } from './OutcomeWordDocxServ
 import { parseWordTemplateStyle } from './WordTemplateStyleParser.js';
 import { createSubmissionBrowserTools } from './SubmissionBrowserTools.js';
 import { SubmissionAssistantService } from './SubmissionAssistantService.js';
-import { ContentCharterService } from './ContentCharterService.js';
-import { ContentCharterSchema, figureCharterPrompt } from '../engine/content-charter/ContentCharterContract.js';
 import { parseGuidelineFormatting, type MutableFormattingDraft, type MutableFormattingSlot } from '../engine/outcomes/GuidelineFormatting.js';
 import { buildFundingTemplateSeed } from '../engine/personalization/FundingTemplateSeed.js';
 import type { WordFormattingConfig } from '../engine/outcomes/WordDocumentFormatting.js';
@@ -946,12 +944,6 @@ function ensureCollabService(): CollabService | null {
 
 // 内置文献检索服务（无状态，直接实例化）。
 const literatureSearchService = new LiteratureSearchService();
-// 内容规范（2026-09-01 刘总定名）：全局/项目两级表达章程，产出型动作统一注入。
-let contentCharterService: ContentCharterService | null = null;
-function ensureContentCharterService(): ContentCharterService {
-  if (!contentCharterService) contentCharterService = new ContentCharterService(store!.raw);
-  return contentCharterService;
-}
 
 // Agent-visible browser bridge (kimi-bridge style control for chat/strategy runs).
 setBrowserControlBridge({
@@ -5036,7 +5028,6 @@ function setupIPC(): void {
     try {
       return await new OutcomePptGenerationService({
         repository: requestRepository,
-        getCharter: (pid) => ensureContentCharterService().resolveActive(pid),
         agentLoop: projectRuntime.agentLoop,
         modelName: projectRuntime.binding.model,
         providerProfileBinding: projectRuntime.binding,
@@ -7286,11 +7277,6 @@ function setupIPC(): void {
         if (stageBlock.length > 0) {
           skillPrompt = [stageBlock.join('\n'), skillPrompt].filter(Boolean).join('\n\n');
         }
-                // 内容规范·写作（2026-09-01 刘总）：所有产出型对话自动遵守激活章程。
-                try {
-                  const charterPrompt = ensureContentCharterService().resolveWritingPrompt(projectId ?? undefined);
-                  if (charterPrompt) skillPrompt = [skillPrompt, charterPrompt].filter(Boolean).join('\n\n');
-                } catch { /* 章程注入失败不阻断对话 */ }
       }
     } catch { /* 阶段上下文必须不破坏对话 */ }
 
@@ -7587,7 +7573,6 @@ function setupIPC(): void {
               cancelSignal: activeRun.scenarioCancel.signal,
               liveSteering: liveSteeringQueue,
               projectId: scenarioRuntime.manifest.projectId ?? projectId,
-              writingCharterPrompt: ensureContentCharterService().resolveWritingPrompt(scenarioRuntime.manifest.projectId ?? projectId) ?? undefined,
               researchRepository: researchRepository ?? undefined,
               literatureBridge: getScenarioLiteratureBridge(),
               isCurrentRuntime: () => runtimeGeneration === requestRuntimeGeneration,
@@ -10153,45 +10138,6 @@ function buildFundingTemplateDigest(pkg: { source?: { sourceFormat?: string; pag
       return { ok: true, definition: null };
     }
   });
-  // ── 内容规范（Content Charter，2026-09-01 刘总定名）：列表/保存/删除/激活/解析 ──
-  ipcMain.handle('content:charter:list', (event, rawRequest: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const parsed = z.object({ scope: z.enum(['global', 'project']).optional(), projectId: z.string().optional() }).safeParse(rawRequest ?? {});
-      if (!parsed.success) return [];
-      return ensureContentCharterService().list(parsed.data.scope, parsed.data.projectId ?? null);
-    } catch { return []; }
-  });
-  ipcMain.handle('content:charter:get', (event, rawRequest: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const parsed = z.object({ id: z.string().min(1) }).safeParse(rawRequest);
-      return parsed.success ? ensureContentCharterService().get(parsed.data.id) : null;
-    } catch { return null; }
-  });
-  ipcMain.handle('content:charter:save', (event, rawRequest: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const parsed = ContentCharterSchema.safeParse(rawRequest);
-      if (!parsed.success) return null;
-      return ensureContentCharterService().save(parsed.data);
-    } catch { return null; }
-  });
-  ipcMain.handle('content:charter:delete', (event, rawRequest: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const parsed = z.object({ id: z.string().min(1) }).safeParse(rawRequest);
-      return parsed.success ? ensureContentCharterService().delete(parsed.data.id) : false;
-    } catch { return false; }
-  });
-  ipcMain.handle('content:charter:setActive', (event, rawRequest: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const parsed = z.object({ id: z.string().min(1), projectId: z.string().nullable().optional() }).safeParse(rawRequest);
-      return parsed.success ? ensureContentCharterService().setActive(parsed.data.id, parsed.data.projectId ?? null) : false;
-    } catch { return false; }
-  });
-  // 项目内容规范绑定（2026-09-01 刘总要求）：写入项目 metadata.charterId（真实绑定）。
   ipcMain.handle('projects:updateMetadata', (event, rawRequest: unknown) => {
     try {
       requireRendererMainFrame(event);
@@ -10203,13 +10149,6 @@ function buildFundingTemplateDigest(pkg: { source?: { sourceFormat?: string; pag
       // ResearchRepository 的 update 通道（项目元数据原子写入）。
       return { ok: researchRepository.updateProject(parsed.data.projectId, { metadata }) !== null };
     } catch { return { ok: false }; }
-  });
-  ipcMain.handle('content:charter:resolveActive', (event, rawRequest: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const parsed = z.object({ projectId: z.string().nullable().optional() }).safeParse(rawRequest ?? {});
-      return parsed.success ? ensureContentCharterService().resolveActive(parsed.data.projectId ?? null) : null;
-    } catch { return null; }
   });
   ipcMain.handle('personalization:save', (event, rawRequest: unknown) => {
     try {
@@ -11064,7 +11003,7 @@ ${effectiveInstruction}`;
           }
 
           // ── 设计轮（仅首轮；只出大纲，骨架立即上屏）──
-          let planTargets: Array<{ id: string; name: string; kind: 'step' | 'substep' | 'section' }> = [];
+          let planTargets: Array<{ id: string; name: string; fillKind: 'step' | 'substep' | 'section'; contextLines: readonly string[] }> = [];
           if (planTool) {
             publishPhaseEvent(phase, `阶段 ${label}：正在设计${phase === 'workflow' ? '步骤' : '章节'}大纲…`);
             const planPrompt = buildScenarioPhasePrompt({
@@ -11087,18 +11026,84 @@ ${effectiveInstruction}`;
               signal: tracked.signal,
             });
             if (tracked.signal.aborted) return { ok: false, code: 'application_shutting_down' };
-            const plannedRaw = phase === 'workflow' ? patchSession.getPlannedWorkflow() : patchSession.getPlannedSections();
-            // 工作流大纲已按 parent→subStep 顺序扁平化（含 kind），逐条驱动填写。
-            planTargets = plannedRaw.map((item) => ({
-              id: item.id,
-              name: (item as { name?: string }).name ?? (item as { title?: string }).title ?? item.id,
-              kind: (item as { kind?: 'step' | 'substep' }).kind ?? (phase === 'workflow' ? 'step' as const : 'section' as const),
-            }));
+            if (phase === 'workflow') {
+              // 工作流大纲已按 parent→subStep 顺序扁平化（含 kind），逐条驱动填写。
+              planTargets = patchSession.getPlannedWorkflow().map((item) => ({
+                id: item.id,
+                name: item.name,
+                fillKind: item.kind === 'substep' ? 'substep' as const : 'step' as const,
+                contextLines: [],
+              }));
+            } else {
+              // 交付物大纲（2026-09-04 升级）：递归登记的每一个节点（章节/小节/
+              // 摘要/参考文献等）都成为独立填写目标，并携带父/相邻部分上下文。
+              const plannedSections = patchSession.getPlannedSections();
+              planTargets = plannedSections.map((item, index) => {
+                const parent = item.depth > 0
+                  ? [...plannedSections.slice(0, index)].reverse().find((candidate) => candidate.depth === item.depth - 1)?.title
+                  : undefined;
+                const prev = index > 0 ? plannedSections[index - 1]?.title : undefined;
+                const next = plannedSections[index + 1]?.title;
+                const contextLines = [
+                  parent ? `上级部分：「${parent}」` : '',
+                  prev ? `前一部分：「${prev}」` : '',
+                  next ? `后一部分：「${next}」` : '',
+                  `该部分类型：${item.kind}`,
+                ].filter(Boolean);
+                return { id: item.id, name: item.title, fillKind: 'section' as const, contextLines };
+              });
+            }
             console.warn(`[scenario:compileHarness] ${label} 设计轮 status=${planAnswer.status} 大纲数=${planTargets.length}`);
             // 设计轮失败不致命：无大纲则退回综合模式。
           }
 
-          // ── 填写轮：逐条驱动，每轮只填一个步骤/章节 ──
+          // ── 总体成文要求前置轮（2026-09-04 刘总要求 Phase 4）：骨架确定后、
+          // 逐节点填写前，先写 deliverable.globalInstructions 作为全局约束。──
+          if (phase === 'deliverable' && planTargets.length > 0) {
+            const draftForGlobal = patchSession.getDraft() ?? normalizeScenarioHarness(current.data);
+            if (!draftForGlobal.deliverable?.globalInstructions?.trim()) {
+              publishPhaseEvent(phase, `阶段 ${label}：正在撰写总体成文要求…`);
+              const giPrompt = buildScenarioPhasePrompt({
+                phase,
+                instruction: effectiveInstruction,
+                current: current.data,
+                definitions,
+                materialContext,
+                fillTarget: { kind: 'deliverable_global_instructions', id: 'globalInstructions', name: '总体成文要求（deliverable.globalInstructions）' },
+              });
+              const appliedBeforeGi = patchSession.appliedCount;
+              let giAnswer = await runEphemeralChatTurn({
+                agentLoop,
+                sessionId: compileSessionId,
+                messages: [{ role: 'user', content: giPrompt.user }],
+                requestId: `scenario_harness_${++requestCounter}`,
+                skillPrompt: giPrompt.system,
+                allowedTools: [SCENARIO_APPLY_UPDATE_TOOL_NAME],
+                maxTurns: 8,
+                acceptUnverified: true,
+                signal: tracked.signal,
+              });
+              if (tracked.signal.aborted) return { ok: false, code: 'application_shutting_down' };
+              if (giAnswer.status !== 'completed' && patchSession.appliedCount === appliedBeforeGi) {
+                giAnswer = await runEphemeralChatTurn({
+                  agentLoop,
+                  sessionId: compileSessionId,
+                  messages: [{ role: 'user', content: giPrompt.user }],
+                  requestId: `scenario_harness_${++requestCounter}`,
+                  skillPrompt: giPrompt.system,
+                  allowedTools: [SCENARIO_APPLY_UPDATE_TOOL_NAME],
+                  maxTurns: 8,
+                  acceptUnverified: true,
+                  signal: tracked.signal,
+                });
+                if (tracked.signal.aborted) return { ok: false, code: 'application_shutting_down' };
+              }
+              console.warn(`[scenario:compileHarness] ${label} 总体成文要求 status=${giAnswer.status} appliedPatches=${patchSession.appliedCount}（+${patchSession.appliedCount - appliedBeforeGi}）`);
+              // 失败不致命：交付物完整性门与最终自检会兜底要求补写。
+            }
+          }
+
+          // ── 填写轮：逐条驱动，每轮只填一个步骤/子步骤/交付物节点 ──
           if (planTargets.length > 0) {
             for (const target of planTargets) {
               publishPhaseEvent(phase, `阶段 ${label}：正在填写「${target.name}」…`);
@@ -11108,7 +11113,7 @@ ${effectiveInstruction}`;
                 current: current.data,
                 definitions,
                 materialContext,
-                fillTarget: { kind: target.kind === 'substep' ? 'substep' : phase === 'workflow' ? 'step' : 'section', id: target.id, name: target.name },
+                fillTarget: { kind: target.fillKind, id: target.id, name: target.name, contextLines: target.contextLines },
               });
               const appliedBeforeFill = patchSession.appliedCount;
               let fillAnswer = await runEphemeralChatTurn({
@@ -11311,6 +11316,19 @@ ${effectiveInstruction}`;
           if (!fallbackRaw) {
             persistAssistantMessage('场景编译未完成：编译器未产出任何场景草稿。');
             return { ok: false, code: 'generation_failed', message: '编译器未产出任何场景草稿。', issues: [] };
+          }
+          // DELIVERABLE COMPLETENESS PASS（2026-09-04 刘总要求）：交付物完整性
+          // blocking（purpose/instructions/requirements/lengthTarget/globalInstructions
+          // 缺失或为占位文本）不允许伪装成"场景生成完成"。保留当前草稿（随结果
+          // 返回为未保存草稿；过程检查点也已落库），返回明确失败状态与缺失清单。
+          const deliverableGateResult = allGates.find((entry) => entry.phase === 'deliverable')?.result;
+          if (deliverableGateResult && !deliverableGateResult.ok) {
+            const incompleteDraft = normalizeScenarioHarness(fallbackRaw);
+            const missingSummary = deliverableGateResult.issues.slice(0, 3).map((issueText) => issueText.slice(0, 120)).join(' ｜ ');
+            const message = `场景编译未完成：交付物蓝图仍缺少必需的内容规范（${missingSummary}）。已完成部分已保留为未保存草稿，请重新发起构建继续补全，系统不会将缺失字段的场景标记为完成。`;
+            console.warn(`[scenario:compileHarness] deliverable completeness failed after repairs: ${deliverableGateResult.issues.length} issue(s)`);
+            persistAssistantMessage(message);
+            return { ok: false, code: 'deliverable_incomplete', issues: deliverableGateResult.issues, message, scenario: incompleteDraft, installedDefinitions };
           }
           const fallbackDraft = normalizeScenarioHarness(fallbackRaw);
           compilation = {
@@ -12439,7 +12457,6 @@ app.whenReady().then(async () => {
           mode: 'send',
           signal,
           projectId: manifest.projectId,
-          writingCharterPrompt: ensureContentCharterService().resolveWritingPrompt(manifest.projectId) ?? undefined,
           researchRepository: researchRepository ?? undefined,
           literatureBridge: getScenarioLiteratureBridge(),
           hookEvent: (hookEvent) => {
@@ -12904,12 +12921,6 @@ app.whenReady().then(async () => {
       repository: outcomeRepository,
       media: outcomeMedia,
       secretVault: personalizationSecretVault,
-      getFigureCharterPrompt: (projectId) => {
-        try {
-          const charter = ensureContentCharterService().resolveActive(projectId);
-          return charter ? figureCharterPrompt(charter.figure) : null;
-        } catch { return null; }
-      },
     });
     researchRepository = new ResearchRepository(store.raw, (manifest, content) => {
       if (!researchRepository || !citationTruthReceipts) {

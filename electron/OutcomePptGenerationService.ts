@@ -8,7 +8,6 @@
  */
 import { randomUUID } from 'node:crypto';
 import { OutlineDocumentSchema, outlineContractPrompt, getPptThemeProfile, renderZoneOutline, auditZonePages } from '../engine/pptx/ZoneLayoutEngine.js';
-import { presentationCharterPrompt, type ContentCharter } from '../engine/content-charter/ContentCharterContract.js';
 import type { ChatMessage } from '../engine/core/types.js';
 import type { AgentLoop } from '../engine/core/AgentLoop.js';
 import {
@@ -43,7 +42,6 @@ export interface OutcomePptGenerationServiceOptions {
   providerProfileBinding?: ProviderProfileBinding;
   projectContext?: Pick<OutcomeProjectContextService, 'collect'>;
   /** 内容规范（2026-09-01）：按项目解析激活章程，演示规范与质量阈值随之注入。 */
-  getCharter?: (projectId: string) => ContentCharter | null;
   skill: PptGenerationSkill;
   template: PptTemplate | null;
   isRuntimeCurrent?: () => boolean;
@@ -239,12 +237,7 @@ export class OutcomePptGenerationService {
     // zone 版式引擎协议（2026-09-01 融入 wut-ppt 方法论）：模型只产出大纲 JSON，
     // 版式由 ZoneLayoutEngine 确定性渲染并机器自检——版式质量不再是模型运气。
     const zoneEngine = this.options.skill.layoutEngine === 'zone';
-    const projectCharter = this.options.getCharter?.(request.projectId) ?? null;
-    const presentationCharter = presentationCharterPrompt(projectCharter?.presentation ?? {
-      themeProfileId: this.options.skill.themeProfileId ?? 'academic-blue', density: 'balanced', bodyFontMinPt: null,
-      narrativePreference: '', extra: '',
-    });
-    const themeProfile = getPptThemeProfile(projectCharter?.presentation.themeProfileId ?? this.options.skill.themeProfileId);
+    const themeProfile = getPptThemeProfile(this.options.skill.themeProfileId);
     const systemPrompt = zoneEngine
       ? [
           '你是 METIS PPT 大纲设计师（zone 版式体系）。把源文档的要点组织为大纲 JSON；版式由引擎渲染，你不需要描述颜色与坐标。',
@@ -252,7 +245,6 @@ export class OutcomePptGenerationService {
           `当前成果：${detail.outcome.title}；当前不可覆盖版本：v${detail.version.version}。`,
           `生成技能：${JSON.stringify(this.options.skill)}。`,
           `主题风格：${themeProfile.name}（主色 ${themeProfile.colors.primary}、点缀 ${themeProfile.colors.accent}、强调 ${themeProfile.colors.emphasis}）。`,
-          presentationCharter,
           `用户生成要求：${request.instruction}`,
           '必须只输出一个 JSON 对象，不能使用 Markdown 代码围栏：',
           '{"answer":"给用户的中文生成说明","outline":{"title":"封面主标题","speaker":"汇报人","chapters":[{"name":"章节名","pages":[{"title":"页面标题","zones":[zone 列表]}]}],"closing":{"line1":"以上汇报，敬请批评指正","line2":"汇报人：xxx"}}}',

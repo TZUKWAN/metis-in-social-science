@@ -30,7 +30,15 @@ function scenario(overrides: Partial<ScenarioDefinition> = {}): ScenarioDefiniti
     deliverable: {
       type: 'empirical_paper', language: 'zh', globalLength: '12000 字', secondarySections: { min: 2, max: 4 },
       structurePolicy: { defaultSections: 1, suggestedMin: 1, suggestedMax: 1 },
-      sections: [{ id: 'chapter-1', title: '研究设计', kind: 'chapter', status: 'required', children: [{ id: 'section-1', title: '研究问题', kind: 'section', status: 'required' }] }],
+      globalInstructions: '全文学术化表达，术语前后一致，各章形成连续论证。',
+      sections: [{
+        id: 'chapter-1', title: '研究设计', kind: 'chapter', status: 'required',
+        purpose: '交代研究设计整体思路。', instructions: '先说明研究策略，再展开数据与测量。', requirements: ['说明研究策略'], lengthTarget: '3000字',
+        children: [{
+          id: 'section-1', title: '研究问题', kind: 'section', status: 'required',
+          purpose: '提出核心研究问题。', instructions: '以一个主问题带子问题的形式陈述。', requirements: ['陈述核心问题'], lengthTarget: '500字',
+        }],
+      }],
     },
     ...overrides,
   } as ScenarioDefinition;

@@ -7,8 +7,11 @@ import {
 import {
   assessScenarioHarness,
   autoFixScenarioHarness,
+  collectDeliverableCompletenessGaps,
+  isPlaceholderText,
   normalizeScenarioHarness,
   renderScenarioMetisMarkdown,
+  requiredDeliverableFieldsForKind,
 } from '../../engine/personalization/ScenarioHarness.js';
 
 function legacyScenario(overrides: Partial<ScenarioDefinition> = {}): ScenarioDefinition {
@@ -150,5 +153,131 @@ describe('Scenario Research Harness compatibility and quality', () => {
     expect(normalized.deliverable?.sections?.[0]?.kind).toBe('chapter');
     // 二级条目保持 "section"
     expect(normalized.deliverable?.sections?.[0]?.children?.[0]?.kind).toBe('section');
+  });
+});
+
+describe('Deliverable completeness contract (2026-09-04 刘总要求)', () => {
+  const deliverableScenario = () => legacyScenario({
+    deliverable: {
+      type: 'theory_paper',
+      globalLength: '10000字',
+      sections: [
+        {
+          id: 'abstract', title: '摘要', kind: 'abstract', status: 'required',
+          purpose: '概括研究问题、方法与核心发现。', instructions: '直接报告问题、方法、发现与贡献，不使用「本文」「本研究」。', requirements: ['报告核心发现'], lengthTarget: '300字',
+          children: [],
+        },
+        {
+          id: 'chapter-1', title: '引言', kind: 'chapter', status: 'required',
+          purpose: '引出研究问题。', instructions: '由现实背景切入。', requirements: ['明确研究问题'], lengthTarget: '1500字',
+          children: [{
+            id: 'chapter-1-1', title: '研究背景', kind: 'section', status: 'required',
+            purpose: '铺垫领域现状。', instructions: '概述发展脉络。', requirements: ['覆盖代表研究'], lengthTarget: '800字',
+          }],
+        },
+        { id: 'references', title: '参考文献', kind: 'references', status: 'required', instructions: '仅列正文实际引用文献。', requirements: ['与正文引用一一对应'] },
+      ],
+    } as ScenarioDefinition['deliverable'],
+  });
+
+  it('requiredDeliverableFieldsForKind is kind-aware (title/references exemptions)', () => {
+    expect(requiredDeliverableFieldsForKind('chapter')).toEqual(['purpose', 'instructions', 'requirements', 'lengthTarget']);
+    expect(requiredDeliverableFieldsForKind('abstract')).toEqual(['purpose', 'instructions', 'requirements', 'lengthTarget']);
+    expect(requiredDeliverableFieldsForKind('references')).toEqual(['instructions', 'requirements']);
+    expect(requiredDeliverableFieldsForKind('title')).toEqual([]);
+  });
+
+  it('isPlaceholderText rejects TBD/待定/根据实际情况 and empty arrays', () => {
+    expect(isPlaceholderText('TBD')).toBe(true);
+    expect(isPlaceholderText('待定。')).toBe(true);
+    expect(isPlaceholderText('根据实际情况')).toBe(true);
+    expect(isPlaceholderText(['待补充'])).toBe(true);
+    expect(isPlaceholderText('')).toBe(true);
+    expect(isPlaceholderText(undefined)).toBe(true);
+    expect(isPlaceholderText('围绕三类解释机制组织文献，导出研究缺口。')).toBe(false);
+    expect(isPlaceholderText(['比较三类机制'])).toBe(false);
+  });
+
+  it('collectDeliverableCompletenessGaps reports missing fields per node', () => {
+    const scenario = deliverableScenario();
+    scenario.deliverable!.sections![1]!.purpose = undefined;
+    (scenario.deliverable!.sections![1]!.children![0] as { lengthTarget?: string }).lengthTarget = undefined;
+    const gaps = collectDeliverableCompletenessGaps(scenario);
+    expect(gaps.some((gap) => gap.field === 'globalInstructions')).toBe(true);
+    expect(gaps.some((gap) => gap.sectionId === 'chapter-1' && gap.field === 'purpose')).toBe(true);
+    expect(gaps.some((gap) => gap.sectionId === 'chapter-1-1' && gap.field === 'lengthTarget')).toBe(true);
+    // references 无 lengthTarget 不应产生 gap（kind 豁免）。
+    expect(gaps.some((gap) => gap.sectionId === 'references')).toBe(false);
+  });
+
+  it('assessScenarioHarness blocks on missing globalInstructions/instructions and turns ready when filled', () => {
+    const scenario = deliverableScenario();
+    scenario.deliverable!.sections![1]!.purpose = undefined;
+    const blocked = assessScenarioHarness(scenario);
+    expect(blocked.issues.map((issue) => issue.code)).toContain('deliverable_global_instructions_missing');
+    expect(blocked.issues.map((issue) => issue.code)).toContain('section_purpose_missing');
+    expect(blocked.status).toBe('blocked');
+    const ready = assessScenarioHarness({
+      ...deliverableScenario(),
+      workflowPrompt: '按步骤推进并保证质量。',
+      scenarioMetis: {
+        purpose: '', roleBoundaries: '', researchRules: '', writingRules: '', toolRules: '', qualityGates: '', failureRecovery: '',
+        markdown: '# 规则\n\n' + '这是一段足够长的真实规则文档内容，用于通过规则长度检查。'.repeat(3),
+      },
+      workflow: scenario.workflow.map((step) => ({
+        ...step,
+        goal: step.goal ?? step.description,
+        prompt: '执行检索并记录证据。',
+        completionCriteria: ['证据已记录。'],
+        failurePolicy: { action: 'retry' as const, retryLimit: 2, backtrackStepId: null, instruction: '' },
+        loop: { enabled: false, maxIterations: 1, stopCondition: '', evaluator: 'completion_criteria' as const, onExhausted: 'fail' as const, backtrackStepId: null },
+      })),
+      deliverable: {
+        ...scenario.deliverable!,
+        globalInstructions: '全文学术化，术语一致，论证连续。',
+        sections: scenario.deliverable!.sections!.map((section) => ({
+          ...section,
+          purpose: section.purpose ?? '完成该部分在全文中的核心论证任务。',
+          instructions: section.instructions ?? '按该部分类型组织内容并满足结构要求。',
+          requirements: section.requirements ?? ['满足该部分基本要求'],
+          lengthTarget: section.lengthTarget ?? '300字',
+        })),
+      },
+    });
+    expect(ready.issues.filter((issue) => issue.code.startsWith('section_') || issue.code === 'deliverable_global_instructions_missing')).toEqual([]);
+  });
+
+  it('migrates legacy writingRules into deliverable.globalInstructions without dropping old fields', () => {
+    const scenario = legacyScenario({
+      writingRules: ['引用必须可验证。'],
+      deliverable: { type: 'theory_paper', sections: [{ id: 's1', title: '引言', kind: 'chapter', status: 'required' }] },
+    } as Partial<ScenarioDefinition>);
+    const normalized = normalizeScenarioHarness(scenario);
+    expect(normalized.deliverable?.globalInstructions).toContain('引用必须可验证。');
+    // 旧字段保留（向后兼容，不丢数据）。
+    expect(normalized.writingRules).toContain('引用必须可验证。');
+  });
+
+  it('does not overwrite an explicit globalInstructions (empty string stays empty)', () => {
+    const scenario = legacyScenario({
+      writingRules: ['引用必须可验证。'],
+      deliverable: { type: 'theory_paper', globalInstructions: '', sections: [] },
+    } as Partial<ScenarioDefinition>);
+    const normalized = normalizeScenarioHarness(scenario);
+    expect(normalized.deliverable?.globalInstructions).toBe('');
+  });
+
+  it('rich fields (instructions/globalInstructions) survive the lenient save parse path', () => {
+    const scenario = deliverableScenario();
+    scenario.deliverable!.globalInstructions = '全文学术化，术语一致。';
+    const parsed = ScenarioDefinitionSchema.safeParse(normalizeScenarioHarness(scenario));
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.deliverable?.globalInstructions).toBe('全文学术化，术语一致。');
+      const abstract = parsed.data.deliverable?.sections?.find((section) => section.id === 'abstract');
+      expect(abstract?.instructions).toContain('本文');
+      const child = abstract; // front-matter 保留
+      expect(child?.kind).toBe('abstract');
+    }
   });
 });

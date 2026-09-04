@@ -325,9 +325,53 @@ describe('ScenarioPatchSession minimal-unit enforcement (2026-08-24 刘总方案
       { id: 'sec-2', title: '研究内容', children: [{ id: 'sec-2-1', title: '研究对象' }, { id: 'sec-2-2', title: '拟解决的关键问题' }] },
     ]);
     expect(result.ok).toBe(true);
-    expect(session.getPlannedSections().length).toBe(2);
+    // 2026-09-04 升级：plannedSections 递归记录每一个待填节点（含二级小节）。
+    expect(session.getPlannedSections().length).toBe(6);
+    expect(session.getPlannedSections().filter((item) => item.depth === 0).map((item) => item.id)).toEqual(['sec-1', 'sec-2']);
+    expect(session.getPlannedSections().filter((item) => item.depth === 1).map((item) => item.id)).toEqual(['sec-1-1', 'sec-1-2', 'sec-2-1', 'sec-2-2']);
     expect(session.getDraft()?.deliverable?.sections.length).toBe(2);
     const draftChildren = session.getDraft()?.deliverable?.sections.find((section) => section.id === 'sec-1')?.children ?? [];
     expect(draftChildren.length).toBe(2);
+  });
+
+  it('planSections registers front-matter parts with explicit kind and no children (2026-09-04 刘总要求)', () => {
+    const session = new ScenarioPatchSession(baseScenario());
+    const result = session.planSections([
+      { id: 'abstract', title: '摘要', kind: 'abstract' },
+      { id: 'sec-1', title: '引言', children: [{ id: 'sec-1-1', title: '研究背景' }, { id: 'sec-1-2', title: '研究问题' }] },
+      { id: 'references', title: '参考文献', kind: 'references' },
+    ]);
+    expect(result.ok).toBe(true);
+    const sections = session.getDraft()?.deliverable?.sections ?? [];
+    expect(sections.find((section) => section.id === 'abstract')?.kind).toBe('abstract');
+    expect(sections.find((section) => section.id === 'references')?.kind).toBe('references');
+    // 摘要/参考文献等部分不要求 children；章节仍被拒收空壳。
+    expect(session.getPlannedSections().map((item) => item.id)).toEqual(['abstract', 'sec-1', 'sec-1-1', 'sec-1-2', 'references']);
+  });
+
+  it('apply keeps purpose/instructions/requirements/forbidden/lengthTarget through adapt+sanitize (2026-09-04 白名单修复)', () => {
+    const session = new ScenarioPatchSession(baseScenario());
+    const applied = session.apply({
+      deliverable: {
+        globalInstructions: '全文学术化，术语一致。',
+        sections: [{
+          id: 'sec-9', title: '文献综述', kind: 'chapter', status: 'required',
+          purpose: '梳理既有解释路径并导出研究缺口。',
+          instructions: '围绕三类解释机制组织文献，不逐篇罗列。',
+          requirements: ['比较三类机制'], forbidden: ['逐篇罗列文献'], lengthTarget: '2500字',
+          children: [{ id: 'sec-9-1', title: '技术控制', kind: 'section', status: 'required', purpose: '阐述技术控制路径。', instructions: '聚焦算法管理。', requirements: ['界定概念'], lengthTarget: '800字', children: [] }],
+        }],
+      },
+    });
+    expect(applied.ok).toBe(true);
+    const section = session.getDraft()?.deliverable?.sections.find((item) => item.id === 'sec-9');
+    expect(section?.purpose).toContain('解释路径');
+    expect(section?.instructions).toContain('三类解释机制');
+    expect(section?.requirements).toEqual(['比较三类机制']);
+    expect(section?.forbidden).toEqual(['逐篇罗列文献']);
+    expect(section?.lengthTarget).toBe('2500字');
+    expect(session.getDraft()?.deliverable?.globalInstructions).toBe('全文学术化，术语一致。');
+    const child = section?.children?.[0];
+    expect(child?.instructions).toContain('算法管理');
   });
 });

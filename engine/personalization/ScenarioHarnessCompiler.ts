@@ -173,6 +173,8 @@ export function buildScenarioHarnessCompilerPrompt(input: {
       'SKILL/MCP PLANNING IS MANDATORY (2026-08-23): for EVERY workflow step, review the installed resource catalog and bind the skills the step needs via skillIds and any required MCP servers via mcpIds. If a needed capability is missing from the catalog, say so explicitly in your final summary instead of inventing IDs. A step with no suitable binding must still justify why none is required in its prompt.',
       BIBLIOGRAPHY_OUTPUT_CONTRACT,
       'BEFORE FINISHING you MUST have produced: a non-empty scenarioMetis.markdown (the scenario-wide Scenario Metis.md rules document) and a non-empty workflowPrompt (end-to-end operating rules). A build without both is incomplete — add them with scenario_apply_update before the final summary.',
+      'DELIVERABLE COMPLETENESS (2026-09-04 刘总要求): every deliverable node (chapters, their children, abstract/keywords/references) MUST end up with purpose + instructions + requirements + lengthTarget (references may omit lengthTarget), plus optionalContent/forbidden/method/evidence where genuinely applicable, AND a non-empty deliverable.globalInstructions. Placeholders like 待定/TBD/根据实际情况 or generic filler like "保持学术性" do NOT count as content. A build leaving these empty is incomplete.',
+      DELIVERABLE_OWNERSHIP,
       'HARD SCHEMA RULES: completionCriteria MUST be an array of short strings (one criterion per element, never a single string). deliverable.type MUST be exactly one of: theory_paper | empirical_paper | computational_paper | case_study | review_paper | grant_nssfc | grant_postdoc | grant_other | policy_report | survey_report | tech_report | industry_report | thesis | opening_report | completion_report | custom. Never invent deliverable keys like length or structure — use globalLength (a STRING such as "7500字", never a number) and sections. output.plan.primaryDeliverable must be a non-empty short title.',
       'SECTION FIELD VOCABULARY (write ONLY these values): every section kind MUST be exactly one of: title | abstract | keywords | chapter | section | grant_column | attachment | references | other (top-level entries use chapter or front-matter kinds; children use section). Every section status MUST be exactly one of: locked | required | optional | conditional — NEVER Chinese words like 必要/可选 or words like must/mandatory. capability is a short ASCII identifier (e.g. research | writing | custom) — do not invent long labels.',
       'SECTION KIND HIERARCHY: top-level deliverable.sections entries are first-level chapters and MUST use kind "chapter"; only their children use kind "section" (front-matter like title/abstract may sit at top level with those kinds). Never rewrite chapter entries to "section".',
@@ -221,6 +223,18 @@ const BIBLIOGRAPHY_OUTPUT_CONTRACT = [
   '(3) only works actually returned by a tool call in this run may appear in that array — entries written from model memory are rejected by the ingestion gate and pollute nothing.',
 ].join(' ');
 
+/**
+ * 职责边界（2026-09-04 刘总要求，写死进编译器提示）：
+ * Deliverable = 结果契约（最终成果长什么样、每部分怎么写）；
+ * Workflow = 生产过程（怎样把它做出来）。Workflow 禁止复制 Deliverable
+ * 已声明的完整成文规范，只能引用；Scenario Metis.md 只承载研究行为规则。
+ */
+const DELIVERABLE_OWNERSHIP = [
+  'DELIVERABLE OWNERSHIP: the deliverable blueprint is the AUTHORITATIVE definition of the final artifact — its structure and every part\u2019s content requirements (purpose / instructions / requirements / optionalContent / forbidden / lengthTarget / method / evidence).',
+  'WORKFLOW OWNERSHIP: workflow steps describe HOW the deliverables are produced (actions, tools, ordering, execution completion). A workflow step or its completionCriteria MUST NOT restate or independently redefine the writing requirements already declared by a deliverable section — refer to them instead, e.g. "形成 Deliverable 中「文献综述」部分，并满足该部分声明的全部 purpose/instructions/requirements/forbidden/lengthTarget 约束".',
+  'SCENARIO METIS OWNERSHIP: scenarioMetis.markdown holds scenario-wide RESEARCH BEHAVIOR rules (truthfulness, evidence, citation, data handling, tool usage, failure recovery) — do NOT write per-section writing style rules (摘要怎么写/综述怎么组织) there; they belong to the deliverable sections.',
+].join(' ');
+
 const TOOL_DISCIPLINE = [
   'FINE-GRAINED INCREMENTAL WRITING (2026-08-24, 刘总要求): confirm ONE small piece at a time and apply it IMMEDIATELY with its own scenario_apply_update call — e.g. name first, then description, then capability; one workflow step per call with its complete prompt/criteria/bindings.',
   'If the current draft already satisfies this phase\u2019s requirements, do NOT rewrite it — reply with ONLY {"summary":"本阶段现状已达标，无需修改"} and nothing else.',
@@ -235,13 +249,28 @@ const PLANNING_TURN_DISCIPLINE = [
   'Keep ids stable — later fill turns will reference them.',
 ].join(' ');
 
-function fillTurnDiscipline(kind: 'step' | 'substep' | 'section' | 'workflow_prompt', id: string, name: string): string {
+function fillTurnDiscipline(
+  kind: 'step' | 'substep' | 'section' | 'workflow_prompt' | 'deliverable_global_instructions',
+  id: string,
+  name: string,
+  contextLines: readonly string[] = [],
+): string {
   const noResearch = 'Research was already done in earlier turns — do NOT web_search/web_fetch now; write immediately from what you know.';
+  const contextBlock = contextLines.length > 0 ? ` Node context (base your content on THIS): ${contextLines.join(' | ')}` : '';
   if (kind === 'workflow_prompt') {
     return [
       `FILL TURN: write ONLY the ${name} (the scenario.workflowPrompt field) via ONE scenario_apply_update call.`,
       'Content: the end-to-end operating rules connecting ALL planned steps and their sub-steps — handoff order, what each consumes/produces, artifact flow, quality gates, failure recovery posture.',
       'Do NOT write any workflow steps, sections, or other fields in this turn.',
+      noResearch,
+    ].join(' ');
+  }
+  if (kind === 'deliverable_global_instructions') {
+    return [
+      'FILL TURN: write ONLY deliverable.globalInstructions via ONE scenario_apply_update call.',
+      'Content: the writing/expression requirements shared by the WHOLE final artifact — e.g. 学术化表达与用词准确、核心术语前后一致、章节间论证连续、避免材料堆砌、引用服务于论证、标题层级与正文形成明确关系。',
+      'BASE the content on the user instruction, the deliverable type and the actual section outline. Generic filler like "保持学术性" alone is a rejected placeholder.',
+      'Do NOT modify sections, workflow, or any other fields in this turn.',
       noResearch,
     ].join(' ');
   }
@@ -254,16 +283,26 @@ function fillTurnDiscipline(kind: 'step' | 'substep' | 'section' | 'workflow_pro
       noResearch,
     ].join(' ');
   }
+  if (kind === 'step') {
+    return [
+      `FILL TURN: write ONLY the workflow step “${name}” (id: ${id}) via ONE scenario_apply_update call.`,
+      'IMPORTANT: reuse the exact id given here — a skeleton with this id (or same title) already exists in the draft; your call MERGES into it.',
+      'This step already has sub-steps registered: write the step-level prompt (what this chapter-level step must achieve overall, coordinating its sub-steps), completionCriteria (array of verifiable checks), and skillIds/mcpIds bindings if needed at step level. Do NOT delete or rewrite the sub-steps.',
+      'WORKFLOW/Deliverable boundary: describe HOW to execute this step; do NOT restate the full writing requirements declared by the deliverable blueprint — refer to the target section instead.',
+      'Do NOT modify any other steps/sections or other parts of the scenario.',
+      noResearch,
+    ].join(' ');
+  }
+  // kind === 'section'：Deliverable 节点填写（2026-09-04 升级）——每个节点（章节/
+  // 小节/摘要/参考文献等）都必须形成完整内容规范，而不是只补结构。
   return [
-    `FILL TURN: write ONLY the ${kind === 'step' ? 'workflow step' : 'deliverable section'} “${name}” (id: ${id}) via ONE scenario_apply_update call.`,
-    'IMPORTANT: reuse the exact id given here — a skeleton with this id (or same title) already exists in the draft; your call MERGES into it.',
-    kind === 'step'
-      ? 'This step already has sub-steps registered: write the step-level prompt (what this chapter-level step must achieve overall, coordinating its sub-steps), completionCriteria (array of verifiable checks), and skillIds/mcpIds bindings if needed at step level. Do NOT delete or rewrite the sub-steps.'
-      : [
-          'This is a CHAPTER: write it WITH its second-level children (2026-08-28 刘总要求). Every chapter must carry 3-5 titled children (follow deliverable.secondarySections policy when present) — each child needs a stable id, kind "section", and a non-empty title; keep the children already planned and complete the missing ones.',
-          'Also include the chapter\u2019s writing prompt covering its planned sub-sections.',
-        ].join(' '),
-    'Do NOT modify any other steps/sections or other parts of the scenario.',
+    `FILL TURN: write ONLY the deliverable section “${name}” (id: ${id}) via ONE scenario_apply_update call.`,
+    'IMPORTANT: reuse the exact id given here — a skeleton with this id (or same title) already exists in the draft; your call MERGES into it (never delete its children).',
+    'MANDATORY FIELDS for this one section: purpose（这一部分在全文中的作用）+ instructions（完整的自然语言写作规范：如何组织、采用什么结构、论证展开方式）+ requirements（必须包含的要点，每条一个元素）+ lengthTarget（目标篇幅，如 "2500字"）。',
+    'Fill ALSO where genuinely applicable: optionalContent（可包含）、forbidden（禁止出现，如"逐篇罗列""使用本文/本研究"）、method（方法要求）、evidence（证据/引用要求）。标题类部分不需要 method。',
+    'QUALITY BAR: every field must be SPECIFIC to this section and this research scenario — derive it from the user instruction, the deliverable type, the section\u2019s position in the outline (parent/sibling sections), and the planned workflow. Generic filler such as "保持学术性" "逻辑清晰" "结构合理" "符合规范" is a REJECTED placeholder; so are 待定/TBD/后续补充/根据实际情况.',
+    'Do NOT copy the section\u2019s writing requirements into workflow prompts — the deliverable blueprint is their single source of truth.',
+    `Do NOT modify any other sections or parts of the scenario.${contextBlock}`,
     noResearch,
   ].join(' ');
 }
@@ -276,8 +315,14 @@ export interface ScenarioPhasePromptInput {
   materialContext?: readonly { name: string; text: string }[];
   /** 设计轮（2026-08-24 刘总方案 C）：只出大纲，不填内容。 */
   planMode?: 'workflow' | 'sections';
-  /** 填写轮：只填指定步骤/子步骤/章节/工作流总 Prompt 的详细内容。 */
-  fillTarget?: { kind: 'step' | 'substep' | 'section' | 'workflow_prompt'; id: string; name: string };
+  /** 填写轮：只填指定步骤/子步骤/交付物节点/全局成文要求/工作流总 Prompt 的详细内容。 */
+  fillTarget?: {
+    kind: 'step' | 'substep' | 'section' | 'workflow_prompt' | 'deliverable_global_instructions';
+    id: string;
+    name: string;
+    /** 节点上下文（父/相邻章节、在大纲中的位置），驱动填写具备上下文感（2026-09-04）。 */
+    contextLines?: readonly string[];
+  };
   /** 能力获取轮（2026-08-28 刘总要求）：联网检索并安装 Skill/MCP 后绑定到步骤。 */
   capabilityPass?: boolean;
 }
@@ -307,9 +352,11 @@ export function buildScenarioPhasePrompt(input: ScenarioPhasePromptInput): { sys
       'Research how scenarios/tasks of this kind are normally framed before writing.',
     ],
     deliverable: [
-      'PHASE GOAL — 交付物结构：write deliverable.type (allowed enum only), deliverable.globalLength (STRING like "7500字", never a number), and deliverable.sections with stable ids, non-empty titles and per-section prompts.',
-      'EVERY chapter (kind "chapter") MUST carry 3-5 second-level children with stable ids, kind "section" and non-empty titles (2026-08-28 刘总要求; follow deliverable.secondarySections policy when present). Front-matter (title/abstract/keywords) sits at top level with its own kind, never as an empty chapter. Also write deliverable.secondarySections {min,max}.',
+      'PHASE GOAL — 交付物蓝图：write deliverable.type (allowed enum only), deliverable.globalLength (STRING like "7500字", never a number), deliverable.globalInstructions (the writing requirements shared by the WHOLE artifact — 学术化表达、术语一致、论证连续；real content, not filler), and deliverable.sections with stable ids and non-empty titles.',
+      'EVERY chapter (kind "chapter") MUST carry 3-5 second-level children with stable ids, kind "section" and non-empty titles (2026-08-28 刘总要求; follow deliverable.secondarySections policy when present). Front-matter (title/abstract/keywords/references) sits at top level with its own kind, never as an empty chapter. Also write deliverable.secondarySections {min,max}.',
+      'PLANNING VS FILLING (2026-09-04 刘总要求): planning registers the skeleton; the driver then drives a FILL TURN per node. During fills every chapter/section/abstract node MUST end up with purpose + instructions + requirements + lengthTarget (references may omit lengthTarget), plus optionalContent/forbidden/method/evidence where genuinely applicable. A section with only id/title/kind is NOT done.',
       'Research the standard structure of this deliverable type (e.g. grant/postdoc application sections) and mirror it.',
+      DELIVERABLE_OWNERSHIP,
     ],
     workflow: [
       'PHASE GOAL — 连续工作流：add workflow steps in SMALL BATCHES of 1-2 steps per call (entries merge by id). Every step needs: stable unique id, concise name, dedicated prompt, array completionCriteria, dependsOn chain, maxTurns.',
@@ -318,7 +365,8 @@ export function buildScenarioPhasePrompt(input: ScenarioPhasePromptInput): { sys
       'Keep steps strictly serial and ordered as they should execute.',
     ],
     rules: [
-      'PHASE GOAL — 场景规则：write a substantive scenarioMetis.markdown document (scenario-wide Metis.md rules: purpose, role boundaries, research rules, writing rules, quality gates, failure recovery — real content, never leave the template) AND workflowPrompt (end-to-end operating rules connecting all steps).',
+      'PHASE GOAL — 场景规则：write a substantive scenarioMetis.markdown document (scenario-wide Metis.md rules: purpose, role boundaries, research rules, tool rules, quality gates, failure recovery — real content, never leave the template) AND workflowPrompt (end-to-end operating rules connecting all steps).',
+      'Scope discipline (2026-09-04 刘总要求): scenarioMetis.markdown defines LONG-RUNNING RESEARCH BEHAVIOR rules (truthfulness, evidence, citation integrity, data handling boundaries, tool usage, method constraints, failure recovery). Per-section writing requirements (摘要怎么写/综述怎么组织) belong to the deliverable blueprint — do NOT copy them here.',
       'Base the rules on what the workflow actually does and on conventions found during research.',
     ],
     output_plan: [
@@ -331,9 +379,10 @@ export function buildScenarioPhasePrompt(input: ScenarioPhasePromptInput): { sys
       'You are the METIS Research Harness compiler working through ONE specific build phase.',
       ...(input.planMode === 'workflow' ? ['MODE: PLANNING TURN (workflow outline).', PLANNING_TURN_DISCIPLINE] : []),
       ...(input.planMode === 'sections' ? ['MODE: PLANNING TURN (deliverable section outline).', PLANNING_TURN_DISCIPLINE] : []),
-      ...(input.fillTarget ? ['MODE: FILL TURN.', fillTurnDiscipline(input.fillTarget.kind, input.fillTarget.id, input.fillTarget.name)] : []),
+      ...(input.fillTarget ? ['MODE: FILL TURN.', fillTurnDiscipline(input.fillTarget.kind, input.fillTarget.id, input.fillTarget.name, input.fillTarget.contextLines ?? [])] : []),
       ...(input.capabilityPass ? ['MODE: CAPABILITY PASS.', CAPABILITY_PASS_DISCIPLINE] : []),
       ...(input.planMode || input.fillTarget || input.capabilityPass ? [] : [ ...PHASE_GOALS[input.phase], RESEARCH_FIRST_POLICY, ACQUISITION_POLICY, TOOL_DISCIPLINE ]),
+      DELIVERABLE_OWNERSHIP,
       'HARD SCHEMA RULES: completionCriteria MUST be an array of short strings. deliverable.globalLength MUST be a string. Never touch contractVersion/id/kind/revision/provenance. Only use IDs present in the resource catalog or returned by scenario_install_extension.',
       'SECTION FIELD VOCABULARY (write ONLY these values): section kind MUST be exactly one of: title | abstract | keywords | chapter | section | grant_column | attachment | references | other. Section status MUST be exactly one of: locked | required | optional | conditional — NEVER 必要/可选 or must/mandatory. capability is a short ASCII identifier (research | writing | custom).',
       'Preserve previously written parts: your patches merge into the draft — do not delete or rewrite other phases\u2019 content.',

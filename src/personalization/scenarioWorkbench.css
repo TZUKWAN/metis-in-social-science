@@ -933,3 +933,37 @@
 .scenario-assistant__message--pending .scenario-assistant__stages { display: flex; flex-direction: column; gap: 2px; margin-top: 5px; padding-left: 2px; }
 .scenario-assistant__message--pending .scenario-assistant__stages small { color: var(--text-muted, var(--text-muted)); font-size: 10.5px; line-height: 1.45; overflow-wrap: anywhere; }
 .scenario-assistant__message--pending .scenario-assistant__stages small.scenario-assistant__stream-tail { display: block; max-height: 4.4em; overflow: hidden; color: var(--text-secondary); font-style: italic; white-space: pre-wrap; }
+
+/* ── 成果蓝图编辑器（2026-09-04 刘总要求：目录编辑器 → 成果蓝图编辑器）── */
+.scenario-focus__global-instructions { display: flex; flex-direction: column; gap: 4px; margin: 8px 0 12px; }
+.scenario-focus__global-instructions > span { font-size: 12px; color: var(--text-secondary); }
+.scenario-focus__global-instructions textarea { font-family: inherit; font-size: 13px; line-height: 1.6; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm, 6px); background: var(--bg-input, transparent); color: var(--text-primary); resize: vertical; }
+.scenario-blueprint { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+.scenario-blueprint__head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.scenario-blueprint__head > strong { font-size: 13px; }
+.scenario-blueprint__completeness { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); }
+.scenario-blueprint__completeness--ok { color: var(--text-secondary); }
+.scenario-blueprint__completeness--todo { color: var(--warning, #a15c00); border-color: var(--warning, #a15c00); }
+.scenario-blueprint__add { margin-left: auto; font-size: 12px; padding: 3px 6px; border: 1px solid var(--border); border-radius: var(--radius-sm, 6px); background: transparent; color: var(--text-primary); }
+.scenario-blueprint__gaps { margin: 0; padding: 6px 10px 6px 24px; font-size: 12px; color: var(--warning, #a15c00); border: 1px dashed var(--warning, #a15c00); border-radius: var(--radius-sm, 6px); }
+.scenario-blueprint__gaps li { margin: 1px 0; }
+.scenario-blueprint__list, .scenario-blueprint__children { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.scenario-blueprint__item { border: 1px solid var(--border); border-radius: var(--radius-sm, 6px); background: var(--bg-elevated, transparent); }
+.scenario-blueprint__item--nested { margin-left: 18px; }
+.scenario-blueprint__row { display: flex; align-items: center; gap: 6px; padding: 4px 6px; }
+.scenario-blueprint__toggle { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border: none; background: transparent; color: var(--text-secondary); cursor: pointer; padding: 0; }
+.scenario-blueprint__toggle .is-open { transform: rotate(90deg); }
+.scenario-blueprint__title { flex: 1 1 auto; min-width: 80px; font-size: 13px; padding: 3px 6px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--text-primary); }
+.scenario-blueprint__title:hover, .scenario-blueprint__title:focus { border-color: var(--border); background: var(--bg-input, transparent); outline: none; }
+.scenario-blueprint__badge { flex: 0 0 auto; font-size: 11px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-secondary); white-space: nowrap; }
+.scenario-blueprint__badge--missing { color: var(--warning, #a15c00); border-color: var(--warning, #a15c00); }
+.scenario-blueprint__length { flex: 0 0 72px; font-size: 12px; padding: 2px 5px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--text-secondary); }
+.scenario-blueprint__length:hover, .scenario-blueprint__length:focus { border-color: var(--border); background: var(--bg-input, transparent); outline: none; }
+.scenario-blueprint__remove { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border: none; background: transparent; color: var(--text-secondary); cursor: pointer; padding: 0; }
+.scenario-blueprint__remove:hover { color: var(--danger, #b3261e); }
+.scenario-blueprint__detail { display: flex; flex-direction: column; gap: 8px; padding: 8px 10px 10px 30px; border-top: 1px dashed var(--border); }
+.scenario-blueprint__detail label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--text-secondary); }
+.scenario-blueprint__detail textarea, .scenario-blueprint__detail input, .scenario-blueprint__detail select { font-family: inherit; font-size: 13px; line-height: 1.55; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm, 6px); background: var(--bg-input, transparent); color: var(--text-primary); resize: vertical; }
+.scenario-blueprint__detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; }
+.scenario-blueprint__detail-actions { display: flex; gap: 8px; }
+.scenario-blueprint__empty { font-size: 12px; color: var(--text-secondary); }

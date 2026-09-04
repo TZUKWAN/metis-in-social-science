@@ -36,7 +36,6 @@ const LatexPreviewPage = lazy(() => import('./pages/LatexPreviewPage'));
 const TaskBoardPage = lazy(() => import('./pages/TaskBoardPage'));
 const OutcomesPage = lazy(() => import('./pages/OutcomesPage'));
 const SubmissionsPage = lazy(() => import('./pages/SubmissionWorkspacePage'));
-const ContentCharterPage = lazy(() => import('./pages/ContentCharterPage'));
 const ScenarioApprovalToast = lazy(() => import('./components/ScenarioApprovalToast'));
 
 /**
@@ -137,7 +136,7 @@ function legacyPageToEntry(page: Page): { entry: TopLevelEntry; mode: WorkspaceM
 
 // ─── Evals Page ───
 
-type StandalonePage = 'dashboard' | 'goal' | 'timeline' | 'latex' | 'experiments' | 'evals' | 'kanban' | 'outcomes' | 'submissions' | 'charter';
+type StandalonePage = 'dashboard' | 'goal' | 'timeline' | 'latex' | 'experiments' | 'evals' | 'kanban' | 'outcomes' | 'submissions';
 
 function resolveStandalonePage(page: Page, diagnosticMode: boolean): StandalonePage | null {
   switch (page) {
@@ -407,10 +406,6 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
   const [commandBarOpen, setCommandBarOpen] = useState(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [personalizationOpen, setPersonalizationOpen] = useState(false);
-  const [charterOpen, setCharterOpen] = useState(false);
-  useEffect(() => {
-    if (charterOpen && (currentEntry !== 'projects' || workspaceMode !== 'converse' || personalizationOpen)) setCharterOpen(false);
-  }, [charterOpen, currentEntry, workspaceMode, personalizationOpen]);
   const [chatIntentRevision, setChatIntentRevision] = useState(0)
   // 科研项目工作台内的模式页签（聊天/任务看板/研究成果）。
   const [projectViewMode, setProjectViewMode] = useState<ProjectViewMode>('chat')
@@ -783,13 +778,6 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
   }
 
   function renderPage() {
-    if (charterOpen) {
-      return (
-        <Suspense fallback={<div className="hydration-loading"><div className="hydration-spinner" /><p>Loading…</p></div>}>
-          <ContentCharterPage />
-        </Suspense>
-      );
-    }
     if (personalizationOpen) {
       return <PersonalizationCenter onActivateScenario={activatePersonalizationScenario} />;
     }
@@ -1029,15 +1017,6 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
                 >{t(item.labelKey)}</button>
               );
             })}
-            <button
-              className={`topbar-nav__item ${charterOpen ? 'active' : ''}`}
-              onClick={() => { setCharterOpen((open) => !open); setPersonalizationOpen(false); setStandalonePage(null); }}
-              aria-current={charterOpen ? 'page' : undefined}
-              aria-label="内容规范"
-              title="内容规范：写作风格、演示主题、绘图规范与质量阈值，全场景通用"
-              data-nav-id="charter"
-              data-testid="charter-trigger"
-            >内容规范</button>
           </div>
         </nav>
         <div className="topbar-actions">

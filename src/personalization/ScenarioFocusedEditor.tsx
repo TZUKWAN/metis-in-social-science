@@ -1,13 +1,33 @@
 import React from 'react';
 import { GripVertical, Plus, Trash2 } from 'lucide-react';
 import type {
-  DeliverableSection,
   PersonalizationDefinition,
   ScenarioDefinition,
   WorkflowStepBinding,
 } from '../../engine/runtime/PersonalizationRuntimeContract.js';
+import ScenarioDeliverableBlueprint from './ScenarioDeliverableBlueprint.js';
 
 type AcquireMode = 'search' | 'package' | 'url';
+
+const DELIVERABLE_TYPE_LABELS: Array<{ value: string; zh: string; en: string }> = [
+  { value: 'theory_paper', zh: '理论论文', en: 'Theory paper' },
+  { value: 'empirical_paper', zh: '实证论文', en: 'Empirical paper' },
+  { value: 'computational_paper', zh: '计算社会科学论文', en: 'Computational social science paper' },
+  { value: 'case_study', zh: '案例研究', en: 'Case study' },
+  { value: 'review_paper', zh: '综述论文', en: 'Review paper' },
+  { value: 'grant_nssfc', zh: '国家社科基金项目', en: 'NSSFC grant' },
+  { value: 'grant_nsfc', zh: '国家自然科学基金项目', en: 'NSFC grant' },
+  { value: 'grant_postdoc', zh: '博士后基金项目', en: 'Postdoc grant' },
+  { value: 'grant_other', zh: '其他项目申报', en: 'Other grant' },
+  { value: 'policy_report', zh: '政策报告', en: 'Policy report' },
+  { value: 'survey_report', zh: '调研报告', en: 'Survey report' },
+  { value: 'tech_report', zh: '技术报告', en: 'Technical report' },
+  { value: 'industry_report', zh: '行业报告', en: 'Industry report' },
+  { value: 'thesis', zh: '学位论文', en: 'Thesis' },
+  { value: 'opening_report', zh: '开题报告', en: 'Opening report' },
+  { value: 'completion_report', zh: '结题报告', en: 'Completion report' },
+  { value: 'custom', zh: '自定义', en: 'Custom' },
+];
 
 interface Props {
   zh: boolean;
@@ -36,8 +56,8 @@ function childSteps(workflow: readonly WorkflowStepBinding[], parentStepId: stri
   return workflow.filter((step) => (step.parentStepId ?? null) === parentStepId);
 }
 
-function chapterSections(draft: ScenarioDefinition): DeliverableSection[] {
-  return (draft.deliverable?.sections ?? []).filter((section) => section.kind === 'chapter');
+function chapterCountOf(draft: ScenarioDefinition): number {
+  return (draft.deliverable?.sections ?? []).filter((section) => section.kind === 'chapter').length;
 }
 
 function StepCard({
@@ -135,8 +155,7 @@ function StepCard({
 export default function ScenarioFocusedEditor(props: Props) {
   const { zh, draft, mutateDraft, ensureDeliverable, addStep, reorderSteps, busy } = props;
   const [draggedStepId, setDraggedStepId] = React.useState<string | null>(null);
-  const chapters = chapterSections(draft);
-  const chapterCount = chapters.length;
+  const chapterCount = chapterCountOf(draft);
   const secondary = draft.deliverable?.secondarySections ?? { min: 3, max: 5 };
   const rootSteps = childSteps(draft.workflow, null);
 
@@ -172,21 +191,6 @@ export default function ScenarioFocusedEditor(props: Props) {
     });
   };
 
-  const updateChapter = (chapterId: string, patch: Partial<DeliverableSection>) => mutateDraft((scenario) => {
-    ensureDeliverable(scenario);
-    scenario.deliverable!.sections = (scenario.deliverable!.sections ?? []).map((section) => section.id === chapterId ? { ...section, ...patch } : section);
-  });
-
-  const updateChildCount = (chapter: DeliverableSection, raw: string) => {
-    const target = Math.max(0, Math.min(24, Number(raw) || 0));
-    const children = [...(chapter.children ?? [])];
-    while (children.length < target) {
-      const ordinal = children.length + 1;
-      children.push({ id: nextId(`${chapter.id}-section`, ordinal), title: zh ? `${chapter.title}·${ordinal}` : `${chapter.title} ${ordinal}`, kind: 'section', status: 'required' });
-    }
-    updateChapter(chapter.id, { children: children.slice(0, target) });
-  };
-
   return (
     <div className="scenario-focus" data-testid="sw-focused-editor">
       <section className="scenario-focus__section" data-testid="sw-page-basics">
@@ -198,19 +202,29 @@ export default function ScenarioFocusedEditor(props: Props) {
       </section>
 
       <section className="scenario-focus__section" data-testid="sw-page-structure">
-        <header><span>02</span><div><h3>{zh ? '交付物' : 'Deliverable'}</h3><p>{zh ? '在左侧描述目标或约束后，这里呈现并允许核对、微调完整结构。' : 'Describe the objective or constraints on the left; review and fine-tune the complete structure here.'}</p></div></header>
+        <header><span>02</span><div><h3>{zh ? '交付物' : 'Deliverable'}</h3><p>{zh ? '交付物定义最终成果的结构与每一部分的写作规范；在左侧描述目标后，这里呈现并允许核对、微调。' : 'The deliverable defines the final artifact and per-part requirements; review and fine-tune it here.'}</p></div></header>
         <div className="scenario-focus__grid scenario-focus__grid--four">
+          <label><span>{zh ? '成果类型' : 'Deliverable type'}</span><select value={draft.deliverable?.type ?? 'custom'} onChange={(event) => mutateDraft((scenario) => { ensureDeliverable(scenario); scenario.deliverable!.type = event.target.value as NonNullable<ScenarioDefinition['deliverable']>['type']; })} disabled={busy} data-testid="sw-config-deliverable-type">{DELIVERABLE_TYPE_LABELS.map((item) => <option key={item.value} value={item.value}>{zh ? item.zh : item.en}</option>)}</select></label>
           <label><span>{zh ? '总篇幅' : 'Total length'}</span><input value={draft.deliverable?.globalLength ?? ''} placeholder={zh ? '例如 12000 字' : 'e.g. 12,000 words'} onChange={(event) => mutateDraft((scenario) => { ensureDeliverable(scenario); scenario.deliverable!.globalLength = event.target.value || undefined; })} disabled={busy} data-testid="sw-config-length" /></label>
           <label><span>{zh ? '一级章节数量' : 'Top-level chapters'}</span><input type="number" min={0} max={24} value={chapterCount} onChange={(event) => updateChapterCount(event.target.value)} disabled={busy} data-testid="sw-chapter-count" /></label>
-          <label><span>{zh ? '二级章节（每章最少）' : 'Second-level minimum'}</span><input type="number" min={0} max={24} value={secondary.min} onChange={(event) => updateSecondaryRange('min', event.target.value)} disabled={busy} data-testid="sw-secondary-min" /></label>
-          <label><span>{zh ? '二级章节（每章最多）' : 'Second-level maximum'}</span><input type="number" min={0} max={24} value={secondary.max} onChange={(event) => updateSecondaryRange('max', event.target.value)} disabled={busy} data-testid="sw-secondary-max" /></label>
           <label><span>{zh ? '语言' : 'Language'}</span><select value={draft.deliverable?.language ?? 'zh'} onChange={(event) => mutateDraft((scenario) => { ensureDeliverable(scenario); scenario.deliverable!.language = event.target.value === 'en' ? 'en' : 'zh'; })} disabled={busy}><option value="zh">{zh ? '中文' : 'Chinese'}</option><option value="en">{zh ? '英文' : 'English'}</option></select></label>
         </div>
-        <div className="scenario-focus__outline" aria-label={zh ? '当前结构预览' : 'Current structure preview'}>
-          <strong>{zh ? '当前结构预览（可直接编辑；每章可单独覆盖二级章节数）' : 'Current structure preview (editable; each chapter can override the child count)'}</strong>
-          {chapters.length === 0 && <p>{zh ? '暂未生成章节结构。' : 'No chapter structure yet.'}</p>}
-          {chapters.map((chapter, index) => <div key={chapter.id} className="scenario-focus__chapter"><label><span>{zh ? `第 ${index + 1} 章` : `Chapter ${index + 1}`}</span><input value={chapter.title} onChange={(event) => updateChapter(chapter.id, { title: event.target.value })} disabled={busy} /></label><label><span>{zh ? '二级章节数' : 'Sections'}</span><input type="number" min={0} max={24} value={(chapter.children ?? []).length} onChange={(event) => updateChildCount(chapter, event.target.value)} disabled={busy} /></label><ol>{(chapter.children ?? []).map((child) => <li key={child.id}><input value={child.title} onChange={(event) => updateChapter(chapter.id, { children: (chapter.children ?? []).map((item) => item.id === child.id ? { ...item, title: event.target.value } : item) })} disabled={busy} /></li>)}</ol></div>)}
+        <label className="scenario-focus__global-instructions">
+          <span>{zh ? '总体成文要求（整个成果共同遵守）' : 'Global writing instructions (whole artifact)'}</span>
+          <textarea
+            rows={4}
+            value={draft.deliverable?.globalInstructions ?? ''}
+            placeholder={zh ? '例如：全文学术化、用词准确克制；核心术语前后一致；各章形成连续论证；避免材料堆砌；引用必须服务于论证。' : 'e.g. academic register, consistent terminology, continuous argumentation.'}
+            onChange={(event) => mutateDraft((scenario) => { ensureDeliverable(scenario); scenario.deliverable!.globalInstructions = event.target.value || undefined; })}
+            disabled={busy}
+            data-testid="sw-config-global-instructions"
+          />
+        </label>
+        <div className="scenario-focus__grid scenario-focus__grid--four">
+          <label><span>{zh ? '二级章节（每章最少）' : 'Second-level minimum'}</span><input type="number" min={0} max={24} value={secondary.min} onChange={(event) => updateSecondaryRange('min', event.target.value)} disabled={busy} data-testid="sw-secondary-min" /></label>
+          <label><span>{zh ? '二级章节（每章最多）' : 'Second-level maximum'}</span><input type="number" min={0} max={24} value={secondary.max} onChange={(event) => updateSecondaryRange('max', event.target.value)} disabled={busy} data-testid="sw-secondary-max" /></label>
         </div>
+        <ScenarioDeliverableBlueprint zh={zh} draft={draft} mutateDraft={mutateDraft} ensureDeliverable={ensureDeliverable} busy={busy} />
       </section>
 
       <section className="scenario-focus__section scenario-focus__section--workflow" data-testid="sw-page-capability">
@@ -222,7 +236,7 @@ export default function ScenarioFocusedEditor(props: Props) {
 
       <section className="scenario-focus__section" data-testid="sw-page-rules">
         <header><span>04</span><div><h3>Scenario Metis.md</h3><p>{zh ? 'Global Metis.md → Scenario Metis.md → Project Metis.md；材料上传与 AI 修改都统一在左侧助手中完成。' : 'Global Metis.md → Scenario Metis.md → Project Metis.md; materials and AI changes are unified in the assistant on the left.'}</p></div></header>
-        <textarea className="scenario-focus__metis" rows={16} value={draft.scenarioMetis?.markdown ?? ''} onChange={(event) => mutateDraft((scenario) => { const current = scenario.scenarioMetis ?? { purpose: '', roleBoundaries: '', researchRules: '', writingRules: '', toolRules: '', qualityGates: '', failureRecovery: '', inheritanceOrder: ['global', 'scenario', 'project'] as const, markdown: '' }; scenario.scenarioMetis = { ...current, markdown: event.target.value }; })} disabled={busy} placeholder={zh ? '# Scenario Metis.md\n\n在这里写入研究规范、引用规则、写作风格、禁止事项和其他硬约束。' : '# Scenario Metis.md\n\nWrite the research rules, citation requirements, style, prohibitions, and other hard constraints here.'} data-testid="sw-scenario-metis-markdown" />
+        <textarea className="scenario-focus__metis" rows={16} value={draft.scenarioMetis?.markdown ?? ''} onChange={(event) => mutateDraft((scenario) => { const current = scenario.scenarioMetis ?? { purpose: '', roleBoundaries: '', researchRules: '', writingRules: '', toolRules: '', qualityGates: '', failureRecovery: '', inheritanceOrder: ['global', 'scenario', 'project'] as const, markdown: '' }; scenario.scenarioMetis = { ...current, markdown: event.target.value }; })} disabled={busy} placeholder={zh ? '# Scenario Metis.md\n\n定义整个场景长期遵守的研究行为规则，例如真实性、证据、引用、数据处理、工具使用、方法边界和失败处理。各章节具体写作要求请在「交付物」中定义。' : '# Scenario Metis.md\n\nDefine the scenario-wide research behavior rules (truthfulness, evidence, citation, data handling, tool usage, method boundaries, failure recovery). Per-section writing requirements belong to the Deliverable blueprint.'} data-testid="sw-scenario-metis-markdown" />
       </section>
     </div>
   );

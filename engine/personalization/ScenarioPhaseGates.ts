@@ -11,7 +11,12 @@
  */
 
 import type { ScenarioDefinition } from '../runtime/PersonalizationRuntimeContract.js';
-import { normalizeScenarioHarness, renderScenarioMetisMarkdown } from './ScenarioHarness.js';
+import {
+  collectDeliverableCompletenessGaps,
+  formatDeliverableCompletenessIssues,
+  normalizeScenarioHarness,
+  renderScenarioMetisMarkdown,
+} from './ScenarioHarness.js';
 
 export const SCENARIO_PHASE_ORDER = ['basics', 'deliverable', 'workflow', 'rules', 'output_plan'] as const;
 
@@ -70,6 +75,11 @@ function checkDeliverable(scenario: ScenarioDefinition): string[] {
       }
     }
   });
+  // 内容完整性门（2026-09-04 刘总要求）：骨架上屏不等于阶段通过。每个部分按
+  // kind 必填的 purpose/instructions/requirements/lengthTarget 与全局
+  // globalInstructions 缺失或为占位文本时，deliverable 阶段不予放行（与
+  // assessScenarioHarness 共用同一份集中规则，不在门禁处另写一套判断）。
+  issues.push(...formatDeliverableCompletenessIssues(collectDeliverableCompletenessGaps(scenario)));
   return issues;
 }
 

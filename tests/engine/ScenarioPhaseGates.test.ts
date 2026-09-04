@@ -31,9 +31,11 @@ function scenario(overrides: Partial<ScenarioDefinition> = {}): ScenarioDefiniti
     deliverable: {
       type: 'empirical_paper', language: 'zh', globalLength: '7500字', secondarySections: { min: 2, max: 4 },
       structurePolicy: { defaultSections: 1, suggestedMin: 1, suggestedMax: 1 },
-      sections: [{ id: 'sec-1', title: '引言', kind: 'chapter', status: 'required', children: [
-        { id: 'sec-1-1', title: '研究背景', kind: 'section', status: 'required', children: [] },
-        { id: 'sec-1-2', title: '研究问题', kind: 'section', status: 'required', children: [] },
+      globalInstructions: '全文学术化表达，核心术语前后一致，各章节形成连续论证，引用必须服务于论证。',
+      sections: [{ id: 'sec-1', title: '引言', kind: 'chapter', status: 'required',
+        purpose: '交代研究背景并引出研究问题。', instructions: '从现实背景切入，两段内完成问题提出，不逐篇罗列文献。', requirements: ['给出研究背景', '明确研究问题'], lengthTarget: '1500字', children: [
+        { id: 'sec-1-1', title: '研究背景', kind: 'section', status: 'required', purpose: '铺垫研究领域现状。', instructions: '概述领域发展脉络并指出当前张力。', requirements: ['覆盖近五年代表研究'], lengthTarget: '800字', children: [] },
+        { id: 'sec-1-2', title: '研究问题', kind: 'section', status: 'required', purpose: '提出本文核心研究问题。', instructions: '以一个主问题带两个子问题的形式陈述。', requirements: ['陈述核心问题'], lengthTarget: '700字', children: [] },
       ] }],
     },
     workflowPrompt: '先完成第一步，再把产出交给下一步；全程保证引用真实来源。',
@@ -66,6 +68,59 @@ describe('ScenarioPhaseGates', () => {
     expect(gate.ok).toBe(false);
     expect(gate.issues.some((issue) => issue.includes('globalLength'))).toBe(true);
     expect(gate.issues.some((issue) => issue.includes('sections'))).toBe(true);
+  });
+
+  it('deliverable gate rejects skeleton sections missing purpose/instructions/requirements/lengthTarget (2026-09-04 刘总要求)', () => {
+    const base = scenario();
+    base.deliverable!.globalInstructions = undefined;
+    base.deliverable!.sections = [{
+      id: 'sec-1', title: '引言', kind: 'chapter', status: 'required',
+      children: [
+        { id: 'sec-1-1', title: '研究背景', kind: 'section', status: 'required', children: [] },
+        { id: 'sec-1-2', title: '研究问题', kind: 'section', status: 'required', children: [] },
+      ],
+    }];
+    const gate = checkPhaseGate('deliverable', base);
+    expect(gate.ok).toBe(false);
+    expect(gate.issues.some((issue) => issue.includes('globalInstructions'))).toBe(true);
+    expect(gate.issues.some((issue) => issue.includes('purpose'))).toBe(true);
+    expect(gate.issues.some((issue) => issue.includes('instructions'))).toBe(true);
+    expect(gate.issues.some((issue) => issue.includes('requirements'))).toBe(true);
+    expect(gate.issues.some((issue) => issue.includes('lengthTarget'))).toBe(true);
+  });
+
+  it('deliverable gate rejects placeholder-only content (TBD/待定/根据实际情况)', () => {
+    const base = scenario();
+    base.deliverable!.sections = [{
+      id: 'sec-1', title: '引言', kind: 'chapter', status: 'required',
+      purpose: '根据实际情况', instructions: '待定', requirements: ['待补充'], lengthTarget: 'TBD',
+      children: [
+        { id: 'sec-1-1', title: '研究背景', kind: 'section', status: 'required', purpose: '铺垫。', instructions: '概述。', requirements: ['覆盖'], lengthTarget: '800字', children: [] },
+        { id: 'sec-1-2', title: '研究问题', kind: 'section', status: 'required', purpose: '提出。', instructions: '陈述。', requirements: ['陈述'], lengthTarget: '700字', children: [] },
+      ],
+    }];
+    const gate = checkPhaseGate('deliverable', base);
+    expect(gate.ok).toBe(false);
+    expect(gate.issues.some((issue) => issue.includes('写作要求'))).toBe(true);
+    expect(gate.issues.some((issue) => issue.includes('必须包含'))).toBe(true);
+    expect(gate.issues.some((issue) => issue.includes('目标篇幅'))).toBe(true);
+  });
+
+  it('deliverable gate does not demand lengthTarget from references kind (kind-aware rules)', () => {
+    const base = scenario();
+    base.deliverable!.sections = [
+      {
+        id: 'sec-1', title: '引言', kind: 'chapter', status: 'required',
+        purpose: '交代研究背景并引出研究问题。', instructions: '从现实背景切入。', requirements: ['给出研究背景'], lengthTarget: '1500字',
+        children: [
+          { id: 'sec-1-1', title: '研究背景', kind: 'section', status: 'required', purpose: '铺垫研究领域现状。', instructions: '概述领域发展脉络。', requirements: ['覆盖近五年代表研究'], lengthTarget: '800字', children: [] },
+          { id: 'sec-1-2', title: '研究问题', kind: 'section', status: 'required', purpose: '提出本文核心研究问题。', instructions: '以主问题带子问题陈述。', requirements: ['陈述核心问题'], lengthTarget: '700字', children: [] },
+        ],
+      },
+      { id: 'ref-1', title: '参考文献', kind: 'references', status: 'required', purpose: ' listing', instructions: '仅列出正文实际引用的文献，格式遵循 GB/T 7714。', requirements: ['与正文引用一一对应'], children: [] },
+    ];
+    const gate = checkPhaseGate('deliverable', base);
+    expect(gate.issues.filter((issue) => issue.includes('参考文献'))).toEqual([]);
   });
 
   it('deliverable gate rejects chapters without enough second-level children (2026-08-28 刘总要求)', () => {

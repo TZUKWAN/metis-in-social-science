@@ -102,8 +102,6 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
   // 同样提供场景下拉；创建后写入全局与项目级偏好。
   const [createScenarioOptions, setCreateScenarioOptions] = useState<Array<{ id: string; name: string }>>([]);
   const [createScenarioId, setCreateScenarioId] = useState('');
-  const [createCharterId, setCreateCharterId] = useState('');
-  const [createCharterOptions, setCreateCharterOptions] = useState<Array<{ id: string; name: string }>>([]);
   const [createBusy, setCreateBusy] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(() => loadWidth(SIDEBAR_KEY, 248, 180, 420));
   const [chatRightWidth, setChatRightWidth] = useState(() => loadWidth(CHAT_RIGHT_KEY, 320, 240, 560));
@@ -234,13 +232,9 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
     }
     setCreateBusy(false);
     if (result.success) {
-      if (createCharterId && newProjectId) {
-        await window.metis?.contentCharterSetActive?.({ id: createCharterId, projectId: newProjectId });
-      }
       setNewTitle('');
       setProjectDir('');
       setCreateScenarioId('');
-      setCreateCharterId('');
       setCreating(false);
     }
   };
@@ -328,21 +322,6 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
                 <option key={scenario.id} value={scenario.id}>{scenario.name}</option>
               ))}
             </Select>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-secondary)', marginTop: 4 }}>
-              内容规范：
-              <select
-                className="settings-input"
-                style={{ flex: 1, fontSize: 12 }}
-                value={createCharterId}
-                onChange={(event) => setCreateCharterId(event.target.value)}
-                aria-label="内容规范绑定"
-              >
-                <option value="">不绑定内容规范</option>
-                {createCharterOptions.map((charter) => (
-                  <option key={charter.id} value={charter.id}>{charter.name}</option>
-                ))}
-              </select>
-            </label>
             <div className="projects-page__create-actions">
               <Button
                 variant="primary"

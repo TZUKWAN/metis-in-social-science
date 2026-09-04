@@ -1245,8 +1245,6 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
   const [scenarioLoadState, setScenarioLoadState] = useState<'loading' | 'ready' | 'failed'>('loading');
   const [scenarioLoadRevision, setScenarioLoadRevision] = useState(0);
   const [activeScenarioId, setActiveScenarioId] = useState(DEFAULT_SCENARIO_ID);
-  const [charters, setCharters] = useState<Array<{ id: string; name: string }>>([]);
-  const [activeCharterId, setActiveCharterId] = useState<string | null>(null);
   const activeResearchProjectId = useResearchWorkspaceStore((state) => state.activeProjectId);
   const workspaceProjectsLoading = useResearchWorkspaceStore((state) => state.loading.projects);
   const currentProjectId = activeResearchProjectId ?? 'global';
@@ -4323,35 +4321,4 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
     rightPanel,
     previewPanel,
   });
-
-  useEffect(() => {
-    const metis = window.metis;
-    if (!metis?.contentCharterList) return;
-    void metis.contentCharterList({}).then((rows) => {
-      const list = (Array.isArray(rows) ? rows : []) as Array<{ id: string; name: string }>;
-      setCharters(list.map((row) => ({ id: String(row.id), name: String(row.name) })));
-    }).catch(() => undefined);
-    if (currentProjectId !== 'global' && metis?.contentCharterResolveActive) {
-      void metis.contentCharterResolveActive(currentProjectId).then((resolved) => {
-        setActiveCharterId(resolved && typeof resolved.id === 'string' && resolved.id !== 'charter-default' ? resolved.id : null);
-      }).catch(() => undefined);
-    } else {
-      setActiveCharterId(null);
-    }
-  }, [currentProjectId]);
-
-  useEffect(() => {
-    const metis = window.metis;
-    if (!metis?.contentCharterList) return;
-    void metis.contentCharterList({}).then((rows) => {
-      const list = (Array.isArray(rows) ? rows : []) as Array<{ id: string; name: string }>;
-      setCharters(list.map((row) => ({ id: String(row.id), name: String(row.name) })));
-    }).catch(() => undefined);
-    // 当前项目已绑定的章程（真实从项目元数据读取）
-    if (currentProjectId !== 'global' && metis?.contentCharterResolveActive) {
-      void metis.contentCharterResolveActive(currentProjectId).then((resolved) => {
-        setActiveCharterId(resolved && typeof resolved.id === 'string' && resolved.id !== 'charter-default' ? resolved.id : null);
-      }).catch(() => undefined);
-    }
-  }, [currentProjectId]);
 }
