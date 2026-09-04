@@ -2700,7 +2700,9 @@ describe('ChatPage', () => {
         await new Promise((resolve) => window.setTimeout(resolve, 250));
       });
 
-      expect(listPersonalization).toHaveBeenCalledTimes(2);
+      // 多对话架构第二期(2026-09-05):会话就绪触发目录重解析(第3次,合法重跑);
+      // 重试计数已跨重跑保持,不会无限重试。handoff 与失败提示必须保留。
+      expect(listPersonalization).toHaveBeenCalledTimes(3);
       expect(window.localStorage.getItem('metis:pendingChatIntent')).toContain(
         'user:scenarios/preserve-until-catalog-recovers',
       );

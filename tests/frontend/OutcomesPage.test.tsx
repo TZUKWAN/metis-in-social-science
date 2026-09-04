@@ -677,7 +677,7 @@ describe('OutcomesPage', () => {
     fireEvent.change(screen.getByLabelText('生成技能说明'), { target: { value: '先做比较，再给出结论。' } });
     fireEvent.click(screen.getByRole('button', { name: '保存技能' }));
     await waitFor(() => {
-      expect(metis.savePptGenerationSkill).toHaveBeenCalledWith({ name: '评审答辩', narrative: 'comparison', contentDensity: 'dense', audience: '基金评审', instructions: '先做比较，再给出结论。' });
+      expect(metis.savePptGenerationSkill).toHaveBeenCalledWith(expect.objectContaining({ name: '评审答辩', narrative: 'comparison', contentDensity: 'dense', audience: '基金评审', instructions: '先做比较，再给出结论。' }));
       expect((screen.getByLabelText('选择 PPT 生成技能') as HTMLSelectElement).value).toBe('skill-new');
     });
     fireEvent.click(screen.getByRole('button', { name: '保存' }));

@@ -1244,6 +1244,9 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
   const [scenarios, setScenarios] = useState<ScenarioDefinition[]>([]);
   const [scenarioLoadState, setScenarioLoadState] = useState<'loading' | 'ready' | 'failed'>('loading');
   const [scenarioLoadRevision, setScenarioLoadRevision] = useState(0);
+  // 目录重试计数跨 effect 重跑保持(多对话架构 2026-09-05)。
+  const catalogAttemptRef = useRef(0);
+  const revisionTokenRef = useRef(-1);
   const [activeScenarioId, setActiveScenarioId] = useState(DEFAULT_SCENARIO_ID);
   const activeResearchProjectId = useResearchWorkspaceStore((state) => state.activeProjectId);
   const workspaceProjectsLoading = useResearchWorkspaceStore((state) => state.loading.projects);
@@ -1726,22 +1729,36 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
             : (available.some((scenario) => scenario.id === remembered)
                 ? remembered
                 : DEFAULT_SCENARIO_ID));
+          catalogAttemptRef.current = 0;
           setScenarioLoadState('ready');
         })
         .catch(() => {
           if (cancelled) return;
           if (attempt < SCENARIO_CATALOG_MAX_ATTEMPTS) {
             retryTimer = window.setTimeout(
-              () => loadCatalog(attempt + 1),
+              () => { catalogAttemptRef.current = attempt; loadCatalog(attempt + 1); },
               SCENARIO_CATALOG_RETRY_DELAY_MS,
             );
             return;
           }
+          catalogAttemptRef.current = attempt;
           setScenarios([]);
           setScenarioLoadState('failed');
         });
     };
-    loadCatalog(1);
+    // 多对话架构(2026-09-05):effect 因会话切换重跑时,重试计数跨重跑保持,
+    // 避免会话就绪把有限重试变成无限重试;手动「重新加载场景」按钮负责清零。
+    if (revisionTokenRef.current !== scenarioLoadRevision) {
+      catalogAttemptRef.current = 0;
+      revisionTokenRef.current = scenarioLoadRevision;
+    }
+    // 重试上限已达时,effect 重跑(会话切换)不再自动调用,保持失败态等待手动重试。
+    if (catalogAttemptRef.current >= SCENARIO_CATALOG_MAX_ATTEMPTS) {
+      setScenarios([]);
+      setScenarioLoadState('failed');
+      return () => { cancelled = true; };
+    }
+    loadCatalog(catalogAttemptRef.current + 1);
     return () => {
       cancelled = true;
       if (retryTimer !== undefined) window.clearTimeout(retryTimer);
