@@ -14,7 +14,6 @@ import { Select } from './ui';
 import SettingsProjectArchiveSection from './SettingsProjectArchiveSection';
 import SettingsStorageSection from './SettingsStorageSection';
 import SettingsWeChatBotSection from './SettingsWeChatBotSection';
-import ContentCharterSection from './ContentCharterSection';
 import SettingsImageGenerationSection from './SettingsImageGenerationSection';
 import ProviderProfilesSection from './ProviderProfilesSection';
 import SettingsAdvancedDialog from './SettingsAdvancedDialog';
@@ -180,8 +179,6 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
       {/* WeChat Bot (METIS-WX-1) */}
       <SettingsWeChatBotSection />
 
-      {/* 内容规范（2026-09-01 刘总）：全局表达章程，全场景通用 */}
-      <ContentCharterSection />
 
       {/* 高级设置按钮 */}
       <div className="settings-group">
