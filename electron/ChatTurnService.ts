@@ -1,4 +1,5 @@
 import type { AgentLoop } from '../engine/core/AgentLoop.js';
+import type { Citation } from '../engine/core/Citation.js';
 import type { AgentRunResult, ChatMessage } from '../engine/core/types.js';
 import { DEFAULT_MAX_TURNS } from '../engine/core/Config.js';
 import type { PersistenceStore } from '../engine/persistence/PersistenceStore.js';
@@ -249,6 +250,70 @@ export async function runPersistedChatTurn({
  * 该函数是 runPersistedChatTurn 与 O15 runEphemeralChatTurn 共用的出口，
  * 保证两种路径的状态/诊断口径完全一致。
  */
+const CITATION_CAPABLE_TOOLS = new Set([
+  'web_search', 'web_fetch', 'ncpssd_search', 'search_papers', 'arxiv_search',
+  'openalex_lookup', 'crossref_lookup', 'search_library', 'web_import',
+]);
+
+/**
+ * 任务7 Web Research 3.1(2026-09-05 刘总要求):Citation 贯通——从本轮检索类
+ * 工具结果中提取真实来源(URL/title),生成可点击引用,修复"调过工具=有引用"
+ * 的断链:ChatPage 的 O8 渲染早已存在,但主进程一直返回空数组。
+ */
+function collectCitations(result: AgentRunResult): Citation[] {
+  const citations: Citation[] = [];
+  const seen = new Set<string>();
+  let index = 1;
+  for (const toolResult of result.toolResults) {
+    if (!CITATION_CAPABLE_TOOLS.has(toolResult.toolName) || toolResult.status !== 'ok') continue;
+    try {
+      const parsed = JSON.parse(toolResult.content) as Record<string, unknown>;
+      const candidates: Array<{ title: string; url?: string; doi?: string }> = [];
+      const pushCandidate = (title: unknown, url: unknown, doi?: unknown): void => {
+        if (typeof title === 'string' && title.trim()) {
+          candidates.push({ title: title.slice(0, 200), url: typeof url === 'string' ? url.slice(0, 1000) : undefined, doi: typeof doi === 'string' ? doi.slice(0, 200) : undefined });
+        }
+      };
+      if (toolResult.toolName === 'web_search') {
+        const result2 = parsed.result as Record<string, unknown> | undefined;
+        if (result2) {
+          if (Array.isArray(result2.results)) {
+            for (const item of result2.results as Array<Record<string, unknown>>) {
+              pushCandidate(item.title, item.url);
+            }
+          }
+          if (Array.isArray(result2.relatedTopics)) {
+            for (const item of result2.relatedTopics as Array<Record<string, unknown>>) {
+              pushCandidate(item.text, item.url);
+            }
+          }
+        }
+      } else {
+        const papers = parsed.papers ?? parsed.results;
+        if (Array.isArray(papers)) {
+          for (const item of papers as Array<Record<string, unknown>>) {
+            pushCandidate(item.title, item.url, item.doi);
+          }
+        }
+      }
+      for (const candidate of candidates) {
+        const key = (candidate.url ?? candidate.doi ?? candidate.title).toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        citations.push({
+          id: String(index),
+          label: candidate.title,
+          ...(candidate.url ? { url: candidate.url } : {}),
+          ...(candidate.doi ? { doi: candidate.doi } : {}),
+        });
+        index += 1;
+        if (index > 20) return citations;
+      }
+    } catch { /* 非 JSON 工具结果忽略 */ }
+  }
+  return citations;
+}
+
 function presentRunResult(
   turnId: string,
   result: AgentRunResult,
@@ -284,7 +349,7 @@ function presentRunResult(
     status,
     answer: verifiedAnswer ? result.finalText : '',
     diagnostics,
-    citations: [],
+    citations: collectCitations(result),
     events: presentTraceEvents(result),
   };
   const decoded = AgentResponseSchema.safeParse(candidate);
