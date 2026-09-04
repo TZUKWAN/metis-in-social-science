@@ -2377,6 +2377,7 @@ function broadcastGoalChanged(_sender: Electron.WebContents, goal: Goal, statusO
       status: statusOverride ?? goal.status,
       priority: goal.priority,
       createdAt: goal.createdAt,
+      ...(goal.projectId ? { projectId: goal.projectId } : {}),
     });
     if (!event) return;
     for (const window of BrowserWindow.getAllWindows()) {

@@ -608,8 +608,9 @@ const api = {
       await ipcRenderer.invoke('session:create', decoded.value),
     );
   },
-  listSessions: async () => {
-    const decoded = decodeSessionListRequest({});
+  listSessions: async (request?: { projectId?: string; includeArchived?: boolean }) => {
+    // 多对话架构(2026-09-04):支持 projectId 过滤;契约仍严格校验。
+    const decoded = decodeSessionListRequest(request ?? {});
     if (!decoded.ok) return createSessionListRecovery();
     return decodeSessionListResponse(
       await ipcRenderer.invoke('session:list', decoded.value),

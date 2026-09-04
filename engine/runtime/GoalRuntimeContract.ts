@@ -288,6 +288,8 @@ export const GoalChangedEventSchema = z.strictObject({
   status: GoalStatusInputSchema,
   priority: z.enum(['low', 'medium', 'high', 'urgent']).optional(),
   createdAt: TimestampSchema,
+  /** 多对话架构(2026-09-05):目标归属项目,渲染端按当前项目过滤,防跨项目串扰。 */
+  projectId: RuntimeIdSchema.optional(),
 });
 
 export type GoalChangedEvent = z.infer<typeof GoalChangedEventSchema>;

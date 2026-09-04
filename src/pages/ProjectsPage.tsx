@@ -110,6 +110,26 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
   const [previewWidth, setPreviewWidth] = useState(() => loadWidth(PREVIEW_KEY, 520, 360, 800));
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => loadBool(SIDEBAR_COLLAPSED_KEY, false));
   const [showArchived, setShowArchived] = useState(false);
+  // ── 多对话架构第二期(2026-09-05):Project → Conversation 树 ──
+  const [projectSessions, setProjectSessions] = useState<Array<{ id: string; title: string; lastActivity: number; messageCount: number }>>([]);
+  const activeTreeProjectId = showArchived ? null : activeProjectId;
+  useEffect(() => {
+    let alive = true;
+    if (!activeTreeProjectId || !window.metis?.listSessions) {
+      setProjectSessions([]);
+      return () => { alive = false; };
+    }
+    void window.metis.listSessions({ projectId: activeTreeProjectId }).then((payload) => {
+      if (!alive) return;
+      const items = (payload?.sessions ?? []) as Array<{ id: string; title?: string; lastActivity: number; messageCount: number; archived?: boolean }>;
+      setProjectSessions(items.filter((item) => !item.archived).map((item) => ({
+        id: item.id,
+        title: item.title || '新对话',
+        lastActivity: item.lastActivity,
+        messageCount: item.messageCount,
+      })));
+    }).catch(() => { if (alive) setProjectSessions([]); });
+  }, [activeTreeProjectId, showArchived]);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const pageRef = useRef<HTMLDivElement>(null);
   const collapsedBeforePreviewRef = useRef<boolean | null>(null);
@@ -417,6 +437,30 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
                     {deleteConfirmId === project.id ? t('projects.confirmDelete') : t('projects.delete')}
                   </Button>
                 </div>
+                {activeProjectId === project.id && !showArchived && (
+                  <div className="projects-page__conversations" data-testid="projects-conversation-tree">
+                    {projectSessions.map((session) => (
+                      <button
+                        key={session.id}
+                        type="button"
+                        className="projects-page__conversation"
+                        data-testid={`projects-conversation-${session.id}`}
+                        onClick={() => {
+                          void researchWorkspaceStore.getState().setActiveProject(project.id).then(() => {
+                            onModeChange('chat');
+                            window.dispatchEvent(new CustomEvent('metis:switch-session', { detail: { sessionId: session.id } }));
+                          });
+                        }}
+                      >
+                        <span className="projects-page__conversation-title">{session.title}</span>
+                        <span className="projects-page__conversation-meta">{session.messageCount}</span>
+                      </button>
+                    ))}
+                    {projectSessions.length === 0 && (
+                      <span className="projects-page__conversation-empty">还没有对话——切到「聊天」页签即可开始。</span>
+                    )}
+                  </div>
+                )}
               </li>
             ))}
           {projects.filter((project) => (showArchived ? project.lifecycle === 'archived' : project.lifecycle !== 'archived')).length === 0 && !loadingProjects && (

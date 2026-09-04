@@ -2110,6 +2110,15 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
       setHistoryReady(true);
     }
     void refreshArtifactsForSession(sessionId, generation);
+    // 多对话架构第二期:恢复该会话的输入草稿与当前工作对象。
+    try {
+      const draftMap = JSON.parse(window.localStorage.getItem('metis:chat-drafts') || '{}') as Record<string, string>;
+      setInput(typeof draftMap[sessionId] === 'string' ? draftMap[sessionId] : '');
+    } catch { setInput(''); }
+    try {
+      const storedArtifacts = window.localStorage.getItem(`metis:session-artifacts:${sessionId}`);
+      setActiveArtifactIds(storedArtifacts ? (JSON.parse(storedArtifacts) as string[]) : []);
+    } catch { setActiveArtifactIds([]); }
   }, [currentSessionId, diagnosticMode, hydrateAgentRunHistory, isCurrentSessionGeneration, refreshArtifactsForSession, t]);
 
   // Follow the latest message only while the user is near the bottom. Once the
@@ -2247,7 +2256,11 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
     // execution completion): refresh the matching card's phase so both views
     // stay in sync. Execution step events above still own step-level detail.
     if (metis.onGoalChanged) {
-      unsubs.push(metis.onGoalChanged(({ goalId, status }) => {
+      unsubs.push(metis.onGoalChanged((payload) => {
+        const { goalId, status } = payload;
+        // 多对话架构(2026-09-05):非当前项目的目标变更直接忽略,防跨项目串扰。
+        const eventProjectId = (payload as { projectId?: string }).projectId;
+        if (eventProjectId && activeResearchProjectId && eventProjectId !== activeResearchProjectId) return;
         const idx = goalCardIndexMapRef.current.get(goalId);
         if (idx === undefined) return;
         updateGoalCard(idx, (card) => {
@@ -2258,7 +2271,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
     }
 
     return () => { for (const u of unsubs) u(); };
-  }, [acceptGoalEvent, isCurrentChatRequest, updateGoalCard]);
+  }, [acceptGoalEvent, isCurrentChatRequest, updateGoalCard, activeResearchProjectId]);
 
   // Public Agent execution events are emitted by main while the same request
   // is in flight. A renderer-generated turnId is the only join key: delayed
@@ -2495,6 +2508,15 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
         role: (m.role === 'tool' || m.role === 'goal') ? 'assistant' : m.role,
         content: m.content,
       }));
+      // 多对话架构第二期(2026-09-05):当前工作对象注入(真实进入模型上下文)。
+      if (activeArtifactIds.length > 0) {
+        const artifactTitles = activeArtifactIds
+          .map((artifactId) => projectOutcomes.find((outcome) => outcome.id === artifactId || `outcome:${outcome.id}` === artifactId)?.title)
+          .filter((title): title is string => Boolean(title));
+        if (artifactTitles.length > 0) {
+          history.unshift({ role: 'system', content: `[当前工作对象] ${artifactTitles.join('、')}。用户说"这篇文章/当前成果/这份PPT"等时指上述对象;对它的修改请使用对应的成果编辑能力。` });
+        }
+      }
 
       const response = decodeAgentResponse(await metis.agentChat(
         request.sessionId,
@@ -3180,6 +3202,17 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
     return () => window.removeEventListener('metis:scenario-continue', listener);
   }, []);
 
+  // 多对话架构第二期(2026-09-05):左侧栏 Conversation 树点击对话行 → typed 事件切换会话。
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const sessionId = (event as CustomEvent<{ sessionId?: string }>).detail?.sessionId;
+      if (!sessionId || sessionId === currentSessionId) return;
+      if (sessions.some((item) => item.id === sessionId)) activateSession(sessionId);
+    };
+    window.addEventListener('metis:switch-session', handler);
+    return () => window.removeEventListener('metis:switch-session', handler);
+  }, [currentSessionId, sessions, activateSession]);
+
   async function runSendTurn(raw: string, scenarioOverride?: string) {
 
     // Slash commands: intercept before scenario matching / task detection.
@@ -3688,6 +3721,16 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
     type: ArtifactItemType;
     updatedAt: number;
   }>>([]);
+  // ── 多对话架构第二期(2026-09-04/05 刘总要求)──
+  const [activeArtifactIds, setActiveArtifactIds] = useState<string[]>([]);
+  const writeSessionDraft = (sessionId: string, value: string): void => {
+    try {
+      const map = JSON.parse(window.localStorage.getItem('metis:chat-drafts') || '{}') as Record<string, string>;
+      if (value) map[sessionId] = value.slice(0, 8000);
+      else delete map[sessionId];
+      window.localStorage.setItem('metis:chat-drafts', JSON.stringify(map));
+    } catch { /* best-effort */ }
+  };
 
   useEffect(() => {
     let alive = true;
@@ -3945,6 +3988,30 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
                 {scenarios.map((scenario) => <option key={scenario.id} value={scenario.id}>{scenario.name}</option>)}
               </select>
             </label>
+            {/* 多对话架构第二期(2026-09-05):当前工作对象——正式持久化到 session,发送时注入模型上下文 */}
+            {activeResearchProjectId && projectOutcomes.length > 0 && (
+              <label>
+                <span>{locale === 'zh' ? '当前成果' : 'Artifact'}</span>
+                <select
+                  value={activeArtifactIds[0] ?? ''}
+                  onChange={(event) => {
+                    const next = event.target.value ? [event.target.value] : [];
+                    setActiveArtifactIds(next);
+                    try {
+                      if (currentSessionId) {
+                        void window.metis?.updateSession?.(currentSessionId, { activeArtifactIds: next });
+                        window.localStorage.setItem(`metis:session-artifacts:${currentSessionId}`, JSON.stringify(next));
+                      }
+                    } catch { /* best-effort */ }
+                  }}
+                  aria-label={locale === 'zh' ? '当前工作对象' : 'Active artifact'}
+                  data-testid="chat-active-artifact"
+                >
+                  <option value="">{locale === 'zh' ? '不指定' : 'None'}</option>
+                  {projectOutcomes.map((outcome) => <option key={outcome.id} value={outcome.id}>{outcome.title}</option>)}
+                </select>
+              </label>
+            )}
             {scenarioLoadState === 'loading' && (
               <div role="status" className="chat-scenario-catalog-status">{t('chat.scenarioLoading')}</div>
             )}
@@ -4250,6 +4317,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
                   value={input}
                   onChange={(e) => {
                     setInput(e.target.value);
+                    if (currentSessionId) writeSessionDraft(currentSessionId, e.target.value);
                     setSlashActiveIndex(0);
                     setSlashMenuDismissed(false);
                   }}

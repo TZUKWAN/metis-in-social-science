@@ -1582,7 +1582,11 @@ describe('ChatPage', () => {
     const input = within(screen.getByTestId('workspace-slot')).getByPlaceholderText('提出一个研究问题...');
     fireEvent.change(input, { target: { value: '共享状态验证' } });
     fireEvent.click(within(screen.getByTestId('left-slot')).getByText('新会话'));
-    expect((input as HTMLTextAreaElement).value).toBe('共享状态验证');
+    // 多对话架构第二期(2026-09-05):草稿按会话隔离——切换到新会话后输入框为空
+    //(新会话没有草稿),但旧会话草稿已持久化,切回时恢复。
+    // 多对话架构第二期:切换到新会话后,输入框按新会话的草稿呈现(新会话从空开始),
+    // 不会把上一会话的草稿串进新会话。
+    expect((input as HTMLTextAreaElement).value).toBe('');
     expect(within(screen.getByTestId('left-slot')).getAllByText('新会话').length).toBeGreaterThanOrEqual(1);
   });
 
