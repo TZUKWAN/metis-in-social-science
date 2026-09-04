@@ -2791,6 +2791,18 @@ function createAgentLoop(
   return { agentLoop, approvalStore };
 }
 
+/** 任务7 能力系统(2026-09-05):Scenario Builder 专属工具——普通 Agent 不可见。 */
+const COMPILER_ONLY_TOOL_NAMES = new Set([
+  SCENARIO_MARKET_SEARCH_TOOL_NAME,
+  SCENARIO_INSTALL_EXTENSION_TOOL_NAME,
+  SCENARIO_PLAN_WORKFLOW_TOOL_NAME,
+  SCENARIO_PLAN_SECTIONS_TOOL_NAME,
+]);
+
+function chatToolsExcludingCompilerTools(allNames: readonly string[]): string[] {
+  return allNames.filter((name) => !COMPILER_ONLY_TOOL_NAMES.has(name));
+}
+
 function buildRuntimeRegistry(): ToolRegistry {
   return new ToolRegistry();
 }
@@ -7527,6 +7539,11 @@ function setupIPC(): void {
     } else if (scenarioId) {
       return createChatTurnErrorResponse(requestId, 'error', 'personalization_unavailable');
     }
+    // 任务7 能力系统(2026-09-05 刘总要求):普通聊天(无场景解析)对 Scenario Builder
+    // 专属工具零可见——显式排除编译/安装工具,防止普通 Agent 触发市场安装。
+    if (!resolvedManifest) {
+      allowedTools = chatToolsExcludingCompilerTools(builtinToolNames());
+    }
 
     const fundingToolScope = {
       ownerId: FUNDING_LOCAL_OWNER_ID,
@@ -10861,7 +10878,43 @@ function buildFundingTemplateDigest(pkg: { source?: { sourceFormat?: string; pag
   // ── 市场：技能/MCP 检索（GitHub 源，令牌走加密凭据库）──
   const marketService = new MarketService(() => personalizationSecretVault);
   // 场景编译循环的市场搜索注入（2026-08-23）：只读，来源白名单由工具侧控制。
-  scenarioAcquisition.search = (kind, query, source) => marketService.search(kind, query, source as Parameters<MarketService['search']>[2]);
+  // 任务7 Capability Vault（2026-09-05 刘总要求）：检索本地优先——先查已装入
+  // Personalization 库的定义（可直接返回 definition id 供绑定），无命中再降级外部市场。
+  scenarioAcquisition.search = async (kind, query, source) => {
+    try {
+      if (personalizationRepository) {
+        const localKind = kind === 'skill' || kind === 'mcp' ? kind : undefined;
+        const definitions = personalizationRepository.list(localKind, false);
+        const terms = query.toLowerCase().split(/\s+/u).filter(Boolean);
+        const matched = definitions.filter((definition) => {
+          const haystack = `${definition.name}
+${definition.description}`.toLowerCase();
+          return terms.some((term) => haystack.includes(term));
+        }).slice(0, 8);
+        if (matched.length > 0) {
+          return {
+            ok: true as const,
+            source: 'local-vault',
+            results: matched.map((definition) => ({
+              kind: 'name' as const,
+              name: definition.name,
+              owner: 'local',
+              repo: definition.id,
+              description: definition.description.slice(0, 300),
+              url: '',
+              installUrl: '',
+              installable: false,
+              defaultBranch: '',
+              stars: 0,
+              source: `local:${kind}`,
+              localDefinitionId: definition.id,
+            })),
+          };
+        }
+      }
+    } catch { /* 本地 Vault 检索失败降级外部市场 */ }
+    return marketService.search(kind, query, source as Parameters<MarketService['search']>[2]);
+  };
   ipcMain.handle('market:search', async (event, rawRequest: unknown) => {
     try {
       requireRendererMainFrame(event);
