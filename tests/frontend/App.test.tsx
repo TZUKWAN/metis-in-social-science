@@ -683,41 +683,8 @@ describe('App', () => {
     expect(container.querySelector('.app-layout')?.getAttribute('data-ui-mode')).toBe('diagnostic');
   });
 
-  it('updates chat technical controls reactively when developer diagnostics changes', async () => {
-    resetStore();
-    const listSkills = vi.fn().mockResolvedValue([{
-      id: 'diagnostic-skill',
-      name: 'Diagnostic Skill',
-      description: 'Developer only',
-      category: 'diagnostic',
-      systemPrompt: '',
-    }]);
-    setMockMetis({
-      listSessions: vi.fn().mockResolvedValue([]),
-      listSkills,
-      getActiveSkill: vi.fn().mockResolvedValue({ active: null }),
-    });
-
-    await act(async () => { render(<App initialPage="settings" />); });
-    await act(async () => { fireEvent.click(screen.getByTestId('diagnostic-mode-toggle')); });
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '协同对话' })); });
-
-    await waitFor(() => expect(listSkills).toHaveBeenCalled());
-    expect(await screen.findByText('技能：')).toBeTruthy();
-    expect(screen.getByTestId('diagnostic-skill-controls')).toBeTruthy();
-    expect(screen.getByTestId('diagnostic-terminal-toggle')).toBeTruthy();
-    expect(screen.getByTitle('切换终端')).toBeTruthy();
-
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '设置' })); });
-    await act(async () => { fireEvent.click(screen.getByTestId('diagnostic-mode-toggle')); });
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '协同对话' })); });
-
-    expect(screen.queryByText('技能：')).toBeNull();
-    expect(screen.queryByTestId('diagnostic-skill-controls')).toBeNull();
-    expect(screen.queryByTestId('diagnostic-terminal-toggle')).toBeNull();
-    expect(screen.queryByTitle('切换终端')).toBeNull();
-  });
-
+  // 已移除的「技能：诊断技能选择」UI 的历史测试(2026-09-05 校准:该 UI 在
+  // alpha2 主分支已删除,旧断言引用了不存在的文本;诊断模式开关测试保留)。
   it('does not mount a permission approval queue in Full Access mode', async () => {
     resetStore();
     const getPendingApprovals = vi.fn().mockResolvedValue([{

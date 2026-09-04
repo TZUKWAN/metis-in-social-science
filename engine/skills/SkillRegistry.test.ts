@@ -7,6 +7,10 @@ import { getShellToolSpecs } from '../tools/builtin/shell-tools.js';
 import { getResearchToolSpecs } from '../tools/builtin/research-tools.js';
 import { PLUGIN_TOOLS } from '../tools/builtin/PluginMarketplace.js';
 import { getEvidenceToolSpecs } from '../tools/builtin/evidence-tools.js';
+import { WRITING_TOOL_SPECS } from '../tools/builtin/writing-tools.js';
+import { JOURNAL_CATALOG_TOOL_SPECS } from '../tools/builtin/journal-catalog-tools.js';
+import { STATISTICS_TOOL_SPECS } from '../tools/builtin/statistics-tools.js';
+import { NOTES_TOOL_SPECS } from '../tools/builtin/notes-tools.js';
 
 describe('SkillRegistry', () => {
   it('registers default skills without duplicates', () => {
@@ -56,6 +60,11 @@ describe('SkillRegistry', () => {
       ...getResearchToolSpecs(),
       ...PLUGIN_TOOLS,
       ...getEvidenceToolSpecs(),
+      // 任务7(2026-09-05):与注册面(buildRuntimeRegistry)对齐——写作/期刊目录等工具同属内置。
+      ...WRITING_TOOL_SPECS,
+      ...JOURNAL_CATALOG_TOOL_SPECS,
+      ...STATISTICS_TOOL_SPECS,
+      ...NOTES_TOOL_SPECS,
     ];
     const registeredNames = new Set(allSpecs.map((spec) => spec.name));
     for (const skill of DEFAULT_SKILLS) {
