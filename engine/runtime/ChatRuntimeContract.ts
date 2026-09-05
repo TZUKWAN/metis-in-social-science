@@ -231,6 +231,22 @@ export type GoalSnapshot = z.infer<typeof GoalSnapshotSchema>;
 
 const StoredMessageRoleSchema = z.enum(['user', 'assistant', 'system', 'tool']);
 
+/**
+ * O8 引用条目(engine/core/Citation.ts Citation 的契约镜像):collectCitations
+ * 与 extractDoiCitations 产出该形状,ChatPage 的 chat-citations 芯片按
+ * id/label/url/doi 渲染。与 ArtifactManifest 的 VerifiedCitation(sourceId/
+ * verified)是两套用途不同的引用。
+ */
+export const CitationChipSchema = z.strictObject({
+  id: boundedText(64),
+  label: boundedText(CHAT_RUNTIME_LIMITS.shortTextChars),
+  paperId: RuntimeIdSchema.optional(),
+  doi: boundedText(256).optional(),
+  url: boundedText(1_200).optional(),
+  page: z.number().int().min(1).optional(),
+  quote: boundedText(2_000).optional(),
+});
+
 const HistoryRunMetadataSchema = z.strictObject({
   runId: RuntimeIdSchema.optional(),
   turnId: RuntimeIdSchema.optional(),
@@ -239,6 +255,7 @@ const HistoryRunMetadataSchema = z.strictObject({
   completedAt: TimestampSchema.optional(),
   lastSequence: z.number().int().min(-1).max(Number.MAX_SAFE_INTEGER).optional(),
   eventsPruned: z.boolean().optional(),
+  citations: z.array(CitationChipSchema).max(CHAT_RUNTIME_LIMITS.citations).optional(),
 });
 
 const StoredMessageRowSchema = z.strictObject({
@@ -479,7 +496,7 @@ export const AgentResponseSchema = z.strictObject({
   status: AgentStatusInputSchema,
   answer: boundedText(CHAT_RUNTIME_LIMITS.answerChars),
   diagnostics: z.array(DiagnosticSchema).max(CHAT_RUNTIME_LIMITS.diagnostics),
-  citations: z.array(VerifiedCitationSchema).max(CHAT_RUNTIME_LIMITS.citations),
+  citations: z.array(CitationChipSchema).max(CHAT_RUNTIME_LIMITS.citations),
   events: z.array(AgentPresentationEventSchema).max(CHAT_RUNTIME_LIMITS.agentEvents),
 }).superRefine((value, context) => {
   if (value.status === 'completed' && value.answer.trim().length === 0) {
@@ -497,18 +514,18 @@ export const AgentResponseSchema = z.strictObject({
     });
   }
 
-  const sourceIds = new Set<string>();
+  const citationIds = new Set<string>();
   for (let index = 0; index < value.citations.length; index += 1) {
     const citation = value.citations[index];
     if (!citation) continue;
-    if (sourceIds.has(citation.sourceId)) {
+    if (citationIds.has(citation.id)) {
       context.addIssue({
         code: 'custom',
-        message: 'Citation source IDs must be unique',
-        path: ['citations', index, 'sourceId'],
+        message: 'Citation IDs must be unique',
+        path: ['citations', index, 'id'],
       });
     }
-    sourceIds.add(citation.sourceId);
+    citationIds.add(citation.id);
   }
 });
 

@@ -45,7 +45,7 @@ import {
 } from '../presentation/SafeMarkdown';
 import { StreamingMarkdown } from '../presentation/StreamingMarkdown';
 import { useFollowScroll } from '../hooks/useFollowScroll';
-import { extractDoiCitations } from '../../engine/core/Citation.js';
+import { extractCitations, extractDoiCitations } from '../../engine/core/Citation.js';
 import { toggleForkActive, loadForkMap, saveForkMap, type ForkRecord } from '../../engine/core/MessageFork.js';
 import {
   AgentExecutionEventSchema,
@@ -2040,6 +2040,9 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
               content: item.content,
               timestamp: now(),
               ...(run ? { run } : {}),
+              // O8: citations persist on message metadata; rehydrate so chips
+              // survive reload, not just the live turn.
+              ...(extractCitations(metadata).length > 0 ? { citations: extractCitations(metadata) } : {}),
             };
           }
           if (item.kind === 'goal') {
@@ -2593,7 +2596,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
           // the accumulated stream, keep the content field untouched so the
           // bubble does not re-parse the full document a second time.
           setMessages((prev) => prev.map((m, i) => i === streamedIndex
-            ? { ...m, ...(m.content === response.answer ? {} : { content: response.answer }), streaming: false, durationMs, run: runActivity(response, response.turnId === request.turnId ? partsForAgentTurn(request.turnId) : createAssistantMessageParts()) }
+            ? { ...m, ...(m.content === response.answer ? {} : { content: response.answer }), streaming: false, durationMs, run: runActivity(response, response.turnId === request.turnId ? partsForAgentTurn(request.turnId) : createAssistantMessageParts()), ...(response.citations?.length ? { citations: response.citations } : {}) }
             : m));
         } else {
           const assistantMsg: ChatMessage = {
@@ -2603,6 +2606,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
             startedAt: request.startedAt,
             durationMs,
             run: runActivity(response, response.turnId === request.turnId ? partsForAgentTurn(request.turnId) : createAssistantMessageParts()),
+            ...(response.citations?.length ? { citations: response.citations } : {}),
           };
           setMessages((prev) => [...prev, assistantMsg]);
           if (response.answer.length > 200 || /^#|^\*|\|.*\||```/.test(response.answer)) {
@@ -3528,7 +3532,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
           // Settle dedupe identical to handleChatFlow: skip the content
           // replacement when the authoritative answer matches the stream.
           setMessages((prev) => prev.map((m, i) => i === streamedIndex
-            ? { ...m, ...(m.content === response.answer ? {} : { content: response.answer }), streaming: false, durationMs, run: runActivity(response, response.turnId === request.turnId ? partsForAgentTurn(request.turnId) : createAssistantMessageParts()) }
+            ? { ...m, ...(m.content === response.answer ? {} : { content: response.answer }), streaming: false, durationMs, run: runActivity(response, response.turnId === request.turnId ? partsForAgentTurn(request.turnId) : createAssistantMessageParts()), ...(response.citations?.length ? { citations: response.citations } : {}) }
             : m));
         } else {
           const assistantMsg: ChatMessage = {
@@ -3538,6 +3542,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
             startedAt: request.startedAt,
             durationMs,
             run: runActivity(response, response.turnId === request.turnId ? partsForAgentTurn(request.turnId) : createAssistantMessageParts()),
+            ...(response.citations?.length ? { citations: response.citations } : {}),
             // O16: the regenerated answer is the newest active sibling in its
             // fork group (existing group extends, or a fresh group is born).
             ...(priorAssistant?.role === 'assistant'

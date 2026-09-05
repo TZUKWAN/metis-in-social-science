@@ -237,6 +237,9 @@ export async function runPersistedChatTurn({
         runId: turnId,
         turnId,
         status: decoded.status,
+        // O8 citations ride on metadata (engine/core/Citation.ts 契约),
+        // 否则重开会话后引用条目全部丢失。
+        ...(decoded.citations.length > 0 ? { citations: decoded.citations } : {}),
       },
     });
   }

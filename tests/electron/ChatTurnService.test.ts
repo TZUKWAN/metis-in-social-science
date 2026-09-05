@@ -666,3 +666,54 @@ describe('runPersistedChatTurn tool-call continuation (UX-CHAT-001)', () => {
     ]);
   });
 });
+
+describe('Citation 贯通(BUG-004 回归):检索工具回合必须成功并携带引用', () => {
+  it('web_search 结果不再触发 response_contract_error,引用随回答落库', async () => {
+    const agentLoop = {
+      run: async () => ({
+        status: 'completed' as const,
+        finalText: '找到 2 篇平台劳动研究,列表如下。',
+        finalVerified: true,
+        messages: [{ role: 'user', content: 'q' }] as ChatMessage[],
+        turnsUsed: 2,
+        toolResults: [
+          {
+            toolName: 'web_search',
+            content: JSON.stringify({
+              result: {
+                results: [
+                  { title: 'Platform Labor: A Review', url: 'https://journals.test/platform-labor' },
+                  { title: '知识劳动者的平台化', url: 'https://journals.test/cn-platform' },
+                ],
+              },
+            }),
+            status: 'ok' as const,
+            toolCallId: 'tc_1',
+            metadata: {},
+          },
+        ],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        errors: [],
+        traceEvents: [],
+      }),
+    };
+
+    const response = await runPersistedChatTurn({
+      agentLoop,
+      store,
+      sessionId: 'session-cite',
+      messages: [{ role: 'user', content: '请检索平台劳动研究' }],
+      requestId: 'chat-cite-1',
+    });
+
+    expect(response.status).toBe('completed');
+    expect(response.citations).toHaveLength(2);
+    expect(response.citations[0]).toMatchObject({ id: '1', label: 'Platform Labor: A Review', url: 'https://journals.test/platform-labor' });
+    expect(response.citations[1]).toMatchObject({ id: '2', label: '知识劳动者的平台化' });
+    expect(response.diagnostics).toEqual([]);
+
+    const rows = store.getMessages('session-cite', undefined, { includeMetadata: true }) as Array<{ role: string; metadata?: Record<string, unknown> }>;
+    const assistantRow = rows.find((row) => row.role === 'assistant');
+    expect(assistantRow?.metadata?.citations).toEqual(response.citations);
+  });
+});

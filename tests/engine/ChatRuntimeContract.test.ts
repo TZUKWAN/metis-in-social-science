@@ -51,7 +51,7 @@ function makeAgentResponse(overrides: Record<string, unknown> = {}) {
     status: 'completed',
     answer: '已完成安全分析。',
     diagnostics: [{ severity: 'info', code: 'analysis_complete', message: '完成。' }],
-    citations: [{ sourceId: 'source-1', label: '受访者资料 A', locator: '第 2 页', verified: true }],
+    citations: [{ id: '1', label: '受访者资料 A', url: 'https://example.test/source-a' }],
     events: [{ type: 'lifecycle', phase: 'completed', timestamp: 1 }],
     ...overrides,
   };
@@ -216,6 +216,42 @@ describe('structured agent response contract', () => {
 
     expect(AgentResponseSchema.parse(response)).toEqual(response);
     expect(decodeAgentResponse(response)).toEqual(response);
+  });
+
+  it('accepts O8 citation chips (id/label/url/doi) and rejects duplicate ids', () => {
+    const withChips = makeAgentResponse({
+      citations: [
+        { id: '1', label: 'Platform labor review', url: 'https://example.test/a', doi: '10.1177/0000001' },
+        { id: '2', label: '知识劳动者研究', doi: '10.1177/0000002' },
+      ],
+    });
+    expect(AgentResponseSchema.parse(withChips)).toEqual(withChips);
+
+    const duplicated = makeAgentResponse({
+      citations: [
+        { id: '1', label: 'A' },
+        { id: '1', label: 'B' },
+      ],
+    });
+    expect(AgentResponseSchema.safeParse(duplicated).success).toBe(false);
+  });
+
+  it('keeps citations in stored message metadata instead of dropping the row', () => {
+    const row = {
+      role: 'assistant',
+      content: '答案正文',
+      metadata: {
+        runId: 'run-1',
+        turnId: 'turn-1',
+        status: 'completed',
+        citations: [{ id: '1', label: '来源一', url: 'https://example.test/1' }],
+      },
+    };
+    const decoded = decodeStoredHistoryEntry(row);
+    expect(decoded.kind).toBe('message');
+    if (decoded.kind === 'message') {
+      expect(decoded.metadata?.citations).toEqual([{ id: '1', label: '来源一', url: 'https://example.test/1' }]);
+    }
   });
 
   it('normalizes unknown response and event statuses without reflecting raw values', () => {
