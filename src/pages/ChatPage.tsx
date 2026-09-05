@@ -3842,16 +3842,49 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
     return () => { alive = false; };
   }, [activeResearchProjectId, isLoading]);
 
-  const rightPanelArtifacts = [
-    ...projectOutcomes.map((outcome) => ({
-      id: `outcome:${outcome.id}`,
-      name: outcome.title,
-      type: outcome.type,
-      createdAt: outcome.updatedAt,
-      contentAvailable: true,
-    })),
-    ...artifacts.filter((artifact) => !projectOutcomes.some((outcome) => outcome.title === artifact.name)),
-  ];
+  // 全局对话体验重构（T3）：按逻辑成果聚合——同名（含轮次后缀规整）只保留
+  // 最新一条，轮次计数进 size 标注（历史版本在成果页 VersionPanel 保留，
+  // 不破坏真实版本历史，仅改善 Presentation）。
+  const rightPanelArtifacts = (() => {
+    const normalizeName = (name: string) => name.replace(/[(（]第\s*\d+\s*轮[)）]/gu, '').replace(/\s*v\d+$/iu, '').trim();
+    const merged = [
+      ...projectOutcomes.map((outcome) => ({
+        id: `outcome:${outcome.id}`,
+        name: outcome.title,
+        type: outcome.type,
+        createdAt: outcome.updatedAt,
+        contentAvailable: true,
+      })),
+      ...artifacts.filter((artifact) => !projectOutcomes.some((outcome) => outcome.title === artifact.name)),
+    ];
+    const byName = new Map<string, { id: string; name: string; type: (typeof merged)[number]['type']; createdAt: number; contentAvailable: boolean; versions: number }>();
+    for (const item of merged) {
+      const key = normalizeName(item.name);
+      const existing = byName.get(key);
+      if (!existing) {
+        byName.set(key, { ...item, versions: 1 });
+        continue;
+      }
+      existing.versions += 1;
+      if (item.createdAt > existing.createdAt) {
+        existing.id = item.id;
+        existing.name = item.name;
+        existing.type = item.type;
+        existing.createdAt = item.createdAt;
+        existing.contentAvailable = item.contentAvailable;
+      }
+    }
+    return [...byName.values()]
+      .map((item) => ({
+        id: item.id,
+        name: item.name,
+        type: item.type,
+        createdAt: item.createdAt,
+        contentAvailable: item.contentAvailable,
+        size: item.versions > 1 ? `${item.versions} 个版本` : undefined,
+      }))
+      .sort((left, right) => right.createdAt - left.createdAt);
+  })();
 
   /**
    * 结构化成果文档 → 可内嵌预览的 Markdown（2026-08-28 刘总要求：生成物点击
