@@ -939,3 +939,25 @@
   font-weight: 400;
   font-style: italic;
 }
+
+/* T3 二期：Step Target Chip（Composer 上方「针对：步骤N ×」） */
+.chat-target-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px 20px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--primary, #2563eb) 9%, var(--bg-card));
+  color: var(--primary, #2563eb);
+  font-size: 12px;
+}
+.chat-target-chip button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}

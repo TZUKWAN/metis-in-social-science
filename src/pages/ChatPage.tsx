@@ -6,6 +6,8 @@ import ModelThinkingSelector from '../components/ModelThinkingSelector';
 import { matchSlashCommand, SLASH_COMMANDS, filterSlashCommands } from '../lib/slashCommands';
 import { CodeBlock } from '../components/CodeBlock';
 import { ScenarioStepCard, parseScenarioStepCard, type ScenarioStepCardData } from '../components/ScenarioStepCard';
+import { ScenarioStepCardWithActions } from '../conversation/ScenarioStepCardWithActions';
+import { formatTargetContext } from '../conversation/scenarioStepActions';
 import { useTranslation } from '../i18n';
 import { researchWorkspaceStore, useResearchWorkspaceStore } from '../research/researchWorkspaceStore';
 import {
@@ -703,6 +705,7 @@ const ChatMessageItem = memo(function ChatMessageItem({
   isLast,
   diagnosticMode,
   onOpenPaper,
+  onStepCardComment,
 }: {
   msg: ChatMessage;
   /** Source index in the messages array, forwarded to onEdit. */
@@ -711,6 +714,8 @@ const ChatMessageItem = memo(function ChatMessageItem({
   onRegenerate?: () => void;
   /** O16: switch which fork sibling is displayed. */
   onSwitchFork?: (forkId: string, targetIndex: number) => void;
+  /** T3 二期：Step 卡三操作——提出意见/修改这步 打开 Composer Target Context。 */
+  onStepCardComment?: (card: import('../components/ScenarioStepCard').ScenarioStepCardData, mode: 'comment' | 'modify') => void;
   isLast?: boolean;
   onOpenPaper?: (doi: string) => void;
   diagnosticMode: boolean;
@@ -834,7 +839,7 @@ const ChatMessageItem = memo(function ChatMessageItem({
             )}
             {msg.role === 'assistant' && parseStepCardPrefix(msg.content) ? (() => {
               const card = parseStepCardPrefix(msg.content)!;
-              return <ScenarioStepCard card={card} />;
+              return <ScenarioStepCardWithActions card={card} onComment={(c, m) => onStepCardComment?.(c, m)} />;
             })() : msg.role === 'assistant' && msg.streaming ? (
               <StreamingMarkdown
                 text={msg.content}
@@ -1180,6 +1185,14 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
     });
   }, []);
   const [input, setInput] = useState('');
+  // T3 二期：Step 卡 Target Context（提出意见/修改这步）
+  const [stepTarget, setStepTarget] = useState<Extract<import('../conversation/types').ConversationTarget, { type: 'scenario_step' }> | null>(null);
+  const [stepTargetMode, setStepTargetMode] = useState<'comment' | 'modify'>('comment');
+  const openStepCardComment = useCallback((card: import('../components/ScenarioStepCard').ScenarioStepCardData, mode: 'comment' | 'modify') => {
+    setStepTarget({ type: 'scenario_step', runId: card.runId, stepId: card.stepId, revision: card.iteration, title: card.stepName });
+    setStepTargetMode(mode);
+  }, []);
+  const handleStepCardComment = useMemo(() => openStepCardComment, [openStepCardComment]);
   const [slashActiveIndex, setSlashActiveIndex] = useState(0);
   const [slashMenuDismissed, setSlashMenuDismissed] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -3213,8 +3226,22 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
   }
 
   async function handleSend(overrideContent?: string, scenarioOverride?: string) {
-    const raw = stripEmoji((overrideContent || input).trim());
+    let raw = stripEmoji((overrideContent || input).trim());
     if (!raw) return;
+    // T3 二期：Step Target Context——结构化上下文随消息进 Runtime（禁裸「针对步骤6」）。
+    if (stepTarget) {
+      const contextLines = [
+        '【对话目标（结构化上下文）】',
+        'targetType: scenario_step',
+        `runId: ${stepTarget.runId}`,
+        `stepId: ${stepTarget.stepId}`,
+        ...(stepTarget.revision !== undefined ? [`stepRevision: ${stepTarget.revision}`] : []),
+        ...(stepTarget.title ? [`stepTitle: ${stepTarget.title}`] : []),
+        ...(stepTargetMode === 'modify' ? ['instruction: 基于当前步骤结果修改并生成新版本（旧版本保留）'] : []),
+      ];
+      raw = `${contextLines.join('\n')}\n\n【用户反馈】\n${raw}`;
+      setStepTarget(null);
+    }
     // 运行中的消息是实时引导（steering），必须放行；防重入只针对空闲态
     // 双击（2026-08-29 刘总要求：消灭同秒双发竞态，同时不拦引导）。
     // 引导若撞上 no_active_run（运行已被中断），降级为断点恢复轮。
@@ -4163,6 +4190,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
                 onEdit={msg.role === 'user' ? handleEditMessageAtIndex : undefined}
                 onRegenerate={msg.role === 'assistant' ? stableRegenerate : undefined}
                 onSwitchFork={msg.forkId ? stableSwitchFork : undefined}
+                onStepCardComment={handleStepCardComment}
               />
             );
             const flushGroup = () => {
@@ -4326,6 +4354,12 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
               >
                 {locale === 'zh' ? '转为研究任务' : 'Turn into research task'}
               </button>
+            </div>
+          )}
+          {stepTarget && (
+            <div className="chat-target-chip" role="status" data-testid="chat-step-target">
+              <span>{locale === 'zh' ? '针对' : 'Target'}: {stepTarget.title ? `步骤 · ${stepTarget.title}` : stepTarget.stepId}{stepTargetMode === 'modify' ? (locale === 'zh' ? '（修改模式）' : ' (modify)') : ''}</span>
+              <button type="button" onClick={() => setStepTarget(null)} aria-label={locale === 'zh' ? '清除对话目标' : 'Clear target'}>×</button>
             </div>
           )}
           <div className="chat-input-grid">
