@@ -5,7 +5,7 @@ import { autoResizeTextarea } from '../lib/textareaAutosize.js';
 import ModelThinkingSelector from '../components/ModelThinkingSelector';
 import { matchSlashCommand, SLASH_COMMANDS, filterSlashCommands } from '../lib/slashCommands';
 import { CodeBlock } from '../components/CodeBlock';
-import { ScenarioStepCard, parseScenarioStepCard } from '../components/ScenarioStepCard';
+import { ScenarioStepCard, parseScenarioStepCard, type ScenarioStepCardData } from '../components/ScenarioStepCard';
 import { useTranslation } from '../i18n';
 import { researchWorkspaceStore, useResearchWorkspaceStore } from '../research/researchWorkspaceStore';
 import {
@@ -496,6 +496,17 @@ function transformChatMarkdown(content: string): string {
  * While `streaming` is true, fenced blocks skip Prism highlighting and render
  * as plain text; the settled path highlights as before.
  */
+/** T3：metadata.stepCard 消息的渲染协议（非 Markdown 围栏；content 前缀承载）。 */
+function parseStepCardPrefix(content: string): ScenarioStepCardData | null {
+  if (!content.startsWith('__STEP_CARD__')) return null;
+  try {
+    const value = JSON.parse(content.slice('__STEP_CARD__'.length)) as ScenarioStepCardData;
+    return value && typeof value === 'object' && typeof value.runId === 'string' ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 function createChatCodeComponent(streaming: boolean): Components['code'] {
   return function ChatMarkdownCode({ className, children, ...props }) {
     const match = /language-([\w-]+)/.exec(className || '');
@@ -821,7 +832,10 @@ const ChatMessageItem = memo(function ChatMessageItem({
                 <div className="chat-reasoning__body">{msg.reasoning}</div>
               </details>
             )}
-            {msg.role === 'assistant' && msg.streaming ? (
+            {msg.role === 'assistant' && parseStepCardPrefix(msg.content) ? (() => {
+              const card = parseStepCardPrefix(msg.content)!;
+              return <ScenarioStepCard card={card} />;
+            })() : msg.role === 'assistant' && msg.streaming ? (
               <StreamingMarkdown
                 text={msg.content}
                 streaming
@@ -2035,9 +2049,16 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
                 ...(historyIncomplete ? { historyIncomplete: true } : {}),
               }
               : undefined;
+            const stepCard = metadata?.stepCard;
+            // T3 全局对话体验重构：新消息的 stepCard 在 metadata（结构化协议），
+            // content 已是人话摘要；渲染经 __STEP_CARD__ 前缀走 ScenarioStepCard，
+            // 与历史围栏消息同一渲染出口，但不再生成 Markdown 围栏协议。
+            const content = stepCard && typeof stepCard === 'object'
+              ? `__STEP_CARD__${JSON.stringify(stepCard)}`
+              : item.content;
             return {
               role: item.role,
-              content: item.content,
+              content,
               timestamp: now(),
               ...(run ? { run } : {}),
               // O8: citations persist on message metadata; rehydrate so chips

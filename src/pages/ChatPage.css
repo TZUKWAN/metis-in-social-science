@@ -120,7 +120,9 @@
   margin-right: auto;
 }
 
+/* 全局对话体验重构：Assistant 默认不显示头像。 */
 .message-avatar {
+  display: none;
   width: 28px;
   height: 28px;
   border-radius: 50%;
@@ -140,26 +142,25 @@
   min-width: 0;
 }
 
+/* 全局对话体验重构（2026-09-08）：Assistant 正文无 Card/Border/Shadow/Avatar，
+   直接生长在阅读流；User 改轻量灰 Bubble（去高饱和主色底）。 */
 .message-content {
-  padding: 10px 14px;
-  font-size: 13px;
-  line-height: 1.6;
-  border-radius: var(--radius-lg, 16px);
+  padding: 2px 0;
+  font-size: 14px;
+  line-height: 1.65;
 }
 
 .chat-message.user .message-content {
-  background: var(--primary);
-  color: var(--text-on-primary);
-  border-bottom-right-radius: 6px;
+  background: var(--bg-active, #eef1f5);
+  color: var(--text-primary);
+  padding: 9px 14px;
+  border-radius: 14px;
+  max-width: 76%;
 }
 
 .chat-message.assistant .message-content,
 .chat-message.tool .message-content {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-bottom-left-radius: 6px;
-  /* 浅色：苹果式柔和阴影把气泡抬离灰底；深色：--shadow-1 为 none，描边承担分离。 */
-  box-shadow: var(--shadow-1);
+  padding: 2px 0;
 }
 
 /* O8: citations — clickable source chips under an assistant answer. */

@@ -509,19 +509,18 @@ export interface ScenarioStepCardPayload {
   scenarioId: string;
 }
 
-function stepCardMessage(payload: ScenarioStepCardPayload): string {
-  const lines: string[] = [`【步骤卡】${payload.stepName}（第 ${payload.iteration} 轮）已完成 ✓`];
+// T3 全局对话体验重构（2026-09-08）：新消息禁用 metis-step-card 围栏协议。
+// 卡片结构化数据放消息 metadata.stepCard，正文只留人话摘要；
+// ChatPage 渲染层从 metadata 读取 scenario_step part（历史围栏走 legacy decoder）。
+function stepCardMessageText(payload: ScenarioStepCardPayload): string {
+  const lines: string[] = [`${payload.stepName}（第 ${payload.iteration} 轮）已完成 ✓`];
   if (payload.brief) {
-    lines.push('', `思路：${payload.brief.approach}`, `结果：${payload.brief.result}`, `下一步：${payload.brief.next}`);
+    const briefLines = [payload.brief.approach, payload.brief.result, payload.brief.next].filter(Boolean);
+    if (briefLines.length > 0) lines.push('', ...briefLines);
   }
-  lines.push(
-    '',
-    `产出：${payload.artifactName}（约 ${payload.chars.toLocaleString('en-US')} 字符）——点开卡片可在右侧预览全文。`,
-    '',
-    '```metis-step-card',
-    JSON.stringify(payload),
-    '```',
-  );
+  if (payload.artifactName) {
+    lines.push('', `产出：${payload.artifactName}（约 ${payload.chars.toLocaleString('en-US')} 字符）——右侧成果面板可查看全文。`);
+  }
   return lines.join('\n');
 }
 
@@ -1351,7 +1350,7 @@ export async function runPersistedScenarioWorkflow({
           chars: Buffer.byteLength(text, 'utf8'),
           scenarioId: manifest.scenarioId,
         };
-        store.appendMessage(sessionId, 'assistant', stepCardMessage(card));
+        store.appendMessage(sessionId, 'assistant', stepCardMessageText(card), { metadata: { stepCard: card } });
       } catch (persistError) {
         console.warn('[ScenarioRun] step summary persistence failed:', persistError instanceof Error ? persistError.message : persistError);
       }
@@ -1581,16 +1580,12 @@ export async function runPersistedScenarioWorkflow({
     chars: Buffer.byteLength(answer, 'utf8'),
     scenarioId: manifest.scenarioId,
   };
-  const completedMessage = [
-    finalArtifactName
-      ? `【场景工作流已完成】最终成果（约 ${finalCard.chars.toLocaleString('en-US')} 字符）已保存为生成物「${finalArtifactName}」${projectId ? '，并自动写入本项目成果库（科研产出分类）' : ''}。`
-      : `【场景工作流已完成】最终成果已生成（生成物注册失败，请检查存储）。`,
-    '',
-    '```metis-step-card',
-    JSON.stringify(finalCard),
-    '```',
-  ].join('\n');
-  try { store.appendMessage(sessionId, 'assistant', completedMessage); } catch { /* 摘要落库失败不阻塞 turn 返回 */ }
+  const completedMessageText = finalArtifactName
+    ? `场景工作流已完成。最终成果（约 ${finalCard.chars.toLocaleString('en-US')} 字符）已保存为生成物「${finalArtifactName}」${projectId ? '，并自动写入本项目成果库（科研产出分类）' : ''}。`
+    : '场景工作流已完成。最终成果已生成（生成物注册失败，请检查存储）。';
+  try {
+    store.appendMessage(sessionId, 'assistant', completedMessageText, { metadata: { stepCard: finalCard } });
+  } catch { /* 摘要落库失败不阻塞 turn 返回 */ }
   return AgentResponseSchema.parse({
     version: CHAT_RUNTIME_CONTRACT_VERSION,
     turnId,
