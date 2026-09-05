@@ -395,7 +395,21 @@ export default function SubmissionWorkspacePage() {
           {shortlist.length === 0 && <p className="submission-workspace__muted">{zh ? '收藏或确定候选后会出现在这里。' : 'Star journals to collect them.'}</p>}
           <ul>
             {shortlist.map((item) => (
-              <li key={item.name}><Star size={12} /> {item.name}{item.source ? <small>{item.source}</small> : null}</li>
+              <li key={item.name} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Star size={12} /> {item.name}{item.source ? <small>{item.source}</small> : null}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShortlist((current) => current.filter((entry) => entry.name !== item.name));
+                    void window.metis?.submissionShortlistRemove?.({ projectId: projectId ?? '', name: item.name });
+                  }}
+                  aria-label={`移除 ${item.name}`}
+                  title="从短名单移除"
+                  style={{ marginLeft: 'auto', border: 0, background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer' }}
+                >
+                  <X size={12} />
+                </button>
+              </li>
             ))}
           </ul>
         </section>

@@ -10261,6 +10261,45 @@ function buildFundingTemplateDigest(pkg: { source?: { sourceFormat?: string; pag
     }
   });
   // 投稿参谋（2026-09-01 刘总规格）：Artifact+Browser+Intent 三上下文编排对话。
+  // ── 投稿短名单持久化（任务6 补齐 2026-09-08）：schema/桥已在，handler 此前缺失 ──
+  ipcMain.handle('submission:shortlist:list', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ projectId: z.string().min(1) }).safeParse(rawRequest);
+      if (!parsed.success || !store) return [];
+      return store.raw.prepare('SELECT id, name, source, url, note, created_at FROM submission_shortlists WHERE project_id = ? ORDER BY created_at DESC')
+        .all(parsed.data.projectId) as Array<{ id: string; name: string; source: string; url: string; note: string; created_at: number }>;
+    } catch { return []; }
+  });
+  ipcMain.handle('submission:shortlist:add', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({
+        projectId: z.string().min(1),
+        name: z.string().min(1).max(300),
+        source: z.string().max(120).optional(),
+        url: z.string().max(2000).optional(),
+        note: z.string().max(2000).optional(),
+      }).safeParse(rawRequest);
+      if (!parsed.success || !store) return { ok: false };
+      const existing = store.raw.prepare('SELECT id FROM submission_shortlists WHERE project_id = ? AND name = ?')
+        .get(parsed.data.projectId, parsed.data.name);
+      if (existing) return { ok: true };
+      store.raw.prepare('INSERT INTO submission_shortlists (id, project_id, name, source, url, note, created_at) VALUES (?,?,?,?,?,?,?)')
+        .run(`sl-${randomUUID()}`, parsed.data.projectId, parsed.data.name, parsed.data.source ?? '', parsed.data.url ?? '', parsed.data.note ?? '', Date.now());
+      return { ok: true };
+    } catch { return { ok: false }; }
+  });
+  ipcMain.handle('submission:shortlist:remove', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ projectId: z.string().min(1), name: z.string().min(1) }).safeParse(rawRequest);
+      if (!parsed.success || !store) return { ok: false };
+      const info = store.raw.prepare('DELETE FROM submission_shortlists WHERE project_id = ? AND name = ?')
+        .run(parsed.data.projectId, parsed.data.name);
+      return { ok: info.changes > 0 };
+    } catch { return { ok: false }; }
+  });
   ipcMain.handle('submission:assistant:chat', async (event, raw: unknown) => {
     try {
       requireRendererMainFrame(event);
