@@ -2,6 +2,7 @@ import React from 'react';
 import { AssistantTurn, UserTurn } from '../conversation/ConversationTurns';
 import { SafeMarkdown } from '../presentation/SafeMarkdown';
 import { ChevronRight, Plus } from 'lucide-react';
+import './TopicWorkspacePage.css';
 import type { TopicCandidateDto, TopicResearchBrief, TopicSessionDto } from '../../engine/runtime/TopicRuntimeContract.js';
 import { researchWorkspaceStore } from '../research/researchWorkspaceStore.js';
 import { setPendingScenarioHandoff } from '../topic/scenarioHandoff.js';
