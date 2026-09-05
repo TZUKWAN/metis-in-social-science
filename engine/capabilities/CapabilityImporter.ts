@@ -30,7 +30,7 @@ export const CAPABILITY_SOURCES: readonly CapabilitySourceSpec[] = [
   { id: 'humanities-thesis-skill', repo: 'ganzhi-black/humanities-thesis-skill', name: 'Humanities Thesis Skill', expansion: 'single', domains: ['人文', '学位论文'], researchStages: ['writing'], licenseStatus: 'unverified' },
   { id: 'research-plugins', repo: 'wentorai/research-plugins', name: 'Research Plugins', expansion: 'per_skill', domains: ['研究方法'], researchStages: ['analysis', 'writing'], licenseStatus: 'unverified' },
   { id: 'social-science-paper-writing', repo: 'fakerqwq/social-science-paper-writing-skill', name: 'Social Science Paper Writing', expansion: 'single', domains: ['社会科学写作'], researchStages: ['writing'], licenseStatus: 'unverified' },
-  { id: 'ai-research-skills', repo: 'WenyuChiou/ai-research-skills', name: 'AI Research Skills', expansion: 'per_skill', domains: ['研究方法', 'AI辅助'], researchStages: ['analysis'], licenseStatus: 'unverified' },
+  { id: 'ai-research-skills', repo: 'WenyuChiou/ai-research-skills', name: 'AI Research Skills (目录仓库)', expansion: 'per_skill', domains: ['研究方法', 'AI辅助'], researchStages: ['analysis'], licenseStatus: 'unverified', notes: '市场目录仓库：本体技能已拆分到 research-hub/academic-writing-skills/zotero-skills 等 6 个子仓库单独注册' },
   // ── 2026-09-08 刘总清单扩容(入库不注入;绑定步骤才动态加载) ──
   { id: 'open-scholar-skill', repo: 'joshzyj/open-scholar-skill', name: 'Open Scholar Skill', expansion: 'single', domains: ['社会科学', '学术写作'], researchStages: ['literature', 'writing'], licenseStatus: 'unverified' },
   { id: 'academic-writing-jackuio', repo: 'jackuio440/academic-writing', name: 'Academic Writing', expansion: 'per_skill', domains: ['学术写作'], researchStages: ['writing'], licenseStatus: 'unverified' },
@@ -80,6 +80,13 @@ export const CAPABILITY_SOURCES: readonly CapabilitySourceSpec[] = [
   { id: 'speaker-notes-skill', repo: 'AI272/speaker', name: 'Speaker (讲稿生成)', expansion: 'single', domains: ['学术演讲', '答辩'], researchStages: ['writing'], licenseStatus: 'unverified', notes: '逐页讲稿写入 speaker notes' },
   { id: 'socialverse', repo: 'omicverse/socialverse', name: 'Socialverse (方法基础设施)', expansion: 'per_skill', domains: ['政策评估', '调查分析', '定性编码'], researchStages: ['analysis'], licenseStatus: 'unverified', notes: 'GPL 许可边界;导入时核验' },
   { id: 'citation-finder', repo: 'HuiyuLi-2000/citation-finder', name: 'Citation Finder', expansion: 'single', domains: ['论断支撑', '引用回填'], researchStages: ['writing', 'review'], licenseStatus: 'unverified', notes: '与 Claim-Evidence-Citation 闭环对应' },
+  // ── WenyuChiou ai-research-skills 目录下的本体技能仓库（2026-09-05 全量导入时发现）──
+  { id: 'wenyuchiou-research-hub', repo: 'WenyuChiou/research-hub', name: 'AI Research Skills · Research Hub', expansion: 'per_skill', domains: ['研究方法', '文献管理', 'AI辅助'], researchStages: ['literature', 'analysis'], licenseStatus: 'unverified', notes: 'ai-research-skills 目录的本体仓库之一（26 个 SKILL.md）' },
+  { id: 'wenyuchiou-academic-writing', repo: 'WenyuChiou/academic-writing-skills', name: 'AI Research Skills · Academic Writing', expansion: 'per_skill', domains: ['学术写作'], researchStages: ['writing'], licenseStatus: 'unverified' },
+  { id: 'wenyuchiou-zotero', repo: 'WenyuChiou/zotero-skills', name: 'AI Research Skills · Zotero', expansion: 'per_skill', domains: ['文献管理', 'Zotero'], researchStages: ['literature'], licenseStatus: 'unverified' },
+  { id: 'wenyuchiou-codex-delegate', repo: 'WenyuChiou/codex-delegate', name: 'AI Research Skills · Codex Delegate', expansion: 'per_skill', domains: ['多智能体协作'], researchStages: ['analysis'], licenseStatus: 'unverified' },
+  { id: 'wenyuchiou-antigravity-delegate', repo: 'WenyuChiou/antigravity-delegate', name: 'AI Research Skills · Antigravity Delegate', expansion: 'per_skill', domains: ['多智能体协作'], researchStages: ['analysis'], licenseStatus: 'unverified' },
+  { id: 'wenyuchiou-agent-collab', repo: 'WenyuChiou/agent-collab-skills', name: 'AI Research Skills · Agent Collab', expansion: 'per_skill', domains: ['多智能体协作'], researchStages: ['analysis'], licenseStatus: 'unverified', notes: '目录仓库标注为 optional-harness 扩展' },
 ];
 
 export interface ExpandedCapabilityManifest {
@@ -129,45 +136,61 @@ export interface RepoSkillFile {
  * excluded=true 并如实写明原因。
  */
 export function expandSourceSkills(source: CapabilitySourceSpec, files: RepoSkillFile[]): ExpandedCapabilityManifest[] {
-  const manifests: ExpandedCapabilityManifest[] = [];
-  for (const file of files) {
-    const lower = file.path.toLowerCase();
-    if (!lower.endsWith('skill.md')) continue;
-    const frontmatterMatch = /^---\n([\s\S]*?)\n---/.exec(file.content);
-    const frontmatter = frontmatterMatch?.[1] ?? '';
-    const name = extractFrontmatterField(frontmatter, 'name')
-      ?? /^#\s+(.+)$/mu.exec(file.content)?.[1]?.trim()
-      ?? file.path.split('/').slice(-2, -1)[0]
-      ?? source.id;
-    const description = extractFrontmatterField(frontmatter, 'description')
-      ?? file.content.split('\n').find((line) => line.trim().length > 30 && !line.startsWith('#'))?.trim().slice(0, 300)
-      ?? '';
-    const license = extractFrontmatterField(frontmatter, 'license');
-    const bodyStart = frontmatterMatch ? file.content.indexOf('---', 4) + 3 : 0;
-    const body = file.content.slice(bodyStart).trim();
-    if (body.length < 80) {
-      manifests.push({
-        id: `${source.id}:${file.path}`,
-        kind: 'skill', name, description, sourceRepo: source.repo, sourceId: source.id,
-        originalPath: file.path, version: '1', license, licenseStatus: source.licenseStatus,
-        domains: source.domains, researchStages: source.researchStages,
-        tags: [...source.domains, ...source.researchStages], contentDigest: contentDigest(file.content),
-        included: false, exclusionReason: 'SKILL.md 无实质内容(正文不足 80 字符)', systemPrompt: '',
-      });
-      continue;
+  return files
+    .filter((file) => file.path.toLowerCase().endsWith('skill.md'))
+    .map((file) => parseMarkdownManifest(source, file));
+}
+
+/**
+ * 扁平 Markdown 回退展开（2026-09-05 全量导入时发现部分清单仓库不含
+ * SKILL.md，技能以扁平 .md 文档形态存在，如 lcrawfurd/claude-skills 的
+ * paper-review.md、xiaoshuntian 的 prompts/*.md）。解析规则与 SKILL.md
+ * 一致（frontmatter/首标题/正文长度门槛），仅排除原因文案不同。
+ */
+export function expandFlatMarkdownSkills(source: CapabilitySourceSpec, files: RepoSkillFile[]): ExpandedCapabilityManifest[] {
+  return files.map((file) => {
+    const manifest = parseMarkdownManifest(source, file);
+    if (!manifest.included && manifest.exclusionReason?.includes('SKILL.md')) {
+      return { ...manifest, exclusionReason: 'Markdown 文件无实质内容(正文不足 80 字符)' };
     }
-    manifests.push({
+    return manifest;
+  });
+}
+
+function parseMarkdownManifest(source: CapabilitySourceSpec, file: RepoSkillFile): ExpandedCapabilityManifest {
+  const lower = file.path.toLowerCase();
+  const frontmatterMatch = /^---\n([\s\S]*?)\n---/.exec(file.content);
+  const frontmatter = frontmatterMatch?.[1] ?? '';
+  const name = extractFrontmatterField(frontmatter, 'name')
+    ?? /^#\s+(.+)$/mu.exec(file.content)?.[1]?.trim()
+    ?? file.path.split('/').slice(-2, -1)[0]
+    ?? lower.replace(/\.md$/u, '');
+  const description = extractFrontmatterField(frontmatter, 'description')
+    ?? file.content.split('\n').find((line) => line.trim().length > 30 && !line.startsWith('#'))?.trim().slice(0, 300)
+    ?? '';
+  const license = extractFrontmatterField(frontmatter, 'license');
+  const bodyStart = frontmatterMatch ? file.content.indexOf('---', 4) + 3 : 0;
+  const body = file.content.slice(bodyStart).trim();
+  if (body.length < 80) {
+    return {
       id: `${source.id}:${file.path}`,
       kind: 'skill', name, description, sourceRepo: source.repo, sourceId: source.id,
-      originalPath: file.path, version: '1',
-      license: license ?? source.licenseStatus === 'verified' ? license : (license ?? 'UNVERIFIED'),
-      licenseStatus: source.licenseStatus,
+      originalPath: file.path, version: '1', license, licenseStatus: source.licenseStatus,
       domains: source.domains, researchStages: source.researchStages,
       tags: [...source.domains, ...source.researchStages], contentDigest: contentDigest(file.content),
-      included: true, systemPrompt: file.content.trim(),
-    });
+      included: false, exclusionReason: 'SKILL.md 无实质内容(正文不足 80 字符)', systemPrompt: '',
+    };
   }
-  return manifests;
+  return {
+    id: `${source.id}:${file.path}`,
+    kind: 'skill', name, description, sourceRepo: source.repo, sourceId: source.id,
+    originalPath: file.path, version: '1',
+    license: license ?? source.licenseStatus === 'verified' ? license : (license ?? 'UNVERIFIED'),
+    licenseStatus: source.licenseStatus,
+    domains: source.domains, researchStages: source.researchStages,
+    tags: [...source.domains, ...source.researchStages], contentDigest: contentDigest(file.content),
+    included: true, systemPrompt: file.content.trim(),
+  };
 }
 
 // ── GitHub 真实拉取管线(任务7 7B:端到端展开导入)──
@@ -180,7 +203,24 @@ export interface GitHubFetcher {
 const GITHUB_API = 'https://api.github.com';
 
 /**
- * 拉取一个来源仓库的全部 SKILL.md 并逐 Skill 展开。
+ * 扁平 Markdown 回退的噪音排除：模板/CI/实验记录/示例交付物/测试夹具
+ * 不是技能，不进目录。README 保留（技能形态仓库的使用说明有真实价值）。
+ */
+const FLAT_MD_NOISE: ReadonlyArray<RegExp> = [
+  /^\.github\//i,
+  /^\.research\//i,
+  /(^|\/)contributing\.md$/i,
+  /(^|\/)changelog\.md$/i,
+  /(^|\/)license(\.txt|\.md)?$/i,
+  /(^|\/)pull_request_template\.md$/i,
+  /(^|\/)issue_template/i,
+  /^tests?\//i,
+  /^examples?\//i,
+];
+
+/**
+ * 拉取一个来源仓库的全部 SKILL.md 并逐 Skill 展开；仓库不含 SKILL.md 时
+ * 回退为扁平 Markdown 展开（噪音过滤后逐文件一条）。
  * fetcher 注入:传 undici 封装(GitHub API 需要可选 token)或测试 stub。
  * 任一网络失败即抛出,由调用方如实报告(不伪造 0 结果)。
  */
@@ -195,14 +235,29 @@ export async function fetchAndExpandSource(
   const ref = branch.default_branch || 'main';
   const treeRes = await fetcher(`${GITHUB_API}/repos/${source.repo}/git/trees/${ref}?recursive=1`);
   const tree = JSON.parse(treeRes) as { tree?: Array<{ path: string; type: string }> };
-  const skillPaths = (tree.tree ?? [])
-    .filter((entry) => entry.type === 'blob' && entry.path.toLowerCase().endsWith('skill.md'))
+  const blobs = (tree.tree ?? []).filter((entry) => entry.type === 'blob');
+  const skillPaths = blobs
+    .filter((entry) => entry.path.toLowerCase().endsWith('skill.md'))
+    .map((entry) => entry.path)
+    .slice(0, 60);
+  if (skillPaths.length > 0) {
+    const files: RepoSkillFile[] = [];
+    for (const path of skillPaths) {
+      const raw = await fetcher(`https://raw.githubusercontent.com/${source.repo}/${ref}/${path}`);
+      files.push({ path, content: raw });
+    }
+    return expandSourceSkills(source, files);
+  }
+  // 扁平 Markdown 回退：仓库没有 SKILL.md 形态的技能。
+  const markdownPaths = blobs
+    .filter((entry) => entry.path.toLowerCase().endsWith('.md')
+      && !FLAT_MD_NOISE.some((pattern) => pattern.test(entry.path)))
     .map((entry) => entry.path)
     .slice(0, 60);
   const files: RepoSkillFile[] = [];
-  for (const path of skillPaths) {
+  for (const path of markdownPaths) {
     const raw = await fetcher(`https://raw.githubusercontent.com/${source.repo}/${ref}/${path}`);
     files.push({ path, content: raw });
   }
-  return expandSourceSkills(source, files);
+  return expandFlatMarkdownSkills(source, files);
 }

@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   CAPABILITY_SOURCES,
   contentDigest,
+  expandFlatMarkdownSkills,
   expandSourceSkills,
+  fetchAndExpandSource,
   type RepoSkillFile,
 } from '../../engine/capabilities/CapabilityImporter.js';
 
@@ -83,3 +85,46 @@ describe('GitHub 真实拉取管线(任务7 7B)', () => {
     expect(manifests[0]!.sourceRepo).toBe(CAPABILITY_SOURCES[0]!.repo);
   });
 });
+
+describe('扁平 Markdown 回退展开（2026-09-05 全量导入发现）', () => {
+  const flatSource = CAPABILITY_SOURCES.find((source) => source.id === 'lcrawfurd-skills')!;
+
+  it('expands flat markdown skill docs when a repo has no SKILL.md', () => {
+    const files: RepoSkillFile[] = [
+      { path: 'paper-review.md', content: ['# Paper Review', '', 'Review academic research papers using established frameworks and guidelines. The reviewer checks claims, methods and reproducibility before recommending an outcome.'].join('\n') },
+      { path: 'tufte-viz.md', content: 'short' },
+    ];
+    const manifests = expandFlatMarkdownSkills(flatSource, files);
+    expect(manifests).toHaveLength(2);
+    expect(manifests[0]!.included).toBe(true);
+    expect(manifests[0]!.name).toBe('Paper Review');
+    expect(manifests[0]!.systemPrompt).toContain('established frameworks');
+    // 正文过短的扁平文件如实排除，且原因文案不含 SKILL.md 字样。
+    expect(manifests[1]!.included).toBe(false);
+    expect(manifests[1]!.exclusionReason).toContain('Markdown 文件无实质内容');
+  });
+
+  it('falls back to flat markdown when the repo tree has no skill.md (fetcher stub)', async () => {
+    const treeResponse = JSON.stringify({
+      tree: [
+        { path: 'README.md', type: 'blob' },
+        { path: 'prompts/abstract.md', type: 'blob' },
+        { path: '.github/workflows/ci.yml', type: 'blob' },
+      ],
+    });
+    const fetched: string[] = [];
+    const fetcher = async (url: string) => {
+      fetched.push(url);
+      if (url.includes('/git/trees/')) return treeResponse;
+      if (url.includes('api.github.com/repos/')) return JSON.stringify({ default_branch: 'main' });
+      return ['# Stub', '', 'Stub body content long enough to pass the eighty character threshold for inclusion.'].join('\n');
+    };
+    const manifests = await fetchAndExpandSource(flatSource, fetcher);
+    // 无 SKILL.md → 回退；噪音（.github/）不拉取；README 保留。
+    expect(fetched.some((url) => url.includes('.github/'))).toBe(false);
+    const paths = manifests.map((manifest) => manifest.originalPath);
+    expect(paths).toContain('prompts/abstract.md');
+    expect(manifests.every((manifest) => manifest.sourceId === flatSource.id)).toBe(true);
+  });
+});
+
