@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import ModelThinkingSelector from '../components/ModelThinkingSelector';
+import { AssistantTurn, UserTurn } from '../conversation/ConversationTurns';
+import '../conversation/conversation.css';
 import { autoResizeTextarea } from '../lib/textareaAutosize.js';
 import { isScenarioCompileActive, onScenarioCompileUpdate } from '../lib/scenarioCompileCoordinator.js';
 import { FilePlus2, FileUp, History, MessageSquarePlus, RotateCcw, Send, Sparkles, Trash2, X } from 'lucide-react';
@@ -470,10 +472,11 @@ ${zh ? '现在直接输入你的要求（例如：帮我生成这份申报书的
           </ul>}
     </section>, document.body)}
     <div className="scenario-assistant__conversation" aria-live="polite">
-      {messages.map((message) => <article key={message.id} className={`scenario-assistant__message scenario-assistant__message--${message.role}`}>
-        <span>{message.role === 'user' ? (zh ? '你' : 'You') : 'METIS'}</span>
-        <p>{message.content}</p>
-      </article>)}
+      {messages.map((message) => (
+        message.role === 'user'
+          ? <UserTurn key={message.id} message={{ id: String(message.id), role: 'user', createdAt: 0, parts: [{ type: 'text', text: message.content }] }} />
+          : <AssistantTurn key={message.id} message={{ id: String(message.id), role: 'assistant', createdAt: 0, parts: [{ type: 'text', text: message.content }] }} />
+      ))}
       {isBusy && <article className="scenario-assistant__message scenario-assistant__message--assistant scenario-assistant__message--pending">
         <span>METIS</span>
         <p>{zh ? '正在将本轮要求编译到场景草稿…' : 'Compiling this turn into the scenario draft…'}</p>

@@ -4,6 +4,8 @@ import { ArrowLeft, ArrowRight, ExternalLink, PanelLeftClose, PanelLeftOpen, Plu
 import SplitHandle from '../components/SplitHandle';
 import ModelThinkingSelector from '../components/ModelThinkingSelector';
 import { SafeMarkdown } from '../presentation/SafeMarkdown';
+import { AssistantTurn, UserTurn } from '../conversation/ConversationTurns';
+import '../conversation/conversation.css';
 import { autoResizeTextarea } from '../lib/textareaAutosize.js';
 import { useResearchWorkspaceStore } from '../research/researchWorkspaceStore';
 import './SubmissionWorkspacePage.css';
@@ -526,11 +528,9 @@ export default function SubmissionWorkspacePage() {
             </div>
           )}
           {messages.map((message) => (
-            <article key={message.id} className={message.role === 'user' ? 'submission-chat__bubble user' : 'submission-chat__bubble'}>
-              {message.role === 'assistant'
-                ? <SafeMarkdown content={message.content} locale={zh ? 'zh' : 'en'} codeComponent={codeComponent} />
-                : message.content}
-            </article>
+            message.role === 'user'
+              ? <UserTurn key={message.id} message={{ id: message.id, role: 'user', createdAt: 0, parts: [{ type: 'text', text: message.content }] }} />
+              : <AssistantTurn key={message.id} message={{ id: message.id, role: 'assistant', createdAt: 0, parts: [{ type: 'text', text: message.content }] }} />
           ))}
           {sending && <div className="submission-chat__thinking" role="status">{zh ? '参谋正在调查（浏览器可能会自动翻页）…' : 'Investigating…'}</div>}
         </div>

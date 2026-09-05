@@ -1,4 +1,6 @@
 import React from 'react';
+import { AssistantTurn, UserTurn } from '../conversation/ConversationTurns';
+import { SafeMarkdown } from '../presentation/SafeMarkdown';
 import { ChevronRight, Plus } from 'lucide-react';
 import type { TopicCandidateDto, TopicResearchBrief, TopicSessionDto } from '../../engine/runtime/TopicRuntimeContract.js';
 import { researchWorkspaceStore } from '../research/researchWorkspaceStore.js';
@@ -288,12 +290,17 @@ export default function TopicWorkspacePage() {
           )}
           {messages.map((message) => (
             message.role === 'user'
-              ? <div key={message.id} className="topic-message topic-message--user"><p>{message.content}</p></div>
-              : <div key={message.id} className="topic-message topic-message--assistant"><p style={{ whiteSpace: 'pre-wrap' }}>{message.content}</p></div>
+              ? <UserTurn key={message.id} message={{ id: message.id, role: 'user', createdAt: 0, parts: [{ type: 'text', text: message.content }] }} />
+              : <AssistantTurn key={message.id} message={{ id: message.id, role: 'assistant', createdAt: 0, parts: [{ type: 'text', text: message.content }] }} />
           ))}
           {streaming && (
-            <div className="topic-message topic-message--assistant topic-message--pending">
-              <small>{streamTail || '正在检索与研究……'}</small>
+            <div className="conv-assistant" data-status="streaming">
+              <div className="conv-assistant__body">
+                {streamTail
+                  ? <SafeMarkdown content={streamTail} locale="zh" />
+                  : <span style={{ color: 'var(--conversation-muted)', fontSize: 13 }}>正在检索与研究……</span>}
+                <span className="conv-caret" aria-hidden>▌</span>
+              </div>
             </div>
           )}
         </div>
