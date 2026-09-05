@@ -70,6 +70,13 @@ beforeEach(() => {
         revision: 0,
         secrets: [],
       }),
+      capabilityVaultSources: vi.fn().mockResolvedValue({ ok: true, sources: [] }),
+      capabilityVaultStats: vi.fn().mockResolvedValue({ ok: true, stats: { total: 0, skills: 0, mcps: 0, installed: 0, sources: 0 } }),
+      capabilityVaultImportSource: vi.fn().mockResolvedValue({ ok: false, imported: 0, excluded: 0 }),
+      capabilityVaultList: vi.fn().mockResolvedValue({ ok: true, entries: [] }),
+      capabilityVaultGetDetail: vi.fn().mockResolvedValue({ ok: false }),
+      capabilityVaultInstall: vi.fn().mockResolvedValue({ ok: false, code: 'install_failed' }),
+      capabilityVaultUninstall: vi.fn().mockResolvedValue({ ok: false }),
     },
   });
 });

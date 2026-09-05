@@ -29,6 +29,7 @@ import './PersonalizationCenter.css';
 
 import MarketBrowserPanel from './MarketBrowserPanel.js';
 import { ExtensionInstaller } from './ExtensionInstaller.js';
+import { CapabilityVaultPanel } from './CapabilityVaultPanel';
 
 type Kind = PersonalizationDefinition['kind'];
 
@@ -2301,6 +2302,9 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
           )}
           {(kind === 'skill' || kind === 'mcp') && (
             <MarketBrowserPanel kind={kind} zh={zh} definitions={userDefinitions} onInstalled={(definitionId) => afterExtensionInstall(definitionId)} />
+          )}
+          {(kind === 'skill' || kind === 'mcp') && (
+            <CapabilityVaultPanel zh={zh} initialKind={kind} onInstalled={(definitionId) => afterExtensionInstall(definitionId)} />
           )}
           {(kind === 'skill' || kind === 'mcp') && <ExtensionInstaller key={kind} kind={kind} definitions={userDefinitions} onInstalled={afterExtensionInstall} onRefresh={load} />}
           {kind === 'mcp' && <SecretVaultPanel />}

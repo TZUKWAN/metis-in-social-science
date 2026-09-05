@@ -9,8 +9,8 @@ import {
   type ExpandedCapabilityManifest,
   type GitHubFetcher,
   type RepoSkillFile,
-} from '../capabilities/CapabilityImporter.js';
-import { MCP_CATALOG } from '../capabilities/McpCatalog.js';
+} from '../engine/capabilities/CapabilityImporter.js';
+import { MCP_CATALOG } from '../engine/capabilities/McpCatalog.js';
 
 /**
  * Capability Vault（任务7 7B/7D 落地，2026-09-08 刘总澄清集成语义）：

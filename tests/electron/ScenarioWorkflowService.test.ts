@@ -332,7 +332,7 @@ describe('runPersistedScenarioWorkflow', () => {
     expect(stepSummaries).toHaveLength(resolved.manifest.workflow.length);
     expect(stepSummaries.every((message) => (
       message.role === 'assistant'
-      && message.content.includes('【步骤卡】')
+      && message.content.includes('已完成 ✓')
       && message.content.includes('产出：')
     ))).toBe(true);
     // 最终成果生成物内容与 answer 完全一致。
@@ -614,7 +614,7 @@ ${'劳动过程与平台治理的分析段落，含 "引号" 与 \\反斜杠\\ �
     const stepSummaries = persistedMessages.slice(1, -1);
     expect(stepSummaries).toHaveLength(resolved.manifest.workflow.length - 1);
     expect(stepSummaries.every((message) => (
-      message.role === 'assistant' && message.content.includes('【步骤卡】')
+      message.role === 'assistant' && message.content.includes('已完成 ✓')
     ))).toBe(true);
     expect(repository.listScenarioRunRecords('session-1')[0]?.status).toBe('failed');
   });
@@ -1084,14 +1084,21 @@ describe('scenario step cards (2026-09-01 刘总方案一期：过程可见)', (
       requestId: 'workflow-step-cards',
       manifest: resolved.manifest,
     });
-    const messages = store.getMessages('session-1')
-      // 只取步骤卡（排除整轮完成时的最终成果卡）
-      .filter((message) => message.role === 'assistant' && message.content.includes('【步骤卡】'));
+    // T3 协议（2026-09-08）：卡片结构进 metadata.stepCard；正文是人话摘要，
+    // 不再有 metis-step-card 围栏 JSON。
+    const messages = store.getMessages('session-1', undefined, { includeMetadata: true })
+      .filter((message) => (
+        message.role === 'assistant'
+        && (message.metadata?.stepCard as { status?: string } | undefined)?.status === 'completed'
+      ));
     expect(messages.length).toBeGreaterThan(0);
-    const cardMessage = messages[messages.length - 1]!.content;
-    expect(cardMessage).toContain('思路：测试思路');
-    expect(cardMessage).toContain('结果：测试结果');
-    const payload = JSON.parse(/```metis-step-card\n([\s\S]*?)\n```/.exec(cardMessage)![1]!) as {
+    const cardMessage = messages[messages.length - 1]!;
+    expect(cardMessage.content).toContain('已完成 ✓');
+    expect(cardMessage.content).toContain('测试思路');
+    expect(cardMessage.content).toContain('测试结果');
+    expect(cardMessage.content).not.toContain('metis-step-card');
+    expect(cardMessage.content).not.toContain('思路：');
+    const payload = cardMessage.metadata!.stepCard as {
       sessionId: string; stepId: string; status: string; brief: { approach: string } | null;
     };
     expect(payload.sessionId).toBe('session-1');

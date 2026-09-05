@@ -351,9 +351,13 @@ import { ScenarioLoopScheduler } from '../engine/personalization/ScenarioLoopSch
 import {
   ScenarioDefinitionSchema,
   SYSTEM_FULL_ACCESS_POLICY,
+  PERSONALIZATION_CONTRACT_VERSION,
   type PersonalizationDefinition,
   type ScenarioDefinition,
+  type SkillDefinitionV2,
 } from '../engine/runtime/PersonalizationRuntimeContract.js';
+import { CapabilityVaultService } from './CapabilityVaultService.js';
+import type { GitHubFetcher } from '../engine/capabilities/CapabilityImporter.js';
 import {
   buildScenarioPhasePrompt,
 } from '../engine/personalization/ScenarioHarnessCompiler.js';
@@ -10089,6 +10093,194 @@ function setupIPC(): void {
       return { ok: true };
     } catch {
       return { ok: false, error: 'delete_failed' };
+    }
+  });
+
+  // ── Capability Vault（任务7 7B/7D：入库不注入，绑定才加载）──────────
+  // 来源拉取仅锁定 GitHub 官方域（api.github.com / raw.githubusercontent.com），
+  // 可选 GITHUB_TOKEN/GH_TOKEN 提升匿名限流；任何失败如实上抛。
+  const vaultGitHubFetcher: GitHubFetcher = async (url) => {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:'
+      || (parsed.hostname !== 'api.github.com' && parsed.hostname !== 'raw.githubusercontent.com')) {
+      throw new Error(`blocked_non_github_host: ${parsed.hostname}`);
+    }
+    const headers: Record<string, string> = {
+      'User-Agent': 'METIS-CapabilityVault',
+      'Accept': 'application/vnd.github+json',
+    };
+    const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? '';
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const response = await fetch(parsed, { headers });
+    if (!response.ok) throw new Error(`github_${response.status}`);
+    return response.text();
+  };
+  // vault 条目 id（含冒号/斜杠）→ 合法 PersonalizationId（user:vault-<净化尾段>）。
+  const vaultDefinitionIdFor = (vaultSkillId: string): string => {
+    const tail = vaultSkillId.replace(/^skill:vault:/, '').replace(/[^A-Za-z0-9._/-]/g, '-').slice(0, 120);
+    return `user:vault-${tail}`;
+  };
+  const ensureCapabilityVaultService = (): CapabilityVaultService | null => {
+    if (!store) return null;
+    return new CapabilityVaultService(store.raw);
+  };
+
+  ipcMain.handle('capability:vault:sources', (event) => {
+    try {
+      requireRendererMainFrame(event);
+      const vault = ensureCapabilityVaultService();
+      if (!vault) return { ok: false, error: 'store_unavailable' };
+      return { ok: true, sources: vault.listSources() };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : 'sources_failed' };
+    }
+  });
+
+  ipcMain.handle('capability:vault:stats', (event) => {
+    try {
+      requireRendererMainFrame(event);
+      const vault = ensureCapabilityVaultService();
+      if (!vault) return { ok: false, error: 'store_unavailable' };
+      return { ok: true, stats: vault.stats() };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : 'stats_failed' };
+    }
+  });
+
+  ipcMain.handle('capability:vault:importSource', async (event, rawSourceId: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const sourceId = typeof rawSourceId === 'string' ? rawSourceId : '';
+      const vault = ensureCapabilityVaultService();
+      if (!vault || !sourceId) return { ok: false, imported: 0, excluded: 0, error: 'invalid_request' };
+      return await vault.importSource(sourceId, vaultGitHubFetcher);
+    } catch (error) {
+      return { ok: false, imported: 0, excluded: 0, error: error instanceof Error ? error.message : 'import_failed' };
+    }
+  });
+
+  ipcMain.handle('capability:vault:list', (event, rawQuery: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const vault = ensureCapabilityVaultService();
+      if (!vault) return { ok: false, error: 'store_unavailable' };
+      const query = (typeof rawQuery === 'object' && rawQuery !== null ? rawQuery : {}) as {
+        keyword?: unknown; sourceId?: unknown; kind?: unknown; stage?: unknown; limit?: unknown;
+      };
+      const entries = vault.search({
+        keyword: typeof query.keyword === 'string' ? query.keyword : undefined,
+        sourceId: typeof query.sourceId === 'string' ? query.sourceId : undefined,
+        kind: query.kind === 'skill' || query.kind === 'mcp' ? query.kind : undefined,
+        stage: typeof query.stage === 'string' ? query.stage : undefined,
+        limit: typeof query.limit === 'number' && Number.isFinite(query.limit) ? Math.floor(query.limit) : undefined,
+      });
+      return { ok: true, entries };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : 'list_failed' };
+    }
+  });
+
+  ipcMain.handle('capability:vault:getDetail', (event, rawId: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const vault = ensureCapabilityVaultService();
+      const id = typeof rawId === 'string' ? rawId : '';
+      if (!vault || !id) return { ok: false, error: 'invalid_request' };
+      const entry = vault.getDetail(id);
+      return entry ? { ok: true, entry } : { ok: false, error: 'not_found' };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : 'detail_failed' };
+    }
+  });
+
+  ipcMain.handle('capability:vault:install', (event, rawId: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const vault = ensureCapabilityVaultService();
+      const id = typeof rawId === 'string' ? rawId : '';
+      if (!vault || !id) return { ok: false, code: 'not_found' };
+      return vault.install(id, (input) => {
+        const repository = personalizationRepository;
+        if (!repository) return { ok: false, error: 'personalization_unavailable' };
+        const now = Date.now();
+        const definitionId = vaultDefinitionIdFor(input.id);
+        const existing = repository.get(definitionId);
+        const tags = Array.from(new Set(
+          input.tags.map((tag) => tag.trim()).filter((tag) => tag.length > 0),
+        )).slice(0, 8);
+        const definition: SkillDefinitionV2 = {
+          contractVersion: PERSONALIZATION_CONTRACT_VERSION,
+          id: definitionId,
+          name: input.name.slice(0, 120),
+          description: input.description.slice(0, 2000),
+          enabled: true,
+          tags,
+          revision: existing ? existing.revision + 1 : 1,
+          provenance: {
+            origin: 'user',
+            author: 'Capability Vault',
+            version: '1.0.0',
+            license: null,
+            sourceUrl: null,
+            sourceRevision: null,
+            installedDigest: null,
+            parentId: null,
+            parentVersion: null,
+            locallyModified: false,
+            createdAt: existing ? existing.provenance.createdAt : now,
+            updatedAt: now,
+          },
+          kind: 'skill',
+          sourceMode: 'markdown',
+          markdown: '',
+          systemPrompt: input.systemPrompt,
+          toolIds: [],
+          mcpIds: [],
+          maxTurns: 30,
+          inputSchema: null,
+          outputSchema: null,
+          packageEntry: null,
+        };
+        const saved = repository.save({
+          contractVersion: PERSONALIZATION_CONTRACT_VERSION,
+          definition,
+          expectedRevision: existing ? existing.revision : 0,
+        });
+        if (!saved.ok || saved.code !== 'saved') return { ok: false, error: saved.code };
+        return { ok: true, definitionId: saved.definition.id };
+      });
+    } catch (error) {
+      return { ok: false, code: 'install_failed', message: error instanceof Error ? error.message : undefined };
+    }
+  });
+
+  ipcMain.handle('capability:vault:uninstall', (event, rawId: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const vault = ensureCapabilityVaultService();
+      const id = typeof rawId === 'string' ? rawId : '';
+      if (!vault || !id) return { ok: false, error: 'invalid_request' };
+      // 先取关联定义再清链：卸载后同步停用个人化技能定义（仍可手动重开）。
+      const detail = vault.getDetail(id);
+      const removed = vault.uninstall(id);
+      if (removed && detail?.installedDefinitionId && personalizationRepository) {
+        const existing = personalizationRepository.get(detail.installedDefinitionId);
+        if (existing) {
+          personalizationRepository.save({
+            contractVersion: PERSONALIZATION_CONTRACT_VERSION,
+            definition: {
+              ...existing,
+              enabled: false,
+              revision: existing.revision + 1,
+              provenance: { ...existing.provenance, updatedAt: Date.now() },
+            },
+            expectedRevision: existing.revision,
+          });
+        }
+      }
+      return { ok: true, removed };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : 'uninstall_failed' };
     }
   });
 

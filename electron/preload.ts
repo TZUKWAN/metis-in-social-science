@@ -1631,6 +1631,48 @@ const api = {
     ipcRenderer.invoke('scenario:material:delete', { id }) as Promise<{ ok: boolean; error?: string }>,
   projectMaterialSetCategory: async (request: { id: string; category: string }) =>
     ipcRenderer.invoke('scenario:material:setCategory', request) as Promise<{ ok: boolean; error?: string }>,
+  // 能力库 Capability Vault（任务7）：入库不注入，绑定才加载。列表接口绝不带出 systemPrompt。
+  capabilityVaultSources: async () =>
+    ipcRenderer.invoke('capability:vault:sources') as Promise<{
+      ok: boolean; error?: string; sources?: Array<{
+        id: string; repo: string; name: string; expansion: 'per_skill' | 'single';
+        domains: string[]; researchStages: string[]; licenseStatus: 'verified' | 'unverified'; notes?: string; vaultCount: number;
+      }>;
+    }>,
+  capabilityVaultStats: async () =>
+    ipcRenderer.invoke('capability:vault:stats') as Promise<{
+      ok: boolean; error?: string; stats?: { total: number; skills: number; mcps: number; installed: number; sources: number };
+    }>,
+  capabilityVaultImportSource: async (sourceId: string) =>
+    ipcRenderer.invoke('capability:vault:importSource', sourceId) as Promise<{
+      ok: boolean; imported: number; excluded: number; error?: string;
+    }>,
+  capabilityVaultList: async (query: { keyword?: string; sourceId?: string; kind?: 'skill' | 'mcp'; stage?: string; limit?: number } = {}) =>
+    ipcRenderer.invoke('capability:vault:list', query) as Promise<{
+      ok: boolean; error?: string; entries?: Array<{
+        id: string; kind: 'skill' | 'mcp'; name: string; description: string;
+        sourceId: string; sourceRepo: string; originalPath: string;
+        license: string | null; licenseStatus: string;
+        domains: string[]; researchStages: string[]; tags: string[];
+        contentDigest: string; included: boolean; exclusionReason: string | null;
+        installedDefinitionId: string | null; importedAt: number; updatedAt: number;
+      }>;
+    }>,
+  capabilityVaultGetDetail: async (id: string) =>
+    ipcRenderer.invoke('capability:vault:getDetail', id) as Promise<{
+      ok: boolean; error?: string; entry?: { id: string; kind: 'skill' | 'mcp'; name: string; description: string;
+        sourceId: string; sourceRepo: string; originalPath: string;
+        license: string | null; licenseStatus: string;
+        domains: string[]; researchStages: string[]; tags: string[];
+        contentDigest: string; included: boolean; exclusionReason: string | null;
+        installedDefinitionId: string | null; importedAt: number; updatedAt: number; systemPrompt?: string };
+    }>,
+  capabilityVaultInstall: async (id: string) =>
+    ipcRenderer.invoke('capability:vault:install', id) as Promise<{
+      ok: boolean; code?: 'not_found' | 'excluded' | 'already_installed' | 'install_failed'; definitionId?: string; message?: string;
+    }>,
+  capabilityVaultUninstall: async (id: string) =>
+    ipcRenderer.invoke('capability:vault:uninstall', id) as Promise<{ ok: boolean; removed?: boolean; error?: string }>,
   // 投稿参谋（2026-09-01 刘总规格）：共享浏览器+成果上下文的编排对话。
   // ---- 投稿 Browser Workspace(2026-09-05,任务6)----
   submissionShortlistList: async (projectId: string) => (

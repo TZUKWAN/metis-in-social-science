@@ -122,7 +122,10 @@ describe('public Scenario pause/cancel over the persisted workflow', () => {
     // 恢复轮消息顺序：步骤摘要 → 完成摘要（最终成果）。
     const stepSummary = messages.at(-2);
     expect(stepSummary?.role).toBe('assistant');
-    expect(String(stepSummary?.content)).toContain('【步骤卡】');
+    // T3 协议（2026-09-08）：正文只留人话摘要（无围栏）；卡片结构在 metadata.stepCard。
+    expect(String(stepSummary?.content)).toContain('已完成 ✓');
+    expect(String(stepSummary?.content)).toContain('产出：');
+    expect(String(stepSummary?.content)).not.toContain('metis-step-card');
     const completion = messages.at(-1);
     expect(completion?.role).toBe('assistant');
     expect(String(completion?.content)).toContain('场景工作流已完成');

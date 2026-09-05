@@ -7,15 +7,25 @@ import {
 } from '../../engine/capabilities/CapabilityImporter.js';
 
 describe('Capability 展开导入器(2026-09-05 任务7 7B)', () => {
-  it('registers the 10 required GitHub sources with expansion strategy', () => {
-    expect(CAPABILITY_SOURCES).toHaveLength(10);
-    const byId = new Set(CAPABILITY_SOURCES.map((source) => source.id));
+  it('registers the full preset source registry (58 repos, 2026-09-08 刘总澄清:集成清单全部技能仓库)', () => {
+    // 刘总 2026-09-08 澄清:集成用户清单中的全部技能仓库,源注册表从 10 扩到 58。
+    expect(CAPABILITY_SOURCES.length).toBeGreaterThanOrEqual(58);
+    const ids = CAPABILITY_SOURCES.map((source) => source.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    const byId = new Set(ids);
     for (const required of ['auto-empirical-research', 'research-plugins', 'cnki-skills', 'paper-search-mcp']) {
       expect(byId.has(required)).toBe(true);
     }
     const perSkill = CAPABILITY_SOURCES.filter((source) => source.expansion === 'per_skill').map((source) => source.id);
     expect(perSkill).toContain('auto-empirical-research');
     expect(perSkill).toContain('research-plugins');
+    // 每个源都必须声明合法 repo/领域/研究阶段/许可证状态(目录元数据完整性)。
+    for (const source of CAPABILITY_SOURCES) {
+      expect(source.repo).toMatch(/^[^/]+\/[^/]+$/u);
+      expect(source.domains.length).toBeGreaterThan(0);
+      expect(source.researchStages.length).toBeGreaterThan(0);
+      expect(['verified', 'unverified']).toContain(source.licenseStatus);
+    }
   });
 
   it('expands multiple SKILL.md files into per-skill manifests with provenance', () => {
