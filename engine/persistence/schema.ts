@@ -502,6 +502,29 @@ CREATE INDEX IF NOT EXISTS idx_topic_messages_session ON topic_messages(session_
 CREATE TABLE IF NOT EXISTS outcome_prompt_overrides (prompt_id TEXT PRIMARY KEY, content TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, base_version INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS outcome_prompt_revisions (id TEXT PRIMARY KEY, prompt_id TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL, source TEXT NOT NULL DEFAULT 'manual', note TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS idx_outcome_prompt_revisions ON outcome_prompt_revisions(prompt_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS capability_vault (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL DEFAULT 'skill',
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  source_id TEXT NOT NULL,
+  source_repo TEXT NOT NULL,
+  original_path TEXT NOT NULL DEFAULT '',
+  license TEXT,
+  license_status TEXT NOT NULL DEFAULT 'unverified',
+  domains_json TEXT NOT NULL DEFAULT '[]',
+  stages_json TEXT NOT NULL DEFAULT '[]',
+  tags_json TEXT NOT NULL DEFAULT '[]',
+  content_digest TEXT NOT NULL DEFAULT '',
+  system_prompt TEXT NOT NULL DEFAULT '',
+  included INTEGER NOT NULL DEFAULT 1,
+  exclusion_reason TEXT,
+  installed_definition_id TEXT,
+  imported_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_capability_vault_source ON capability_vault(source_id);
+CREATE INDEX IF NOT EXISTS idx_capability_vault_installed ON capability_vault(installed_definition_id);
 CREATE TABLE IF NOT EXISTS office_prompt_profiles (id TEXT PRIMARY KEY, office_kind TEXT NOT NULL, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', builtin INTEGER NOT NULL DEFAULT 0, slots_json TEXT NOT NULL DEFAULT '{}', deleted_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, global_prompt TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS office_prompt_profile_revisions (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, slot_id TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL, source TEXT NOT NULL DEFAULT 'manual');
 CREATE INDEX IF NOT EXISTS idx_office_prompt_profiles_kind ON office_prompt_profiles(office_kind, deleted_at, updated_at DESC);
