@@ -3184,6 +3184,15 @@ button.tool-call-header { cursor: pointer; }
   overflow: hidden;
 }
 
+/* T7 WorkspaceShell 约束（2026-09-08）：中央最低 560px；<1200 视口右栏
+   自动折叠为可展开态（预览/任务面板仍可经各自按钮打开为浮层）。 */
+@media (max-width: 1200px) {
+  .projects-page__chat-right:not(.projects-page__chat-right--pinned) {
+    width: 0;
+    border-left: 0;
+  }
+}
+
 /* ─── 生成物预览栏与清单折叠（2026-08-31 布局重构）───────────── */
 .projects-page__sidebar-rail {
   width: 36px;

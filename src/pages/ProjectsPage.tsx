@@ -519,7 +519,7 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
                   setChatRightWidth((current) => Math.min(560, Math.max(240, current - delta)));
                 }}
               />
-              <div className="projects-page__chat-right" style={{ width: chatRightWidth }}>{chatRightPanel}</div>
+              <div className={`projects-page__chat-right${chatRightWidth >= 280 ? ' projects-page__chat-right--pinned' : ''}`} style={{ width: chatRightWidth }}>{chatRightPanel}</div>
               {previewOpen && (
                 <>
                   <SplitHandle
