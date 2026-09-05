@@ -4091,6 +4091,7 @@ function setupIPC(): void {
         providerProfileBinding: runtime.binding,
         projectContext: new OutcomeProjectContextService(outcomeRepository, { read: readOutcomeProjectMetis }),
         resolveBehaviorPrompt: (promptId, outcomeId) => officePromptProfileService?.resolveForBasePrompt(promptId, outcomeId ?? null) ?? artifactPromptService?.resolve(promptId) ?? null,
+        getGlobalPrompt: (officeKind, outcomeId) => officePromptProfileService?.resolveGlobal(officeKind, outcomeId ?? null) ?? null,
       });
       return await new SubmissionOptimizationService({
         submissionRepository,
@@ -5217,6 +5218,7 @@ function setupIPC(): void {
         template,
         signal: tracked.signal,
         resolveBehaviorPrompt: (promptId, outcomeId) => officePromptProfileService?.resolveForBasePrompt(promptId, outcomeId ?? null) ?? artifactPromptService?.resolve(promptId) ?? null,
+        getGlobalPrompt: (officeKind, outcomeId) => officePromptProfileService?.resolveGlobal(officeKind, outcomeId ?? null) ?? null,
         isRuntimeCurrent: () => runtimeGeneration === requestRuntimeGeneration
           && agentLoop === requestAgentLoop
           && provider === requestProvider,
@@ -10562,6 +10564,13 @@ function buildFundingTemplateDigest(pkg: { source?: { sourceFormat?: string; pag
       return officePromptProfileService?.deleteProfile(parsed.data.profileId) ?? false;
     } catch { return false; }
   });
+  ipcMain.handle('officePrompt:deletedProfiles', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ officeKind: z.string().min(1) }).safeParse(rawRequest);
+      return parsed.success && officePromptProfileService ? officePromptProfileService.listDeletedProfiles(parsed.data.officeKind) : [];
+    } catch { return []; }
+  });
   ipcMain.handle('officePrompt:restoreProfile', (event, raw: unknown) => {
     try {
       requireRendererMainFrame(event);
@@ -10585,6 +10594,13 @@ function buildFundingTemplateDigest(pkg: { source?: { sourceFormat?: string; pag
       if (!parsed.success) return { ok: false, code: 'invalid_request' };
       return officePromptProfileService?.setDefaultProfile(parsed.data.officeKind, parsed.data.profileId) ?? { ok: false, code: 'persistence_unavailable' };
     } catch { return { ok: false, code: 'failed' }; }
+  });
+  ipcMain.handle('officePrompt:getBinding', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ outcomeId: z.string().min(1) }).safeParse(rawRequest);
+      return parsed.success && officePromptProfileService ? officePromptProfileService.getOutcomeBinding(parsed.data.outcomeId) : null;
+    } catch { return null; }
   });
   ipcMain.handle('officePrompt:bindOutcome', (event, raw: unknown) => {
     try {
@@ -10666,6 +10682,20 @@ function buildFundingTemplateDigest(pkg: { source?: { sourceFormat?: string; pag
       else delete metadata.defaultScenarioId;
       return { ok: researchRepository.updateProject(parsed.data.projectId, { metadata }) !== null };
     } catch { return { ok: false }; }
+  });
+  ipcMain.handle('officePrompt:setGlobal', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ profileId: z.string().min(1), content: z.string().max(20_000) }).safeParse(rawRequest);
+      return parsed.success && officePromptProfileService ? officePromptProfileService.setGlobalPrompt(parsed.data.profileId, parsed.data.content) : null;
+    } catch { return null; }
+  });
+  ipcMain.handle('officePrompt:getGlobal', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.object({ officeKind: z.string().min(1), outcomeId: z.string().nullable().optional() }).safeParse(rawRequest);
+      return parsed.success && officePromptProfileService ? officePromptProfileService.resolveGlobal(parsed.data.officeKind, parsed.data.outcomeId ?? null) : null;
+    } catch { return null; }
   });
   ipcMain.handle('projects:updateMetadata', (event, rawRequest: unknown) => {
     try {

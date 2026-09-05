@@ -1142,7 +1142,7 @@ function LocalWordAssistantPopover({ projectId, outcomeId, selection, anchor, ha
     { label: '改写', prompt: '请在不改变含义的前提下改写所选文本，使其更清晰、准确。' },
     { label: '压缩', prompt: '请压缩所选文本，保留事实、论点与必要限定。' },
     { label: '扩写', prompt: '请在不虚构事实的前提下扩写所选文本，补足衔接与论证。' },
-    { label: '格式', prompt: '请优化所选文本的段落格式与表达层次。' },
+    { label: '润色', prompt: '请优化所选文本的表达层次与衔接，使论述更连贯、学术。' },
   ]).map((item) => [item.label, item.prompt] as const);
   return <section ref={popoverRef} className="word-local-ai" role="dialog" aria-label="所选文本 AI 操作" style={{ left: placement.left, top: placement.top }}><header><div><strong>AI 局部编辑</strong><small>已选 {selection.text.length} 个字符</small></div><button type="button" onClick={close} aria-label="关闭局部 AI 操作" title="关闭（Esc）"><X size={14} /></button></header><div className="word-local-ai__actions">{actions.map(([label, prompt]) => <button key={label} type="button" onClick={() => void send(prompt)} disabled={hasUnsavedChanges || isSending}>{label}</button>)}</div><label className="word-local-ai__instruction">补充指令<textarea aria-label="局部 AI 指令" value={instruction} onChange={(event) => setInstruction(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void send(instruction); } }} placeholder="例如：保留术语，语气更严谨" disabled={hasUnsavedChanges || isSending} /></label>{hasUnsavedChanges && <p className="word-local-ai__notice" role="status">当前草稿未保存。请先保存版本，再使用局部 AI。</p>}{notice && <p className="word-local-ai__notice" role="status">{notice}</p>}<footer><span>Ctrl / ⌘ + Enter 发送</span><button className="primary" type="button" onClick={() => void send(instruction)} disabled={hasUnsavedChanges || isSending || !instruction.trim()}>{isSending ? <LoaderCircle size={14} className="spin" /> : <Send size={14} />}发送</button></footer></section>;
 }
@@ -1563,8 +1563,9 @@ function OutcomeAssistant({ projectId, projectName, detail, selection, hasUnsave
       try {
         const rows = await window.metis?.officePromptProfiles?.(outcomeKindForProfiles);
         if (!alive || !Array.isArray(rows)) return;
-        const binding = rows.find((profile) => profile.id === (detail.outcome as { boundProfileId?: string }).boundProfileId);
-        void binding;
+        // T8 假配置修复：binding 从 office_prompt_outcome_bindings 表读取真值回显。
+        const boundId = await window.metis?.officePromptGetBinding?.(detail.outcome.id);
+        if (alive && typeof boundId === 'string' && boundId) setBoundProfileId(boundId);
       } catch { /* best-effort */ }
     })();
     return () => { alive = false; };

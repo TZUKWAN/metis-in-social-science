@@ -18,15 +18,49 @@ export interface OfficePromptProfile {
   name: string;
   description: string;
   builtin: boolean;
+  /** Profile 全局风格与行为段（T8，2026-09-08）：跨该 Profile 全部 AI Action 生效。 */
+  globalPrompt: string;
   slots: Record<string, string>;
   deletedAt: number | null;
   createdAt: number;
   updatedAt: number;
 }
 
+/** 内置 Global Prompt（可编辑 built-in，不硬编码进 runtime contract）。 */
+export const OFFICE_BUILTIN_GLOBAL_PROMPTS: Record<string, string> = {
+  word: [
+    '你正在协助生成和修改中文哲学社会科学学术文稿。',
+    '整体表达保持严谨、克制、连贯和论证导向。',
+    '正文以连续学术论述为主。每一段承担明确的论证功能，围绕中心判断展开，并通过概念、理论、文献或证据支撑该判断。',
+    '保持核心概念前后一致。出现定义变化时必须明确说明，避免概念语义无提示漂移。',
+    '标题应体现学术逻辑和论证层级。避免营销化、口号化、产品说明书式标题。',
+    '减少机械化罗列，减少大量「首先、其次、最后」，减少过多短段与无必要的冒号；避免宣传性表达与没有依据的总结性判断。',
+    '已有引用、脚注、参考文献和证据关系应尽可能保留。',
+    '涉及事实、文献与理论判断时，区分来源事实、已有学者观点与当前分析判断。',
+    '禁止为了缩短文字而任意删除有效理论论证、引用和核心限定条件。',
+  ].join('\n'),
+  ppt: [
+    '你正在协助设计学术型演示文稿。',
+    '每页优先表达一个核心判断。页面标题优先使用具有信息含量的结论性标题，仅在实际模板或正式结构要求下使用单纯栏目标题。',
+    '页面正文控制信息密度。优先通过关键判断、机制关系、比较、流程、时间线、图示、数据与关键数字组织内容。',
+    '避免将论文长段正文直接搬入幻灯片；避免连续大量 bullet、过小字体、无信息价值的装饰、重复标题与为填满页面堆积图标。',
+    '学术图表应尽可能保留图表标题、变量含义、必要注释与数据来源。',
+    '整套演示文稿需要形成连续叙事：前一页的问题应能自然引出后一页的判断。',
+  ].join('\n'),
+  markdown: [
+    '使用稳定、清晰的 Markdown 层级组织研究内容。',
+    '一级标题用于主要文档结构；二级、三级标题用于论证层级；通常避免超过四级标题。',
+    '连续学术论证优先使用自然段。列表适用于并列关系、条件、步骤、对比与清单；不要为了结构化外观把所有正文转换成列表。',
+    '表格只用于真正适合二维比较的信息。数学表达使用规范 LaTeX，代码块声明语言。',
+    '引用、链接和资料来源保持可追溯。',
+    '研究笔记允许存在假设、待验证判断、Evidence Gap、反例与 TODO，但必须明确标识这些状态。',
+  ].join('\n'),
+};
+
+
 const MAX_SLOT_CHARS = 20_000;
 
-function builtinProfileSpec(kind: string): { name: string; description: string; slots: Record<string, string> } | null {
+function builtinProfileSpec(kind: string): { name: string; description: string; globalPrompt: string; slots: Record<string, string> } | null {
   const capability = OFFICE_CAPABILITY_DEFINITIONS.find((definition) => definition.kind === kind);
   if (!capability || !capability.aiEnabled) return null;
   const slots: Record<string, string> = {};
@@ -38,6 +72,7 @@ function builtinProfileSpec(kind: string): { name: string; description: string; 
   return {
     name: `${capability.label} · 通用默认`,
     description: 'METIS 出厂默认工作方式;可直接编辑,恢复随时可用。',
+    globalPrompt: OFFICE_BUILTIN_GLOBAL_PROMPTS[capability.kind] ?? '',
     slots,
   };
 }
@@ -56,8 +91,8 @@ export class OfficePromptProfileService {
       if (existing) continue;
       const now = Date.now();
       this.db.prepare(
-        'INSERT INTO office_prompt_profiles (id, office_kind, name, description, builtin, slots_json, deleted_at, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, NULL, ?, ?)',
-      ).run(`office_${definition.kind}_default`, definition.kind, spec.name, spec.description, JSON.stringify(spec.slots), now, now);
+        'INSERT INTO office_prompt_profiles (id, office_kind, name, description, builtin, slots_json, global_prompt, deleted_at, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?, NULL, ?, ?)',
+      ).run(`office_${definition.kind}_default`, definition.kind, spec.name, spec.description, JSON.stringify(spec.slots), spec.globalPrompt, now, now);
     }
   }
 
@@ -87,6 +122,7 @@ export class OfficePromptProfileService {
       name: row.name as string,
       description: row.description as string,
       builtin: row.builtin === 1,
+      globalPrompt: typeof row.global_prompt === 'string' ? row.global_prompt : '',
       slots,
       deletedAt: (row.deleted_at as number | null) ?? null,
       createdAt: row.created_at as number,
@@ -107,6 +143,14 @@ export class OfficePromptProfileService {
       const builtin = this.listProfiles(input.officeKind).find((profile) => profile.builtin);
       slots = builtin ? { ...builtin.slots } : {};
     }
+    let globalPrompt = '';
+    if (input.fromProfileId) {
+      const source = this.getProfile(input.fromProfileId);
+      globalPrompt = source?.globalPrompt ?? '';
+    } else {
+      const builtin = this.listProfiles(input.officeKind).find((profile) => profile.builtin);
+      globalPrompt = builtin?.globalPrompt ?? OFFICE_BUILTIN_GLOBAL_PROMPTS[input.officeKind] ?? '';
+    }
     const now = Date.now();
     const profile: OfficePromptProfile = {
       id: `office_profile_${randomUUID().replace(/-/g, '').slice(0, 16)}`,
@@ -114,14 +158,15 @@ export class OfficePromptProfileService {
       name: name.slice(0, 120),
       description: (input.description ?? '').slice(0, 500),
       builtin: false,
+      globalPrompt,
       slots,
       deletedAt: null,
       createdAt: now,
       updatedAt: now,
     };
     this.db.prepare(
-      'INSERT INTO office_prompt_profiles (id, office_kind, name, description, builtin, slots_json, deleted_at, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, NULL, ?, ?)',
-    ).run(profile.id, profile.officeKind, profile.name, profile.description, JSON.stringify(profile.slots), profile.createdAt, profile.updatedAt);
+      'INSERT INTO office_prompt_profiles (id, office_kind, name, description, builtin, slots_json, global_prompt, deleted_at, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?, NULL, ?, ?)',
+    ).run(profile.id, profile.officeKind, profile.name, profile.description, JSON.stringify(profile.slots), profile.globalPrompt, profile.createdAt, profile.updatedAt);
     return { ok: true, profile };
   }
 
@@ -219,6 +264,37 @@ export class OfficePromptProfileService {
    * 统一解析入口:Outcome 显式绑定 → 格式默认 Profile → 内置 Profile → 通用 Registry。
    * 返回 null 表示该 slot 无覆盖,使用任务4 Registry 的 defaultPrompt(内部 fallback)。
    */
+  /** 编辑 Profile 全局风格段（T8）。空串=回退 built-in。 */
+  setGlobalPrompt(profileId: string, content: string): OfficePromptProfile | null {
+    const profile = this.getProfile(profileId);
+    if (!profile) return null;
+    const now = Date.now();
+    this.db.prepare('UPDATE office_prompt_profiles SET global_prompt = ?, updated_at = ? WHERE id = ?')
+      .run(content.slice(0, MAX_SLOT_CHARS), now, profileId);
+    this.db.prepare('INSERT INTO office_prompt_profile_revisions (id, profile_id, slot_id, content, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run(`opr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`, profileId, '__global__', content.slice(0, MAX_SLOT_CHARS), now);
+    return this.getProfile(profileId);
+  }
+
+  /** 解析 Profile 全局段：Outcome 绑定 → Kind 默认 → builtin（含 built-in global prompt fallback）。 */
+  resolveGlobal(officeKind: string, outcomeId: string | null): string | null {
+    const read = (profileId: string | null): string | null => {
+      if (!profileId) return null;
+      const profile = this.getProfile(profileId);
+      if (!profile || profile.officeKind !== officeKind) return null;
+      if (profile.globalPrompt.trim()) return profile.globalPrompt;
+      if (profile.builtin) return OFFICE_BUILTIN_GLOBAL_PROMPTS[officeKind] ?? null;
+      return null;
+    };
+    if (outcomeId) {
+      const bound = read(this.getOutcomeBinding(outcomeId));
+      if (bound !== null) return bound;
+    }
+    const defaulted = read(this.getDefaultProfileId(officeKind));
+    if (defaulted !== null) return defaulted;
+    return read(this.listProfiles(officeKind).find((profile) => profile.builtin)?.id ?? null);
+  }
+
   resolveSlot(officeKind: string, outcomeId: string | null, slotId: string): string | null {
     const baseId = OFFICE_SLOT_TO_BASE_PROMPT[slotId];
     const tryProfile = (profileId: string | null): string | null => {

@@ -270,6 +270,10 @@ export class PersistenceStore {
     const cols = (this.db.prepare('PRAGMA table_info(memory)').all() as Array<{ name: string }>).map((row) => row.name);
     if (!cols.includes('project_id')) {
       this.db.exec('ALTER TABLE memory ADD COLUMN project_id TEXT');
+    const officeProfileColumns = this.db.prepare('PRAGMA table_info(office_prompt_profiles)').all() as Array<{ name: string }>;
+    if (officeProfileColumns.length > 0 && !officeProfileColumns.some((column) => column.name === 'global_prompt')) {
+      this.db.exec("ALTER TABLE office_prompt_profiles ADD COLUMN global_prompt TEXT NOT NULL DEFAULT ''");
+    }
     }
   }
 

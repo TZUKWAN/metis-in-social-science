@@ -45,6 +45,7 @@ export interface OutcomeAssistantServiceOptions {
   signal?: AbortSignal;
   /** 成果提示词工程(任务4):行为段 Override 解析。 */
   resolveBehaviorPrompt?: (promptId: string, outcomeId?: string | null) => string | null;
+  getGlobalPrompt?: (officeKind: string, outcomeId?: string | null) => string | null;
 }
 
 interface ResolvedSelection {
@@ -362,6 +363,7 @@ function assistantPrompt(input: {
   projectContext: OutcomeProjectContext;
   /** 成果提示词工程(任务4/5):行为段 Override 解析(带 outcomeId)。 */
   resolveBehaviorPrompt?: (promptId: string, outcomeId?: string | null) => string | null;
+  getGlobalPrompt?: (officeKind: string, outcomeId?: string | null) => string | null;
 }): string {
   const scope = input.selection
     ? `\n${input.selection.prompt}\n`
@@ -369,6 +371,7 @@ function assistantPrompt(input: {
   // 成果提示词工程(2026-09-05,任务4):行为段支持用户 Override(只替换行为规范,
   // 编辑协议 JSON 与上下文注入保持系统控制)。
   const behaviorPrompt = input.resolveBehaviorPrompt?.('outcome.assistant', input.outcomeId) ?? null;
+  const globalPrompt = input.getGlobalPrompt?.('word', input.outcomeId) ?? null;
   const behaviorLines = behaviorPrompt
     ? behaviorPrompt.split('\n').filter((line) => line.trim().length > 0)
     : [
@@ -377,6 +380,8 @@ function assistantPrompt(input: {
       ];
   return [
     ...behaviorLines,
+    ...((globalPrompt ?? '').trim() ? [`【内容规范·全局风格（本 Profile 全部动作共同遵守）】
+${(globalPrompt ?? '').trim()}`] : []),
     `当前成果：${input.title}；类型：${input.kind}；当前版本：v${input.currentVersion}。`,
     input.historyTruncated ? `仅提供最近 ${MAX_HISTORY_MESSAGES} 条成果协同历史；更早历史未被本轮模型读取。` : '已提供全部当前成果协同历史。',
     '必须只输出一个 JSON 对象：',

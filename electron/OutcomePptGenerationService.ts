@@ -41,6 +41,8 @@ export interface OutcomePptGenerationServiceOptions {
   /** Credential-free routing receipt resolved by the main-process provider resolver. */
   providerProfileBinding?: ProviderProfileBinding;
   projectContext?: Pick<OutcomeProjectContextService, 'collect'>;
+  /** T8：Profile 全局风格段（跨该 Profile 全部 AI Action）。 */
+  getGlobalPrompt?: (officeKind: string, outcomeId: string | null) => string | null;
   /** 内容规范（2026-09-01）：按项目解析激活章程，演示规范与质量阈值随之注入。 */
   skill: PptGenerationSkill;
   template: PptTemplate | null;
@@ -242,6 +244,7 @@ export class OutcomePptGenerationService {
     const themeProfile = getPptThemeProfile(this.options.skill.themeProfileId);
     // 成果提示词工程(任务4):行为段支持用户 Override(版式协议与源文档注入保持系统控制)。
     const generationBehavior = this.options.resolveBehaviorPrompt?.('presentation.generation', request.outcomeId) ?? null;
+    const globalStylePrompt = this.options.getGlobalPrompt?.('ppt', request.outcomeId) ?? null;
     const zoneBehaviorLines = generationBehavior
       ? generationBehavior.split('\n').filter((line) => line.trim().length > 0)
       : [
@@ -257,6 +260,8 @@ export class OutcomePptGenerationService {
           `用户生成要求：${request.instruction}`,
           '必须只输出一个 JSON 对象，不能使用 Markdown 代码围栏：',
           '{"answer":"给用户的中文生成说明","outline":{"title":"封面主标题","speaker":"汇报人","chapters":[{"name":"章节名","pages":[{"title":"页面标题","zones":[zone 列表]}]}],"closing":{"line1":"以上汇报，敬请批评指正","line2":"汇报人：xxx"}}}',
+          ...((globalStylePrompt ?? '').trim() ? [`【内容规范·全局风格（本 Profile 全部动作共同遵守）】
+${(globalStylePrompt ?? '').trim()}`] : []),
           outlineContractPrompt(themeProfile),
           `当前 PPT 文档 JSON（现状）：\n${serializeDocument(detail.version.content)}`,
           projectContext.prompt,

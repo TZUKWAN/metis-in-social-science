@@ -8,7 +8,7 @@ import { Plus, RotateCcw, Trash2 } from 'lucide-react';
  */
 
 interface CapabilitySummary { kind: string; label: string; profileCount: number; defaultProfileId: string | null; aiEnabled: boolean }
-interface Profile { id: string; officeKind: string; name: string; description: string; builtin: boolean; slots: Record<string, string>; createdAt: number; updatedAt: number }
+interface Profile { id: string; officeKind: string; name: string; description: string; builtin: boolean; globalPrompt?: string; slots: Record<string, string>; createdAt: number; updatedAt: number }
 interface CapabilityDetail { kind: string; label: string; aiEnabled: boolean; aiNote?: string; aiActions: Array<{ slotId: string; label: string; description: string }> }
 
 const CAPABILITY_LABELS: Record<string, string> = {
@@ -24,9 +24,11 @@ export default function SettingsOfficeProfilesSection() {
   const [activeProfileId, setActiveProfileId] = React.useState<string | null>(null);
   const [draftSlot, setDraftSlot] = React.useState<{ slotId: string; label: string; content: string } | null>(null);
   const [notice, setNotice] = React.useState('');
+  const [globalDraft, setGlobalDraft] = React.useState('');
   const [busy, setBusy] = React.useState(false);
 
   const activeProfile = profiles.find((profile) => profile.id === activeProfileId) ?? null;
+  React.useEffect(() => { setGlobalDraft(activeProfile?.globalPrompt ?? ''); }, [activeProfile?.id, activeProfile?.globalPrompt]);
 
   const loadCapabilities = React.useCallback(async () => {
     const rows = await window.metis?.officePromptCapabilities?.();
@@ -65,7 +67,7 @@ export default function SettingsOfficeProfilesSection() {
       if (!name) return;
       const result = await window.metis?.officePromptCreateProfile?.({ officeKind: activeKind, name, fromProfileId });
       if (result?.ok) {
-        await loadProfiles(activeKind);
+        if (activeKind) await loadProfiles(activeKind);
         await loadCapabilities();
         if (result.profile) setActiveProfileId(String((result.profile as { id: string }).id));
         setNotice('Profile 已创建。');
@@ -83,9 +85,14 @@ export default function SettingsOfficeProfilesSection() {
 
   const restoreLatest = async () => {
     if (!activeKind) return;
-    const deleted = await window.metis?.officePromptProfiles?.(activeKind);
-    void deleted;
-    setNotice('如需恢复已删除 Profile,请在删除前确认。恢复接口:officePrompt:restoreProfile。');
+    const metis = window.metis;
+    if (!metis?.officePromptDeletedProfiles || !metis?.officePromptRestoreProfile) { setNotice('当前版本不支持恢复。'); return; }
+    const deleted = await metis.officePromptDeletedProfiles(activeKind);
+    const latest = Array.isArray(deleted) ? deleted[0] : null;
+    if (!latest || typeof latest.id !== 'string') { setNotice('该格式没有可恢复的已删除 Profile。'); return; }
+    const restored = await metis.officePromptRestoreProfile(latest.id);
+    setNotice(restored ? `已恢复「${latest.name}」。` : '恢复未完成。');
+    if (restored && activeKind) await loadProfiles(activeKind);
   };
 
   const setDefault = async (profile: Profile) => {
@@ -95,6 +102,18 @@ export default function SettingsOfficeProfilesSection() {
       await loadCapabilities();
       setNotice(`已设为 ${CAPABILITY_LABELS[profile.officeKind] ?? profile.officeKind} 的默认 Profile。新成果默认使用;已有成果的显式绑定不受影响。`);
     }
+  };
+
+  const saveGlobal = async () => {
+    const metis = window.metis;
+    if (!activeProfile || !metis?.officePromptSetGlobal || busy) return;
+    setBusy(true);
+    try {
+      const saved = await metis.officePromptSetGlobal({ profileId: activeProfile.id, content: globalDraft });
+      setNotice(saved ? '全局风格已保存；后续 AI 动作即时生效。' : '保存未完成。');
+      if (activeKind) await loadProfiles(activeKind);
+    } catch { setNotice('保存请求未完成。'); }
+    finally { setBusy(false); }
   };
 
   const saveSlot = async () => {

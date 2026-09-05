@@ -907,15 +907,23 @@ const api = {
   officePromptDeleteProfile: async (profileId: string) => (
     ipcRenderer.invoke('officePrompt:deleteProfile', { profileId }) as Promise<boolean>
   ),
+  officePromptDeletedProfiles: async (officeKind: string) =>
+    ipcRenderer.invoke('officePrompt:deletedProfiles', { officeKind }) as Promise<Array<Record<string, unknown>>>,
   officePromptRestoreProfile: async (profileId: string) => (
     ipcRenderer.invoke('officePrompt:restoreProfile', { profileId }) as Promise<Record<string, unknown> | null>
   ),
+  officePromptGetGlobal: async (request: { officeKind: string; outcomeId?: string | null }) =>
+    ipcRenderer.invoke('officePrompt:getGlobal', request) as Promise<string | null>,
+  officePromptSetGlobal: async (request: { profileId: string; content: string }) =>
+    ipcRenderer.invoke('officePrompt:setGlobal', request) as Promise<Record<string, unknown> | null>,
   officePromptSetSlot: async (request: { profileId: string; slotId: string; content: string }) => (
     ipcRenderer.invoke('officePrompt:setSlot', request) as Promise<{ ok: boolean; code?: string }>
   ),
   officePromptSetDefault: async (request: { officeKind: string; profileId: string }) => (
     ipcRenderer.invoke('officePrompt:setDefault', request) as Promise<{ ok: boolean; code?: string }>
   ),
+  officePromptGetBinding: async (outcomeId: string) =>
+    ipcRenderer.invoke('officePrompt:getBinding', { outcomeId }) as Promise<string | null>,
   officePromptBindOutcome: async (request: { outcomeId: string; profileId: string | null }) => (
     ipcRenderer.invoke('officePrompt:bindOutcome', request) as Promise<{ ok: boolean }>
   ),

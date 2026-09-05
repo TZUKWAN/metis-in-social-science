@@ -56,6 +56,8 @@ export interface CoverLetterServiceOptions {
   providerProfileBinding?: ProviderProfileBinding;
   /** 成果提示词工程(任务4/5):行为段 Override 解析。 */
   resolveBehaviorPrompt?: (promptId: string, outcomeId?: string | null) => string | null;
+  /** T8：Profile 全局风格段。 */
+  getGlobalPrompt?: (officeKind: string, outcomeId: string | null) => string | null;
 }
 
 /**
@@ -250,7 +252,9 @@ export class CoverLetterService {
     ].filter((line) => line !== '').join('\n');
     // 成果提示词工程(任务4):行为段首行支持 Override;事实禁令与占位协议保持系统控制。
     const coverLetterBehavior = this.options.resolveBehaviorPrompt?.('document.cover_letter') ?? null;
+    const globalStylePrompt = this.options.getGlobalPrompt?.('word', null) ?? null;
     const skillPrompt = [
+        ...((globalStylePrompt ?? '').trim() ? ['【内容规范·全局风格（本 Profile 全部动作共同遵守）】\n' + (globalStylePrompt ?? '').trim()] : []),
       ...(coverLetterBehavior ? coverLetterBehavior.split('\n').filter((line) => line.trim().length > 0) : [
       '你是学术投稿信（Cover Letter）撰写助手。根据用户给出的稿件与期刊上下文，撰写一封投稿信正文。',
       ]),

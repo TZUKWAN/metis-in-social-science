@@ -58,6 +58,8 @@ export class OutcomeImageService {
     now?: () => number;
     /** 成果提示词工程(任务4/5):绘图行为规范 Override。 */
     resolveBehaviorPrompt?: (promptId: string, outcomeId?: string | null) => string | null;
+  /** T8：Profile 全局风格段。 */
+  getGlobalPrompt?: (officeKind: string, outcomeId: string | null) => string | null;
   }) {}
 
   getSettings(): OutcomeImageSettingsGetResult {
@@ -125,6 +127,7 @@ export class OutcomeImageService {
       : request.prompt;
     // 成果提示词工程(任务4):科研绘图行为规范前置(Override;空=不附加,与升级前行为一致)。
     const figureBehavior = this.options.resolveBehaviorPrompt?.('image.generation') ?? null;
+    const globalStylePrompt = this.options.getGlobalPrompt?.('image', null) ?? null;
     const prompt = figureBehavior && figureBehavior.trim()
       ? `${figureBehavior.trim()}\n\n${userPrompt}`
       : userPrompt;
