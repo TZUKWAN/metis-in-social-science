@@ -33,8 +33,8 @@ export interface NavEntry {
 const NORMAL_NAV: NavEntry[] = [
   { id: 'projects', labelKey: 'nav.projects', descriptionKey: 'nav.projectsDesc', isTopLevel: true },
   { id: 'settings', labelKey: 'nav.settings', descriptionKey: 'nav.settingsDesc', isTopLevel: true },
-  // project-internal modes (METIS-104)
-  { id: 'converse', labelKey: 'nav.converse', descriptionKey: 'nav.converseDesc', isTopLevel: false },
+  // 「协同对话」一级工作区已取消（2026-09-05 刘总规格）：第三方 AI 能力迁入
+  // 选题 Topic Workspace 的「打开 Chatbot」临时协作视图，不再占用一级导航。
 ];
 
 /**
@@ -66,9 +66,9 @@ export function getTopLevelNav(): NavEntry[] {
  * navigate directly between the four workspaces.
  */
 export function getPrimaryWorkspaceNav(): NavEntry[] {
-  // 固定顺序：对话在前、科研项目在后（与 NORMAL_NAV 的声明顺序无关）。
+  // 协同对话取消后，workspace 一级仅剩科研项目（2026-09-05 刘总规格）。
   const byId = new Map(NORMAL_NAV.map((entry) => [entry.id, entry]));
-  return ['converse', 'projects']
+  return ['projects']
     .map((id) => byId.get(id))
     .filter((entry): entry is NavEntry => entry !== undefined);
 }

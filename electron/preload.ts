@@ -797,6 +797,30 @@ const api = {
   collabSetBounds: async (bounds: { x: number; y: number; width: number; height: number }) =>
     ipcRenderer.invoke('collab:setBounds', bounds) as Promise<{ ok: boolean; error?: string }>,
   collabNavigate: async (url: string) => ipcRenderer.invoke('collab:navigate', url) as Promise<{ ok: boolean; url?: string; error?: string }>,
+  // ── Chatbot Context Bridge（2026-09-05 刘总规格书）──
+  // METIS→Chatbot：把剪贴板内容粘贴进第三方 AI 页面（自动填入路径）。
+  collabPaste: async () =>
+    ipcRenderer.invoke('collab:paste') as Promise<{ ok: boolean; error?: string }>,
+  // Chatbot→METIS：只读捕获选区原文；失败如实返回（渲染层走剪贴板 fallback）。
+  collabCaptureSelection: async () =>
+    ipcRenderer.invoke('collab:captureSelection') as Promise<{ ok: boolean; text?: string; error?: string }>,
+  clipboardReadText: async () =>
+    ipcRenderer.invoke('clipboard:readText') as Promise<{ ok: boolean; text?: string; error?: string }>,
+  clipboardWriteText: async (text: string) =>
+    ipcRenderer.invoke('clipboard:writeText', text) as Promise<{ ok: boolean; error?: string }>,
+  collabGetState: async () =>
+    ipcRenderer.invoke('collab:getState') as Promise<{ ok: boolean; error?: string; state?: { url: string; title: string } }>,
+  // 外部模型引用（外部参考·非证据）：确认卡通过后才调用 add。
+  externalRefAdd: async (reference: Record<string, unknown>) =>
+    ipcRenderer.invoke('externalRef:add', reference) as Promise<{
+      ok: boolean; issues?: string[]; reference?: { v: 1; id: string; model: string; url: string; quotedText: string; contextDigest: string; capturedAt: number; projectId: string | null; sessionId: string | null }; duplicate?: boolean;
+    }>,
+  externalRefList: async (query: { projectId?: string; sessionId?: string; limit?: number } = {}) =>
+    ipcRenderer.invoke('externalRef:list', query) as Promise<{
+      ok: boolean; error?: string; references?: Array<{ v: 1; id: string; model: string; url: string; quotedText: string; contextDigest: string; capturedAt: number; projectId: string | null; sessionId: string | null }>;
+    }>,
+  externalRefRemove: async (id: string) =>
+    ipcRenderer.invoke('externalRef:remove', id) as Promise<{ ok: boolean; error?: string }>,
   // ── 内置文献检索 ──
   literatureSearch: async (request: { query: string; sources: Array<'ncpssd' | 'openalex'>; page?: number; pageSize?: number; coreOnly?: boolean }) =>
     ipcRenderer.invoke('literature:search', request) as Promise<{

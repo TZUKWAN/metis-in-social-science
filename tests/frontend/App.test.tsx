@@ -91,7 +91,7 @@ describe('App', () => {
   it('opens global search from the slash-command bus event', async () => {
     resetStore();
     render(<App />);
-    await screen.findByRole('region', { name: 'Metis 研究工作台' });
+    await screen.findByTestId('chat-page');
     window.dispatchEvent(new CustomEvent('metis:open-search'));
     expect(await screen.findByPlaceholderText(/搜索|Search/)).toBeTruthy();
   });
@@ -99,12 +99,12 @@ describe('App', () => {
   it('renders the fine top navigation with workspaces, research runs, and destinations', async () => {
     resetStore();
     render(<App />);
-    await screen.findByRole('region', { name: 'Metis 研究工作台' });
+    await screen.findByTestId('chat-page');
     const nav = screen.getByRole('navigation', { name: 'Metis' });
     const primaryItems = within(nav).getAllByRole('button').filter((button) => button.hasAttribute('data-nav-id'));
 
+    // 协同对话一级工作区已取消（2026-09-05 刘总规格）。
     expect(primaryItems.map((button) => button.getAttribute('data-nav-id'))).toEqual([
-      'converse',
       'projects',
       'topics',
       'outcomes',
@@ -113,7 +113,6 @@ describe('App', () => {
       'personalization',
     ]);
     expect(primaryItems.map((button) => button.textContent?.trim())).toEqual([
-      '协同对话',
       '科研项目',
       '选题',
       '成果',
@@ -122,7 +121,6 @@ describe('App', () => {
       '场景',
     ]);
     expect(primaryItems.map((button) => button.getAttribute('aria-label'))).toEqual([
-      '协同对话',
       '科研项目',
       '选题',
       '成果',
@@ -134,7 +132,6 @@ describe('App', () => {
     // (descriptionKey) instead of repeating the label. aria-label still holds
     // the plain label for accessibility; title holds the description.
     expect(primaryItems.map((button) => button.getAttribute('title'))).toEqual([
-      '与其他 AI（豆包/Kimi/GLM/ChatGPT/Claude/DeepSeek）分屏协同：左边交流思路，右边让 Metis 干活。',
       '科研项目工作台：左侧项目列表，内含聊天、任务看板、资料与研究成果。',
       '从一个研究兴趣出发:真实检索、研究版图、候选论证,确定选题后一路进入场景与项目',
       '管理当前项目的论文、PPT、报告与其他正式交付物。',
@@ -150,7 +147,6 @@ describe('App', () => {
       await Promise.resolve();
     });
     expect(primaryItems.map((button) => button.getAttribute('aria-label'))).toEqual([
-      'AI Collab',
       'Research Projects',
       'Topic Selection',
       'Outcomes',
@@ -204,29 +200,6 @@ describe('App', () => {
     expect(listPersonalization.mock.calls.length).toBeGreaterThan(callsBeforeReturn);
   });
 
-  it('composes converse mode as the AI-collab split view with the Metis chat embedded', async () => {
-    resetStore();
-    const { container } = render(<App />);
-    await screen.findByRole('region', { name: 'Metis 研究工作台' });
-
-    // 协同对话：左侧第三方 AI 嵌入区 + 右侧 Metis 对话。
-    expect(await screen.findByTestId('collab-page')).toBeTruthy();
-    expect(container.querySelectorAll('.project-shell')).toHaveLength(0);
-    expect(screen.getByTestId('collab-host')).toBeTruthy();
-    expect(container.querySelectorAll('.chat-main')).toHaveLength(1);
-    expect(container.querySelector('.collab-metis__chat > .chat-main')).not.toBeNull();
-    // 第三方 AI 站点页签齐全。
-    for (const id of ['doubao', 'kimi', 'glm', 'chatgpt', 'claude', 'deepseek']) {
-      expect(screen.getByTestId(`collab-ai-${id}`)).toBeTruthy();
-    }
-    // 会话列表与任务面板以抽屉形式存在，默认收起。
-    expect(screen.queryByTestId('collab-sessions-drawer')).toBeNull();
-    expect(screen.queryByTestId('collab-panel-drawer')).toBeNull();
-    fireEvent.click(screen.getByTestId('collab-toggle-sessions'));
-    expect(await screen.findByTestId('collab-sessions-drawer')).toBeTruthy();
-    expect(container.querySelectorAll('.chat-sidebar')).toHaveLength(1);
-  });
-
   it('routes the visible research destination to Outcomes, not the removed autonomous page', async () => {
     resetStore();
     render(<App />);
@@ -277,22 +250,8 @@ describe('App', () => {
 
     try {
       render(<App />);
-      await screen.findByTestId('collab-page');
+      await screen.findByTestId('chat-page');
       await waitFor(() => expect(onScenarioApprovalRequired.mock.calls.length).toBeGreaterThanOrEqual(2));
-      // Wait for CollabPage's effect to have attached its restore listener;
-      // the page itself publishes its initial bounds asynchronously.
-      await waitFor(() => expect(collabShow).toHaveBeenCalled());
-      vi.spyOn(screen.getByTestId('collab-host'), 'getBoundingClientRect').mockReturnValue({
-        x: 24,
-        y: 56,
-        top: 56,
-        left: 24,
-        right: 664,
-        bottom: 536,
-        width: 640,
-        height: 480,
-        toJSON: () => ({}),
-      } as DOMRect);
       collabHide.mockClear();
       browserHide.mockClear();
       collabShow.mockClear();
@@ -319,7 +278,6 @@ describe('App', () => {
       await waitFor(() => expect(respondScenarioApproval).toHaveBeenCalledWith('scenario-approval-1', true));
       await waitFor(() => expect(screen.queryByTestId('scenario-approval-dialog')).toBeNull());
       expect(document.querySelector('[aria-modal="true"]')).toBeNull();
-      await waitFor(() => expect(collabShow).toHaveBeenCalled());
     } finally {
       if (originalResizeObserver) Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, value: originalResizeObserver });
       else Reflect.deleteProperty(globalThis, 'ResizeObserver');
@@ -339,7 +297,7 @@ describe('App', () => {
       appendMessage,
     });
     render(<App />);
-    await screen.findByRole('region', { name: 'Metis 研究工作台' });
+    await screen.findByTestId('chat-page');
 
     window.dispatchEvent(new CustomEvent('metis:open-goal', { detail: { goalId: 'g1' } }));
 
@@ -348,7 +306,8 @@ describe('App', () => {
     await waitFor(() => {
       const nav = screen.getByRole('navigation', { name: 'Metis' });
       const active = within(nav).getAllByRole('button').find((b) => b.getAttribute('aria-current') === 'page');
-      expect(active?.getAttribute('data-nav-id')).toBe('converse');
+      // 协同对话一级取消：任务交接落科研项目工作台（2026-09-05 刘总规格）。
+      expect(active?.getAttribute('data-nav-id')).toBe('projects');
     });
     expect(await screen.findByText('从看板来的任务')).toBeDefined();
     expect(screen.getByText('研究任务已完成')).toBeDefined();
@@ -375,7 +334,7 @@ describe('App', () => {
       }),
     });
     render(<App />);
-    await screen.findByRole('region', { name: 'Metis 研究工作台' });
+    await screen.findByTestId('chat-page');
     window.dispatchEvent(new CustomEvent('metis:open-goal', { detail: { goalId: 'g1' } }));
     expect(await screen.findByText('状态会变的任务')).toBeDefined();
 
@@ -396,7 +355,7 @@ describe('App', () => {
       onGoalChanged: vi.fn().mockReturnValue(() => {}),
     });
     render(<App />);
-    await screen.findByRole('region', { name: 'Metis 研究工作台' });
+    await screen.findByTestId('chat-page');
 
     window.dispatchEvent(new CustomEvent('metis:open-kanban', { detail: { goalId: 'g1' } }));
 
@@ -433,7 +392,7 @@ describe('App', () => {
       }),
     });
     render(<App />);
-    await screen.findByRole('region', { name: 'Metis 研究工作台' });
+    await screen.findByTestId('chat-page');
 
     window.dispatchEvent(new CustomEvent('metis:open-project', {
       detail: { projectId: 'proj-1', section: 'sources' },
@@ -480,7 +439,7 @@ describe('App', () => {
     });
     setMockMetis({});
     render(<App />);
-    await screen.findByRole('region', { name: 'Metis 研究工作台' });
+    await screen.findByTestId('chat-page');
 
     window.dispatchEvent(new CustomEvent('metis:open-paper', { detail: { paperId: 'paper-9' } }));
 
@@ -499,49 +458,21 @@ describe('App', () => {
       listPersonalization: vi.fn().mockResolvedValue({ ok: true, definitions: [] }),
     });
     render(<App />);
-    await screen.findByRole('region', { name: 'Metis 研究工作台' });
+    await screen.findByTestId('chat-page');
 
     window.dispatchEvent(new CustomEvent('metis:open-mcp-installer'));
 
     expect(await screen.findByTestId('scenario-workbench')).toBeDefined();
   });
 
-  it('keeps the Metis chat draft while toggling collab drawers and external pane', async () => {
-    resetStore();
-    render(<App />);
-    await screen.findByRole('region', { name: 'Metis 研究工作台' });
-
-    const input = screen.getByPlaceholderText('提出一个研究问题...') as HTMLTextAreaElement;
-    fireEvent.change(input, { target: { value: '协同分屏下保留的草稿' } });
-
-    // 展开/收起会话抽屉与面板，草稿不丢。
-    fireEvent.click(screen.getByTestId('collab-toggle-sessions'));
-    expect(await screen.findByTestId('collab-sessions-drawer')).toBeTruthy();
-    fireEvent.click(screen.getByTestId('collab-toggle-panel'));
-    expect(await screen.findByTestId('collab-panel-drawer')).toBeTruthy();
-    expect(
-      (screen.getByPlaceholderText('提出一个研究问题...') as HTMLTextAreaElement).value,
-    ).toBe('协同分屏下保留的草稿');
-
-    // 收起第三方 AI 分屏再展开，草稿仍在。
-    fireEvent.click(screen.getByTestId('collab-hide-external'));
-    expect(screen.queryByTestId('collab-host')).toBeNull();
-    fireEvent.click(await screen.findByTestId('collab-show-external'));
-    expect(await screen.findByTestId('collab-host')).toBeTruthy();
-    expect(
-      (screen.getByPlaceholderText('提出一个研究问题...') as HTMLTextAreaElement).value,
-    ).toBe('协同分屏下保留的草稿');
-  });
-
-  it('switches between conversation and the project center from the fine top navigation', async () => {
+  it('renders projects as the only workspace entry after the collab workspace removal', async () => {
     resetStore();
     const { container } = render(<App />);
-    await screen.findByRole('region', { name: 'Metis 研究工作台' });
+    await screen.findByTestId('chat-page');
 
-    const labels = ['协同对话', '科研项目'];
-    const modeButtons = screen.getAllByRole('button').filter((button) => ['converse', 'projects'].includes(button.getAttribute('data-nav-id') ?? ''));
-    expect(modeButtons.map((button) => button.textContent)).toEqual(labels);
-
+    // 协同对话一级工作区已取消：导航只有科研项目；也不再有 collab-page。
+    expect(screen.queryByRole('button', { name: '协同对话' })).toBeNull();
+    expect(screen.queryByTestId('collab-page')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '科研项目' }));
     await waitFor(() => expect(screen.getByTestId('projects-page')).toBeTruthy());
     expect(container.querySelectorAll('.project-shell')).toHaveLength(0);
@@ -551,15 +482,15 @@ describe('App', () => {
     await waitFor(() => expect(screen.getByTestId('kanban-board')).toBeTruthy());
     expect(container.querySelectorAll('.project-shell')).toHaveLength(0);
 
-    // 回到协同对话。
-    fireEvent.click(screen.getByRole('button', { name: '协同对话' }));
-    await waitFor(() => expect(screen.getByTestId('collab-page')).toBeTruthy());
+    // 回到聊天模式。
+    fireEvent.click(screen.getByTestId('projects-mode-chat'));
+    await waitFor(() => expect(screen.getByTestId('projects-page')).toBeTruthy());
   });
 
   it('preserves the ChatPage draft across project-center modes and the conversation workspace', async () => {
     resetStore();
     const { container } = render(<App />);
-    await screen.findByRole('region', { name: 'Metis 研究工作台' });
+    await screen.findByTestId('chat-page');
 
     const input = screen.getByPlaceholderText('提出一个研究问题...') as HTMLTextAreaElement;
     fireEvent.change(input, { target: { value: '跨模式保留的研究草稿' } });
@@ -581,9 +512,8 @@ describe('App', () => {
       (screen.getByPlaceholderText('提出一个研究问题...') as HTMLTextAreaElement).value,
     ).toBe('跨模式保留的研究草稿');
 
-    // 返回协同对话，草稿依旧保留。
-    fireEvent.click(screen.getByRole('button', { name: '协同对话' }));
-    await waitFor(() => expect(screen.getByTestId('collab-page')).toBeTruthy());
+    // 协同对话一级入口已移除（2026-09-05 刘总规格），草稿依旧保留在聊天模式。
+    expect(screen.queryByRole('button', { name: '协同对话' })).toBeNull();
     expect(
       (screen.getByPlaceholderText('提出一个研究问题...') as HTMLTextAreaElement).value,
     ).toBe('跨模式保留的研究草稿');
@@ -695,7 +625,7 @@ describe('App', () => {
     setMockMetis({ getPendingApprovals });
 
     render(<App />);
-    await waitFor(() => expect(screen.getByRole('button', { name: '协同对话' })).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole('button', { name: '科研项目' })).toBeTruthy());
     expect(screen.queryByRole('button', { name: '审批队列' })).toBeNull();
     expect(screen.queryByText('approval-normal')).toBeNull();
     expect(getPendingApprovals).not.toHaveBeenCalled();

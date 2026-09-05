@@ -22,7 +22,7 @@ export interface ShortcutSpec {
 }
 
 export const SHORTCUTS: readonly ShortcutSpec[] = [
-  { id: 'mode-converse', description: '切换到对话模式', descriptionEn: 'Switch to Converse', key: '1', mod: true, action: 'switch_converse' },
+  { id: 'mode-converse', description: '切换到科研项目', descriptionEn: 'Switch to Projects', key: '1', mod: true, action: 'switch_converse' },
   { id: 'mode-write', description: '切换到写作模式', descriptionEn: 'Switch to Write', key: '2', mod: true, action: 'switch_write' },
   { id: 'toggle-left', description: '收起/展开资料栏', descriptionEn: 'Toggle left panel', key: '[', mod: true, action: 'toggle_left' },
   { id: 'toggle-right', description: '收起/展开检查器', descriptionEn: 'Toggle right panel', key: ']', mod: true, action: 'toggle_right' },
@@ -47,7 +47,8 @@ export function matchShortcut(e: { key: string; metaKey: boolean; ctrlKey: boole
 /** Resolve a shortcut action into a workspace mode (for the switch_* actions). */
 export function modeForAction(action: ShortcutSpec['action']): WorkspaceMode | null {
   switch (action) {
-    case 'switch_converse': return 'converse';
+    // 协同对话一级工作区取消：Ctrl+1 归入科研项目（2026-09-05 刘总规格）。
+    case 'switch_converse': return 'projects';
     case 'switch_write': return 'write';
     default: return null;
   }

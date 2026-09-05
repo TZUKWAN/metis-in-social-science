@@ -29,7 +29,6 @@ const DashboardPage = lazy(() => import('./pages/DashboardPage'));
 const ProjectShell = lazy(() => import('./shell/ProjectShell'));
 const NotesPage = lazy(() => import('./pages/NotesPage'));
 const ProjectsPage = lazy(() => import('./pages/ProjectsPage'));
-const CollabPage = lazy(() => import('./pages/CollabPage'));
 const ExperimentsPage = lazy(() => import('./pages/ExperimentsPage'));
 const ResearchTimelinePage = lazy(() => import('./pages/ResearchTimelinePage'));
 const LatexPreviewPage = lazy(() => import('./pages/LatexPreviewPage'));
@@ -120,18 +119,18 @@ const PREFERENCE_NAV_ITEMS = getPreferenceNav();
 function legacyPageToEntry(page: Page): { entry: TopLevelEntry; mode: WorkspaceMode } {
   switch (page) {
     case 'settings':
-      return { entry: 'settings', mode: 'converse' };
+      return { entry: 'settings', mode: 'projects' };
     case 'kanban':
     case 'autonomous':
     case 'outcomes':
     case 'timeline':
     case 'experiments':
-      return { entry: 'projects', mode: 'converse' };
+      return { entry: 'projects', mode: 'projects' };
     case 'latex':
     case 'notes':
       return { entry: 'projects', mode: 'write' };
     default:
-      return { entry: 'projects', mode: 'converse' };
+      return { entry: 'projects', mode: 'projects' };
   }
 }
 
@@ -433,7 +432,8 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
     sessionRestoredRef.current = true
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot session restore on launch
     setCurrentEntry(saved.entry)
-    setWorkspaceMode(saved.mode)
+    // 协同对话一级工作区已取消（2026-09-05）：历史会话里的 converse 归入 projects。
+    setWorkspaceMode(saved.mode === 'converse' ? 'projects' : saved.mode)
     setStandalonePage(null)
     if (saved.projectId) {
       researchWorkspaceStore.setState({ activeProjectId: saved.projectId })
@@ -581,7 +581,8 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
           setProjectViewMode('chat');
         });
       } else {
-        navigateWorkspaceModeRef.current('converse');
+        setWorkspaceMode('projects');
+        setProjectViewMode('chat');
       }
       // ChatPage may already be mounted (converse is the default workspace);
       // if not, its mount effect consumes the sessionStorage fallback.
@@ -755,7 +756,12 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
       autoSend: false,
     });
     setChatIntentRevision((revision) => revision + 1);
-    navigateWorkspaceMode('converse');
+    // 使用场景后必须离开个人化中心，回到科研项目聊天工作区。
+    setPersonalizationOpen(false);
+    setStandalonePage(null);
+    setCurrentEntry('projects');
+    setWorkspaceMode('projects');
+    setProjectViewMode('chat');
   }
 
   function projectShellStateProps() {
@@ -770,7 +776,6 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
   function renderNonChatWorkspace() {
     switch (workspaceMode) {
       case 'write': return <NotesPage uiMode={uiMode} onNavigate={(page) => navigateLegacy(page as Page)} />;
-      case 'converse': return null;
     }
   }
 
@@ -819,17 +824,10 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
               />
             );
           }
-          const isConversation = workspaceMode === 'converse';
-          // 协同对话：左侧第三方 AI 网页版 + 右侧 METIS 对话分屏。
-          if (isConversation) {
-            return (
-              <CollabPage
-                chatContent={workspace}
-                sessionPanel={leftPanel}
-                rightPanel={rightPanel}
-              />
-            );
-          }
+          // 协同对话一级工作区已取消（2026-09-05 刘总规格）：第三方 AI 协作
+          // 视图迁入选题 Topic Workspace（TopicWorkspacePage 内「打开 Chatbot」）。
+          const isConversation = false;
+          void leftPanel;
           return (
             <ProjectShell
               {...projectShellStateProps()}
@@ -935,7 +933,6 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
 
   // O1: command palette registry — navigation + research runs + library + search.
   const commandItems: CommandItem[] = [
-    { id: 'goto-converse', label: t('nav.converse'), description: t('cmdbar.gotoWorkspace'), group: 'nav', onExecute: () => navigateWorkspaceMode('converse'), keywords: ['chat', '对话'] },
     { id: 'goto-projects', label: t('nav.projects'), description: t('cmdbar.gotoWorkspace'), group: 'nav', onExecute: () => navigateWorkspaceMode('projects'), keywords: ['project', '项目', '科研', '看板'] },
     { id: 'goto-outcomes', label: t('nav.outcomes'), description: t('nav.outcomesDesc'), group: 'nav', onExecute: () => navigateLegacy('outcomes'), keywords: ['成果', '论文', 'PPT', '报告'] },
     { id: 'goto-topics', label: t('nav.topics'), description: t('nav.topicsDesc'), group: 'nav', onExecute: () => navigateLegacy('topics'), keywords: ['topic', '选题', '研究方向', '题目'] },
@@ -1068,7 +1065,7 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
       <main className={`main-content ${currentEntry === 'projects' && standalonePage === null ? 'main-content--workspace' : ''}`}>
         <ErrorBoundary
           showDetails={uiMode === 'diagnostic'}
-          onReset={() => leavePersonalizationGuard(() => { setPersonalizationOpen(false); setCurrentEntry('projects'); setWorkspaceMode('converse'); setStandalonePage(null); })}
+          onReset={() => leavePersonalizationGuard(() => { setPersonalizationOpen(false); setCurrentEntry('projects'); setWorkspaceMode('projects'); setStandalonePage(null); })}
         >
           <Suspense fallback={<div className="hydration-loading"><div className="hydration-spinner" /><p>{t('common.loading')}</p></div>}>
             {renderPage()}

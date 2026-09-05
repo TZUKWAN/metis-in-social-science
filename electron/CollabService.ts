@@ -122,6 +122,47 @@ export class CollabService {
     return { url: this.currentUrl, title: this.currentTitle };
   }
 
+  /**
+   * Context Bridge（METIS → Chatbot）：把剪贴板内容粘贴进第三方 AI 页面的
+   * 输入框。webContents.paste() 走 Chromium 原生粘贴通道（无需模拟按键、
+   * 不注入任何写入型 JS）。仅在有可见视图时可用；失败如实返回，不假装已粘贴。
+   */
+  pasteFromClipboard(): { ok: boolean; error?: string } {
+    if (!this.view || !this.window.contentView.children.includes(this.view)) {
+      return { ok: false, error: 'collab_not_visible' };
+    }
+    try {
+      this.view.webContents.focus();
+      this.view.webContents.paste();
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  }
+
+  /**
+   * Context Bridge（Chatbot → METIS）：读取用户在第三方 AI 页面的选区原文。
+   * executeJavaScript 只读 window.getSelection().toString()，不写入任何内容；
+   * 失败（CSP/iframe/超时）如实返回 ok:false，由渲染层走剪贴板 fallback。
+   */
+  async getSelectedText(timeoutMs = 2000): Promise<{ ok: boolean; text?: string; error?: string }> {
+    if (!this.view || !this.window.contentView.children.includes(this.view)) {
+      return { ok: false, error: 'collab_not_visible' };
+    }
+    const webContents = this.view.webContents;
+    try {
+      const script = '(() => { const s = window.getSelection(); return s ? s.toString() : ""; })()';
+      const result = await Promise.race([
+        webContents.executeJavaScript(script, false) as Promise<string>,
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('selection_timeout')), timeoutMs)),
+      ]);
+      const text = typeof result === 'string' ? result : '';
+      return text.trim() ? { ok: true, text } : { ok: false, error: 'empty_selection' };
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  }
+
   destroy(): void {
     this.hide();
     this.view = null;

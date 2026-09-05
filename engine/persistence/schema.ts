@@ -525,6 +525,19 @@ CREATE TABLE IF NOT EXISTS capability_vault (
 );
 CREATE INDEX IF NOT EXISTS idx_capability_vault_source ON capability_vault(source_id);
 CREATE INDEX IF NOT EXISTS idx_capability_vault_installed ON capability_vault(installed_definition_id);
+CREATE TABLE IF NOT EXISTS external_references (
+  id TEXT PRIMARY KEY,
+  model TEXT NOT NULL,
+  url TEXT NOT NULL,
+  quoted_text TEXT NOT NULL,
+  context_digest TEXT NOT NULL,
+  captured_at INTEGER NOT NULL,
+  project_id TEXT,
+  session_id TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_external_references_project ON external_references(project_id, captured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_external_references_session ON external_references(session_id, captured_at DESC);
 CREATE TABLE IF NOT EXISTS office_prompt_profiles (id TEXT PRIMARY KEY, office_kind TEXT NOT NULL, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', builtin INTEGER NOT NULL DEFAULT 0, slots_json TEXT NOT NULL DEFAULT '{}', deleted_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, global_prompt TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS office_prompt_profile_revisions (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, slot_id TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL, source TEXT NOT NULL DEFAULT 'manual');
 CREATE INDEX IF NOT EXISTS idx_office_prompt_profiles_kind ON office_prompt_profiles(office_kind, deleted_at, updated_at DESC);

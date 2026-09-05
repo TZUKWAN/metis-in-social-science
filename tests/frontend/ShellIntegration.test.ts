@@ -47,10 +47,10 @@ describe('METIS-506 navConfig — technical entries hidden in normal mode', () =
   it('normal mode shows only the three top-level + one mode entry', () => {
     setDiagnosticMode('normal');
     const ids = getVisibleNav().map((n) => n.id);
+    // 协同对话一级工作区已取消（2026-09-05 刘总规格）。
     expect(ids).toEqual([
       'projects',
       'settings',
-      'converse',
     ]);
     // technical entries absent
     expect(ids).not.toContain('evals');

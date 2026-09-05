@@ -4026,7 +4026,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
   ) : null;
 
   const workspace = (
-    <div className="chat-main">
+    <div className="chat-main" data-testid="chat-page">
         {/* 项目内多对话切换（2026-08-29 刘总要求）：一个项目支持多个对话，
             可在此选择进入某个对话或新建对话；协同对话布局另有完整侧栏。 */}
         {(projectScopedSessions.length > 0 || currentSessionId) && (

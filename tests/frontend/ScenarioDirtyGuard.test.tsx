@@ -133,7 +133,7 @@ describe('App scenario dirty guard', () => {
 
   it('留在本页 closes the dialog and keeps the workbench open', async () => {
     render(<App />);
-    await screen.findByRole('region', { name: 'Metis 研究工作台' });
+    await screen.findByTestId('chat-page');
     await openDirtyScenario();
     await attemptLeaveToProjects();
 
@@ -145,7 +145,7 @@ describe('App scenario dirty guard', () => {
 
   it('不保存并离开 closes the dialog and actually navigates away', async () => {
     render(<App />);
-    await screen.findByRole('region', { name: 'Metis 研究工作台' });
+    await screen.findByTestId('chat-page');
     await openDirtyScenario();
     await attemptLeaveToProjects();
 
@@ -159,7 +159,7 @@ describe('App scenario dirty guard', () => {
 
   it('保存并离开 persists the draft and then navigates away', async () => {
     render(<App />);
-    await screen.findByRole('region', { name: 'Metis 研究工作台' });
+    await screen.findByTestId('chat-page');
     await openDirtyScenario();
     await attemptLeaveToProjects();
 

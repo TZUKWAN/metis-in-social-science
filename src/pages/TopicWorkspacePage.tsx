@@ -6,6 +6,10 @@ import './TopicWorkspacePage.css';
 import type { TopicCandidateDto, TopicResearchBrief, TopicSessionDto } from '../../engine/runtime/TopicRuntimeContract.js';
 import { researchWorkspaceStore } from '../research/researchWorkspaceStore.js';
 import { setPendingScenarioHandoff } from '../topic/scenarioHandoff.js';
+import ChatbotCollabPanel from '../topic/ChatbotCollabPanel';
+import SplitHandle from '../components/SplitHandle';
+import { buildTopicContextPackage } from '../topic/contextPackage';
+import type { ExternalModelReference } from '../../engine/runtime/ExternalReferenceContract.js';
 
 /**
  * 选题 Topic Workspace(2026-09-04 刘总要求:选题一级功能)。
@@ -62,10 +66,40 @@ export default function TopicWorkspacePage() {
   const [rightCollapsed, setRightCollapsed] = React.useState(false);
   const [activeCandidateId, setActiveCandidateId] = React.useState<string | null>(null);
   const [projectCreating, setProjectCreating] = React.useState(false);
+  // Chatbot 协作视图（2026-09-05 刘总规格书）：临时双栏，关闭即退出嵌入。
+  const [chatbotOpen, setChatbotOpen] = React.useState(false);
+  const [externalRefs, setExternalRefs] = React.useState<ExternalModelReference[]>([]);
+  const [chatbotSplit, setChatbotSplit] = React.useState<number>(() => {
+    try {
+      const value = Number(window.localStorage.getItem('metis-chatbot-split-v2'));
+      return Number.isFinite(value) && value >= 0.4 && value <= 0.45 ? value : 0.42;
+    } catch { return 0.42; }
+  });
+  const collabWrapRef = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    try { window.localStorage.setItem('metis-chatbot-split-v2', String(chatbotSplit)); } catch { /* best-effort */ }
+  }, [chatbotSplit]);
+  const applySplitFromClientX = React.useCallback((clientX: number) => {
+    const rect = collabWrapRef.current?.getBoundingClientRect();
+    if (!rect || rect.width <= 0) return;
+    const ratio = (rect.right - clientX) / rect.width;
+    setChatbotSplit(Math.min(0.45, Math.max(0.4, ratio)));
+  }, []);
+  const syncChatbotBounds = React.useCallback(() => {
+    // 松手后按新尺寸恢复嵌入视图（拖动期间已隐藏）。
+    window.dispatchEvent(new CustomEvent('metis:restore-embedded-views'));
+  }, []);
   const sessionIdRef = React.useRef<string | null>(null);
   React.useEffect(() => {
     sessionIdRef.current = activeSessionId;
   }, [activeSessionId]);
+
+  const refreshExternalRefs = React.useCallback(async () => {
+    try {
+      const result = await window.metis?.externalRefList?.({ limit: 50 });
+      if (result?.ok && result.references) setExternalRefs(result.references);
+    } catch { /* 列表失败保留现状 */ }
+  }, []);
 
   const refreshSessions = React.useCallback(async () => {
     try {
@@ -87,7 +121,8 @@ export default function TopicWorkspacePage() {
   React.useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot session list load
     void refreshSessions();
-  }, [refreshSessions]);
+    void refreshExternalRefs();
+  }, [refreshSessions, refreshExternalRefs]);
 
   React.useEffect(() => {
     const unsubscribe = window.metis?.onTopicStreamChunk?.((chunk: TopicStreamChunk) => {
@@ -95,6 +130,31 @@ export default function TopicWorkspacePage() {
       setStreamTail(chunk.content.length > 400 ? chunk.content.slice(-400) : chunk.content);
     });
     return () => unsubscribe?.();
+  }, []);
+
+  const buildPackage = React.useCallback((): string | null => buildTopicContextPackage({
+    hasSession: Boolean(session),
+    sessionTitle: session?.title ?? null,
+    sessionStatus: session ? (SESSION_STATUS_LABELS[session.status] ?? session.status) : null,
+    candidates: candidates.map((candidate) => ({
+      title: candidate.title,
+      status: CANDIDATE_STATUS_LABELS[candidate.status] ?? candidate.status,
+    })),
+    messages: messages.map((message) => ({ role: message.role, content: message.content })),
+    externalReferences: externalRefs.map((ref) => ({ model: ref.model, quotedText: ref.quotedText })),
+  }), [session, candidates, messages, externalRefs]);
+
+  const handleReferenceConfirmed = React.useCallback((reference: ExternalModelReference, duplicate: boolean) => {
+    setExternalRefs((current) => current.some((item) => item.contextDigest === reference.contextDigest) ? current : [reference, ...current]);
+    setMessages((current) => [...current, {
+      id: `extref-${reference.id}`,
+      role: 'assistant',
+      content: [
+        `外部参考·非证据｜来源：${reference.model}（${reference.url}）`,
+        reference.quotedText.length > 600 ? `${reference.quotedText.slice(0, 600)}…` : reference.quotedText,
+        duplicate ? '（内容指纹重复，未重复入库）' : '已存入外部参考库（external_references）。该内容不进入证据链，仅供选题论证参考。',
+      ].join('\n'),
+    }]);
   }, []);
 
   const createSession = async () => {
@@ -231,14 +291,25 @@ export default function TopicWorkspacePage() {
     }
   };
 
-  return (
-    <div className="topic-workspace" data-testid="topic-workspace">
+  const workspaceNode = (
+    <div className={`topic-workspace${chatbotOpen ? ' topic-workspace--collab' : ''}`} data-testid="topic-workspace">
       <aside className="topic-workspace__sidebar" aria-label="选题会话">
         <header>
           <strong>选题</strong>
-          <button type="button" className="btn-secondary btn-sm" onClick={() => setCreating((value) => !value)} data-testid="topic-new">
-            <Plus size={13} /> 新选题
-          </button>
+          <span className="topic-workspace__header-actions">
+            <button type="button" className="btn-secondary btn-sm" onClick={() => setCreating((value) => !value)} data-testid="topic-new">
+              <Plus size={13} /> 新选题
+            </button>
+            <button
+              type="button"
+              className="btn-secondary btn-sm"
+              onClick={() => setChatbotOpen(true)}
+              data-testid="topic-open-chatbot"
+              title="打开 Chatbot 协作面板：与其他 AI 并排讨论，内容仅作外部参考（非证据）"
+            >
+              打开 Chatbot
+            </button>
+          </span>
         </header>
         {creating && (
           <div className="topic-workspace__new">
@@ -378,6 +449,36 @@ export default function TopicWorkspacePage() {
           </>
         )}
       </aside>
+    </div>
+  );
+
+  if (!chatbotOpen) return workspaceNode;
+
+  return (
+    <div className="topic-collab" data-testid="topic-collab" ref={collabWrapRef}>
+      {workspaceNode}
+      <SplitHandle
+        label="拖动调整 Chatbot 面板宽度（40%–45%）"
+        testId="chatbot-split-handle"
+        onDragStart={() => { void window.metis?.collabHide?.(); }}
+        onDrag={(clientX) => applySplitFromClientX(clientX)}
+        onDragEnd={() => syncChatbotBounds()}
+        onKeyDelta={(delta) => {
+          const rect = collabWrapRef.current?.getBoundingClientRect();
+          const width = rect && rect.width > 0 ? rect.width : 1;
+          setChatbotSplit((ratio) => Math.min(0.45, Math.max(0.4, ratio + delta / width)));
+        }}
+      />
+      <ChatbotCollabPanel
+        zh
+        buildContextPackage={buildPackage}
+        projectId={session?.sourceProjectId ?? null}
+        sessionId={activeSessionId}
+        splitRatio={chatbotSplit}
+        onSplitRatioChange={setChatbotSplit}
+        onReferenceConfirmed={handleReferenceConfirmed}
+        onClose={() => setChatbotOpen(false)}
+      />
     </div>
   );
 }

@@ -12,6 +12,7 @@
 import {
   app,
   BrowserWindow,
+  clipboard,
   ipcMain,
   dialog,
   net,
@@ -357,6 +358,7 @@ import {
   type SkillDefinitionV2,
 } from '../engine/runtime/PersonalizationRuntimeContract.js';
 import { CapabilityVaultService } from './CapabilityVaultService.js';
+import { ExternalReferenceService } from './ExternalReferenceService.js';
 import type { GitHubFetcher } from '../engine/capabilities/CapabilityImporter.js';
 import {
   buildScenarioPhasePrompt,
@@ -6921,6 +6923,112 @@ function setupIPC(): void {
       if (!service) return { ok: false, error: 'collab_unavailable' };
       const url = typeof raw === 'string' ? raw : '';
       return await service.navigate(url);
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  });
+
+  // ── Chatbot Context Bridge（2026-09-05 刘总规格书） ─────────────
+  // METIS → Chatbot：剪贴板内容粘贴进第三方 AI 页面（自动填入路径）。
+  ipcMain.handle('collab:paste', (event) => {
+    try {
+      requireRendererMainFrame(event);
+      const service = ensureCollabService();
+      if (!service) return { ok: false, error: 'collab_unavailable' };
+      return service.pasteFromClipboard();
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  });
+
+  // Chatbot → METIS：捕获选区原文（只读；失败如实返回，渲染层走剪贴板 fallback）。
+  ipcMain.handle('collab:captureSelection', async (event) => {
+    try {
+      requireRendererMainFrame(event);
+      const service = ensureCollabService();
+      if (!service) return { ok: false, error: 'collab_unavailable' };
+      return await service.getSelectedText();
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  });
+
+  // 剪贴板只读回读（选区捕获失败时的 fallback；用户点击「引用」即授权）。
+  ipcMain.handle('clipboard:readText', (event) => {
+    try {
+      requireRendererMainFrame(event);
+      return { ok: true, text: clipboard.readText() };
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  });
+
+  // 剪贴板写入（Context Package 发送；渲染层无可靠剪贴板写权限）。
+  ipcMain.handle('clipboard:writeText', (event, rawText: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const text = typeof rawText === 'string' ? rawText : '';
+      if (!text) return { ok: false, error: 'empty_text' };
+      clipboard.writeText(text);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  });
+
+  // 当前第三方 AI 页面状态（确认卡展示真实来源 URL）。
+  ipcMain.handle('collab:getState', (event) => {
+    try {
+      requireRendererMainFrame(event);
+      return { ok: true, state: collabService?.getState() ?? { url: '', title: '' } };
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  });
+
+  // 外部模型引用（外部参考·非证据）：确认卡通过后由渲染层显式提交。
+  ipcMain.handle('externalRef:add', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      if (!store) return { ok: false, issues: ['store_unavailable'] };
+      const service = new ExternalReferenceService(store.raw);
+      const result = service.add(raw);
+      if (!result.ok) return { ok: false, issues: result.issues };
+      return { ok: true, reference: result.reference, duplicate: result.duplicate };
+    } catch (err) {
+      return { ok: false, issues: [String((err as Error).message ?? err)] };
+    }
+  });
+
+  ipcMain.handle('externalRef:list', (event, rawQuery: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      if (!store) return { ok: false, error: 'store_unavailable' };
+      const service = new ExternalReferenceService(store.raw);
+      const query = (typeof rawQuery === 'object' && rawQuery !== null ? rawQuery : {}) as {
+        projectId?: unknown; sessionId?: unknown; limit?: unknown;
+      };
+      return {
+        ok: true,
+        references: service.list({
+          projectId: typeof query.projectId === 'string' ? query.projectId : undefined,
+          sessionId: typeof query.sessionId === 'string' ? query.sessionId : undefined,
+          limit: typeof query.limit === 'number' && Number.isFinite(query.limit) ? Math.floor(query.limit) : undefined,
+        }),
+      };
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err) };
+    }
+  });
+
+  ipcMain.handle('externalRef:remove', (event, rawId: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      if (!store) return { ok: false, error: 'store_unavailable' };
+      const service = new ExternalReferenceService(store.raw);
+      const id = typeof rawId === 'string' ? rawId : '';
+      if (!id) return { ok: false, error: 'invalid_request' };
+      return { ok: service.remove(id) };
     } catch (err) {
       return { ok: false, error: String((err as Error).message ?? err) };
     }

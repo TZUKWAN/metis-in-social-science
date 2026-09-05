@@ -61,9 +61,9 @@ describe('App session restore', () => {
   it('migrates legacy browser/library entries to the projects entry', async () => {
     window.localStorage.setItem(SESSION_KEY, JSON.stringify({ entry: 'library', mode: 'converse', projectId: null }));
     render(<App />);
-    // 迁移后落在科研项目入口（converse 工作区仍正常工作，不落回设置页或崩溃）。
+    // 迁移后落在科研项目入口（协同对话一级已取消，2026-09-05 刘总规格）。
     await waitFor(() => {
-      expect(activeNavButton()?.getAttribute('data-nav-id')).toBe('converse');
+      expect(activeNavButton()?.getAttribute('data-nav-id')).toBe('projects');
       expect(document.querySelector('.library-page')).toBeNull();
     });
   });
@@ -71,7 +71,7 @@ describe('App session restore', () => {
   it('saves navigation changes back to localStorage', async () => {
     render(<App />);
     await waitFor(() => {
-      expect(activeNavButton()?.getAttribute('data-nav-id')).toBe('converse');
+      expect(activeNavButton()?.getAttribute('data-nav-id')).toBe('projects');
     });
 
     const settingsNav = within(screen.getByRole('navigation', { name: 'Metis' }))
@@ -83,17 +83,17 @@ describe('App session restore', () => {
       const saved = JSON.parse(window.localStorage.getItem(SESSION_KEY) ?? 'null') as
         { entry?: unknown; mode?: unknown; projectId?: unknown };
       expect(saved.entry).toBe('settings');
-      expect(saved.mode).toBe('converse');
+      expect(saved.mode).toBe('projects');
       // No project is active yet, so projectId is persisted as null.
       expect(saved.projectId).toBeNull();
     });
   });
 
   it('seeds the active project id for the workspace store', async () => {
-    window.localStorage.setItem(SESSION_KEY, JSON.stringify({ entry: 'projects', mode: 'converse', projectId: 'p-restored' }));
+    window.localStorage.setItem(SESSION_KEY, JSON.stringify({ entry: 'projects', mode: 'projects', projectId: 'p-restored' }));
     render(<App />);
     await waitFor(() => {
-      expect(activeNavButton()?.getAttribute('data-nav-id')).toBe('converse');
+      expect(activeNavButton()?.getAttribute('data-nav-id')).toBe('projects');
     });
     expect(researchWorkspaceStore.getState().activeProjectId).toBe('p-restored');
   });
@@ -103,16 +103,16 @@ describe('App session restore', () => {
     render(<App />);
     await waitFor(() => {
       // Falls back to the default projects entry and stays functional.
-      expect(activeNavButton()?.getAttribute('data-nav-id')).toBe('converse');
+      expect(activeNavButton()?.getAttribute('data-nav-id')).toBe('projects');
     });
     expect(researchWorkspaceStore.getState().activeProjectId).toBeNull();
   });
 
   it('ignores sessions with unknown entries', async () => {
-    window.localStorage.setItem(SESSION_KEY, JSON.stringify({ entry: 'hacked', mode: 'converse', projectId: null }));
+    window.localStorage.setItem(SESSION_KEY, JSON.stringify({ entry: 'hacked', mode: 'projects', projectId: null }));
     render(<App />);
     await waitFor(() => {
-      expect(activeNavButton()?.getAttribute('data-nav-id')).toBe('converse');
+      expect(activeNavButton()?.getAttribute('data-nav-id')).toBe('projects');
     });
   });
 });
