@@ -89,16 +89,14 @@ jobs:
     needs: quality
     runs-on: windows-2022
     timeout-minutes: 25
+    env:
+      METIS_SKIP_GENOFFICE: '1'
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
-      - name: Build note
-        run: echo "METIS_SKIP_GENOFFICE=1 — CI validates compilation health; GenOffice packaging is verified by the local release chain"
-      - env:
-          METIS_SKIP_GENOFFICE: '1'
       - run: npm ci
       - name: Build
         run: npm run build
