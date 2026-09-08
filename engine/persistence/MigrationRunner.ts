@@ -135,6 +135,18 @@ export class MigrationRunner {
     if (!this.dbPath || this.dbPath === ':memory:' || !fs.existsSync(this.dbPath)) return undefined;
     const bak = `${this.dbPath}.bak-${Date.now()}`;
     try {
+      // WAL consistency: committed data may still live in `<db>-wal`, so a
+      // plain copyFileSync of the main file is NOT a complete snapshot.
+      // TRUNCATE-checkpoint first folds every committed WAL page back into
+      // the main database (and truncates the WAL), after which the file copy
+      // is a true snapshot. At migration time — single boot path, before any
+      // renderer/reader exists — the checkpoint cannot fail on contention;
+      // if it ever does, fail the backup rather than copy a torn snapshot.
+      const checkpoint = this.db.pragma('wal_checkpoint(TRUNCATE)') as Array<{ busy: number; log: number; checkpointed: number }>;
+      const checkpointRow = checkpoint?.[0];
+      if (!checkpointRow || checkpointRow.busy !== 0) {
+        throw new Error(`wal_checkpoint(TRUNCATE) could not complete: ${JSON.stringify(checkpointRow ?? checkpoint)}`);
+      }
       fs.copyFileSync(this.dbPath, bak);
       return bak;
     } catch {

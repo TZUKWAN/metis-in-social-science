@@ -1,11 +1,15 @@
 // Node >=25 exposes an experimental Web Storage global whose localStorage
-// shadows jsdom's (missing clear/removeItem). Setting NODE_OPTIONS here makes
-// every forked worker start with it disabled — the CLI flag alone does not
-// propagate into worker execArgv.
+// shadows jsdom's (missing clear/removeItem). When that global exists, the
+// flag is needed AND allowed: only Node >=25 accepts --no-webstorage in
+// NODE_OPTIONS — Node 22 rejects it outright, killing every forked worker at
+// startup ("--no-webstorage is not allowed in NODE_OPTIONS"), which used to
+// hang CI for the full 30-minute timeout. Gate the injection on the actual
+// runtime capability instead of setting it unconditionally.
 // 任务2：METIS_ELECTRON_NODE=1 时用 Electron 内置 Node 直接跑 vitest（避免
 // 为系统 Node 重编译被运行中实例锁定的 better_sqlite3.node）；该 Node 不认
 // 识 --no-webstorage，注入反而会让所有 worker fork 失败。
-if (!process.env.METIS_ELECTRON_NODE) {
+import { shouldInjectNoWebstorage } from './scripts/lib/webstorage-flag-policy.mjs';
+if (shouldInjectNoWebstorage(process.versions.node, process.env)) {
   process.env.NODE_OPTIONS = [process.env.NODE_OPTIONS, '--no-webstorage'].filter(Boolean).join(' ');
 }
 

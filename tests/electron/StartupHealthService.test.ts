@@ -45,6 +45,7 @@ function baseInput(dir: string, dbPath: string, overrides: Partial<StartupHealth
     browserReady: true,
     mcpSummary: '2/2 MCP servers connected',
     orphanRunningRuns: 0,
+    reconciledOrphanRuns: 0,
     crashMarker: { previousRunUnclean: false, marker: null },
     lastMigration: { fromVersion: 0, toVersion: 116 },
     ...overrides,
@@ -123,6 +124,7 @@ describe('collectStartupHealth', () => {
         genofficeReady: false,
         crashMarker: { previousRunUnclean: true, marker: { bootId: 'b-1' } },
         orphanRunningRuns: 2,
+        reconciledOrphanRuns: null,
         lastMigration: { fromVersion: 0, toVersion: 103, failed: { version: 104, description: 'notes: scope columns' } },
       }));
       const issueIds = report.issues.map((i) => i.id);

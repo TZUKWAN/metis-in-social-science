@@ -202,3 +202,89 @@ describe('Backup → mutate → restore → restart → verify (system acceptanc
     }
   }, 30_000);
 });
+
+// ── P0-7: restore must await a REAL runtime drain, and abort before the swap on timeout ──
+
+import { BackupService as DrainBackupService } from '../../electron/BackupService.js';
+
+describe('restore runtime drain (P0-7)', () => {
+  function makeDrainFixture() {
+    const dir = tempDir('metis-backup-drain-');
+    const dbPath = path.join(dir, 'metis.db');
+    const backupsDir = path.join(dir, 'backups');
+    const store = new PersistenceStore(dbPath);
+    store.savePaper({ id: 'p-drain', title: 'Drain Fixture', authors: [], year: 2026, venue: '', abstract: '', tags: [], notes: '', readStatus: 'unread', rating: 0, addedAt: 1 });
+    const service = new DrainBackupService(store, backupsDir, dbPath);
+    return { dir, dbPath, backupsDir, store, service };
+  }
+
+  it('awaits a resolving drain and proceeds with the swap', async () => {
+    const fx = makeDrainFixture();
+    try {
+      const backup = await fx.service.runBackup();
+      expect(backup.ok).toBe(true);
+      const result = await fx.service.restoreFrom(backup.destination!, {
+        drain: async () => ({ timedOut: false }),
+        restart: () => undefined,
+        onFailure: () => undefined,
+      });
+      expect(result.ok).toBe(true);
+    } finally {
+      try { fx.store.close(); } catch { /* closed by restore */ }
+      rmTemp(fx.dir);
+    }
+  }, 30_000);
+
+  it('a drain TIMEOUT aborts BEFORE the swap: original DB stays live and intent is cleared', async () => {
+    const fx = makeDrainFixture();
+    try {
+      const backup = await fx.service.runBackup();
+      expect(backup.ok).toBe(true);
+      let failureMessage = '';
+      const result = await fx.service.restoreFrom(backup.destination!, {
+        drain: async () => new Promise<{ timedOut: boolean }>((resolve) => setTimeout(() => resolve({ timedOut: true }), 50)),
+        restart: () => undefined,
+        onFailure: (message) => { failureMessage = message; },
+      });
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe('restore_runtime_drain_timeout');
+
+      // Original database untouched and still fully usable.
+      const verify = new PersistenceStore(fx.dbPath);
+      try {
+        expect(verify.getPapers().map((p) => p.id)).toContain('p-drain');
+      } finally {
+        verify.close();
+      }
+      // No restore intent left behind for the next boot to trip over.
+      expect(fs.existsSync(path.join(fx.dir, 'metis.db.restore-intent.json'))).toBe(false);
+      expect(failureMessage).toBe('');
+    } finally {
+      try { fx.store.close(); } catch { /* still open (no swap happened) */ }
+      rmTemp(fx.dir);
+    }
+  }, 30_000);
+
+  it('a drain REJECTION aborts before the swap and surfaces a stable error', async () => {
+    const fx = makeDrainFixture();
+    try {
+      const backup = await fx.service.runBackup();
+      const result = await fx.service.restoreFrom(backup.destination!, {
+        drain: async () => { throw new Error('coordinator unavailable'); },
+        restart: () => undefined,
+        onFailure: () => undefined,
+      });
+      expect(result.ok).toBe(false);
+      expect(String(result.error)).toMatch(/restore_runtime_drain_failed/);
+      const verify = new PersistenceStore(fx.dbPath);
+      try {
+        expect(verify.getPapers().length).toBeGreaterThan(0);
+      } finally {
+        verify.close();
+      }
+    } finally {
+      try { fx.store.close(); } catch { /* still open */ }
+      rmTemp(fx.dir);
+    }
+  }, 30_000);
+});

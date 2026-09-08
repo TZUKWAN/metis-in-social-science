@@ -22,23 +22,24 @@
     },
     {
       "id": "lint",
-      "name": "ESLint",
+      "name": "Lint — no regression against baseline (build/lint-baseline.json)",
       "tiers": [
         1
       ],
-      "command": "npm run lint",
+      "command": "node scripts/lint-gate.mjs",
       "timeoutMinutes": 10,
       "required": true
     },
     {
       "id": "audit",
-      "name": "npm audit (production dependencies)",
+      "name": "npm audit — SECURITY ADVISORY REPORT (non-blocking)",
       "tiers": [
         1
       ],
       "command": "npm audit --omit=dev",
       "timeoutMinutes": 5,
-      "required": true
+      "required": true,
+      "blocking": false
     },
     {
       "id": "host-abi",

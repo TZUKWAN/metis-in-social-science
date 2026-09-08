@@ -44,6 +44,8 @@ export interface StartupHealthInput {
   mcpSummary: string | null;
   /** Rows still marked running after an unclean previous exit; null = not probed. */
   orphanRunningRuns: number | null;
+  /** Orphan rows retired to interrupted/process_crash at startup; null = reconciliation did not run. */
+  reconciledOrphanRuns: number | null;
   crashMarker: { previousRunUnclean: boolean; marker: unknown } | null;
   lastMigration: { fromVersion: number; toVersion: number; failed?: { version: number; description: string } } | null;
   /**
@@ -224,7 +226,10 @@ export function collectStartupHealth(input: StartupHealthInput): StartupHealthRe
   } else {
     push('crash_marker', 'ok', 'clean');
   }
-  if (input.orphanRunningRuns !== null && input.orphanRunningRuns > 0) {
+  if (input.reconciledOrphanRuns !== null && input.reconciledOrphanRuns > 0) {
+    push('orphan_runs', 'ok', `reconciled ${input.reconciledOrphanRuns} orphan run(s) from the previous session (marked interrupted/process_crash)`);
+  } else if (input.orphanRunningRuns !== null && input.orphanRunningRuns > 0) {
+    // Rows still running WITH no reconciliation having run: a real zombie risk.
     push('orphan_runs', 'warning', `${input.orphanRunningRuns} run(s) still marked running from a previous session`, {
       severity: 'warning',
       message: '上次异常退出留下了未完结的任务记录，本次启动已可安全重试。',

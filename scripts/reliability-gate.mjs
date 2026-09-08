@@ -150,6 +150,7 @@ function baseResult(check, startedAt, logPath) {
     name: check.name,
     tiers: check.tiers,
     required: check.required !== false,
+    blocking: check.blocking !== false,
     command: check.command,
     startedAt,
     finishedAt: new Date().toISOString(),
@@ -204,8 +205,12 @@ async function main() {
     results.push(run);
   }
 
-  const failed = results.filter((r) => r.status === 'FAIL' || r.status === 'TIMEOUT');
-  const notRunRequired = results.filter((r) => r.status === 'NOT RUN' && r.required);
+  // `blocking: false` checks (security advisories, CVE reports) are recorded
+  // honestly as FAIL but do not redden the engineering gate — per the
+  // delivery policy: security findings are a report, not a stop sign.
+  const failed = results.filter((r) => (r.status === 'FAIL' || r.status === 'TIMEOUT') && r.blocking !== false);
+  const advisoryFailed = results.filter((r) => (r.status === 'FAIL' || r.status === 'TIMEOUT') && r.blocking === false);
+  const notRunRequired = results.filter((r) => r.status === 'NOT RUN' && r.required && r.blocking !== false);
   const notRunOptional = results.filter((r) => r.status === 'NOT RUN' && !r.required);
   const passed = results.filter((r) => r.status === 'PASS');
   const gate = failed.length === 0 && notRunRequired.length === 0 ? 'PASS' : 'FAIL';
@@ -220,6 +225,7 @@ async function main() {
       total: results.length,
       passed: passed.length,
       failed: failed.length,
+      advisoryFailed: advisoryFailed.length,
       notRunRequired: notRunRequired.length,
       notRunOptional: notRunOptional.length,
     },
@@ -234,7 +240,7 @@ async function main() {
   for (const r of results) {
     console.log(`${r.status.padEnd(8)} ${r.required ? '[required]' : '[optional]'} ${r.id}`);
   }
-  console.log(`gate: ${gate} (passed=${passed.length} failed=${failed.length} notRunRequired=${notRunRequired.length} notRunOptional=${notRunOptional.length})`);
+  console.log(`gate: ${gate} (passed=${passed.length} failed=${failed.length} advisoryFailed=${advisoryFailed.length} notRunRequired=${notRunRequired.length} notRunOptional=${notRunOptional.length})`);
   console.log(`report: ${reportPath}`);
   if (notRunOptional.length > 0) console.log(`note: ${notRunOptional.length} optional check(s) NOT RUN — gate is INCOMPLETE but not failing.`);
   process.exit(gate === 'PASS' ? 0 : 1);

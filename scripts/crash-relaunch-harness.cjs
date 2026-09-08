@@ -44,8 +44,12 @@ const STATE_POLL_MS = 500;
 const STATE_TIMEOUT_MS = 90_000;
 
 const REPORT_INDEX = process.argv.indexOf('--report');
-const SCENARIO_INDEX = process.argv.indexOf('--scenario');
-const ONLY_SCENARIO = SCENARIO_INDEX >= 0 ? process.argv[SCENARIO_INDEX + 1] : null;
+const ONLY_SCENARIO = (() => {
+  const arg = process.argv.find((a) => a.startsWith('--scenario='));
+  if (arg) return arg.slice('--scenario='.length);
+  const i = process.argv.indexOf('--scenario');
+  return i >= 0 ? process.argv[i + 1] : null;
+})();
 const REPORT_PATH = path.resolve(
   REPORT_INDEX >= 0 && process.argv[REPORT_INDEX + 1]
     ? process.argv[REPORT_INDEX + 1]
@@ -313,10 +317,25 @@ async function childMain() {
         const sessionId = `crash-relaunch-agent-${Date.now()}`;
         const created = await run(`window.metis.createSession(${JSON.stringify(sessionId)})`);
         check('session created before the crash', Boolean(created), created);
-        // Fire the agent turn — the provider stalls forever, so this turn is
-        // still "running" when the process tree is killed.
+        // Fire a real agent turn as well (best effort — the stalling provider
+        // keeps it in flight), AND deterministically write a 'running'
+        // agent_runs row into the live DB. The reconciliation contract under
+        // test is about the ROW surviving the kill, regardless of which code
+        // path created it; a direct write makes the scenario deterministic.
         void run(`window.metis.agentChat(${JSON.stringify(sessionId)}, [{ role: 'user', content: 'CRASH_RELAUNCH_MID_STREAM: produce the marker.' }])`);
-        await sleep(3_000); // let the turn start and hit the stalling provider
+        try {
+          const Database = require('better-sqlite3');
+          const probe = new Database(sqlitePath, { readonly: false });
+          probe.prepare(
+            `INSERT INTO agent_runs (run_id, session_id, turn_id, project_id, status, started_at, last_sequence, metadata)
+             VALUES ('run-crash-zombie', ?, 'turn-crash-zombie', NULL, 'running', ?, 3, '{}')`,
+          ).run(sessionId, Date.now());
+          probe.close();
+          check('zombie running row written before the kill', true, { sqlitePath });
+        } catch (err) {
+          check('zombie running row written before the kill', false, String(err.message ?? err));
+        }
+        await sleep(1_000);
       }
 
       if (scenario === 'outcome-write-burst') {
@@ -368,21 +387,14 @@ async function childMain() {
       check('database integrity is clean after the crash', dbCheck?.status === 'ok', dbCheck ?? health?.checks);
 
       if (scenario === 'agent-run-mid-stream') {
+        // P0-8: startup reconciliation MUST have retired the crash-era
+        // 'running' rows (interrupted / process_crash) — a zombie spinner is
+        // a delivery blocker, not a warning.
         const orphanCheck = health?.checks?.find((c) => c.id === 'orphan_runs');
         report.evidence.orphanRuns = orphanCheck ?? null;
-        if (orphanCheck && orphanCheck.status !== 'ok') {
-          // Known product gap: no startup reconciliation resets agent_runs
-          // rows left 'running' by a crash. Recorded as a finding, owned by
-          // the persistence domain — the harness documents it, it does not
-          // silently pass.
-          report.findings = report.findings || [];
-          report.findings.push({
-            id: 'F-CRASH-001',
-            severity: 'warning',
-            detail: 'agent_runs rows left status=running by the hard kill are not reconciled at startup',
-            evidence: orphanCheck,
-          });
-        }
+        check('orphan runs reconciled at startup (no zombie running state)',
+          orphanCheck?.status === 'ok' && /reconciled/i.test(String(orphanCheck?.detail ?? '')),
+          orphanCheck ?? health?.checks);
         // Data survived: the session list still contains the seeded session.
         const sessions = await run(`window.metis.listSessions()`);
         const summary = JSON.stringify(sessions);

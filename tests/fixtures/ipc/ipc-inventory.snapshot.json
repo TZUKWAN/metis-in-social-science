@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "counts": {
-    "invoke": 489,
+    "invoke": 490,
     "rendererInvoke": 482,
     "send": 13
   },
@@ -97,6 +97,7 @@
     "diagnostics:healthReport",
     "dialog:openDirectory",
     "dialog:openPdf",
+    "dialog:openReferenceFiles",
     "eval:runSuite",
     "experiment:attachScript",
     "experiment:cancel",

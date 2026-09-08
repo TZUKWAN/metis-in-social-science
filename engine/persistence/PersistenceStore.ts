@@ -2920,6 +2920,23 @@ export class PersistenceStore {
     return Number(result.changes) > 0;
   }
 
+  /**
+   * Startup crash reconciliation (Engineering Delivery Ready P0-8): any run
+   * still marked 'running' when the store opens belongs to a process that no
+   * longer exists — the single-instance lock guarantees no other writer.
+   * Deterministically retire them as interrupted instead of leaving zombie
+   * "running" rows that the UI would render as endless spinners. Returns the
+   * number of reconciled rows so startup health can report it.
+   */
+  reconcileOrphanRunningRuns(recoveredAt: number): number {
+    const result = this.db.prepare(
+      `UPDATE agent_runs
+       SET status = 'interrupted', terminal_reason = 'process_crash', completed_at = ?
+       WHERE status = 'running'`,
+    ).run(recoveredAt);
+    return Number(result.changes);
+  }
+
   /** 任务2 Context Provenance：记录一次重要 run 装入了哪些 scope 的上下文（幂等覆盖写）。 */
   recordContextProvenance(input: {
     runId: string;

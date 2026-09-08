@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { renderHook, act, waitFor } from '@testing-library/react';
+import { renderHook, render, act, waitFor, screen } from '@testing-library/react';
 import {
   deriveAsyncViewState,
   useAsyncView,
@@ -125,5 +125,38 @@ describe('usePendingAction —— mutation 防双击', () => {
       await result.current.run(() => Promise.reject(new Error('failed')));
     });
     expect(result.current.pending).toBe(false);
+  });
+});
+
+// ── P0-5 race regression: scope switch during an in-flight load ─────────────
+
+describe('useAsyncView — scope switch during in-flight load (P0-5)', () => {
+  it('replays the queued scope switch after the in-flight load settles', async () => {
+    const loads: Array<string> = [];
+    let releaseA: (value: string[]) => void = () => {};
+    const gateA = new Promise<string[]>((resolve) => { releaseA = resolve; });
+
+    function Probe({ projectId }: { projectId: string }) {
+      const view = useAsyncView<string[]>(async () => {
+        loads.push(projectId);
+        if (projectId === 'proj-a') return gateA;
+        return [`items-${projectId}`];
+      }, { deps: [projectId] });
+      return <div data-testid="status">{view.status}</div>;
+    }
+
+    const { rerender } = render(<Probe projectId="proj-a" />);
+    await waitFor(() => expect(loads).toEqual(['proj-a']));
+    expect(screen.getByTestId('status').textContent).toBe('loading');
+
+    // Switch scope while A is in flight: B must be QUEUED, then replayed.
+    rerender(<Probe projectId="proj-b" />);
+    await waitFor(() => expect(loads).toContain('proj-b'));
+
+    // A finally resolves — it must NOT land in B's view.
+    releaseA(['stale-a-items']);
+    await waitFor(() => expect(screen.getByTestId('status').textContent).not.toBe('loading'));
+    await waitFor(() => expect(loads.filter((x) => x === 'proj-b').length).toBeGreaterThanOrEqual(1));
+    expect(loads[0]).toBe('proj-a');
   });
 });

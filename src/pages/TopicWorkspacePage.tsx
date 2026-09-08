@@ -68,7 +68,21 @@ export default function TopicWorkspacePage() {
   const [projectCreating, setProjectCreating] = React.useState(false);
   // Chatbot 协作视图（2026-09-05 刘总规格书）：临时双栏，关闭即退出嵌入。
   const [chatbotOpen, setChatbotOpen] = React.useState(false);
-  const [externalRefs, setExternalRefs] = React.useState<ExternalModelReference[]>([]);
+  // P0-4 scoped external refs: refs belong to ONE scope (projectId + topic
+  // session). On scope change the state resets immediately (refs cleared,
+  // status loading) and every async return is discarded unless its generation
+  // still matches — a slow or failed request can never leak Topic A refs into
+  // Topic B's context package.
+  type ExternalRefsStatus = 'idle' | 'loading' | 'ready' | 'error';
+  interface ExternalRefsState {
+    scopeKey: string;
+    status: ExternalRefsStatus;
+    refs: ExternalModelReference[];
+  }
+  const externalRefsScopeKey = React.useCallback((projectId: string | null, sessionId: string | null): string =>
+    `${projectId ?? 'global'}::${sessionId ?? 'none'}`, []);
+  const [externalRefsState, setExternalRefsState] = React.useState<ExternalRefsState>({ scopeKey: 'global::none', status: 'idle', refs: [] });
+  const externalRefsGeneration = React.useRef(0);
   const [chatbotSplit, setChatbotSplit] = React.useState<number>(() => {
     try {
       const value = Number(window.localStorage.getItem('metis-chatbot-split-v2'));
@@ -95,22 +109,30 @@ export default function TopicWorkspacePage() {
   }, [activeSessionId]);
 
   const refreshExternalRefs = React.useCallback(async (scope?: { sessionId?: string | null; projectId?: string | null }) => {
+    // 任务2 上下文隔离：只取当前选题会话（+其来源项目）捕获的外部参考。
+    // 空 scope 的全局拉取已被 runtime 禁止（scope_required）——那会把其他
+    // Topic/Project 的 Chatbot 引用串进本会话上下文。
+    const sessionId = scope?.sessionId ?? sessionIdRef.current;
+    const projectId = scope?.projectId ?? session?.sourceProjectId ?? null;
+    const scopeKey = externalRefsScopeKey(projectId, sessionId);
+    const generation = ++externalRefsGeneration.current;
+    // Scope 切换第一时间清空旧 refs 并置 loading——旧 scope 的引用绝不跨 scope 存活。
+    setExternalRefsState({ scopeKey, status: 'loading', refs: [] });
+    if (!sessionId) { setExternalRefsState({ scopeKey, status: 'ready', refs: [] }); return; }
     try {
-      // 任务2 上下文隔离：只取当前选题会话（+其来源项目）捕获的外部参考。
-      // 空 scope 的全局拉取已被 runtime 禁止（scope_required）——那会把其他
-      // Topic/Project 的 Chatbot 引用串进本会话上下文。
-      const sessionId = scope?.sessionId ?? sessionIdRef.current;
-      const projectId = scope?.projectId ?? session?.sourceProjectId ?? null;
-      if (!sessionId) { setExternalRefs([]); return; }
       const result = await window.metis?.externalRefList?.({
         sessionId,
         ...(projectId ? { projectId } : {}),
         limit: 50,
       });
-      if (result?.ok && result.references) setExternalRefs(result.references);
-      else if (result && !result.ok) setExternalRefs([]);
-    } catch { /* 列表失败保留现状 */ }
-  }, [session?.sourceProjectId]);
+      if (generation !== externalRefsGeneration.current) return; // 晚到的旧 scope 响应：丢弃
+      if (result?.ok && result.references) setExternalRefsState({ scopeKey, status: 'ready', refs: result.references });
+      else setExternalRefsState({ scopeKey, status: result ? 'error' : 'error', refs: [] }); // 失败：明确 error，绝不保留旧数据
+    } catch {
+      if (generation !== externalRefsGeneration.current) return;
+      setExternalRefsState({ scopeKey, status: 'error', refs: [] });
+    }
+  }, [externalRefsScopeKey, session?.sourceProjectId]);
 
   const refreshSessions = React.useCallback(async () => {
     try {
@@ -163,11 +185,21 @@ export default function TopicWorkspacePage() {
       status: CANDIDATE_STATUS_LABELS[candidate.status] ?? candidate.status,
     })),
     messages: messages.map((message) => ({ role: message.role, content: message.content })),
-    externalReferences: externalRefs.map((ref) => ({ model: ref.model, quotedText: ref.quotedText })),
-  }), [session, candidates, messages, externalRefs]);
+    // P0-4：进入 LLM Context 的引用必须与当前工作区 scope 完全一致——
+    // loading/error/旧 scope 状态下一律不带 externalReferences。
+    externalReferences: externalRefsState.status === 'ready'
+      && externalRefsState.scopeKey === externalRefsScopeKey(session?.sourceProjectId ?? null, sessionIdRef.current)
+      ? externalRefsState.refs.map((ref) => ({ model: ref.model, quotedText: ref.quotedText }))
+      : [],
+  }), [session, candidates, messages, externalRefsState, externalRefsScopeKey]);
 
   const handleReferenceConfirmed = React.useCallback((reference: ExternalModelReference, duplicate: boolean) => {
-    setExternalRefs((current) => current.some((item) => item.contextDigest === reference.contextDigest) ? current : [reference, ...current]);
+    setExternalRefsState((current) => {
+      const scopeKey = externalRefsScopeKey(session?.sourceProjectId ?? null, sessionIdRef.current);
+      if (current.scopeKey !== scopeKey) return current; // scope 已切换：新引用属于旧 scope，丢弃
+      if (current.refs.some((item) => item.contextDigest === reference.contextDigest)) return current;
+      return { ...current, status: 'ready', refs: [reference, ...current.refs] };
+    });
     setMessages((current) => [...current, {
       id: `extref-${reference.id}`,
       role: 'assistant',

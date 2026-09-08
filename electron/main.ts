@@ -681,6 +681,8 @@ let autoUpdaterService: AutoUpdaterService | null = null;
 // startup health report.
 let previousRunUnclean = false;
 let previousCrashMarker: unknown = null;
+// P0-8: orphan running runs retired at startup ('interrupted'/process_crash).
+let reconciledOrphanRuns: number | null = null;
 // Latest auto-update event, kept for the renderer to query on demand.
 let lastUpdateEvent: { type: string; version?: string; percent?: number; message?: string; trust?: unknown } = { type: 'idle' };
 let researchRepository: ResearchRepository | null = null;
@@ -6236,7 +6238,9 @@ function setupIPC(): void {
 
   // ── Startup health & diagnostic bundle (Task 5) ─────────────
   const collectMetisStartupHealth = () => {
-    const orphanRunningRuns = (() => {
+    // P0-8: reconciliation already retired crash-era 'running' rows at boot;
+    // probe what is STILL running now (a live turn is legitimate).
+    const stillRunningNow = (() => {
       try {
         return (store?.raw.prepare("SELECT COUNT(*) AS n FROM agent_runs WHERE status = 'running'").get() as { n: number } | undefined)?.n ?? 0;
       } catch { return null; }
@@ -6265,7 +6269,8 @@ function setupIPC(): void {
       genofficeReady: null,
       browserReady: null,
       mcpSummary,
-      orphanRunningRuns,
+      orphanRunningRuns: stillRunningNow,
+      reconciledOrphanRuns,
       crashMarker: { previousRunUnclean, marker: previousCrashMarker },
       lastMigration: store?.getLastMigrationResult()
         ? {
@@ -10748,7 +10753,7 @@ ${definition.description}`.toLowerCase();
       const imported: Array<{ id: string; name: string; category: string; charCount: number; binaryArchive?: string }> = [];
       const errors: Array<{ name: string; error: string }> = [];
       for (const filePath of selected.filePaths.slice(0, 12)) {
-        const fileName = filePath.split(/[\/]/).pop() ?? filePath;
+        const fileName = filePath.split(/[/]/).pop() ?? filePath;
         try {
           const material = await scenarioMaterials.importMaterial(filePath, {
             category: parsedInput.data.category,
@@ -12493,6 +12498,23 @@ app.whenReady().then(async () => {
     pid: process.pid,
     startedAt: new Date().toISOString(),
   });
+  // P0-8 startup reconciliation: rows still 'running' belong to a dead
+  // process (single-instance lock guarantees no concurrent writer). Retire
+  // them NOW — before any renderer can query run state — so no UI ever shows
+  // a zombie "running" task after a crash. The count feeds the health report.
+  reconciledOrphanRuns = null;
+  try {
+    const recoveredAt = Date.now();
+    const storeProbe = new PersistenceStore(DB_PATH);
+    reconciledOrphanRuns = storeProbe.reconcileOrphanRunningRuns(recoveredAt);
+    storeProbe.close();
+    if (reconciledOrphanRuns > 0) {
+      console.warn(`[Main] reconciled ${reconciledOrphanRuns} orphan running run(s) from a previous session`);
+    }
+  } catch (error) {
+    console.warn('[Main] orphan-run reconciliation skipped:', (error as Error)?.message);
+    reconciledOrphanRuns = null;
+  }
   executionCapabilities = new ExecutionCapabilityRegistry({
     allowedCwdRoots: [DATA_DIR],
     allowedEnvironmentKeys: ['ELECTRON_RUN_AS_NODE'],

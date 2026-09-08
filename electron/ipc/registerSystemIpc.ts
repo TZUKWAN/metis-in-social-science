@@ -20,7 +20,7 @@ import type { DomainIpcContext } from './DomainIpcContext.js';
 export function registerSystemIpc(ctx: DomainIpcContext): () => void {
   const { requireRendererMainFrame, store } = ctx;
   const DATA_DIR = (): string => ctx.dataDir();
-  const dom = ctx.registry.domain('system', ['storage:', 'backup:', 'clipboard:', 'flashcard:']);
+  const dom = ctx.registry.domain('system', ['storage:', 'backup:', 'clipboard:', 'flashcard:', 'dialog:']);
 
   // ── Storage location (user-configurable data directory) ──────
   dom.handle('storage:getLocation', (event) => {
@@ -106,7 +106,13 @@ export function registerSystemIpc(ctx: DomainIpcContext): () => void {
       const backupService = ctx.backupService();
       const request = rawRequest as { backupPath?: string };
       if (!backupService || !request?.backupPath) return { ok: false, error: 'backup_unavailable' };
-      return backupService.restoreFrom(request.backupPath);
+      // P0-7: drain via the real RuntimeShutdownCoordinator (aborts agent
+      // runs / scenario workflows / queued writers, awaits settlement with
+      // the coordinator's own timeout). The restore aborts before the swap
+      // when the drain times out.
+      return backupService.restoreFrom(request.backupPath, {
+        drain: async () => ctx.runtimeShutdown.drain(),
+      });
     } catch (err) {
       return { ok: false, error: String((err as Error).message ?? err) };
     }
@@ -170,6 +176,31 @@ export function registerSystemIpc(ctx: DomainIpcContext): () => void {
       return { ok: true };
     } catch {
       return { ok: false };
+    }
+  });
+
+  // ── Reference file picker (scenario / personalization material import) ──
+  // Contract (electron/preload.ts openReferenceFileDialog): resolves to a
+  // list of chosen absolute paths; an empty array means the user cancelled or
+  // the picker could not run. Multi-select is the point — consumers feed the
+  // paths into importScenarioMaterials.
+  dom.handle('dialog:openReferenceFiles', async (event) => {
+    try {
+      const win = requireRendererMainFrame(event);
+      const selected = await dialog.showOpenDialog(win, {
+        title: '选择参考文件',
+        properties: ['openFile', 'multiSelections'],
+        filters: [
+          { name: '参考文档', extensions: ['md', 'txt', 'pdf', 'docx', 'doc', 'pptx', 'ppt', 'xlsx', 'csv', 'html', 'htm', 'json', 'rtf'] },
+          { name: 'All Files', extensions: ['*'] },
+        ],
+      });
+      if (selected.canceled || selected.filePaths.length === 0) return [];
+      return selected.filePaths;
+    } catch {
+      // Cancelled-by-exception (window destroyed, dialog unavailable) is
+      // surfaced as "nothing picked" per the preload contract.
+      return [];
     }
   });
 

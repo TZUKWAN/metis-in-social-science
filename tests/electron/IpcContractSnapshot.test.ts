@@ -24,10 +24,10 @@ const UPDATE_HINT = 'IPC surface drifted from tests/fixtures/ipc/ipc-inventory.s
  * gate keeps failing on any NEW orphan and also fails once a listed orphan is
  * fixed so the entry gets removed.
  */
-const KNOWN_ORPHAN_PRELOAD_CHANNELS: Record<string, string> = {
-  'dialog:openReferenceFiles':
-    'FINDING-IPC-001: electron/preload.ts openReferenceFileDialog invokes a channel no main handler registers (HEAD and worktree). Used by src/personalization/PersonalizationCenter.tsx and ScenarioWorkbench.tsx reference-material import — the invoke rejects with "No handler registered". Owner: Scenario/Personalization domain.',
-};
+// FINDING-IPC-001 (dialog:openReferenceFiles) was FIXED: the system domain
+// registrar now owns the channel (electron/ipc/registerSystemIpc.ts) and
+// tests/electron/DialogOpenReferenceFiles.test.ts locks the contract.
+const KNOWN_ORPHAN_PRELOAD_CHANNELS: Record<string, string> = {};
 
 interface Snapshot {
   schemaVersion: number;

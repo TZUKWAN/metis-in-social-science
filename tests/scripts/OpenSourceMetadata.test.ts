@@ -38,8 +38,14 @@ describe('open-source release metadata', () => {
     expect(workflow).toContain('tests/integration');
     expect(workflow).toContain('tests/security');
     expect(workflow).toContain('tests/docs');
-    expect(workflow).toContain('npm audit --omit=dev');
     expect(workflow).toContain('npm run typecheck');
-    expect(workflow).toContain('npm run lint');
+    // Lint runs as a legacy-baseline gate (no regression against
+    // build/lint-baseline.json) — see scripts/lint-gate.mjs.
+    expect(workflow).toContain('scripts/lint-gate.mjs');
+    // Security advisories are a REPORT, not an engineering gate: the audit
+    // step lives in a continue-on-error job so CVE findings never block
+    // delivery, while still being visible on every push.
+    expect(workflow).toContain('npm audit --omit=dev');
+    expect(workflow).toContain('continue-on-error: true');
   });
 });

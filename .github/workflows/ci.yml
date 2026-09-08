@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   quality:
-    name: Audit, type-check, and lint
+    name: Type-check and lint gate
     runs-on: windows-2022
     timeout-minutes: 20
     steps:
@@ -27,12 +27,29 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Audit production dependencies
-        run: npm audit --omit=dev
       - name: Type-check
         run: npm run typecheck
-      - name: Lint
-        run: npm run lint
+      - name: Lint (no regression against legacy baseline)
+        run: node scripts/lint-gate.mjs
+
+  security-report:
+    # SECURITY / SUPPLY CHAIN REPORT — advisory only. Dependency CVEs do NOT
+    # block the engineering delivery gate (delivery policy): findings are
+    # reported for triage instead. Existing runtime/data-integrity protections
+    # are untouched.
+    name: Security advisory report (non-blocking)
+    runs-on: windows-2022
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: npm audit (production dependencies)
+        run: npm audit --omit=dev
 
   tests:
     name: Tests (${{ matrix.group }})

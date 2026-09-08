@@ -130,8 +130,28 @@ export function useAsyncView<T>(load: () => Promise<T>, options: UseAsyncViewOpt
   const everEnabledRef = useRef(enabled);
   everEnabledRef.current = everEnabledRef.current || enabled;
 
+  // P0-5 race fix: a scope switch that lands while a load is in flight used
+  // to be silently dropped (`if (inFlightRef.current) return`), so the NEW
+  // scope never loaded and the OLD scope's response would settle into the new
+  // view — a cross-scope stale render. Now the switch is queued and replayed
+  // the moment the in-flight load settles; the generation guard below still
+  // discards whichever response is superseded.
+  const pendingPhaseRef = useRef<'initial' | 'refresh' | null>(null);
   const run = useCallback((phase: 'initial' | 'refresh') => {
-    if (inFlightRef.current) return;
+    if (inFlightRef.current) {
+      // 展示层立即进入 loading/retrying，完成后按 pending 阶段重启加载。
+      pendingPhaseRef.current = phase;
+      setState((prev) => deriveAsyncViewState({
+        phase,
+        succeeded: false,
+        hasEverSucceeded: hasEverSucceededRef.current,
+        data: prev.data,
+        isEmptyData: false,
+        error: null,
+        reloading: true,
+      }));
+      return;
+    }
     inFlightRef.current = true;
     const runId = ++runIdRef.current;
     setState((prev) => deriveAsyncViewState({
@@ -158,8 +178,8 @@ export function useAsyncView<T>(load: () => Promise<T>, options: UseAsyncViewOpt
         // 错误细节只进 console 诊断，不冒充成功，也不吞掉。
         console.error('[asyncView] load failed:', err);
       }
+      if (runId !== runIdRef.current) return; // 已有更新的加载接管（本次响应被丢弃）
       inFlightRef.current = false;
-      if (runId !== runIdRef.current) return; // 已有更新的加载接管
       if (succeeded) hasEverSucceededRef.current = true;
       setState((prev) => deriveAsyncViewState({
         phase,
@@ -170,6 +190,12 @@ export function useAsyncView<T>(load: () => Promise<T>, options: UseAsyncViewOpt
         error: failure,
         reloading: false,
       }));
+      // 被排队的作用域切换：in-flight 结束后立即以最新加载器重放。
+      const pendingPhase = pendingPhaseRef.current;
+      if (pendingPhase !== null) {
+        pendingPhaseRef.current = null;
+        run(pendingPhase === 'refresh' || hasEverSucceededRef.current ? 'refresh' : 'initial');
+      }
     })();
    
   }, [errorMessage, errorCode]);

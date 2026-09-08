@@ -49,13 +49,21 @@ export interface RestoreIntent {
 }
 
 export interface RestoreHooks {
-  /** Fully restart the application (relaunch + exit). Called after a successful swap. */
-  restart: () => void;
+  /** Fully restart the application (relaunch + exit). Called after a successful swap.
+   *  Optional: defaults to relaunching the packaged app after a short delay. */
+  restart?: () => void;
   /** Surface a restore failure to the user; the app must not keep running with a
-   *  half-restored database. Called when the swap failed after the store was closed. */
-  onFailure: (message: string) => void;
-  /** Stop runtime writers (timers, queues) before the store is closed. */
-  drain?: () => void;
+   *  half-restored database. Called when the swap failed after the store was closed.
+   *  Optional: defaults to a native error dialog. */
+  onFailure?: (message: string) => void;
+  /**
+   * Stop runtime writers (agent runs, scenario workflows, background queues)
+   * before the store is closed. Must await real work: a resolved promise
+   * means every writer has settled. `timedOut` true (or a rejection) aborts
+   * the restore BEFORE the swap — the original database stays live and the
+   * pending restore intent is cleared.
+   */
+  drain?: () => Promise<{ timedOut: boolean; pending?: unknown[] } | void>;
 }
 
 export function restoreIntentPathFor(dbPath: string): string {
@@ -227,8 +235,24 @@ export class BackupService {
         requestedAt: Date.now(),
       });
 
-      // 4. Drain runtime writers, flush WAL, release handles.
-      try { drain?.(); } catch { /* drain is advisory */ }
+      // 4. Drain runtime writers — a REAL await: agent runs, scenario
+      //    workflows and background queues must settle before the WAL is
+      //    checkpointed and the store closes. A drain timeout aborts the
+      //    restore BEFORE the swap: the intent is cleared, the original
+      //    database stays open and live, and the caller can retry later.
+      if (drain) {
+        let drainResult: { timedOut: boolean; pending?: unknown[] } | void;
+        try {
+          drainResult = await drain();
+        } catch (drainErr) {
+          clearRestoreIntent(this.dbPath);
+          return { ok: false, error: `restore_runtime_drain_failed: ${String((drainErr as Error).message ?? drainErr)}` };
+        }
+        if (drainResult && drainResult.timedOut) {
+          clearRestoreIntent(this.dbPath);
+          return { ok: false, error: 'restore_runtime_drain_timeout' };
+        }
+      }
       this.store.checkpointWal();
       this.store.close();
 
