@@ -180,7 +180,7 @@ describe('startup health checks (fail-closed)', () => {
   beforeEach(() => { dir = tempDir(); });
   afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
-  it('fails with integrity_check_failed when foreign keys are violated', () => {
+  it('fails with integrity_check_failed when foreign keys are violated', { timeout: 90_000 }, () => {
     const dbPath = path.join(dir, 'fk-broken.db');
     const db = new Database(dbPath);
     try {

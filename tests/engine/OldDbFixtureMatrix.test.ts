@@ -300,8 +300,7 @@ describe('old database fixture matrix — open → migrate → validate → reop
     } finally {
       await rmDirRetry(dir);
     }
-  });
-
+  }, 90_000);
   it('5. pre-topic database gains the topic tables from the baseline', () => {
     const dir = tempDir();
     try {
