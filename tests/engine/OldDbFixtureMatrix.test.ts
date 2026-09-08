@@ -351,7 +351,7 @@ describe('schema convergence — every upgraded old database equals a fresh data
   // the per-test budget is sized for the slowest supported runner instead of
   // the developer machine (resource calibration, not failure masking — the
   // assertion itself is unchanged).
-  it('tables, columns and indexes match the fresh schema for all seven fixtures', { timeout: 120_000 }, async () => {
+  it('tables, columns and indexes match the fresh schema for all seven fixtures', async () => {
     const dir = tempDir();
     try {
       const freshPath = path.join(dir, 'fresh.db');
@@ -381,5 +381,5 @@ describe('schema convergence — every upgraded old database equals a fresh data
     } finally {
       await rmDirRetry(dir);
     }
-  });
+  }, 120_000);
 });
