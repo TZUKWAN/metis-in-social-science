@@ -1,7 +1,8 @@
 import fs from 'node:fs';
-import os from 'node:os';
+
 import path from 'node:path';
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { realTempRoot } from './helpers/realTempDir.mjs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   PersonalizationSecretVault,
@@ -20,7 +21,7 @@ function operationId(): string {
 }
 
 function temporaryRoot(): string {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'metis-personalization-secret-vault-'));
+  const root = fs.mkdtempSync(path.join(realTempRoot(), 'metis-personalization-secret-vault-'));
   roots.push(root);
   return root;
 }

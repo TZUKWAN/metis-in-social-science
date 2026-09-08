@@ -1,6 +1,6 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { realTempRoot } from '../electron/helpers/realTempDir';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   reconcileExperimentManagedRoot,
@@ -13,7 +13,7 @@ describe('experiment managed storage reconciliation', () => {
   });
 
   it('removes temp and unreferenced final files while retaining referenced files', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'metis-exp-reconcile-'));
+    const root = fs.mkdtempSync(path.join(realTempRoot(), 'metis-exp-reconcile-'));
     roots.push(root);
     const directory = path.join(root, 'experiment');
     fs.mkdirSync(directory);
@@ -33,7 +33,7 @@ describe('experiment managed storage reconciliation', () => {
   });
 
   it('fails closed when the managed root is a symlink or junction', () => {
-    const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'metis-exp-reconcile-link-'));
+    const parent = fs.mkdtempSync(path.join(realTempRoot(), 'metis-exp-reconcile-link-'));
     roots.push(parent);
     const real = path.join(parent, 'real');
     const linked = path.join(parent, 'linked');
@@ -43,7 +43,7 @@ describe('experiment managed storage reconciliation', () => {
   });
 
   it('pre-scans nested entries and performs no cleanup when a symlink is present', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'metis-exp-reconcile-nested-'));
+    const root = fs.mkdtempSync(path.join(realTempRoot(), 'metis-exp-reconcile-nested-'));
     roots.push(root);
     const directory = path.join(root, 'experiment');
     const outside = path.join(root, 'outside');

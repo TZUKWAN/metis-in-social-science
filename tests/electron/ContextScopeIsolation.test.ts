@@ -9,8 +9,9 @@
 import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
-import os from 'node:os';
+
 import path from 'node:path';
+import { realTempRoot } from './helpers/realTempDir.mjs';
 
 import { ExternalReferenceService } from '../../electron/ExternalReferenceService.js';
 import { buildTopicContextPackage } from '../../src/topic/contextPackage.js';
@@ -152,7 +153,7 @@ describe('ExternalReference 跨 Topic/Project 串线修复（任务第六节）'
 describe('ChatTurnService fail-closed scope 校验（任务第十三/十四节）', () => {
   // Windows + WAL：必须先 close 再删目录，否则 rmSync EPERM。
   function makeStore(): { store: PersistenceStore; dir: string } {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'metis-scope-'));
+    const dir = fs.mkdtempSync(path.join(realTempRoot(), 'metis-scope-'));
     return { store: new PersistenceStore(path.join(dir, 'scope.db')), dir };
   }
 
@@ -222,7 +223,7 @@ describe('ChatTurnService fail-closed scope 校验（任务第十三/十四节�
 
 describe('跨项目 Provider Request 零泄漏（任务第十四节，模型发送前断言）', () => {
   it('project B request text contains no project-A-only memory markers', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'metis-leak-'));
+    const dir = fs.mkdtempSync(path.join(realTempRoot(), 'metis-leak-'));
     const store = new PersistenceStore(path.join(dir, 'leak.db'));
     try {
       const memory = new MemoryManager(store, dir);
@@ -268,7 +269,7 @@ describe('跨项目 Provider Request 零泄漏（任务第十四节，模型发�
   });
 
   it('searchLibrary with a project scope excludes papers linked to other projects', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'metis-lib-'));
+    const dir = fs.mkdtempSync(path.join(realTempRoot(), 'metis-lib-'));
     const store = new PersistenceStore(path.join(dir, 'lib.db'));
     const save = (id: string, title: string, pdfText: string, addedAt: number): void => store.savePaper({
       id, title, authors: [], year: 2024, venue: '', abstract: '', pdfText,
@@ -307,7 +308,7 @@ describe('跨项目 Provider Request 零泄漏（任务第十四节，模型发�
   });
 
   it('context provenance is recorded and diagnosable per run', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'metis-prov-'));
+    const dir = fs.mkdtempSync(path.join(realTempRoot(), 'metis-prov-'));
     const store = new PersistenceStore(path.join(dir, 'prov.db'));
     try {
       const agentLoop = {

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
-import os from 'node:os';
+
 import path from 'node:path';
+import { realTempRoot } from './helpers/realTempDir.mjs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { MCPServerConfig, MCPTool } from '../../engine/mcp/protocol.js';
 import {
@@ -25,7 +26,7 @@ const TOOL: MCPTool = {
 };
 
 function temporaryServer(): { root: string; entry: string; callMarker: string } {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'metis-mcp-probe-runner-'));
+  const root = fs.mkdtempSync(path.join(realTempRoot(), 'metis-mcp-probe-runner-'));
   roots.push(root);
   const entry = path.join(root, 'server.mjs');
   const callMarker = path.join(root, 'sample-call.json');

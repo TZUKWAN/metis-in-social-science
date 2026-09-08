@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
-import os from 'node:os';
+import { realTempRoot } from './helpers/realTempDir.mjs';
 import path from 'node:path';
 import { PersistenceStore } from '../../engine/persistence/PersistenceStore.js';
 import { ResearchRepository } from '../../engine/persistence/ResearchRepository.js';
@@ -93,7 +93,7 @@ function outputBundleText(
 }
 
 beforeEach(() => {
-  root = fs.mkdtempSync(path.join(os.tmpdir(), 'metis-scenario-workflow-'));
+  root = fs.mkdtempSync(path.join(realTempRoot(), 'metis-scenario-workflow-'));
   store = new PersistenceStore(path.join(root, 'workflow.db'));
   store.createSession('session-1');
   repository = new PersonalizationRepository(store.raw, INTEGRITY_SECRET);
@@ -1066,7 +1066,7 @@ describe('scenario step cards (2026-09-01 刘总方案一期：过程可见)', (
 
   it('persists a step card message with brief, artifact pointer and control payload', async () => {
     const resolved = resolveManifest('builtin:scenarios/article-review');
-    const run = vi.fn().mockImplementation((request: { requestId: string; messages: ChatMessage[] }) => Promise.resolve(
+    const run = vi.fn().mockImplementation(() => Promise.resolve(
       completedResult(`${'步骤产出内容。'.repeat(5)}
 
 <step_brief>

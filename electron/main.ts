@@ -104,10 +104,7 @@ import {
 } from './StartupHealthService.js';
 import { buildDiagnosticBundle } from './DiagnosticBundleService.js';
 import {
-  LOCATION_POINTER_VERSION,
   resolveDataDir,
-  validateTargetLocation,
-  writeLocationPointer,
 } from './StorageLocation.js';
 import { ResearchRepository } from '../engine/persistence/ResearchRepository.js';
 import { OutcomeRepository } from './OutcomeRepository.js';
@@ -116,13 +113,6 @@ import { ArtifactPromptService } from './ArtifactPromptService.js';
 import { OfficePromptProfileService } from './OfficePromptProfileService.js';
 import { buildExperienceElicitationPrompt, buildTestRunOptions, type SkillStudioSource } from '../engine/skills/SkillStudio.js';
 import { TopicService, TOPIC_SEARCH_TOOLS } from './TopicService.js';
-import {
-  TopicChatRequestSchema,
-  TopicSessionCreateRequestSchema,
-  TopicSessionUpdatePatchSchema,
-  TopicCandidateUpsertSchema,
-  type TopicCandidateDto,
-} from '../engine/runtime/TopicRuntimeContract.js';
 import { SubmissionRepository } from './SubmissionRepository.js';
 import {
   SUBMISSION_STATUSES,
@@ -461,12 +451,6 @@ import {
   GoalRefineRequestSchema,
 } from '../engine/runtime/GoalRuntimeContract.js';
 import {
-  decodeArtifactContentRequest,
-  decodeArtifactContentResponse,
-  decodeArtifactCreateRequest,
-  decodeArtifactCreatedNotification,
-  decodeArtifactListResponse,
-  decodeArtifactMutationResult,
 } from '../engine/runtime/ArtifactRuntimeContract.js';
 import {
   createSessionListRecovery,
@@ -590,14 +574,12 @@ import {
   PROVIDER_PROFILE_CONTRACT_VERSION,
   createProviderProfileListRecovery,
   createProviderProfileMutationRecovery,
-  decodeProjectProviderOverride,
   decodeProviderProfileDeleteRequest,
   decodeProviderProfileListRequest,
   decodeProviderProfileSaveRequest,
   decodeProviderProfileSwitchRequest,
   decodeProviderProfileResetRequest,
   resolveProviderProfileRuntimeState,
-  ProjectProviderOverrideSchema,
   ProviderProfileIdSchema,
   type ProviderProfileBinding,
   type ProviderProfileMutationResponse,
@@ -657,17 +639,8 @@ import {
   decodeEvalRunResult,
 } from '../engine/runtime/EvalRuntimeContract.js';
 import { createExperimentScriptAdapter, type ExperimentScriptAdapter } from './ExperimentScriptAdapter.js';
-import {
-  decodeExperimentDelete,
-  decodeExperimentList,
-  decodeExperimentListResult,
-  decodeExperimentMutationResult,
-  decodeExperimentSave,
-} from '../engine/runtime/ExperimentMetadataContract.js';
-import {
-  decodeExperimentRunRequest,
-  decodeExperimentRunResult,
-} from '../engine/runtime/ExperimentRuntimeContract.js';
+import { decodeExperimentList } from '../engine/runtime/ExperimentMetadataContract.js';
+
 
 // ─── Globals ──────────────────────────────────────────────────
 
@@ -1560,7 +1533,6 @@ process.env.METIS_DATA_DIR = DATA_DIR;
 
 const PAPERS_DIR = path.join(DATA_DIR, 'papers');
 const IMPORTS_DIR = path.join(DATA_DIR, 'imports');
-const EXPORTS_DIR = path.join(DATA_DIR, 'exports');
 const RESEARCH_MEDIA_DIR = path.join(DATA_DIR, 'research-media');
 const OUTCOME_MEDIA_DIR = path.join(DATA_DIR, 'outcome-media');
 const GENOFFICE_ROOT = resolveGenofficeRoot({
@@ -10730,7 +10702,6 @@ ${definition.description}`.toLowerCase();
   });
 
   // ── 项目参考材料库（2026-09-01 刘总要求）：上传 / 列表 / 删除 / 改大类 ──
-  const MATERIAL_CATEGORY_VALUES = ['references', 'data', 'code', 'notes', 'template_spec', 'other'];
   ipcMain.handle('scenario:material:importDialog', async (event, rawRequest: unknown) => {
     try {
       const window = requireRendererMainFrame(event);

@@ -1,7 +1,8 @@
 import fs from 'node:fs';
-import os from 'node:os';
+
 import path from 'node:path';
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { realTempRoot } from './helpers/realTempDir.mjs';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ProviderProfileStore } from '../../electron/ProviderProfileStore.js';
 import type { FirstRunSecureStorage } from '../../electron/FirstRunSetupService.js';
@@ -10,7 +11,7 @@ const roots: string[] = [];
 let sequence = 0;
 
 function root(): string {
-  const value = fs.mkdtempSync(path.join(os.tmpdir(), 'metis-provider-profiles-'));
+  const value = fs.mkdtempSync(path.join(realTempRoot(), 'metis-provider-profiles-'));
   roots.push(value);
   return value;
 }

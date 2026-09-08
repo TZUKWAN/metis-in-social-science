@@ -1,7 +1,8 @@
 import fs from 'node:fs';
-import os from 'node:os';
+
 import path from 'node:path';
 import { inflateRawSync } from 'node:zlib';
+import { realTempRoot } from './helpers/realTempDir.mjs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { PersistenceStore } from '../../engine/persistence/PersistenceStore.js';
 import { ResearchRepository } from '../../engine/persistence/ResearchRepository.js';
@@ -122,7 +123,7 @@ describe('MEDIA-303 production research media trust chain', () => {
   let media: ResearchMediaService;
 
   beforeEach(() => {
-    temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'metis-media-303-'));
+    temporaryRoot = fs.mkdtempSync(path.join(realTempRoot(), 'metis-media-303-'));
     managedRoot = path.join(temporaryRoot, 'managed');
     externalRoot = path.join(temporaryRoot, 'external');
     exportRoot = path.join(temporaryRoot, 'exports');

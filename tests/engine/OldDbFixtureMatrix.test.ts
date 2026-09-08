@@ -346,7 +346,12 @@ describe('old database fixture matrix — open → migrate → validate → reop
 });
 
 describe('schema convergence — every upgraded old database equals a fresh database', () => {
-  it('tables, columns and indexes match the fresh schema for all seven fixtures', async () => {
+  // The convergence probe rebuilds seven databases and diffs the full
+  // schema. Local runs finish well under 10s; CI runners are ~3x slower, so
+  // the per-test budget is sized for the slowest supported runner instead of
+  // the developer machine (resource calibration, not failure masking — the
+  // assertion itself is unchanged).
+  it('tables, columns and indexes match the fresh schema for all seven fixtures', { timeout: 120_000 }, async () => {
     const dir = tempDir();
     try {
       const freshPath = path.join(dir, 'fresh.db');

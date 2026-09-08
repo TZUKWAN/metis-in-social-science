@@ -1,7 +1,8 @@
 import fs from 'node:fs';
-import os from 'node:os';
+
 import path from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
+import { realTempRoot } from './helpers/realTempDir.mjs';
 import { afterEach, describe, expect, it } from 'vitest';
 import { AgentLoop } from '../../engine/core/AgentLoop.js';
 import type { NormalizedResponse, StreamChunk } from '../../engine/core/types.js';
@@ -175,7 +176,7 @@ interface Harness {
 }
 
 async function createHarness(): Promise<Harness> {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'metis-mcp-tool-bridge-'));
+  const root = fs.mkdtempSync(path.join(realTempRoot(), 'metis-mcp-tool-bridge-'));
   roots.push(root);
   const installer = new PersonalizationMcpInstaller(path.join(root, 'installations'), {
     runtimeExecutable: process.execPath,
@@ -376,7 +377,7 @@ describe('PersonalizationMcpToolBridge', () => {
       turnIndex: 0,
     });
 
-    const storeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'metis-mcp-scenario-digest-'));
+    const storeRoot = fs.mkdtempSync(path.join(realTempRoot(), 'metis-mcp-scenario-digest-'));
     roots.push(storeRoot);
     const store = new PersistenceStore(path.join(storeRoot, 'runtime.db'));
     try {

@@ -1,8 +1,9 @@
 import fs from 'node:fs';
-import os from 'node:os';
+
 import path from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
+import { realTempRoot } from './helpers/realTempDir.mjs';
 import { afterEach, describe, expect, it } from 'vitest';
 import { PersonalizationRepository } from '../../engine/personalization/PersonalizationRepository.js';
 import {
@@ -62,7 +63,7 @@ interface Harness {
 }
 
 function createHarness(): Harness {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'metis-generated-mcp-transaction-'));
+  const root = fs.mkdtempSync(path.join(realTempRoot(), 'metis-generated-mcp-transaction-'));
   roots.push(root);
   const mcpRoot = path.join(root, 'mcp');
   const installer = new PersonalizationMcpInstaller(mcpRoot, { now: () => 500 });

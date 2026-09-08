@@ -1,8 +1,9 @@
 import fs from 'node:fs';
-import os from 'node:os';
+
 import path from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
+import { realTempRoot } from './helpers/realTempDir.mjs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PersonalizationRepository } from '../../engine/personalization/PersonalizationRepository.js';
 import {
@@ -75,7 +76,7 @@ class MemoryMcpNetwork implements McpNetworkClient {
 }
 
 function createHarness(resolvedSecret?: string): Harness {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'metis-mcp-activation-'));
+  const root = fs.mkdtempSync(path.join(realTempRoot(), 'metis-mcp-activation-'));
   roots.push(root);
   const mcpRoot = path.join(root, 'mcp');
   const installer = new PersonalizationMcpInstaller(mcpRoot, { now: () => 500 });
@@ -186,7 +187,7 @@ afterEach(() => {
 
 describe('PersonalizationMcpActivationService', () => {
   it('runs the real URL install -> static validation -> list-only activation chain end to end', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'metis-mcp-url-activation-e2e-'));
+    const root = fs.mkdtempSync(path.join(realTempRoot(), 'metis-mcp-url-activation-e2e-'));
     roots.push(root);
     const mcpRoot = path.join(root, 'mcp');
     const network = new MemoryMcpNetwork();

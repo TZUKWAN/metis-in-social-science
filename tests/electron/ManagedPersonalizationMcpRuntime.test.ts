@@ -1,7 +1,8 @@
 import fs from 'node:fs';
-import os from 'node:os';
+
 import path from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
+import { realTempRoot } from './helpers/realTempDir.mjs';
 import { afterEach, describe, expect, it } from 'vitest';
 import { EvidenceEnvelopeService } from '../../electron/EvidenceEnvelopeService.js';
 import {
@@ -38,7 +39,7 @@ function sha256(value: Uint8Array | string): string {
 }
 
 function temporaryRoot(): string {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'metis-managed-mcp-runtime-'));
+  const root = fs.mkdtempSync(path.join(realTempRoot(), 'metis-managed-mcp-runtime-'));
   roots.push(root);
   return root;
 }
