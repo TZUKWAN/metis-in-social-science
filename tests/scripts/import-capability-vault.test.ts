@@ -18,8 +18,14 @@ import { CAPABILITY_SOURCES, type CapabilitySourceSpec, type GitHubFetcher } fro
 import { SCHEMA_SQL } from '../../engine/persistence/schema.js';
 
 const DB_PATH = path.join(process.env.APPDATA ?? '', 'metis-workbench', 'metis-data', 'metis.db');
-const TOKEN = fs.readFileSync('C:/Users/lauze/AppData/Local/Temp/gh_token.txt', 'utf8').trim()
+// Optional local token: this drill talks to the REAL GitHub and the REAL user
+// database, so it only runs when explicitly provisioned (gh_token.txt or
+// GITHUB_TOKEN). Everywhere else it reports a clean skip.
+const GH_TOKEN_FILE = 'C:/Users/lauze/AppData/Local/Temp/gh_token.txt';
+const TOKEN = (fs.existsSync(GH_TOKEN_FILE) ? fs.readFileSync(GH_TOKEN_FILE, 'utf8').trim() : '')
   || process.env.GITHUB_TOKEN || '';
+// Real-network + real-database drill: skip entirely without provisioned credentials.
+const HAS_TOKEN = TOKEN.length > 0;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -61,7 +67,7 @@ interface SourceOutcome {
   ms: number;
 }
 
-describe('Capability Vault 全量导入（运维脚本）', () => {
+describe.skipIf(!HAS_TOKEN)(/* real-network drill */'Capability Vault 全量导入（运维脚本）', () => {
   it('imports every registered source into the live database', { timeout: 1_200_000 }, async () => {
     expect(fs.existsSync(DB_PATH), `运行库不存在：${DB_PATH}`).toBe(true);
     const db = new Database(DB_PATH);

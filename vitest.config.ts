@@ -2,7 +2,12 @@
 // shadows jsdom's (missing clear/removeItem). Setting NODE_OPTIONS here makes
 // every forked worker start with it disabled — the CLI flag alone does not
 // propagate into worker execArgv.
-process.env.NODE_OPTIONS = [process.env.NODE_OPTIONS, '--no-webstorage'].filter(Boolean).join(' ');
+// 任务2：METIS_ELECTRON_NODE=1 时用 Electron 内置 Node 直接跑 vitest（避免
+// 为系统 Node 重编译被运行中实例锁定的 better_sqlite3.node）；该 Node 不认
+// 识 --no-webstorage，注入反而会让所有 worker fork 失败。
+if (!process.env.METIS_ELECTRON_NODE) {
+  process.env.NODE_OPTIONS = [process.env.NODE_OPTIONS, '--no-webstorage'].filter(Boolean).join(' ');
+}
 
 import { defineConfig } from 'vitest/config'
 import path from 'path'
@@ -28,7 +33,7 @@ export default defineConfig({
           environment: 'node',
           include: [
             'engine/**/*.test.ts',
-            'tests/{engine,electron,e2e,security,integration,scripts,utils,evals}/**/*.test.{ts,tsx}',
+            'tests/{engine,electron,e2e,security,integration,scripts,utils,evals,conversation}/**/*.test.{ts,tsx}',
             'electron/ScenarioLoopRunTracker.test.ts',
             'electron/RuntimeShutdownCoordinator.test.ts',
           ],

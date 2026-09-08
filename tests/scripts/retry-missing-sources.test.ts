@@ -1,10 +1,10 @@
 /** 运维脚本：定向重拉 5 个缺失源（仓库均确认存在，先前为网络抖动）。 */
-import fs from 'node:fs';
+
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { CapabilityVaultService } from '../../electron/CapabilityVaultService.js';
-import { CAPABILITY_SOURCES } from '../../engine/capabilities/CapabilityImporter.js';
+
 import { SCHEMA_SQL } from '../../engine/persistence/schema.js';
 
 const DB_PATH = path.join(process.env.APPDATA ?? '', 'metis-workbench', 'metis-data', 'metis.db');
@@ -34,7 +34,8 @@ function makeFetcher() {
   };
 }
 
-describe('重试缺失源', () => {
+// Real-network drill (hits GitHub): skip without provisioned credentials.
+   describe.skipIf(!TOKEN)('重试缺失源', () => {
   it('re-imports the 5 missing sources', { timeout: 600_000 }, async () => {
     const db = new Database(DB_PATH);
     db.pragma('journal_mode = WAL');

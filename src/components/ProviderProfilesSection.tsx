@@ -13,10 +13,18 @@ type FormState = {
   model: string;
   vision: boolean;
   maxContextTokens: number;
+  timeout: number;
+  maxRetries: number;
   apiKey: string;
 };
 
 type Notice = { kind: 'success' | 'error' | 'info'; message: string } | null;
+
+// timeout/maxRetries 默认值（2026-09-06 P0 遗留）：与 ProviderProfileStore.save 的
+// 缺省语义对齐（30s/2），这里给更贴近真实使用的 10 分钟/2 次——:free 渠道推理慢，
+// 10 分钟足够一次完整生成，同时不会像 30 分钟那样把失败拖成黑盒。
+const DEFAULT_TIMEOUT_MS = 600_000;
+const DEFAULT_MAX_RETRIES = 2;
 
 const EMPTY_FORM: FormState = {
   id: null,
@@ -25,6 +33,8 @@ const EMPTY_FORM: FormState = {
   model: '',
   vision: false,
   maxContextTokens: 0,
+  timeout: DEFAULT_TIMEOUT_MS,
+  maxRetries: DEFAULT_MAX_RETRIES,
   apiKey: '',
 };
 
@@ -98,6 +108,8 @@ export default function ProviderProfilesSection() {
       model: profile.model,
       vision: profile.vision,
       maxContextTokens: profile.maxContextTokens,
+      timeout: profile.timeout ?? DEFAULT_TIMEOUT_MS,
+      maxRetries: profile.maxRetries ?? DEFAULT_MAX_RETRIES,
       apiKey: '',
     });
   }
@@ -135,6 +147,8 @@ export default function ProviderProfilesSection() {
       model: form.model.trim(),
       vision: form.vision,
       maxContextTokens: Math.max(0, Math.floor(form.maxContextTokens || 0)),
+      timeout: Math.max(1_000, Math.floor(form.timeout || DEFAULT_TIMEOUT_MS)),
+      maxRetries: Math.max(0, Math.floor(form.maxRetries ?? DEFAULT_MAX_RETRIES)),
       keyMode: form.id && !replacingKey ? 'saved' : 'replace',
       ...(replacingKey ? { newApiKey: form.apiKey.trim() } : {}),
     };
@@ -318,6 +332,16 @@ export default function ProviderProfilesSection() {
             <label className="provider-profiles__check">
               <input type="checkbox" checked={form.vision} onChange={(event) => patchForm({ vision: event.target.checked })} disabled={isBusy} />
               {zh ? '支持图像理解' : 'Supports vision'}
+            </label>
+          </div>
+          <div className="provider-profiles__two-col">
+            <label className="settings-label">
+              {zh ? '请求超时（毫秒）' : 'Request timeout (ms)'}
+              <input className="settings-input" type="number" min={1000} step={1000} value={form.timeout} onChange={(event) => patchForm({ timeout: Math.max(1_000, Math.floor(Number(event.target.value) || 0)) })} disabled={isBusy} data-testid="provider-profile-timeout" />
+            </label>
+            <label className="settings-label">
+              {zh ? '失败重试次数' : 'Max retries'}
+              <input className="settings-input" type="number" min={0} step={1} value={form.maxRetries} onChange={(event) => patchForm({ maxRetries: Math.max(0, Math.floor(Number(event.target.value) || 0)) })} disabled={isBusy} data-testid="provider-profile-maxretries" />
             </label>
           </div>
           <label className="settings-label">

@@ -8,6 +8,7 @@
 
 import { useState, useEffect } from 'react';
 import { useTranslation } from '../i18n';
+import SettingsHealthSection from './SettingsHealthSection.js';
 
 interface McpServer {
   id: string;
@@ -85,6 +86,7 @@ export default function SettingsDiagnosticSection() {
 
   return (
     <>
+      <SettingsHealthSection />
       <div className="settings-group" data-testid="diagnostic-mcp-settings">
         <h3>{t('settings.mcpServers')}</h3>
         <p>{t('settings.mcpServersDescription')}</p>

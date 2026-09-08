@@ -43,6 +43,13 @@
     "release:package": "node scripts/release-provenance.mjs package",
     "release:verify": "node scripts/verify-release-policy.mjs",
     "release:windows": "npm run release:source && npm run build:electron && npm run release:dist && electron-builder --win nsis msi && npm run release:compliance && npm run release:scan && npm run release:package && npm run release:verify",
+    "verify:reliability": "node scripts/reliability-gate.mjs --tier=1",
+    "verify:reliability:desktop": "node scripts/reliability-gate.mjs --tier=2",
+    "verify:reliability:nightly": "node scripts/reliability-gate.mjs --tier=3",
+    "verify:reliability:release": "node scripts/reliability-gate.mjs --tier=4",
+    "ipc:snapshot:check": "node scripts/ipc-contract-scan.mjs",
+    "ipc:snapshot:update": "node scripts/ipc-contract-scan.mjs --write",
+    "test:electron": "node scripts/run-vitest-electron.mjs",
     "dist": "npm run release:windows"
   },
   "dependencies": {

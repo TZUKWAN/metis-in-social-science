@@ -32,25 +32,21 @@ import { promisify } from 'node:util';
 import os from 'node:os';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
-// ── 主进程文件日志（2026-08-25 刘总要求）─────────────────────────
+// ── 主进程文件日志（2026-08-25 刘总要求；任务3重构为缓冲写入）──────────
 // Start-Process 管道重定向下 Node console 是 64KB 块缓冲，过程日志会长期
-// 滞留缓冲区无法用于实时诊断。开发模式下把 console 输出同步追加到
-// logs/main-app.log，保证场景编译等长流程的每一步都可实时 tail。
-{
-  const logDir = path.join(process.cwd(), 'logs');
-  try { fs.mkdirSync(logDir, { recursive: true }); } catch { /* 目录已存在 */ }
-  const mainLog = path.join(logDir, 'main-app.log');
-  const wrapConsole = (orig: (...args: unknown[]) => void) => (...args: unknown[]) => {
-    try {
-      const line = args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
-      fs.appendFileSync(mainLog, new Date().toISOString() + ' ' + line + '\n');
-    } catch { /* 日志失败绝不影响主流程 */ }
-    orig(...args);
-  };
-  console.log = wrapConsole(console.log.bind(console));
-  console.warn = wrapConsole(console.warn.bind(console));
-  console.error = wrapConsole(console.error.bind(console));
-}
+// 滞留缓冲区无法用于实时诊断，因此保留 logs/main-app.log 实时 tail 目的地。
+// 任务3（§11）：原实现逐条同步 appendFileSync，高频 Agent/Tool/Event 日志会
+// 阻塞 main loop 且无滚动；现改为缓冲批量写 + 大小滚动 + 凭据 redaction，
+// 数据目录归档（2026-08-29 刘总要求）在 DATA_DIR 解析后通过 rebind 启用。
+let archiveDataDir: string | null = null;
+const mainProcessLogger = new MainProcessLogger({
+  tailLogPath: path.join(process.cwd(), 'logs', 'main-app.log'),
+  archivePathForDate: (date) =>
+    archiveDataDir === null
+      ? null
+      : path.join(archiveDataDir, 'logs', `main-${date.toISOString().slice(0, 10)}.log`),
+});
+mainProcessLogger.install();
 
 
 // Windows occlusion tracking can throttle — or fully stall — input delivery to
@@ -89,17 +85,24 @@ import { ResearchAgendaService } from './ResearchAgendaService.js';
 import { CloudSyncService } from './CloudSyncService.js';
 import { AutonomousProfileService } from './AutonomousProfileService.js';
 import { setBrowserControlBridge } from '../engine/tools/browser-tools.js';
-import { BackupService } from './BackupService.js';
+import { BackupService, clearRestoreIntent, readRestoreIntent, writeRestoreIntent } from './BackupService.js';
+import { PersistenceStartupError } from '../engine/persistence/errors.js';
 import { WeChatBotService } from './WeChatBotService.js';
 import { IlinkClient } from '../engine/im/IlinkClient.js';
 import {
-  PROJECT_ARCHIVE_EXT,
-  PROJECT_ARCHIVE_LEGACY_EXTS,
-  exportProjectArchive,
-  importProjectArchive,
 } from '../engine/export/ProjectArchiveExporter.js';
 import { UpdateCheckerService } from './UpdateCheckerService.js';
 import { AutoUpdaterService } from './AutoUpdaterService.js';
+import { resolveUpdateChannel } from './UpdateChannelPolicy.js';
+import { verifyAuthenticodeSignature } from './UpdateSignatureVerifier.js';
+import {
+  clearCrashMarker,
+  collectStartupHealth,
+  crashMarkerPath,
+  readCrashMarkerState,
+  writeCrashMarker,
+} from './StartupHealthService.js';
+import { buildDiagnosticBundle } from './DiagnosticBundleService.js';
 import {
   LOCATION_POINTER_VERSION,
   resolveDataDir,
@@ -217,6 +220,16 @@ import {
 } from './RuntimeShutdownCoordinator.js';
 import { ApprovalShutdownRegistry, ScenarioApprovalRegistry } from './ApprovalShutdownRegistry.js';
 import { createScenarioLoopRunTracker } from './ScenarioLoopRunTracker.js';
+import { MainProcessLogger } from './MainProcessLogger.js';
+import { IpcRegistry } from './ipc/IpcRegistry.js';
+import { registerTopicIpc } from './ipc/registerTopicIpc.js';
+import type { DomainIpcContext } from './ipc/DomainIpcContext.js';
+import { registerSystemIpc } from './ipc/registerSystemIpc.js';
+import { registerProjectIpc } from './ipc/registerProjectIpc.js';
+import { registerArtifactIpc } from './ipc/registerArtifactIpc.js';
+import { registerExperimentIpc } from './ipc/registerExperimentIpc.js';
+import { registerWeChatIpc } from './ipc/registerWeChatIpc.js';
+import { registerFreeModelIpc } from './ipc/registerFreeModelIpc.js';
 import { OpenAICompatProvider } from '../engine/providers/OpenAICompatProvider.js';
 import { AgentLoop } from '../engine/core/AgentLoop.js';
 import { OutcomeAssistantChatRequestSchema, OutcomeAssistantChatResultSchema, OutcomeCategoryCreateSchema, OutcomeCategoryDeleteSchema, OutcomeCategoryRenameSchema, OutcomeCreateRequestSchema, OutcomeExternalEditorCloseRequestSchema, OutcomeExternalEditorOpenRequestSchema, OutcomeExternalEditorOpenResultSchema, OutcomeExternalEditorStateRequestSchema, OutcomeExternalEditorStateSchema, OutcomeExternalEditorSyncRequestSchema, OutcomeExternalEditorSyncResultSchema, OutcomeFinalRequestSchema, OutcomeGetRequestSchema, OutcomeImageGenerateResultSchema, OutcomeImageSettingsGetResultSchema, OutcomeImageSettingsSaveResultSchema, OutcomeListRequestSchema, OutcomeMediaImportRequestSchema, OutcomeMediaReadRequestSchema, OutcomeMoveRequestSchema, OutcomePptxExportRequestSchema, OutcomePptxExportResultSchema, OutcomePptxImportCommitRequestSchema, OutcomePptxImportCommitResultSchema, OutcomePptxImportRequestSchema, OutcomePptxImportResultSchema, OutcomeRenameRequestSchema, OutcomeRestoreRequestSchema, OutcomeSaveRequestSchema, OutcomeVersionsRequestSchema, OutcomeWordDocxExportRequestSchema, OutcomeWordDocxExportResultSchema, OutcomeWordDocxImportCommitRequestSchema, OutcomeWordDocxImportCommitResultSchema, OutcomeWordDocxImportRequestSchema, OutcomeWordDocxImportResultSchema, PptGenerationExecuteRequestSchema, PptGenerationResultSchema, PptGenerationSkillSaveRequestSchema, PptGenerationSkillSchema, PptTemplateSaveRequestSchema, PptTemplateSchema, ScenarioScopedConversationCreateSchema, ScenarioScopedConversationRequestSchema, ScopedConversationMessageRequestSchema, ScopedConversationRequestSchema, ScopedConversationCreateSchema, ScopedConversationRefSchema, ScopedConversationAppendToSchema, OutcomeSourceLocateRequestSchema, OutcomeSourceLocateResultSchema, OutcomeTrashListRequestSchema, OutcomeTrashRequestSchema } from '../engine/runtime/OutcomeRuntimeContract.js';
@@ -419,6 +432,7 @@ import {
   decodeStoredHistory,
   RuntimeIdSchema,
 } from '../engine/runtime/ChatRuntimeContract.js';
+import { buildContextProvenance } from '../engine/runtime/ContextScopeContract.js';
 import {
   AgentControlRequestSchema,
   InMemoryLiveSteeringQueue,
@@ -663,8 +677,12 @@ let backupService: BackupService | null = null;
 let backupTimer: NodeJS.Timeout | null = null;
 let updateChecker: UpdateCheckerService | null = null;
 let autoUpdaterService: AutoUpdaterService | null = null;
+// Task 5 crash marker: set at boot from the stale marker file, surfaced in the
+// startup health report.
+let previousRunUnclean = false;
+let previousCrashMarker: unknown = null;
 // Latest auto-update event, kept for the renderer to query on demand.
-let lastUpdateEvent: { type: string; version?: string; percent?: number; message?: string } = { type: 'idle' };
+let lastUpdateEvent: { type: string; version?: string; percent?: number; message?: string; trust?: unknown } = { type: 'idle' };
 let researchRepository: ResearchRepository | null = null;
 let outcomeRepository: OutcomeRepository | null = null;
 let topicRepositoryInstance: TopicRepository | null = null;
@@ -675,6 +693,7 @@ function ensureTopicService(): TopicService {
   if (!topicServiceSingleton) {
     topicServiceSingleton = new TopicService({
       repository: () => topicRepositoryInstance,
+      researchRepository: () => researchRepository,
       runTurn: async (options) => {
         if (!agentLoop) return { status: 'agent_unavailable', answer: '' };
         const response = await runEphemeralChatTurn({
@@ -852,6 +871,35 @@ interface ActiveChatRun {
 }
 const activeChatRuns = new Map<string, ActiveChatRun>();
 const runtimeShutdown = new RuntimeShutdownCoordinator();
+
+// ── IPC 注册台账（任务3：一个 channel 一个 owner）──────────────
+// 非 packaged（开发/测试）模式下 strict：重复注册立即抛错，而不是叠加
+// listener 静默轮流应答。已迁移域经由 domainIpcContext 注册；未迁移的
+// handler 仍直调 ipcMain.handle，由 registry snapshot 对账逐步收敛。
+const ipcRegistry = new IpcRegistry({ ipcMain, strict: !app.isPackaged });
+const ipcDomainDisposers: Array<() => void> = [];
+const domainIpcContext: DomainIpcContext = {
+  registry: ipcRegistry,
+  requireRendererMainFrame,
+  runtimeShutdown,
+  agentLoop: () => agentLoop,
+  ensureTopicService,
+  freeModelService: () => freeModelService,
+  provider: () => provider,
+  store: () => store,
+  researchRepository: () => researchRepository,
+  providerProfileStore: () => providerProfileStore,
+  experimentScriptAdapter: () => experimentScriptAdapter,
+  fileCapabilities: () => fileCapabilities,
+  ensureWeChatBot,
+  browserService: () => browserService,
+  collabService: () => collabService,
+  ensureCollabService,
+  dataDir: () => DATA_DIR,
+  userDataDir: () => USER_DATA_DIR,
+  defaultDataDir: () => DEFAULT_DATA_DIR,
+  backupService: () => backupService,
+};
 const hitlApprovalRegistry = new ApprovalShutdownRegistry(runtimeShutdown, 'hitl-approval');
 const scenarioApprovalRegistry = new ScenarioApprovalRegistry(runtimeShutdown);
 let shutdownPromise: Promise<void> | null = null;
@@ -1021,45 +1069,8 @@ setBrowserControlBridge({
 // The data directory is user-configurable (Settings → 存储位置). Only a tiny
 // pointer file lives in `userData`; everything else follows DATA_DIR. Any
 // pending relocation runs here, before any database handle is opened.
-// ── 主进程文件日志镜像（2026-08-29 刘总要求：任何失败必须有据可查）──
-// Windows GUI 子系统下主进程 console 不进任何管道，导致运行失败长期"无痕"。
-// 这里把 log/warn/error 镜像到 DATA_DIR/logs/main-<日期>.log；DATA_DIR 解析
-// 完成前先缓存在内存，初始化后一次性落盘并持续追加。
-const mainLogBuffer: string[] = [];
-let mainLogStream: import('node:fs').WriteStream | null = null;
-function mirrorMainLog(level: string, args: unknown[]): void {
-  const line = `[${new Date().toISOString()}] [${level}] ${args.map((item) => {
-    if (typeof item === 'string') return item;
-    try { return JSON.stringify(item); } catch { return String(item); }
-  }).join(' ')}
-`;
-  if (mainLogStream) {
-    try { mainLogStream.write(line); } catch { /* 日志写失败不影响主流程 */ }
-  } else {
-    mainLogBuffer.push(line);
-    if (mainLogBuffer.length > 2000) mainLogBuffer.splice(0, mainLogBuffer.length - 2000);
-  }
-}
-for (const level of ['log', 'warn', 'error'] as const) {
-  const original = console[level].bind(console);
-  console[level] = (...args: unknown[]) => {
-    mirrorMainLog(level, args);
-    original(...args);
-  };
-}
-function initMainLogFile(dataDir: string): void {
-  try {
-    const logDir = path.join(dataDir, 'logs');
-    fs.mkdirSync(logDir, { recursive: true });
-    mainLogStream = fs.createWriteStream(
-      path.join(logDir, `main-${new Date().toISOString().slice(0, 10)}.log`),
-      { flags: 'a' },
-    );
-    for (const line of mainLogBuffer.splice(0)) mainLogStream.write(line);
-  } catch (error) {
-    console.warn('[Main] 文件日志初始化失败（不影响主流程）：', error instanceof Error ? error.message : error);
-  }
-}
+// 任务3：数据目录日志归档由 MainProcessLogger 承担（DATA_DIR 解析后 rebind，
+// 解析前的行留在 logger 内存 backlog，随首次 flush 一并落盘）。
 
 const USER_DATA_DIR = app.getPath('userData');
 const DEFAULT_DATA_DIR = path.join(USER_DATA_DIR, 'metis-data');
@@ -4823,226 +4834,11 @@ function setupIPC(): void {
   ipcMain.handle('scenario:conversation:append', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=ScopedConversationAppendToSchema.safeParse(raw); if (!p.success || !outcomeRepository) return null; return outcomeRepository.appendToConversation(p.data); } catch { return null; } });
 
   // ── 选题 Topic(2026-09-04 刘总要求:选题一级功能)──
-  ipcMain.handle('topic:sessions:create', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const parsed = TopicSessionCreateRequestSchema.safeParse(raw ?? {});
-      if (!parsed.success) return { ok: false as const, code: 'invalid_request' };
-      const session = ensureTopicService().createSession(parsed.data);
-      return { ok: true as const, session };
-    } catch (error) {
-      return { ok: false as const, code: error instanceof Error && error.message === 'topic_persistence_unavailable' ? 'persistence_unavailable' : 'create_failed' };
-    }
-  });
-  ipcMain.handle('topic:sessions:list', (event) => {
-    try {
-      requireRendererMainFrame(event);
-      return ensureTopicService().listSessions();
-    } catch { return []; }
-  });
-  ipcMain.handle('topic:sessions:get', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const parsed = z.object({ sessionId: z.string().min(1).max(160) }).safeParse(raw);
-      if (!parsed.success) return null;
-      return ensureTopicService().getSessionDetail(parsed.data.sessionId);
-    } catch { return null; }
-  });
-  ipcMain.handle('topic:sessions:update', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const parsed = z.object({ sessionId: z.string().min(1).max(160), patch: TopicSessionUpdatePatchSchema }).safeParse(raw);
-      if (!parsed.success) return null;
-      return ensureTopicService().updateSession(parsed.data.sessionId, parsed.data.patch);
-    } catch { return null; }
-  });
-  ipcMain.handle('topic:sessions:delete', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const parsed = z.object({ sessionId: z.string().min(1).max(160) }).safeParse(raw);
-      if (!parsed.success) return false;
-      return ensureTopicService().deleteSession(parsed.data.sessionId);
-    } catch { return false; }
-  });
-  ipcMain.handle('topic:candidates:update', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const parsed = z.object({
-        sessionId: z.string().min(1).max(160),
-        candidateId: z.string().min(1).max(160),
-        patch: TopicCandidateUpsertSchema.partial(),
-      }).safeParse(raw);
-      if (!parsed.success) return null;
-      return ensureTopicService().updateCandidate(parsed.data.sessionId, parsed.data.candidateId, parsed.data.patch as Partial<TopicCandidateDto>);
-    } catch { return null; }
-  });
-  ipcMain.handle('topic:select', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const parsed = z.object({ sessionId: z.string().min(1).max(160), candidateId: z.string().min(1).max(160) }).safeParse(raw);
-      if (!parsed.success) return { ok: false as const, code: 'invalid_request' };
-      return ensureTopicService().selectCandidate(parsed.data.sessionId, parsed.data.candidateId);
-    } catch (error) {
-      return { ok: false as const, code: error instanceof Error && error.message === 'topic_persistence_unavailable' ? 'persistence_unavailable' : 'select_failed' };
-    }
-  });
-  ipcMain.handle('topic:markConverted', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const parsed = z.object({
-        candidateId: z.string().min(1).max(160),
-        projectId: z.string().max(160).optional(),
-        scenarioId: z.string().max(160).optional(),
-      }).safeParse(raw);
-      if (!parsed.success) return null;
-      return ensureTopicService().markConverted(parsed.data.candidateId, parsed.data);
-    } catch { return null; }
-  });
-  ipcMain.handle('topic:brief', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const parsed = z.object({ sessionId: z.string().min(1).max(160) }).safeParse(raw);
-      if (!parsed.success) return null;
-      return ensureTopicService().getBrief(parsed.data.sessionId);
-    } catch { return null; }
-  });
-  ipcMain.handle('topic:chat', async (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const parsed = TopicChatRequestSchema.safeParse(raw);
-      if (!parsed.success) return { ok: false as const, code: 'invalid_request' };
-      if (!agentLoop) return { ok: false as const, code: 'agent_unavailable', message: 'AI 运行时尚未就绪,请稍后重试。' };
-      const tracked = trackEphemeralOperation(runtimeShutdown, {
-        id: `topic:chat:${parsed.data.sessionId}:${Date.now().toString(36)}`,
-        rejection: { ok: false as const, code: 'application_shutting_down' },
-      });
-      if (!tracked.admitted) return tracked.rejection;
-      // token 级流式转发(按 topic 会话 id 隔离,防跨会话泄漏)。
-      const topicStreamHookName = `topic-stream-forward:${parsed.data.sessionId}`;
-      const forwardTopicStream = (ctx: import('../engine/core/HookBus.js').HookContext): import('../engine/core/HookBus.js').HookContext => {
-        const payload = ctx as unknown as { sessionId?: unknown; content?: unknown; reasoning?: unknown; isFinished?: unknown };
-        if (payload.sessionId !== `topic_${parsed.data.sessionId}`) return ctx;
-        try {
-          if (!event.sender.isDestroyed()) {
-            event.sender.send('topic:stream-chunk', {
-              sessionId: parsed.data.sessionId,
-              content: typeof payload.content === 'string' ? payload.content : '',
-              reasoning: typeof payload.reasoning === 'string' ? payload.reasoning : undefined,
-              isFinished: payload.isFinished === true,
-            });
-          }
-        } catch { /* 流转发绝不中断对话 */ }
-        return ctx;
-      };
-      agentLoop.registerHook('model.stream_chunk', forwardTopicStream, { name: topicStreamHookName });
-      try {
-        return await ensureTopicService().chat({
-          sessionId: parsed.data.sessionId,
-          message: parsed.data.message,
-          signal: tracked.signal,
-        });
-      } finally {
-        agentLoop.unregisterHook('model.stream_chunk', topicStreamHookName);
-      }
-    } catch (error) {
-      return { ok: false as const, code: error instanceof Error && error.message === 'topic_persistence_unavailable' ? 'persistence_unavailable' : 'chat_failed', message: error instanceof Error ? error.message.slice(0, 300) : undefined };
-    }
-  });
+  // 任务3：域 registrar 迁移——channel/contract/恢复形状不变，注册走 IpcRegistry。
+  ipcDomainDisposers.push(registerTopicIpc(domainIpcContext));
   // ---- 免费模型中心 IPC（2026-08-23）----
-  ipcMain.handle('freeModel:listSources', (event) => {
-    try { requireRendererMainFrame(event); return freeModelService?.listSources() ?? []; } catch { return []; }
-  });
-  ipcMain.handle('freeModel:addSource', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      if (!isRecord(raw)) return { ok: false, code: 'invalid_request' };
-      return freeModelService?.addSource({ name: String(raw.name ?? ''), baseUrl: String(raw.baseUrl ?? ''), apiKey: typeof raw.apiKey === 'string' ? raw.apiKey : undefined }) ?? { ok: false, code: 'unavailable' };
-    } catch { return { ok: false, code: 'internal_error' }; }
-  });
-  ipcMain.handle('freeModel:removeSource', (event, raw: unknown) => {
-    try { requireRendererMainFrame(event); if (!isRecord(raw)) return false; return freeModelService?.removeSource(String(raw.id ?? '')) ?? false; } catch { return false; }
-  });
-  ipcMain.handle('freeModel:scan', async (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const probe = isRecord(raw) && raw.probe === true;
-      return await freeModelService?.scanNow(probe) ?? { count: 0 };
-    } catch { return { count: 0 }; }
-  });
-  ipcMain.handle('freeModel:listDiscoveries', (event) => {
-    try { requireRendererMainFrame(event); return freeModelService?.listDiscoveries() ?? []; } catch { return []; }
-  });
-  ipcMain.handle('freeModel:listAttached', (event) => {
-    try { requireRendererMainFrame(event); return freeModelService?.listAttached() ?? []; } catch { return []; }
-  });
-  ipcMain.handle('freeModel:attach', async (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      if (!isRecord(raw) || typeof raw.discoveryKey !== 'string') return { ok: false, code: 'invalid_request' };
-      return await freeModelService?.attachModel(raw.discoveryKey) ?? { ok: false, code: 'unavailable' };
-    } catch { return { ok: false, code: 'internal_error' }; }
-  });
-  ipcMain.handle('freeModel:detach', async (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      if (!isRecord(raw) || typeof raw.profileId !== 'string') return { removedAttachment: false, deletedProfile: false };
-      return await freeModelService?.detachModel(raw.profileId) ?? { removedAttachment: false, deletedProfile: false };
-    } catch { return { removedAttachment: false, deletedProfile: false }; }
-  });
-  ipcMain.handle('freeModel:setDisabled', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      if (!isRecord(raw) || typeof raw.profileId !== 'string') return false;
-      return freeModelService?.setDisabled(raw.profileId, raw.disabled === true) ?? false;
-    } catch { return false; }
-  });
-  ipcMain.handle('freeModel:discoverCommunity', async (event) => {
-    try {
-      requireRendererMainFrame(event);
-      return await freeModelService?.discoverCommunitySources() ?? { found: 0, added: 0, stations: [] };
-    } catch { return { found: 0, added: 0, stations: [] }; }
-  });
-  ipcMain.handle('mailbox:add', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      if (!isRecord(raw)) return { ok: false, code: 'invalid_request' };
-      return freeModelService?.addMailbox({ kind: String(raw.kind ?? ''), label: typeof raw.label === 'string' ? raw.label : undefined, user: String(raw.user ?? ''), authorizationCode: String(raw.authorizationCode ?? '') }) ?? { ok: false, code: 'unavailable' };
-    } catch { return { ok: false, code: 'internal_error' }; }
-  });
-  ipcMain.handle('mailbox:list', (event) => {
-    try { requireRendererMainFrame(event); return freeModelService?.listMailboxes() ?? []; } catch { return []; }
-  });
-  ipcMain.handle('mailbox:remove', (event, raw: unknown) => {
-    try { requireRendererMainFrame(event); if (!isRecord(raw)) return false; return freeModelService?.removeMailbox(String(raw.id ?? '')) ?? false; } catch { return false; }
-  });
-  ipcMain.handle('mailbox:testFetch', async (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      if (!isRecord(raw) || typeof raw.id !== 'string') return { ok: false, error: 'invalid_request' };
-      return await freeModelService?.testAndFetchMailbox(raw.id) ?? { ok: false, error: 'unavailable' };
-    } catch { return { ok: false, error: 'internal_error' }; }
-  });
-  ipcMain.handle('freeModel:autoRegisterBatch', async (event) => {
-    try {
-      requireRendererMainFrame(event);
-      return await freeModelService?.runAutoRegisterBatch() ?? { ok: false as const, code: 'unavailable' };
-    } catch { return { ok: false as const, code: 'internal_error' }; }
-  });
-  ipcMain.handle('freeModel:stationStates', (event) => {
-    try { requireRendererMainFrame(event); return freeModelService?.listStationStates() ?? {}; } catch { return {}; }
-  });
-  ipcMain.handle('freeModel:omniRouteStatus', async (event) => {
-    try {
-      requireRendererMainFrame(event);
-      return await freeModelService?.omniRouteStatus() ?? { running: false, models: [], latencyMs: null, error: 'unavailable' };
-    } catch { return { running: false, models: [], latencyMs: null, error: 'internal_error' }; }
-  });
-  ipcMain.handle('freeModel:omniRouteStart', async (event) => {
-    try {
-      requireRendererMainFrame(event);
-      return await freeModelService?.omniRouteStart() ?? { running: false, models: [], latencyMs: null, started: false, error: 'unavailable' };
-    } catch { return { running: false, models: [], latencyMs: null, started: false, error: 'internal_error' }; }
-  });
+  // 任务3：域 registrar 迁移——channel/contract/恢复形状不变，注册走 IpcRegistry。
+  ipcDomainDisposers.push(registerFreeModelIpc(domainIpcContext));
 
   // 每日免费模型扫描调度（2026-08-23）：启动后 120 秒检查，超过 20 小时未扫描则后台补扫（含探活）。
   setTimeout(() => {
@@ -5849,183 +5645,8 @@ function setupIPC(): void {
   });
 
   // ── Artifacts ───────────────────────────────────────────
-  ipcMain.handle('artifact:create', (event, rawRecord: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const owner = executionOwnerFor(event);
-      const decoded = decodeArtifactCreateRequest(rawRecord);
-      if (!decoded.ok || !store) return decodeArtifactMutationResult(null);
-      const source = decoded.value.sourceCapabilityId
-        ? fileCapabilities.resolve({
-            capabilityId: decoded.value.sourceCapabilityId,
-            operation: 'read',
-            maxBytes: 1,
-          }, owner)
-        : undefined;
-      if (source && !source.ok) return decodeArtifactMutationResult({ success: false, code: 'rejected' });
-      const createdAt = Date.now();
-      store.createArtifact({
-        id: decoded.value.id,
-        sessionId: decoded.value.sessionId,
-        name: decoded.value.name,
-        type: decoded.value.type,
-        path: source?.ok ? source.resolvedPath : undefined,
-        size: decoded.value.size,
-        metadata: {},
-      });
-      const notification = decodeArtifactCreatedNotification({
-        artifactId: decoded.value.id,
-        sessionId: decoded.value.sessionId,
-        name: decoded.value.name,
-        type: decoded.value.type,
-        size: decoded.value.size,
-        contentAvailable: false,
-        sourceCapability: source?.ok ? source.capability : undefined,
-        createdAt,
-      });
-      if (notification.ok) event.sender.send('artifact:created', notification.value);
-      return decodeArtifactMutationResult({ success: true, code: 'created' });
-    } catch {
-      return decodeArtifactMutationResult(null);
-    }
-  });
-  ipcMain.handle('artifact:list', (event, rawSessionId: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const owner = executionOwnerFor(event);
-      const sessionId = RuntimeIdSchema.parse(rawSessionId);
-      const items = (store?.listArtifacts(sessionId) ?? []).map((item) => {
-        const issued = item.path
-          ? fileCapabilities.issue({
-              path: item.path,
-              kind: 'file',
-              mime: mimeForLocalFile(item.path),
-              displayName: item.name,
-              operations: ['file', 'folder', 'read', 'extract'],
-            }, owner)
-          : undefined;
-        return {
-          id: item.id,
-          sessionId: item.sessionId,
-          name: item.name,
-          type: item.type,
-          size: item.size,
-          contentAvailable: item.contentAvailable,
-          sourceCapability: issued?.success ? issued.capability : undefined,
-          createdAt: item.createdAt,
-        };
-      });
-      return decodeArtifactListResponse({ success: true, items });
-    } catch {
-      return decodeArtifactListResponse(null);
-    }
-  });
-  ipcMain.handle('artifact:get-content', (event, rawRequest: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const decoded = decodeArtifactContentRequest(rawRequest);
-      if (!decoded.ok || !store) return decodeArtifactContentResponse(null);
-      const artifact = store.getArtifactContent(
-        decoded.value.artifactId,
-        decoded.value.sessionId,
-      );
-      if (!artifact) {
-        return decodeArtifactContentResponse({ success: false, code: 'not_found' });
-      }
-      return decodeArtifactContentResponse({ success: true, ...artifact });
-    } catch {
-      return decodeArtifactContentResponse(null);
-    }
-  });
-  ipcMain.handle('artifact:delete', (event, rawId: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const id = RuntimeIdSchema.parse(rawId);
-      if (!store) return decodeArtifactMutationResult(null);
-      store.deleteArtifact(id);
-      return decodeArtifactMutationResult({ success: true, code: 'deleted' });
-    } catch {
-      return decodeArtifactMutationResult(null);
-    }
-  });
-
-  // ── Project artifact management (research_artifacts, project-scoped) ──
-  ipcMain.handle('artifact:listByProject', (event, rawProjectId: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const projectId = typeof rawProjectId === 'string' ? rawProjectId : '';
-      if (!projectId || !researchRepository) return { items: [] };
-      const repository = researchRepository;
-      const items = repository.listArtifacts(projectId).map((artifact) => {
-        const current = repository.getArtifactVersion(artifact.id);
-        const manifest = (current?.manifest ?? {}) as Record<string, unknown>;
-        return {
-          id: artifact.id,
-          projectId: artifact.projectId,
-          title: artifact.title,
-          artifactType: artifact.artifactType,
-          reviewStatus: artifact.reviewStatus,
-          version: artifact.version,
-          createdAt: artifact.createdAt,
-          updatedAt: artifact.updatedAt,
-          citedSourceIds: Array.isArray(manifest.citedSourceIds) ? manifest.citedSourceIds : [],
-          reviewTrail: Array.isArray(manifest.reviewTrail) ? manifest.reviewTrail : [],
-        };
-      });
-      return { items };
-    } catch {
-      return { items: [] };
-    }
-  });
-
-  ipcMain.handle('artifact:updateReviewStatus', (event, rawRequest: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const request = rawRequest as { artifactId?: unknown; toStatus?: unknown; reason?: unknown };
-      const artifactId = typeof request?.artifactId === 'string' ? request.artifactId : '';
-      const toStatus = typeof request?.toStatus === 'string' ? request.toStatus : '';
-      const reason = typeof request?.reason === 'string' ? request.reason : '';
-      const allowed = new Set(['draft', 'pending', 'partial', 'verified', 'stale']);
-      if (!artifactId || !allowed.has(toStatus) || !researchRepository) {
-        return { ok: false, error: 'invalid_request' };
-      }
-      const updated = researchRepository.updateArtifactReviewStatus(artifactId, toStatus, reason || 'manual');
-      return updated ? { ok: true } : { ok: false, error: 'not_found' };
-    } catch {
-      return { ok: false, error: 'update_failed' };
-    }
-  });
-
-  ipcMain.handle('artifact:listVersions', (event, rawArtifactId: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const artifactId = typeof rawArtifactId === 'string' ? rawArtifactId : '';
-      if (!artifactId || !researchRepository) return { versions: [] };
-      const versions = researchRepository.listArtifactVersions(artifactId).map((record) => ({
-        version: record.version,
-        createdAt: record.createdAt,
-        createdBy: record.createdBy,
-        contentPreview: typeof record.content === 'string' ? record.content.slice(0, 2000) : '',
-      }));
-      return { versions };
-    } catch {
-      return { versions: [] };
-    }
-  });
-
-  ipcMain.handle('artifact:restoreVersion', (event, rawRequest: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const request = rawRequest as { artifactId?: unknown; version?: unknown };
-      const artifactId = typeof request?.artifactId === 'string' ? request.artifactId : '';
-      const version = typeof request?.version === 'number' ? request.version : 0;
-      if (!artifactId || version < 1 || !researchRepository) return { ok: false, error: 'invalid_request' };
-      const restored = researchRepository.restoreArtifactVersion(artifactId, version);
-      return restored ? { ok: true, version: restored.version } : { ok: false, error: 'not_found' };
-    } catch {
-      return { ok: false, error: 'restore_failed' };
-    }
-  });
+  // 任务3：域 registrar 迁移——channel/contract/恢复形状不变，注册走 IpcRegistry。
+  ipcDomainDisposers.push(registerArtifactIpc(domainIpcContext));
 
   // ── Messages ────────────────────────────────────────────
   ipcMain.handle('messages:get', (event, rawSessionId: unknown) => {
@@ -6585,7 +6206,12 @@ function setupIPC(): void {
     } catch {
       return { error: 'unauthorized_renderer' };
     }
-    return { ...lastUpdateEvent, currentVersion: app.getVersion() };
+    return {
+      ...lastUpdateEvent,
+      currentVersion: app.getVersion(),
+      channel: autoUpdaterService?.channel ?? null,
+      trust: autoUpdaterService?.getTrustState() ?? null,
+    };
   });
   ipcMain.handle('update:download', async (event) => {
     try {
@@ -6602,214 +6228,107 @@ function setupIPC(): void {
     } catch {
       return { error: 'unauthorized_renderer' };
     }
-    autoUpdaterService?.quitAndInstall();
-    return { installing: true };
+    const installAccepted = autoUpdaterService ? autoUpdaterService.quitAndInstall() : false;
+    return installAccepted
+      ? { installing: true }
+      : { installing: false, blocked: 'update_install_blocked_by_trust_policy' };
   });
 
-  // ── Backup management ──────────────────────────────────────
-  ipcMain.handle('backup:list', (event) => {
+  // ── Startup health & diagnostic bundle (Task 5) ─────────────
+  const collectMetisStartupHealth = () => {
+    const orphanRunningRuns = (() => {
+      try {
+        return (store?.raw.prepare("SELECT COUNT(*) AS n FROM agent_runs WHERE status = 'running'").get() as { n: number } | undefined)?.n ?? 0;
+      } catch { return null; }
+    })();
+    const providerConfigured = (() => {
+      try {
+        const listed = providerProfileStore?.list() as unknown as { value?: { profiles?: unknown[] } } | undefined;
+        const profiles = listed?.value?.profiles;
+        return Array.isArray(profiles) ? profiles.length > 0 : null;
+      } catch { return null; }
+    })();
+    const mcpSummary = (() => {
+      try {
+        const status = mcpManager?.getStatus();
+        return status ? `${status.filter((s) => s.connected).length}/${status.length} MCP servers connected` : null;
+      } catch { return null; }
+    })();
+    return collectStartupHealth({
+      appVersion: app.getVersion(),
+      buildId: 'metis-alpha2-release',
+      dataDir: DATA_DIR,
+      dbPath: DB_PATH,
+      backupDir: path.join(DATA_DIR, 'backups'),
+      storeReady: store !== null,
+      providerConfigured,
+      genofficeReady: null,
+      browserReady: null,
+      mcpSummary,
+      orphanRunningRuns,
+      crashMarker: { previousRunUnclean, marker: previousCrashMarker },
+      lastMigration: store?.getLastMigrationResult()
+        ? {
+            fromVersion: store.getLastMigrationResult()!.fromVersion,
+            toVersion: store.getLastMigrationResult()!.toVersion,
+            failed: store.getLastMigrationResult()!.failed,
+          }
+        : null,
+      storeHealth: store?.getStartupHealthReport()
+        ? {
+            ok: store.getStartupHealthReport()!.ok,
+            checks: store.getStartupHealthReport()!.checks,
+            schemaVersion: store.getStartupHealthReport()!.schemaVersion,
+            migrationVersion: store.getStartupHealthReport()!.migrationVersion,
+          }
+        : null,
+    });
+  };
+  ipcMain.handle('diagnostics:healthReport', (event) => {
     try {
       requireRendererMainFrame(event);
-      if (!backupService) return { backups: [] };
-      return { backups: backupService.listBackups().map((p) => ({ path: p, name: path.basename(p) })) };
     } catch {
-      return { backups: [] };
+      return { error: 'unauthorized_renderer' };
     }
+    return collectMetisStartupHealth();
   });
-
-  ipcMain.handle('backup:restore', async (event, rawRequest: unknown) => {
+  ipcMain.handle('diagnostics:exportBundle', async (event) => {
     try {
       requireRendererMainFrame(event);
-      const request = rawRequest as { backupPath?: string };
-      if (!backupService || !request?.backupPath) return { ok: false, error: 'backup_unavailable' };
-      return backupService.restoreFrom(request.backupPath);
-    } catch (err) {
-      return { ok: false, error: String((err as Error).message ?? err) };
+    } catch {
+      return { ok: false, error: 'unauthorized_renderer' };
     }
+    const health = collectMetisStartupHealth();
+    const bundle = await buildDiagnosticBundle({
+      appVersion: app.getVersion(),
+      buildId: 'metis-alpha2-release',
+      dataDir: DATA_DIR,
+      settingsPath: SETTINGS_PATH,
+      logDir: path.join(DATA_DIR, 'logs'),
+      crashMarkerPath: crashMarkerPath(DATA_DIR),
+      health,
+      schemaInfo: {
+        schemaVersion: store?.getStartupHealthReport()?.schemaVersion ?? null,
+        migrationVersion: store?.getLastMigrationResult()?.toVersion ?? null,
+      },
+      featureReadiness: {
+        persistence: store ? 'ready' : 'unavailable',
+        mcp: mcpManager ? 'initialized' : 'unavailable',
+        updater: autoUpdaterService ? `channel:${autoUpdaterService.channel}` : 'unavailable',
+      },
+    });
+    return bundle.ok
+      ? { ok: true, path: bundle.zipPath, sha256: bundle.sha256, entries: bundle.entries.length }
+      : bundle;
   });
+
+  // 任务3：域 registrar 迁移——channel/contract/恢复形状不变，注册走 IpcRegistry。
+  ipcDomainDisposers.push(registerSystemIpc(domainIpcContext));
 
   // ── Complete project archive (METIS-F10) ───────────────────
-  ipcMain.handle('project:export', async (event, rawRequest: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const request = rawRequest as { projectId?: string; destPath?: string };
-      if (!store || !researchRepository || !request?.projectId) {
-        return { ok: false, error: 'project_export_unavailable' };
-      }
-      fs.mkdirSync(EXPORTS_DIR, { recursive: true });
-      const destPath = request.destPath
-        ?? path.join(EXPORTS_DIR, `${request.projectId}-${new Date().toISOString().replace(/[:.]/g, '-')}${PROJECT_ARCHIVE_EXT}`);
-      return await exportProjectArchive({
-        db: store.raw,
-        projectId: request.projectId,
-        destPath,
-        appVersion: app.getVersion(),
-      });
-    } catch (err) {
-      return { ok: false, error: String((err as Error).message ?? err) };
-    }
-  });
+  // 任务3：域 registrar 迁移——channel/contract/恢复形状不变，注册走 IpcRegistry。
+  ipcDomainDisposers.push(registerProjectIpc(domainIpcContext));
 
-  ipcMain.handle('project:import', async (event, rawRequest: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const request = rawRequest as { archivePath?: string; projectId?: string; overwrite?: boolean };
-      if (!store || !request?.archivePath) return { ok: false, error: 'archive_path_required' };
-      fs.mkdirSync(IMPORTS_DIR, { recursive: true });
-      return await importProjectArchive({
-        db: store.raw,
-        archivePath: request.archivePath,
-        projectId: request.projectId,
-        overwrite: request.overwrite,
-        filesDir: IMPORTS_DIR,
-      });
-    } catch (err) {
-      return { ok: false, error: String((err as Error).message ?? err) };
-    }
-  });
-
-  ipcMain.handle('project:list', (event) => {
-    try {
-      requireRendererMainFrame(event);
-      if (!researchRepository) return { success: false, code: 'project_repository_unavailable' };
-      const projects = researchRepository.listProjects().map((p) => ({
-        id: p.id,
-        title: p.title,
-        updatedAt: p.updatedAt,
-        archivedAt: p.archivedAt,
-      }));
-      return { success: true, projects };
-    } catch {
-      return { success: false, code: 'project_list_failed' };
-    }
-  });
-
-  // ── O13: 项目级 provider/model 覆盖 ───────────────────────
-  // 覆盖存于 projects.metadata.providerOverride；读取经 zod 校验，损坏数据
-  // 一律视为无覆盖。写入只允许 contract 定义的字段。
-  ipcMain.handle('project:getProviderOverride', (event, rawProjectId: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      if (!researchRepository || typeof rawProjectId !== 'string' || !rawProjectId) {
-        return { ok: false as const, code: 'invalid_request' as const };
-      }
-      const override = researchRepository.getProjectProviderOverride(rawProjectId);
-      return { ok: true as const, override };
-    } catch {
-      return { ok: false as const, code: 'invalid_request' as const };
-    }
-  });
-
-  ipcMain.handle('project:setProviderOverride', (event, rawRequest: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const request = rawRequest as { projectId?: unknown; override?: unknown };
-      if (!researchRepository || typeof request?.projectId !== 'string' || !request.projectId) {
-        return { ok: false as const, code: 'invalid_request' as const };
-      }
-      // override 为 null 表示清除；否则必须通过 contract 校验。
-      if (request.override === null) {
-        const cleared = researchRepository.setProjectProviderOverride(request.projectId, null);
-        return cleared ? { ok: true as const } : { ok: false as const, code: 'not_found' as const };
-      }
-      const parsed = ProjectProviderOverrideSchema.safeParse(request.override);
-      if (!parsed.success || !decodeProjectProviderOverride(parsed.data)) {
-        return { ok: false as const, code: 'invalid_request' as const };
-      }
-      // 引用的 profile 必须真实存在，防止写入悬空覆盖。
-      if (parsed.data.providerProfileId) {
-        const listed = providerProfileStore?.list();
-        const exists = listed?.ok === true && listed.value.profiles.some((p) => p.id === parsed.data.providerProfileId);
-        if (!exists) return { ok: false as const, code: 'not_found' as const };
-      }
-      const saved = researchRepository.setProjectProviderOverride(request.projectId, parsed.data);
-      return saved ? { ok: true as const } : { ok: false as const, code: 'not_found' as const };
-    } catch {
-      return { ok: false as const, code: 'invalid_request' as const };
-    }
-  });
-
-  ipcMain.handle('project:pickArchive', async (event) => {
-    try {
-      const win = requireRendererMainFrame(event);
-      const selected = await dialog.showOpenDialog(win, {
-        properties: ['openFile'],
-        filters: [{
-          name: 'Metis Project Archive',
-          extensions: [PROJECT_ARCHIVE_EXT.slice(1), ...PROJECT_ARCHIVE_LEGACY_EXTS.map((ext) => ext.slice(1))],
-        }],
-      });
-      return { canceled: selected.canceled, path: selected.canceled ? undefined : selected.filePaths[0] };
-    } catch {
-      return { canceled: true, path: undefined };
-    }
-  });
-
-  // ── Storage location (user-configurable data directory) ──────
-  ipcMain.handle('storage:getLocation', (event) => {
-    try {
-      requireRendererMainFrame(event);
-      return {
-        ok: true,
-        dataDir: DATA_DIR,
-        defaultDir: DEFAULT_DATA_DIR,
-        usingDefault: path.resolve(DATA_DIR) === path.resolve(DEFAULT_DATA_DIR),
-      };
-    } catch (err) {
-      return { ok: false, error: String((err as Error).message ?? err) };
-    }
-  });
-
-  ipcMain.handle('storage:chooseLocation', async (event) => {
-    try {
-      const win = requireRendererMainFrame(event);
-      const selected = await dialog.showOpenDialog(win, {
-        properties: ['openDirectory', 'createDirectory'],
-        title: 'Select Metis data directory',
-      });
-      return { canceled: selected.canceled, path: selected.canceled ? undefined : selected.filePaths[0] };
-    } catch {
-      return { canceled: true, path: undefined };
-    }
-  });
-
-  ipcMain.handle('storage:setLocation', (event, rawTarget: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const target = typeof rawTarget === 'string' && rawTarget.trim() ? rawTarget.trim() : '';
-      if (!target) return { ok: false, error: 'location_invalid_path' };
-      const current = DATA_DIR;
-      if (path.resolve(target) === path.resolve(current)) {
-        return { ok: true, restarting: false, dataDir: current };
-      }
-      const validation = validateTargetLocation(target, USER_DATA_DIR);
-      if (!validation.ok) return { ok: false, error: `location_${validation.reason}` };
-      const written = writeLocationPointer(USER_DATA_DIR, {
-        version: LOCATION_POINTER_VERSION,
-        dataDir: target,
-        pendingMigrateFrom: current,
-      });
-      if (!written) return { ok: false, error: 'location_pointer_write_failed' };
-      // Relaunch so the migration runs before any data handle is opened.
-      setTimeout(() => {
-        app.relaunch();
-        app.quit();
-      }, 200);
-      return { ok: true, restarting: true, dataDir: target };
-    } catch (err) {
-      return { ok: false, error: String((err as Error).message ?? err) };
-    }
-  });
-
-  ipcMain.handle('storage:openFolder', async (event) => {
-    try {
-      requireRendererMainFrame(event);
-      const errorMessage = await shell.openPath(DATA_DIR);
-      return { ok: !errorMessage, error: errorMessage || undefined };
-    } catch (err) {
-      return { ok: false, error: String((err as Error).message ?? err) };
-    }
-  });
 
   // ── Research browser (embedded WebContentsView) ──────────────
   ipcMain.handle('browser:show', (event, rawBounds: unknown) => {
@@ -6855,6 +6374,16 @@ function setupIPC(): void {
       requireRendererMainFrame(event);
       const service = ensureBrowserService();
       if (!service) return { ok: false, error: 'browser_unavailable' };
+      // 任务2 上下文隔离：渲染端可显式声明该次导航归属的项目（对象参数）；
+      // 旧字符串参数与未声明归属的导航都记为「归属未知」（null）。
+      if (typeof raw === 'object' && raw !== null) {
+        const payload = raw as { url?: unknown; projectId?: unknown };
+        const url = typeof payload.url === 'string' ? payload.url : '';
+        const projectId = typeof payload.projectId === 'string' && payload.projectId.trim() ? payload.projectId.trim() : null;
+        service.setActiveOwnership(projectId);
+        return await service.navigate(url);
+      }
+      service.setActiveOwnership(null);
       const url = typeof raw === 'string' ? raw : '';
       return await service.navigate(url);
     } catch (err) {
@@ -6953,28 +6482,6 @@ function setupIPC(): void {
     }
   });
 
-  // 剪贴板只读回读（选区捕获失败时的 fallback；用户点击「引用」即授权）。
-  ipcMain.handle('clipboard:readText', (event) => {
-    try {
-      requireRendererMainFrame(event);
-      return { ok: true, text: clipboard.readText() };
-    } catch (err) {
-      return { ok: false, error: String((err as Error).message ?? err) };
-    }
-  });
-
-  // 剪贴板写入（Context Package 发送；渲染层无可靠剪贴板写权限）。
-  ipcMain.handle('clipboard:writeText', (event, rawText: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const text = typeof rawText === 'string' ? rawText : '';
-      if (!text) return { ok: false, error: 'empty_text' };
-      clipboard.writeText(text);
-      return { ok: true };
-    } catch (err) {
-      return { ok: false, error: String((err as Error).message ?? err) };
-    }
-  });
 
   // 当前第三方 AI 页面状态（确认卡展示真实来源 URL）。
   ipcMain.handle('collab:getState', (event) => {
@@ -7006,14 +6513,25 @@ function setupIPC(): void {
       if (!store) return { ok: false, error: 'store_unavailable' };
       const service = new ExternalReferenceService(store.raw);
       const query = (typeof rawQuery === 'object' && rawQuery !== null ? rawQuery : {}) as {
-        projectId?: unknown; sessionId?: unknown; limit?: unknown;
+        projectId?: unknown; sessionId?: unknown; limit?: unknown; global?: unknown;
       };
+      // 任务2 上下文隔离：读取必须显式声明 scope。空 scope 不再返回全局最近
+      // 数据（跨 Topic/Project 串线的根因）；管理页浏览必须显式传 global:true。
+      const limit = typeof query.limit === 'number' && Number.isFinite(query.limit) ? Math.floor(query.limit) : undefined;
+      if (query.global === true) {
+        return { ok: true, references: service.listGlobal(limit) };
+      }
+      const scopeProjectId = typeof query.projectId === 'string' ? query.projectId : undefined;
+      const scopeSessionId = typeof query.sessionId === 'string' ? query.sessionId : undefined;
+      if (!scopeProjectId && !scopeSessionId) {
+        return { ok: false, error: 'scope_required' };
+      }
       return {
         ok: true,
-        references: service.list({
-          projectId: typeof query.projectId === 'string' ? query.projectId : undefined,
-          sessionId: typeof query.sessionId === 'string' ? query.sessionId : undefined,
-          limit: typeof query.limit === 'number' && Number.isFinite(query.limit) ? Math.floor(query.limit) : undefined,
+        references: service.listForScope({
+          ...(scopeProjectId ? { projectId: scopeProjectId } : {}),
+          ...(scopeSessionId ? { sessionId: scopeSessionId } : {}),
+          ...(limit !== undefined ? { limit } : {}),
         }),
       };
     } catch (err) {
@@ -7206,125 +6724,9 @@ function setupIPC(): void {
 
 
   // ── WeChat Bot (METIS-WX-1, iLink protocol — same as ZCode) ──
-  ipcMain.handle('wechat:getStatus', (event) => {
-    try {
-      requireRendererMainFrame(event);
-      const service = ensureWeChatBot();
-      return service ? { ok: true, status: service.getStatus() } : { ok: false, error: 'wechat_unavailable' };
-    } catch {
-      return { ok: false, error: 'unauthorized_renderer' };
-    }
-  });
+  // 任务3：域 registrar 迁移——channel/contract/恢复形状不变，注册走 IpcRegistry。
+  ipcDomainDisposers.push(registerWeChatIpc(domainIpcContext));
 
-  ipcMain.handle('wechat:beginLogin', async (event) => {
-    try {
-      requireRendererMainFrame(event);
-      const service = ensureWeChatBot();
-      if (!service) return { ok: false, error: 'wechat_unavailable' };
-      return await service.beginLogin();
-    } catch {
-      return { ok: false, error: 'unauthorized_renderer' };
-    }
-  });
-
-  ipcMain.handle('wechat:pollLogin', async (event) => {
-    try {
-      requireRendererMainFrame(event);
-      const service = ensureWeChatBot();
-      if (!service) return { ok: false, phase: 'error', error: 'wechat_unavailable' };
-      return await service.pollLogin();
-    } catch {
-      return { ok: false, phase: 'error', error: 'unauthorized_renderer' };
-    }
-  });
-
-  ipcMain.handle('wechat:submitVerifyCode', (event, rawRequest: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const service = ensureWeChatBot();
-      const request = rawRequest as { code?: string };
-      if (!service || !request?.code) return { ok: false, error: 'wechat_unavailable' };
-      service.submitVerifyCode(request.code);
-      return { ok: true };
-    } catch {
-      return { ok: false, error: 'unauthorized_renderer' };
-    }
-  });
-
-  ipcMain.handle('wechat:logout', async (event) => {
-    try {
-      requireRendererMainFrame(event);
-      const service = ensureWeChatBot();
-      if (!service) return { ok: false, error: 'wechat_unavailable' };
-      await service.logout();
-      return { ok: true };
-    } catch {
-      return { ok: false, error: 'unauthorized_renderer' };
-    }
-  });
-
-  ipcMain.handle('wechat:sendTest', async (event, rawRequest: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const service = ensureWeChatBot();
-      const request = rawRequest as { text?: string };
-      if (!service || !request?.text?.trim()) return { ok: false, error: 'wechat_unavailable' };
-      return await service.sendTestMessage(request.text);
-    } catch {
-      return { ok: false, error: 'unauthorized_renderer' };
-    }
-  });
-
-  ipcMain.handle('wechat:setProject', (event, rawRequest: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const service = ensureWeChatBot();
-      const request = rawRequest as { projectId?: string };
-      if (!service || !request?.projectId) return { ok: false, error: 'wechat_unavailable' };
-      service.setActiveProject(request.projectId);
-      return { ok: true };
-    } catch {
-      return { ok: false, error: 'unauthorized_renderer' };
-    }
-  });
-
-  // ── Flashcards (SQLite-backed via memory store) ──────────
-  ipcMain.handle('flashcard:list', (event) => {
-    try {
-      requireRendererMainFrame(event);
-      if (!store) return { cards: [] };
-      const entries = store.getMemoryByCategory('flashcard');
-      return { cards: entries.map((e) => { try { return JSON.parse(e.value); } catch { return null; } }).filter(Boolean) };
-    } catch {
-      return { cards: [] };
-    }
-  });
-
-  ipcMain.handle('flashcard:save', (event, rawCard: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      if (!store) return { ok: false };
-      const card = rawCard as { id?: unknown; front?: unknown; back?: unknown; dueAt?: unknown; intervalDays?: unknown; createdAt?: unknown };
-      if (typeof card?.id !== 'string') return { ok: false };
-      store.setMemory(`flashcard:${card.id}`, JSON.stringify(card), 'flashcard');
-      return { ok: true };
-    } catch {
-      return { ok: false };
-    }
-  });
-
-  ipcMain.handle('flashcard:delete', (event, rawId: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      if (!store) return { ok: false };
-      const id = typeof rawId === 'string' ? rawId : '';
-      if (!id) return { ok: false };
-      store.deleteMemory?.(`flashcard:${id}`);
-      return { ok: true };
-    } catch {
-      return { ok: false };
-    }
-  });
 
   ipcMain.handle('settings:set', (event, rawRequest: unknown) => {
     try {
@@ -7721,10 +7123,13 @@ function setupIPC(): void {
     // preferences) so the agent carries cross-session continuity. Previously
     // MemoryManager.recordKeyDecision was wired but buildMemoryContext was not
     // consumed by any prompt — decisions were recorded but never fed back.
+    let injectedMemoryContext = '';
+    let injectedLearningContext = '';
     try {
       // METIS-F12: scope the injected memory to the active project when known.
       const memoryContext = memoryManager?.buildMemoryContext(projectId);
       if (memoryContext && memoryContext.trim()) {
+        injectedMemoryContext = memoryContext;
         skillPrompt = [skillPrompt, memoryContext].filter(Boolean).join('\n\n');
         resolvedSystemPrompt = [resolvedSystemPrompt, memoryContext].filter(Boolean).join('\n\n');
       }
@@ -7732,12 +7137,35 @@ function setupIPC(): void {
       // feedback and tool reliability stats derived from history.
       const learningContext = learningEngine?.buildLearningContext(projectId);
       if (learningContext && learningContext.trim()) {
+        injectedLearningContext = learningContext;
         skillPrompt = [skillPrompt, learningContext].filter(Boolean).join('\n\n');
         resolvedSystemPrompt = [resolvedSystemPrompt, learningContext].filter(Boolean).join('\n\n');
       }
     } catch {
       // Memory injection must never break a chat turn.
     }
+
+    // 任务2 Context Provenance：轻量记录本次请求装入了哪些 scope 的上下文
+    //（项目/会话/场景、规则 digest、注入片段 digest），供事后诊断上下文串线；
+    // 不保存隐藏推理链。记录失败绝不破坏对话。
+    try {
+      store?.recordContextProvenance({
+        runId: requestId,
+        sessionId,
+        ...(projectId ? { projectId } : {}),
+        provenance: buildContextProvenance({
+          ...(projectId ? { projectId } : {}),
+          sessionId,
+          ...(resolvedManifest?.scenarioId ? { scenarioId: resolvedManifest.scenarioId } : {}),
+          ...(resolvedManifest?.manifestDigest ? { ruleRevisions: [resolvedManifest.manifestDigest] } : {}),
+          injectedParts: [
+            ...(injectedMemoryContext ? [{ kind: 'memory', content: injectedMemoryContext }] : []),
+            ...(injectedLearningContext ? [{ kind: 'learning', content: injectedLearningContext }] : []),
+            ...(skillPrompt ? [{ kind: 'systemPrompt', content: skillPrompt }] : []),
+          ],
+        }),
+      });
+    } catch { /* provenance 必须不破坏对话 */ }
 
     let mcpToolRun: import('./PersonalizationMcpToolBridge.js').PersonalizationMcpToolRun | undefined;
     try {
@@ -7808,6 +7236,27 @@ function setupIPC(): void {
           // can return. Never let a stale hook publish into a newer turn.
           if (activeChatRuns.get(sessionId) !== activeRun || event.sender.isDestroyed()) return;
           store?.appendAgentEvent(payload);
+          // 2026-09-05 僵尸 run 修复：终态 lifecycle 事件在这里同步写 run 终态。
+          // 场景工作流等路径的 await 可能永远不返回到 runPersistedChatTurn 的
+          // 收尾（挂起的调用不检查取消信号），只有这一层能保证 agent_runs
+          // 不再永远停留在 running。重复写终态是幂等 UPDATE，无害。
+          if (payload.event.type === 'lifecycle') {
+            const statusForPhase: Record<string, string> = {
+              completed: 'completed',
+              interrupted: 'interrupted',
+              cancelled: 'cancelled',
+              failed: 'error',
+            };
+            const runStatus = statusForPhase[payload.event.phase];
+            if (runStatus) {
+              store?.finishAgentRun({
+                runId: payload.runId,
+                sessionId: payload.sessionId,
+                status: runStatus,
+                terminalReason: payload.event.summary,
+              });
+            }
+          }
           event.sender.send('agent:execution-event', payload);
         },
       });
@@ -8866,151 +8315,8 @@ function setupIPC(): void {
   });
 
   // ── Experiments metadata CRUD (GLM-102: safe DTO, no path leak) ──
-  ipcMain.handle('experiment:list', (event) => {
-    try {
-      requireRendererMainFrame(event);
-      if (!store) return decodeExperimentListResult(undefined);
-      return decodeExperimentListResult({
-        success: true,
-        experiments: decodeExperimentList(store.getExperimentMetadata()),
-      });
-    } catch {
-      return decodeExperimentListResult(undefined);
-    }
-  });
-  ipcMain.handle('experiment:save', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const req = decodeExperimentSave(raw);
-      if (!req) return decodeExperimentMutationResult({
-        success: false,
-        code: 'experiment_metadata_invalid',
-      });
-      if (!store) return decodeExperimentMutationResult(undefined);
-      store.saveExperimentMetadata(req);
-      return decodeExperimentMutationResult({ success: true, code: 'saved' });
-    } catch {
-      return decodeExperimentMutationResult(undefined);
-    }
-  });
-  ipcMain.handle('experiment:delete', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const id = decodeExperimentDelete(raw);
-      if (!id) return decodeExperimentMutationResult({
-        success: false,
-        code: 'experiment_metadata_invalid',
-      });
-      if (!store) return decodeExperimentMutationResult(undefined);
-      store.deleteExperimentMetadata(id);
-      return decodeExperimentMutationResult({ success: true, code: 'deleted' });
-    } catch {
-      return decodeExperimentMutationResult(undefined);
-    }
-  });
-
-  // ── Experiments secure execution (GLM-102: service-backed IPC) ──
-  ipcMain.handle('experiment:attachScript', async (event, rawRequest: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const owner = executionOwnerFor(event);
-      if (!experimentScriptAdapter) return { status: 'rejected', code: 'experiment_script_unavailable' };
-      return experimentScriptAdapter.ipc.attachScript(owner, rawRequest);
-    } catch {
-      return { status: 'rejected', code: 'experiment_script_unavailable' };
-    }
-  });
-
-  ipcMain.handle('experiment:requestRunGrant', async (event, rawRequest: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const owner = executionOwnerFor(event);
-      if (!experimentScriptAdapter) return { status: 'rejected', code: 'experiment_grant_unavailable' };
-      return experimentScriptAdapter.ipc.requestRunGrant(owner, rawRequest);
-    } catch {
-      return { status: 'rejected', code: 'experiment_grant_unavailable' };
-    }
-  });
-
-  ipcMain.handle('experiment:run', async (event, rawRequest: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const owner = executionOwnerFor(event);
-      if (!experimentScriptAdapter) return { status: 'rejected', exitCode: null, metrics: {} };
-      const request = decodeExperimentRunRequest(rawRequest);
-      if (!request) return { status: 'rejected', exitCode: null, metrics: {} };
-      const result = decodeExperimentRunResult(
-        await experimentScriptAdapter.ipc.run(owner, request),
-      );
-      if (store && !['rejected', 'runtime_unavailable'].includes(result.status)) {
-        const status = result.status === 'completed'
-          ? 'completed'
-          : result.status === 'cancelled'
-            ? 'cancelled'
-            : 'failed';
-        store.updateExperimentRunState(request.experimentId, status, result.metrics);
-      }
-      return result;
-    } catch {
-      return { status: 'rejected', exitCode: null, metrics: {} };
-    }
-  });
-
-  ipcMain.handle('experiment:cancel', (event, rawRequest: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const owner = executionOwnerFor(event);
-      if (!experimentScriptAdapter) return false;
-      return experimentScriptAdapter.ipc.cancel(owner, rawRequest);
-    } catch {
-      return false;
-    }
-  });
-
-  // ── Experiment run history + output ──────────────────────
-  ipcMain.handle('experiment:listRuns', (event, rawRequest: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const request = rawRequest as { experimentId?: string; limit?: number };
-      if (!experimentScriptAdapter) return { runs: [] };
-      const runs = experimentScriptAdapter.repository.getRunsForExperiment(
-        String(request?.experimentId ?? ''),
-        typeof request?.limit === 'number' ? request.limit : 50,
-      );
-      return {
-        runs: runs.map((r) => ({
-          runId: r.runId, experimentId: r.experimentId, status: r.status,
-          exitCode: r.exitCode, metrics: r.metrics, startedAt: r.startedAt,
-          finishedAt: r.finishedAt, hasOutput: Boolean(r.stdoutLogPath),
-        })),
-      };
-    } catch {
-      return { runs: [] };
-    }
-  });
-
-  ipcMain.handle('experiment:getRunOutput', (event, rawRequest: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const request = rawRequest as { experimentId?: string; runId?: string };
-      if (!experimentScriptAdapter) return { output: '', truncated: false };
-      const runs = experimentScriptAdapter.repository.getRunsForExperiment(String(request?.experimentId ?? ''), 200);
-      const run = runs.find((r) => r.runId === request?.runId);
-      if (!run?.stdoutLogPath) return { output: '', truncated: false };
-      const MAX_BYTES = 16 * 1024;
-      const stat = fs.statSync(run.stdoutLogPath);
-      const start = Math.max(0, stat.size - MAX_BYTES);
-      const fd = fs.openSync(run.stdoutLogPath, 'r');
-      const buf = Buffer.alloc(Math.min(stat.size, MAX_BYTES));
-      fs.readSync(fd, buf, 0, buf.length, start);
-      fs.closeSync(fd);
-      let text = buf.toString('utf8');
-      text = text.replace(/[A-Z]:\\[^\s\n]+/gi, '[path]').replace(/\/home\/[^\s\n]+/g, '[path]');
-      return { output: text, truncated: stat.size > MAX_BYTES };
-    } catch {
-      return { output: '', truncated: false };
-    }
-  });
+  // 任务3：域 registrar 迁移——channel/contract/恢复形状不变，注册走 IpcRegistry。
+  ipcDomainDisposers.push(registerExperimentIpc(domainIpcContext));
 
   // ── Bulk Load ───────────────────────────────────────────
   // Papers ship without pdfText (the largest field) so startup hydration stays
@@ -10632,6 +9938,12 @@ function buildFundingTemplateDigest(pkg: { source?: { sourceFormat?: string; pag
             const service = ensureBrowserService();
             if (!service) return { ok: false, error: 'browser_unavailable' };
             return service.extract();
+          },
+          // 任务2 上下文隔离：参谋注入浏览器上下文前按项目归属校验。
+          extractScoped: async (projectId) => {
+            const service = ensureBrowserService();
+            if (!service) return { ok: false, error: 'browser_unavailable' };
+            return service.extractScoped(projectId ?? null);
           },
         },
         loadOutcome: (projectId, outcomeId) => {
@@ -13053,8 +12365,81 @@ function setupJournalCatalogFetcher(): void {
 }
 
 
+/**
+ * 任务1（P0/P6）：数据库迁移 / 完整性启动失败的唯一受控出口。
+ * 写诊断文件、给出用户可读的受控恢复对话框（不打 SQL 堆栈），然后退出——
+ * 绝不带着不可信的数据库继续启动。若失败发生在一次 restore 之后（存在
+ * restore intent），先提供「回滚到恢复前备份」。
+ */
+async function handlePersistenceStartupFailure(error: PersistenceStartupError, dbPath: string, dataDir: string): Promise<void> {
+  const diagnostics = {
+    at: new Date().toISOString(),
+    code: error.detail.code,
+    failedVersion: error.detail.failedVersion ?? null,
+    userMessage: error.userMessage,
+    message: error.message,
+    stack: error.stack ?? '',
+    report: error.detail.report ?? null,
+    dbPath,
+    dataDir,
+  };
+  let diagnosticsPath = '';
+  try {
+    const logsDir = path.join(dataDir, 'logs');
+    fs.mkdirSync(logsDir, { recursive: true });
+    diagnosticsPath = path.join(logsDir, `db-startup-failure-${Date.now()}.json`);
+    fs.writeFileSync(diagnosticsPath, JSON.stringify(diagnostics, null, 2), 'utf8');
+  } catch { /* 诊断文件写不进去不阻塞对话框 */ }
+
+  // Restore 之后的启动失败：优先提供回滚到恢复前快照。
+  const intent = readRestoreIntent(dbPath);
+  if (intent) {
+    const rollbackChoice = await dialog.showMessageBox({
+      type: 'error',
+      title: 'METIS',
+      buttons: ['回滚到恢复前备份', '退出'],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+      message: '数据库完整性检查失败（刚完成的恢复未通过校验），原数据未被继续修改。',
+      detail: `${error.userMessage}\n\n选择「回滚到恢复前备份」将恢复本次还原之前的状态并重启应用。`,
+    });
+    if (rollbackChoice.response === 0) {
+      const rolled = BackupService.rollbackFromIntent(intent);
+      if (rolled.ok) {
+        app.relaunch();
+        app.exit(0);
+        return;
+      }
+    } else {
+      app.exit(1);
+      return;
+    }
+  }
+
+  const choice = await dialog.showMessageBox({
+    type: 'error',
+    title: 'METIS',
+    buttons: ['打开备份目录', '复制诊断信息', '退出'],
+    defaultId: 2,
+    cancelId: 2,
+    noLink: true,
+    message: error.userMessage,
+    detail: diagnosticsPath ? `诊断信息已写入：${diagnosticsPath}` : error.message,
+  });
+  if (choice.response === 0) {
+    void shell.openPath(path.join(dataDir, 'backups'));
+  } else if (choice.response === 1) {
+    clipboard.writeText(JSON.stringify(diagnostics, null, 2));
+  }
+  app.exit(1);
+}
+
+
 app.whenReady().then(async () => {
-  initMainLogFile(DATA_DIR);
+  // 任务3：数据目录日志归档绑定（替代旧 initMainLogFile 的 stream 初始化）。
+  archiveDataDir = DATA_DIR;
+  mainProcessLogger.rebindArchiveTarget();
   if (!gotSingleInstanceLock) return;
   setupJournalCatalogFetcher();
 
@@ -13096,6 +12481,18 @@ app.whenReady().then(async () => {
   // Ensure data directory
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.mkdirSync(TERMINAL_WORKSPACE_DIR, { recursive: true });
+  // Task 5 crash marker: a stale marker means the previous run did not exit
+  // cleanly. Record it for the health report, then mark this boot.
+  try {
+    const staleMarker = readCrashMarkerState(DATA_DIR, true);
+    previousRunUnclean = staleMarker.previousRunUnclean;
+    previousCrashMarker = staleMarker.marker;
+  } catch { /* marker handling never blocks startup */ }
+  writeCrashMarker(DATA_DIR, {
+    bootId: `${Date.now()}-${process.pid}-${Math.random().toString(16).slice(2)}`,
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+  });
   executionCapabilities = new ExecutionCapabilityRegistry({
     allowedCwdRoots: [DATA_DIR],
     allowedEnvironmentKeys: ['ELECTRON_RUN_AS_NODE'],
@@ -13116,11 +12513,20 @@ app.whenReady().then(async () => {
     providerProfileStore = null;
     providerProfileStorage = null;
   }
-  // Background auto-update (unsigned NSIS builds update fine when
-  // verifyUpdateCodeSignature is false). Non-fatal: failures only emit an
-  // error event and never block startup.
+  // Background auto-update, channel-aware. Alpha builds may download and
+  // (user-)install unsigned artifacts with the unsigned state disclosed;
+  // stable builds verify the Authenticode signature of the downloaded
+  // artifact and refuse to install unsigned updates (fail-safe). Non-fatal:
+  // failures only emit an error event and never block startup.
   try {
-    autoUpdaterService = new AutoUpdaterService();
+    autoUpdaterService = new AutoUpdaterService({
+      channel: resolveUpdateChannel({
+        isPackaged: app.isPackaged,
+        appVersion: app.getVersion(),
+        envOverride: process.env.METIS_UPDATE_CHANNEL ?? null,
+      }),
+      verifySignature: (updateFilePath) => verifyAuthenticodeSignature(updateFilePath),
+    });
     autoUpdaterService.on('event', (event: { type: string; version?: string; percent?: number; message?: string }) => {
       lastUpdateEvent = event;
     });
@@ -13189,23 +12595,49 @@ app.whenReady().then(async () => {
     console.warn('[Main] Evidence-envelope signer unavailable; third-party Skill and MCP results are disabled.');
   }
 
-  // Initialize persistence (graceful degradation if native module fails)
+  // Initialize persistence — graceful degradation ONLY for environment failures
+  // (e.g. the native module ABI). Migration/integrity failures carry the typed
+  // PersistenceStartupError and fail closed with a controlled recovery dialog;
+  // the app never keeps running on an untrusted database (task 1 §六).
   try {
-    store = new PersistenceStore(DB_PATH);
+    // T33 + 任务1（§八）：云端暂存的恢复在 store 创建【之前】替换 DB 文件——
+    // 此时尚无任何 service 持有 store 引用，不存在热重绑 stale handle；
+    // 替换后的库直接进入 PersistenceStore 启动管线（baseline → migrations →
+    // health checks），损坏的云端备份会触发受控恢复对话框。
+    const stagedRestore = cloudSync.applyStagedRestoreIfNeeded();
+    if (stagedRestore.applied && stagedRestore.rollbackPath) {
+      // 有回滚快照才写 intent；全新安装（无既有库可回滚）无需记录。
+      writeRestoreIntent(DB_PATH, {
+        backupPath: 'cloud-staged-restore',
+        rollbackPath: stagedRestore.rollbackPath,
+        dbPath: DB_PATH,
+        requestedAt: Date.now(),
+      });
+      console.log('[Main] cloud staged restore applied before store init; intent recorded.');
+    } else if (stagedRestore.applied) {
+      console.log('[Main] cloud staged restore applied on fresh install (no rollback snapshot needed).');
+    }
+    // 任务1（P6）：存在 restore intent 即代表本次启动是恢复后的首次启动；
+    // 数据库通过启动健康检查则提交（清除 intent），否则在失败分支提供回滚。
+    const pendingRestoreIntent = readRestoreIntent(DB_PATH);
+    try {
+      store = new PersistenceStore(DB_PATH);
+    } catch (error) {
+      if (error instanceof PersistenceStartupError) {
+        await handlePersistenceStartupFailure(error, DB_PATH, DATA_DIR);
+        return; // app.exit 已在对话框动作后调度
+      }
+      throw error;
+    }
+    if (pendingRestoreIntent) {
+      clearRestoreIntent(DB_PATH);
+      console.log('[Main] restored database passed startup health checks; restore intent cleared.');
+    }
     setSharedStore(store);
     outcomeTemplateService = new OutcomeTemplateService(store);
     jobQueueService.attachStore(store);
     literatureWatch.attachStore(store);
     literatureWatch.start();
-    // T33：如用户从云端暂存了恢复备份，现在应用（旧库自动另存）。
-    if (cloudSync.applyStagedRestoreIfNeeded()) {
-      store.close();
-      store = new PersistenceStore(DB_PATH);
-      setSharedStore(store);
-      outcomeTemplateService = new OutcomeTemplateService(store);
-      jobQueueService.attachStore(store);
-      literatureWatch.attachStore(store);
-    }
     // Rolling automatic backups: snapshot on startup, then every 6 hours.
     // Failures are non-fatal and only logged — backups must never block the app.
     try {
@@ -13217,6 +12649,10 @@ app.whenReady().then(async () => {
     } catch {
       backupService = null;
     }
+    // 任务1（P6）：backup:list / backup:restore 由任务3的域 registrar
+    // （electron/ipc/registerSystemIpc.ts）注册；restoreFrom 现在是受控
+    // 重启语义（校验 → 回滚快照 → intent → 原子替换 → 完整重启 → 启动
+    // 健康检查 → 清 intent），绝不热重绑 store。
     // Persistent RAG index: load previously persisted documents so the
     // in-memory TF-IDF index survives restarts, then index the current library.
     try {
@@ -13978,6 +13414,9 @@ app.whenReady().then(async () => {
           try {
             const candidate = prepareProviderRuntime(providerProfileRuntimeContext(activeConfig.value, 'restore'));
             await candidate.commitAndAbortPrevious();
+            // 如实日志（2026-09-05 排障教训）：此前启动只打 legacy config 的
+            // baseUrl，误导排障方向；实际请求走的是这里 restore 的 active profile。
+            console.log('[Main] active provider profile restored —', active.name, '·', activeConfig.value.baseUrl, '· model:', activeConfig.value.model, '· timeout(ms):', activeConfig.value.timeout ?? '(provider default)');
           } catch {
             // The profile file remains authoritative; an unusable active profile
             // does not silently fall back to an older configuration source.
@@ -14007,7 +13446,8 @@ async function completeApplicationShutdown(): Promise<void> {
       goalEngine?.drainActiveRuns(SHUTDOWN_DRAIN_TIMEOUT_MS) ?? Promise.resolve({ timedOut: false, pending: [] }),
     ]);
     if (chatDrain.timedOut || goalDrain.timedOut) {
-      console.warn('[Main] shutdown drain timed out', JSON.stringify({ chat: chatDrain, goal: goalDrain }));
+      // 任务3：pending 进入诊断——结构化写出未完结操作 id，供排障审计。
+      console.warn('[Main][shutdown-diagnostic] drain timed out; pending operations:', JSON.stringify({ chat: chatDrain, goal: goalDrain }));
     }
 
     if (backupTimer) {
@@ -14050,6 +13490,9 @@ async function completeApplicationShutdown(): Promise<void> {
     researchRepository = null;
     researchRuntime = null;
     researchMedia = null;
+    // 任务3：最后一步——冲刷并关闭日志目的地，恢复原始 console。
+    // 后续（before-quit 兜底）日志仍走原始 console，不影响退出。
+    mainProcessLogger.dispose();
   })();
   return shutdownPromise;
 }
@@ -14061,8 +13504,12 @@ app.on('window-all-closed', () => {
 app.on('before-quit', (event) => {
   if (shutdownPromise) return;
   event.preventDefault();
-  void completeApplicationShutdown().then(() => app.quit()).catch((error) => {
+  void completeApplicationShutdown().then(() => {
+    clearCrashMarker(DATA_DIR);
+    app.quit();
+  }).catch((error) => {
     console.error('[Main] shutdown cleanup failed', error);
+    clearCrashMarker(DATA_DIR);
     app.quit();
   });
 });

@@ -13,6 +13,7 @@ import {
   RuntimeIdSchema,
   type AgentResponse,
 } from '../engine/runtime/ChatRuntimeContract.js';
+import { checkSessionProjectBinding } from '../engine/runtime/ContextScopeContract.js';
 
 export type ChatTurnMode = 'send' | 'regenerate';
 
@@ -43,7 +44,7 @@ interface RunPersistedChatTurnOptions {
   agentLoop: Pick<AgentLoop, 'run'>;
   store: Pick<
     PersistenceStore,
-    'appendMessage' | 'createSession' | 'getSession' | 'truncateMessagesAfterLastUser'
+    'appendMessage' | 'createSession' | 'getSession' | 'truncateMessagesAfterLastUser' | 'updateSession'
   > & Partial<Pick<PersistenceStore, 'beginAgentRun' | 'finishAgentRun'>>;
   sessionId: string;
   messages: ChatMessage[];
@@ -149,8 +150,24 @@ export async function runPersistedChatTurn({
     return createChatTurnErrorResponse(turnId, 'error', 'missing_user_message');
   }
 
-  if (!store.getSession(sessionId)) {
-    store.createSession(sessionId);
+  // 任务2 上下文隔离（fail-closed）：
+  // - 隐式建会话必须带上本次请求声明的 projectId，否则会话落库为无主记录，
+  //   永远无法被任何项目的 scope 校验与列表覆盖。
+  // - session 已归属项目 A 而 request 声明项目 B → 拒绝 scope_mismatch：
+  //   不注入 A 的历史、不调用模型；绝不自动改绑或按「最近项目」回退。
+  // - 无主 session 首次在项目上下文中使用 → 显式绑定到该 request.projectId
+  //   （写绑定，消除存量无主会话；null scope 不等于「所有项目」）。
+  const existingSession = store.getSession(sessionId);
+  if (!existingSession) {
+    store.createSession(sessionId, undefined, projectId);
+  } else {
+    const scopeIssue = checkSessionProjectBinding(existingSession, { projectId });
+    if (scopeIssue) {
+      return createChatTurnErrorResponse(turnId, 'error', scopeIssue.code);
+    }
+    if (!existingSession.projectId && projectId) {
+      store.updateSession(sessionId, { projectId });
+    }
   }
   if (mode === 'send') {
     store.appendMessage(sessionId, 'user', userMessage.content);

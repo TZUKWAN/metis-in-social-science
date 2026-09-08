@@ -10,6 +10,8 @@ import {
   type TopicSessionDto,
 } from '../engine/runtime/TopicRuntimeContract.js';
 import type { TopicRepository } from './TopicRepository.js';
+import type { ResearchRepository } from '../engine/persistence/ResearchRepository.js';
+import type { Project } from '../engine/persistence/researchModel.js';
 
 /**
  * Topic(选题)服务(2026-09-04 刘总要求:选题一级功能)。
@@ -48,6 +50,8 @@ export interface TopicServiceOptions {
   repository: TopicRepository | null | (() => TopicRepository | null);
   /** 由 main.ts 注入(包装 runEphemeralChatTurn),避免本模块绑定具体 agentLoop 实例。 */
   runTurn: TopicChatTurnRunner;
+  /** 任务1（§七）：候选→项目事务化转换需要研究库；main.ts 惰性注入。 */
+  researchRepository?: () => ResearchRepository | null;
 }
 
 const MAX_CHAT_TURNS = 30;
@@ -322,7 +326,8 @@ export class TopicService {
     };
   }
 
-  /** 候选转换为项目(provenance):记录 projectId/scenarioId/convertedAt。 */
+  /** 候选转换为项目(provenance):记录 projectId/scenarioId/convertedAt。
+   *  任务1（§七）：只校验引用完整性（项目必须存在），防止悬挂 projectId。 */
   markConverted(candidateId: string, refs: { projectId?: string; scenarioId?: string }): TopicCandidateDto | null {
     const candidate = this.repo.getCandidate(candidateId);
     if (!candidate) return null;
@@ -336,6 +341,50 @@ export class TopicService {
     };
     this.repo.upsertCandidate(next);
     return next;
+  }
+
+  /**
+   * 任务1（§七）：候选 → 项目的一次性事务化转换。
+   * 创建 Project + 标记候选（convertedAt/provenance）在同一 SQLite 事务内完成：
+   * 任一步失败整体回滚，不再可能出现「项目已建但候选未标记」或反向的悬挂状态。
+   * 原 markConverted IPC（两步式）保留兼容；新 UI 应迁移到此方法。
+   */
+  convertCandidateToProject(
+    candidateId: string,
+    input: { title?: string; researchQuestion?: string; discipline?: string; scenarioId?: string },
+  ): { ok: true; project: Project; candidate: TopicCandidateDto } | { ok: false; code: string } {
+    const candidate = this.repo.getCandidate(candidateId);
+    if (!candidate) return { ok: false, code: 'candidate_not_found' };
+    const research = this.options.researchRepository?.();
+    if (!research) return { ok: false, code: 'research_repository_unavailable' };
+
+    const now = Date.now();
+    const project: Project = {
+      id: `project-topic-${now.toString(36)}-${randomUUID().replace(/-/g, '').slice(0, 6)}`,
+      title: (input.title?.trim() || candidate.title || '未命名项目').slice(0, 200),
+      originalIntent: candidate.summary ?? '',
+      researchQuestion: (input.researchQuestion ?? candidate.researchQuestion ?? '').slice(0, 2000),
+      lifecycle: 'draft',
+      methodology: '',
+      discipline: input.discipline?.trim() ?? '',
+      metadata: { source: 'topic_conversion', topicCandidateId: candidateId },
+      createdAt: now,
+      updatedAt: now,
+      archivedAt: null,
+      version: 1,
+      source: 'user',
+      deletedAt: null,
+    };
+    const converted = this.repo.runInTransaction(() => {
+      research.createProject(project);
+      const marked = this.markConverted(candidateId, {
+        projectId: project.id,
+        scenarioId: input.scenarioId,
+      });
+      if (!marked) throw new Error('candidate_marking_failed');
+      return marked;
+    });
+    return { ok: true, project, candidate: converted };
   }
 
   getBrief(sessionId: string): TopicResearchBrief | null {

@@ -80,6 +80,8 @@ import {
   MAX_TOOLS_PER_SESSION,
   MAX_TOOL_REPAIR_RETRIES,
   MAX_SAME_TOOL_PER_SESSION,
+  MODEL_WAITING_HEARTBEAT_MS,
+  RUN_TIME_BUDGET_MS,
 } from './Config.js';
 import type { BudgetConfig } from './types.js';
 
@@ -372,6 +374,10 @@ export class AgentLoop {
 
     let currentTurnIndex = 0;
     let windowsUsed = 1;
+    // 2026-09-05 卡死修复：单请求超时 × 重试次数的组合不允许把一次 run
+    // 拖成数小时级挂死。预算在每个 turn 边界检查——正在飞行中的请求仍可
+    // 等满自身超时（尊重「宁等完整结果」），但不再开启新的 turn。
+    const runStartedAt = Date.now();
     try {
       // UX-CHAT-002 soft turn windows: a window that made real progress does not
       // end the run at maxTurns; the loop tightens the context budget (auto
@@ -382,6 +388,16 @@ export class AgentLoop {
         windowsUsed = windowIndex + 1;
         for (let turnIndex = 0; turnIndex < ctx.maxTurns; turnIndex += 1) {
           currentTurnIndex = windowIndex * ctx.maxTurns + turnIndex;
+          const elapsedMs = Date.now() - runStartedAt;
+          if (elapsedMs > RUN_TIME_BUDGET_MS) {
+            ctx.errors.push(`Run time budget exhausted after ${Math.round(elapsedMs / 1000)}s (budget ${Math.round(RUN_TIME_BUDGET_MS / 1000)}s)`);
+            this.trace(ctx.traceEvents, 'agent.time_budget_exhausted', ctx.sessionId, {
+              elapsed_ms: elapsedMs,
+              budget_ms: RUN_TIME_BUDGET_MS,
+              turn: currentTurnIndex + 1,
+            });
+            return this.makeResult('error', '', ctx, currentTurnIndex);
+          }
           ctx.state.turnSignatures.push('');
           const outcome = await this.executeTurn(ctx, currentTurnIndex);
 
@@ -512,8 +528,10 @@ export class AgentLoop {
     const interruptedBeforeModel = this.interruptIfRequested(ctx, turnIndex + 1, 'before_model');
     if (interruptedBeforeModel) return interruptedBeforeModel;
 
-    const response = await this.callProviderWithRecovery(
-      ctx, contextResult.messages, toolSpecs, temperature, turnIndex,
+    const response = await this.callProviderWithHeartbeat(
+      ctx,
+      turnIndex,
+      () => this.callProviderWithRecovery(ctx, contextResult.messages, toolSpecs, temperature, turnIndex),
     );
     if (response instanceof LoopReturn) return response;
     if (response instanceof LoopContinue) return response;
@@ -586,6 +604,33 @@ export class AgentLoop {
   }
 
   // ─── Provider Call with Recovery ───────────────────────────
+
+  /**
+   * 2026-09-05 无声卡死修复：model.request 发出后，首字节返回前按固定间隔
+   * 广播 model.waiting 事件（事件桥 → agent_events 落库 + 渲染端实时显示），
+   * 让等待可观测。心跳只走 hook 通道，不写入 traceEvents，避免挤占
+   * run 结束后的展示事件额度。
+   */
+  private async callProviderWithHeartbeat(
+    ctx: RunContext,
+    turnIndex: number,
+    call: () => Promise<NormalizedResponse | LoopContinue | LoopReturn>,
+  ): Promise<NormalizedResponse | LoopContinue | LoopReturn> {
+    const startedAt = Date.now();
+    const timer = setInterval(() => {
+      const elapsedSeconds = Math.round((Date.now() - startedAt) / 1000);
+      void this.hooks.emitAsync('model.waiting', {
+        sessionId: ctx.sessionId,
+        turn: turnIndex + 1,
+        elapsedSeconds,
+      } as unknown as HookContext).catch(() => {});
+    }, MODEL_WAITING_HEARTBEAT_MS);
+    try {
+      return await call();
+    } finally {
+      clearInterval(timer);
+    }
+  }
 
   /**
    * Call the LLM provider, handling context overflow with aggressive recompression.

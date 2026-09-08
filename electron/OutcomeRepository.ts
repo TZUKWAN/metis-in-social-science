@@ -106,7 +106,7 @@ export class OutcomeRepository {
    * uploads, or session-scoped legacy artifacts because they have no reliable
    * project binding/content reader on this path.
    */
-  listAssistantProjectRecords(input: { projectId: string; outcomeId: string; includeOtherOutcomes: boolean; includeHistory: boolean; includeArtifacts: boolean; candidateLimit?: number }): OutcomeAssistantProjectRecord[] {
+  listAssistantProjectRecords(input: { projectId: string; outcomeId: string; includeOtherOutcomes: boolean; includeHistory: boolean; includeArtifacts: boolean; candidateLimit?: number; /** 任务2：显式选中的 artifact id（activeArtifactIds）；提供时只取这些（仍校验项目归属），不再按最近更新抓取。 */ artifactIds?: string[] }): OutcomeAssistantProjectRecord[] {
     const current = this.owned(input.projectId, input.outcomeId);
     if (!current) return [];
     const limit = Math.max(1, Math.min(input.candidateLimit ?? 8, 16));
@@ -122,8 +122,21 @@ export class OutcomeRepository {
       for (const row of rows) { const id=validId(row.id); const document=validDocument(row.content); if (id && document) records.push({type:'outcome_history',id,title:row.title,kind:row.kind,version:row.version,document,note:row.note,updatedAt:row.updated_at}); }
     }
     if (input.includeArtifacts) {
-      const rows = this.db.prepare(`SELECT a.id,a.title,a.artifact_type,a.version,v.content,a.updated_at FROM research_artifacts a JOIN artifact_versions v ON v.artifact_id=a.id AND v.version=a.version WHERE a.project_id=? AND a.deleted_at IS NULL AND length(v.content)>0 ORDER BY a.updated_at DESC LIMIT ?`).all(input.projectId,limit) as AssistantArtifactRow[];
-      for (const row of rows) { const id=validId(row.id); if (id) records.push({type:'artifact',id,title:row.title,artifactType:row.artifact_type,version:row.version,content:row.content,updatedAt:row.updated_at}); }
+      if (input.artifactIds && input.artifactIds.length > 0) {
+        // 任务2：只取显式选中的 artifact（activeArtifactIds），逐个按 id 读取并
+        // 校验项目归属；非法/不属于本项目的 id 跳过（fail-closed）。
+        for (const artifactId of input.artifactIds.slice(0, limit)) {
+          const id = validId(artifactId);
+          if (!id) continue;
+          const row = this.db.prepare(`SELECT a.id,a.title,a.artifact_type,a.version,v.content,a.updated_at FROM research_artifacts a JOIN artifact_versions v ON v.artifact_id=a.id AND v.version=a.version WHERE a.id=? AND a.project_id=? AND a.deleted_at IS NULL AND length(v.content)>0`).get(id,input.projectId) as AssistantArtifactRow | undefined;
+          if (row) records.push({type:'artifact',id:row.id,title:row.title,artifactType:row.artifact_type,version:row.version,content:row.content,updatedAt:row.updated_at});
+        }
+      } else if (input.artifactIds === undefined) {
+        // 兼容路径：调用方未传 artifactIds（旧调用点）才按最近更新抓取；
+        // 显式传空数组 = 「无选中成果」，不抓取任何 artifact。
+        const rows = this.db.prepare(`SELECT a.id,a.title,a.artifact_type,a.version,v.content,a.updated_at FROM research_artifacts a JOIN artifact_versions v ON v.artifact_id=a.id AND v.version=a.version WHERE a.project_id=? AND a.deleted_at IS NULL AND length(v.content)>0 ORDER BY a.updated_at DESC LIMIT ?`).all(input.projectId,limit) as AssistantArtifactRow[];
+        for (const row of rows) { const id=validId(row.id); if (id) records.push({type:'artifact',id,title:row.title,artifactType:row.artifact_type,version:row.version,content:row.content,updatedAt:row.updated_at}); }
+      }
     }
     return records;
   }

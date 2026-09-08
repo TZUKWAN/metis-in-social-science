@@ -21,6 +21,15 @@ export interface SubmissionBrowserPage {
 export interface SubmissionBrowserFacade {
   navigate(rawUrl: string): Promise<{ ok: boolean; url?: string; error?: string }>;
   extract(): Promise<{ ok: boolean; page?: SubmissionBrowserPage; error?: string }>;
+  /**
+   * 任务2 上下文隔离：带归属校验的提取。归属已知且与请求项目不一致 →
+   * ok:false + scopeMismatch；归属未知 → 放行但 ownershipKnown:false，
+   * 由调用方显式声明「归属未知」，不得默认属于请求项目。
+   */
+  extractScoped?(projectId: string | null): Promise<
+    | { ok: true; page: SubmissionBrowserPage; ownershipKnown: boolean }
+    | { ok: false; error: string; scopeMismatch?: boolean }
+  >;
 }
 
 const READ_PAGE_CHARS = 9_000;

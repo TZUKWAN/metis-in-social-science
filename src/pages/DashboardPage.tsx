@@ -446,7 +446,9 @@ export default function DashboardPage({ onNavigate }: { onNavigate?: (page: Page
               <SecondaryStat
                 label={t('dashboard.statArtifacts')}
                 value={`${artifactStats.total}（${t('dashboard.statArtifactsPending', { count: artifactStats.pending })}）`}
-                onClick={() => onNavigate?.('artifacts')}
+                // 任务4 dead-id 收敛：旧 'artifacts' 页面 id 从未实现路由（点击静默落空），
+                // 成果的用户目的地是成果工作台。
+                onClick={() => onNavigate?.('outcomes')}
               />
             )}
           </div>

@@ -135,7 +135,6 @@ const ArtifactPartView = memo(function ArtifactPartView({ part }: { part: Artifa
 /** Step 三操作语义（文档三十四节）：提出意见≠修改≠重做。 */
 const ScenarioStepPartView = memo(function ScenarioStepPartView({
   part,
-  locale,
   onStepTarget,
 }: {
   part: ScenarioStepPart;

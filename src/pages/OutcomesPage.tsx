@@ -21,6 +21,10 @@ import { OfficeWordRibbon } from '../components/OfficeWordRibbon';
 import { OfficePptRibbon } from '../components/OfficePptRibbon';
 import SplitHandle from '../components/SplitHandle';
 import { useTranslation } from '../i18n';
+import { EmptyState, InlineError, QuietLoading, RowActionsMenu, StaleDataNotice } from '../components/async/AsyncFeedback';
+
+import { readStickyValue } from '../hooks/workspacePersistence';
+import { navigate } from '../shell/navigation';
 
 const OUTCOMES_TREE_WIDTH_KEY = 'metis-outcomes-tree-width';
 const OUTCOMES_ASSISTANT_WIDTH_KEY = 'metis-outcomes-assistant-width';
@@ -177,13 +181,47 @@ export default function OutcomesPage({ onNavigateToSubmissions }: { onNavigateTo
   const [createOpen, setCreateOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [categoryPrompt, setCategoryPrompt] = useState<{ mode: 'create' } | { mode: 'rename'; categoryId: string; initialName: string } | null>(null);
+  // ── 任务4 统一 Async View State：列表加载 loading / error / stale 三态 ──
+  // 首次加载失败 → listState='error'（可重试，绝不冒充空列表）；
+  // 已有数据刷新失败 → 保留旧列表 + listStale 提示"当前显示上次成功加载的数据"。
+  const [listState, setListState] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [listStale, setListStale] = useState(false);
+  const [listRetrying, setListRetrying] = useState(false);
+  // 任务4：新建成果对话框提交防双击。
+  const [createBusy, setCreateBusy] = useState(false);
+  // 任务4：复制成果防双击。
+  const [duplicateBusy, setDuplicateBusy] = useState(false);
+  // 任务4：标记最终版防双击。
+  const [markFinalBusy, setMarkFinalBusy] = useState(false);
+  // 任务4：保存版本防双击（保存进行中禁用按钮）。
+  const [saveBusy, setSaveBusy] = useState(false);
+
+  const loadOutcomes = useCallback(async (phase: 'initial' | 'refresh') => {
+    if (!projectId || !window.metis) return;
+    if (phase === 'initial') setListState((state) => (state === 'ready' ? 'ready' : 'loading'));
+    else setListRetrying(true);
+    try {
+      const [nextCategories, nextItems] = await Promise.all([
+        window.metis.listOutcomeCategories(),
+        window.metis.listOutcomes({ projectId, query: '' }),
+      ]);
+      setCategories(nextCategories as OutcomeCategory[]);
+      setItems(nextItems as OutcomeSummary[]);
+      setListState('ready');
+      setListStale(false);
+    } catch (error) {
+      console.error('[OutcomesPage] list load failed:', error);
+      if (phase === 'initial') setListState('error');
+      else setListStale(true);
+    } finally {
+      setListRetrying(false);
+    }
+  }, [projectId]);
 
   const refresh = useCallback(async () => {
-    if (!projectId || !window.metis) return;
-    const [nextCategories, nextItems] = await Promise.all([window.metis.listOutcomeCategories(), window.metis.listOutcomes({ projectId, query: '' })]);
-    setCategories(nextCategories as OutcomeCategory[]);
-    setItems(nextItems as OutcomeSummary[]);
-   }, [projectId]);
+    // refresh 是 mutation 后的再同步：失败必须保留旧数据并标 stale，不得静默清空。
+    await loadOutcomes('refresh');
+  }, [loadOutcomes]);
 
   // ── 成果回收站（2026-08-24）：软删除进回收站，7 天到期由主进程惰性彻底删除 ──
   const [trashOpen, setTrashOpen] = useState(false);
@@ -212,6 +250,8 @@ export default function OutcomesPage({ onNavigateToSubmissions }: { onNavigateTo
     const ok = await window.metis.archiveOutcome({ projectId, outcomeId: item.id });
     if (!ok) { setOperationNotice('移入回收站未完成，成果未被删除。'); return; }
     if (selected?.outcome.id === item.id) { setSelected(null); setEditorDocument(null); setVersions([]); updateAssistantSelection(undefined); }
+    // 已移入回收站：清掉"上次选中"记忆，避免下次进入尝试打开已删除成果。
+    try { window.localStorage.removeItem(`metis:outcomes-selected:${projectId}`); } catch { /* best-effort */ }
     setOperationNotice(`「${item.title}」已移入回收站，7 天后自动彻底删除；可在回收站恢复。`);
     await refresh();
   }, [externalEditorSession, projectId, refresh, selected, updateAssistantSelection]);
@@ -246,16 +286,16 @@ export default function OutcomesPage({ onNavigateToSubmissions }: { onNavigateTo
     let current = true;
     void (async () => {
       if (!projectId || !window.metis) return;
-      const [nextCategories, nextItems] = await Promise.all([
-        window.metis.listOutcomeCategories(),
-        window.metis.listOutcomes({ projectId, query: '' }),
-      ]);
       if (!current) return;
-      setCategories(nextCategories as OutcomeCategory[]);
-      setItems(nextItems as OutcomeSummary[]);
+      await loadOutcomes('initial');
+      // 任务4 第十一节：切走再回来恢复上次选中的成果（open 对已删除的成果自会空处理）。
+      if (!current) return;
+      const stickyId = readStickyValue(`metis:outcomes-selected:${projectId}`);
+      if (stickyId && !selected?.outcome.id) void openRef.current?.(stickyId);
     })();
     return () => { current = false; };
-  }, [projectId]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- 初始加载仅依赖 projectId；open 通过 ref 取最新
+  }, [projectId, loadOutcomes]);
   useEffect(() => { externalEditorSessionRef.current = externalEditorSession; }, [externalEditorSession]);
 
   // Metis Office 关闭自动同步（2026-09-01 刘总要求）：编辑器一关，主进程
@@ -294,20 +334,38 @@ export default function OutcomesPage({ onNavigateToSubmissions }: { onNavigateTo
       }
       setExternalEditorSession(null);
     }
-    const detail = await window.metis.getOutcome({ projectId, outcomeId: id, ...(version ? { version } : {}) });
+    const detail = await window.metis.getOutcome({ projectId, outcomeId: id, ...(version ? { version } : {}) }).catch((error) => {
+      console.error('[OutcomesPage] open outcome failed:', error);
+      setOperationNotice('打开成果未完成，成果未被修改；可直接重试。');
+      return null;
+    });
     if (!detail) return;
     const typed = detail as OutcomeDetail;
     setSelected(typed); setEditorDocument(typed.version.content); updateAssistantSelection(undefined); setOperationNotice('');
-    setVersions(await window.metis.listOutcomeVersions({ projectId, outcomeId: id }) as OutcomeVersion[]);
+    // 任务4 第十一节：记住当前项目里上次打开的成果，切走再回来不重置。
+    try { window.localStorage.setItem(`metis:outcomes-selected:${projectId}`, typed.outcome.id); } catch { /* best-effort */ }
+    try {
+      setVersions(await window.metis.listOutcomeVersions({ projectId, outcomeId: id }) as OutcomeVersion[]);
+    } catch (error) {
+      console.error('[OutcomesPage] list versions failed:', error);
+      setVersions([]);
+    }
   }, [externalEditorSession, projectId, updateAssistantSelection]);
-  const save = useCallback(async (content: OutcomeDocument, note = '保存编辑', actor: 'human' | 'ai' | 'import' | 'restore' = 'human', sources: OutcomeSource[] = [], importToken?: string) => {
+  // open 定义于其后使用前的场景（初始 sticky 恢复 effect）：经 ref 取最新版本。
+  const openRef = useRef<typeof open>(undefined);
+  useEffect(() => { openRef.current = open; }, [open]);
+  const performSave = useCallback(async (content: OutcomeDocument, note = '保存编辑', actor: 'human' | 'ai' | 'import' | 'restore' = 'human', sources: OutcomeSource[] = [], importToken?: string) => {
     if (!projectId || !selected || !window.metis) return false;
     if (externalEditorSession?.outcomeId === selected.outcome.id) {
       setOperationNotice('当前成果正在 Metis Office 中编辑。请先同步回 METIS 或放弃外部编辑会话，再保存本地草稿。');
       return false;
     }
     setOperationNotice('');
-    const saved = await window.metis.saveOutcome({ projectId, outcomeId: selected.outcome.id, baseVersion: selected.outcome.currentVersion, content, note, actor, sources, ...(importToken ? { importToken } : {}) });
+    // Promise.resolve 包一层：IPC 缺失或测试桩返回非 Promise 时不至于抛 TypeError。
+    const saved = await Promise.resolve(window.metis.saveOutcome({ projectId, outcomeId: selected.outcome.id, baseVersion: selected.outcome.currentVersion, content, note, actor, sources, ...(importToken ? { importToken } : {}) })).catch((error) => {
+      console.error('[OutcomesPage] saveOutcome failed:', error);
+      return null;
+    });
     const parsed = OutcomeDetailSchema.safeParse(saved);
     if (!parsed.success) { setOperationNotice('保存未完成（可能是版本已更新或运行服务不可用）。当前未保存编辑仍保留在页面，请检查后重试。'); return false; }
      setSelected(parsed.data); setEditorDocument(parsed.data.version.content);
@@ -318,22 +376,55 @@ export default function OutcomesPage({ onNavigateToSubmissions }: { onNavigateTo
          ? parsed.data.version.content.type === 'ppt' && parsed.data.version.content.pages.some((page) => page.id === selection.pageId && (!selection.elementId || page.elements.some((element) => element.id === selection.elementId)))
          : false;
       updateAssistantSelection(selectionStillExists ? selection : undefined);
-     setVersions(await window.metis.listOutcomeVersions({ projectId, outcomeId: parsed.data.outcome.id }) as OutcomeVersion[]);
+     try {
+       setVersions(await window.metis.listOutcomeVersions({ projectId, outcomeId: parsed.data.outcome.id }) as OutcomeVersion[]);
+     } catch (error) {
+       console.error('[OutcomesPage] list versions failed:', error);
+       setVersions([]);
+     }
     await refresh(); return true;
      }, [externalEditorSession, projectId, refresh, selected, updateAssistantSelection]);
+  const save = useCallback(async (content: OutcomeDocument, note = '保存编辑', actor: 'human' | 'ai' | 'import' | 'restore' = 'human', sources: OutcomeSource[] = [], importToken?: string) => {
+    if (!projectId || !selected || !window.metis) return false;
+    if (saveBusy) { setOperationNotice('上一次保存仍在进行中，请稍候。'); return false; } // 任务4：防双击/防并发保存。
+    setSaveBusy(true);
+    try {
+      return await performSave(content, note, actor, sources, importToken);
+    } finally {
+      setSaveBusy(false);
+    }
+  }, [saveBusy, performSave, projectId, selected]);
   const create = useCallback(async (kind: OutcomeKind, title: string, categoryId: string | null) => {
     if (!projectId || !window.metis || !title.trim()) return;
-    const created = await window.metis.createOutcome({ projectId, kind, title: title.trim(), categoryId, content: makeDocument(kind), note: '创建成果' });
-    if (!created) return;
-    setCreateOpen(false); await refresh(); await open((created as OutcomeDetail).outcome.id);
-  }, [open, projectId, refresh]);
+    if (createBusy) return; // 任务4：防双击——同一时刻只允许一个创建请求。
+    setCreateBusy(true);
+    try {
+      const created = await window.metis.createOutcome({ projectId, kind, title: title.trim(), categoryId, content: makeDocument(kind), note: '创建成果' });
+      if (!created) {
+        setOperationNotice('成果创建未完成，未被创建；请重试。');
+        return;
+      }
+      setCreateOpen(false); await refresh(); await open((created as OutcomeDetail).outcome.id);
+    } catch (error) {
+      console.error('[OutcomesPage] create outcome failed:', error);
+      setOperationNotice('成果创建未完成，未被创建；请重试。');
+    } finally {
+      setCreateBusy(false);
+    }
+  }, [createBusy, open, projectId, refresh]);
   const submitCategoryPrompt = useCallback(async (rawName: string) => {
     const pending = categoryPrompt;
     const name = rawName.trim();
     setCategoryPrompt(null);
     if (!pending || !name || !window.metis) return;
-    if (pending.mode === 'rename') await window.metis.renameOutcomeCategory({ categoryId: pending.categoryId, name });
-    else await window.metis.createOutcomeCategory({ name });
+    try {
+      if (pending.mode === 'rename') await window.metis.renameOutcomeCategory({ categoryId: pending.categoryId, name });
+      else await window.metis.createOutcomeCategory({ name });
+    } catch (error) {
+      console.error('[OutcomesPage] category write failed:', error);
+      setOperationNotice(pending.mode === 'rename' ? '分类重命名未完成，分类未改动；请重试。' : '分类创建未完成；请重试。');
+      return;
+    }
     await refresh();
   }, [categoryPrompt, refresh]);
   useEffect(() => {
@@ -351,13 +442,32 @@ export default function OutcomesPage({ onNavigateToSubmissions }: { onNavigateTo
     setVersions(await window.metis.listOutcomeVersions({ projectId, outcomeId: parsed.data.outcome.id }) as OutcomeVersion[]);
     await refresh();
   }, [projectId, refresh, selected, updateAssistantSelection]);
-  const moveOutcome = useCallback(async (outcomeId: string, categoryId: string | null) => { if (!projectId || !window.metis) return; if (await window.metis.moveOutcome({ projectId, outcomeId, categoryId })) await refresh(); }, [projectId, refresh]);
+  const moveOutcome = useCallback(async (outcomeId: string, categoryId: string | null) => {
+    if (!projectId || !window.metis) return;
+    try {
+      if (await window.metis.moveOutcome({ projectId, outcomeId, categoryId })) await refresh();
+      else setOperationNotice('成果移动未完成，仍留在原分类；请重试。');
+    } catch (error) {
+      console.error('[OutcomesPage] move outcome failed:', error);
+      setOperationNotice('成果移动未完成，仍留在原分类；请重试。');
+    }
+  }, [projectId, refresh]);
   const duplicateCurrent = useCallback(async () => {
     if (!selected || !projectId || !window.metis) return;
-    const title = `${selected.outcome.title} 副本`;
-    const created = await window.metis.createOutcome({ projectId, kind: selected.outcome.kind, title, categoryId: selected.outcome.categoryId, content: editorDocument ?? selected.version.content, note: `从 ${selected.outcome.title} 复制`, applyDefaultTemplate: false });
-    if (created) { await refresh(); await open((created as OutcomeDetail).outcome.id); }
-  }, [editorDocument, open, projectId, refresh, selected]);
+    if (duplicateBusy) return; // 任务4：防双击。
+    setDuplicateBusy(true);
+    try {
+      const title = `${selected.outcome.title} 副本`;
+      const created = await window.metis.createOutcome({ projectId, kind: selected.outcome.kind, title, categoryId: selected.outcome.categoryId, content: editorDocument ?? selected.version.content, note: `从 ${selected.outcome.title} 复制`, applyDefaultTemplate: false });
+      if (!created) { setOperationNotice('复制未完成，副本未被创建；请重试。'); return; }
+      await refresh(); await open((created as OutcomeDetail).outcome.id);
+    } catch (error) {
+      console.error('[OutcomesPage] duplicate outcome failed:', error);
+      setOperationNotice('复制未完成，副本未被创建；请重试。');
+    } finally {
+      setDuplicateBusy(false);
+    }
+  }, [editorDocument, open, projectId, refresh, selected, duplicateBusy]);
   const applyAssistantVersion = useCallback(async (applied: AssistantApplied | undefined) => {
     const raw = asRecord(applied); if (!raw) return;
     const parsed = OutcomeDetailSchema.safeParse({ outcome: raw.outcome, version: raw.version });
@@ -385,7 +495,7 @@ export default function OutcomesPage({ onNavigateToSubmissions }: { onNavigateTo
     void window.metis.locateOutcomeSource({ projectId, outcomeId: selected?.outcome.id ?? '', source }).then((located) => {
       if (located && located.ok) {
         if (located.kind === 'artifact') {
-          window.dispatchEvent(new CustomEvent('metis:open-project', { detail: { projectId, section: 'artifacts' } }));
+          navigate({ kind: 'project', projectId, section: 'artifacts' }); // 任务4：typed navigation contract
           setOperationNotice(`已定位研究资料：${located.targetId}（已在项目资料区打开）。`);
         } else {
           setOperationNotice(`已定位：${located.label}`);
@@ -609,9 +719,31 @@ export default function OutcomesPage({ onNavigateToSubmissions }: { onNavigateTo
     <aside className="outcomes-tree" aria-label="成果树">
       <header><div><small>当前项目</small><strong>{project?.title ?? projectId}</strong></div><div className="outcomes-tree__actions"><button type="button" onClick={() => void importWordDocx()} title="导入 Word DOCX" aria-label="导入 Word DOCX" disabled={isWordDocxImporting}>{isWordDocxImporting ? <LoaderCircle size={16} className="spin" /> : <Upload size={16} />}</button><button type="button" onClick={() => void importPptx()} title="导入 PPTX" aria-label="导入 PPTX" disabled={isPptxImporting}>{isPptxImporting ? <LoaderCircle size={16} className="spin" /> : <Presentation size={16} />}</button><button type="button" onClick={() => setCreateOpen(true)} title="新建成果" aria-label="新建成果"><Plus size={17} /></button></div></header>
       <input className="outcomes-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索成果" aria-label="搜索成果" />
+      {listStale && !listRetrying && <StaleDataNotice onRetry={() => void loadOutcomes('refresh')} retrying={listRetrying} />}
       <div className="outcomes-tree-scroll">
-        {categories.map((category) => <OutcomeCategorySection key={category.id} category={category} outcomes={visible.filter((item) => item.categoryId === category.id)} activeId={selectedForProject?.outcome.id} onOpen={open} onMove={moveOutcome} onTrash={(item) => void archiveOutcome(item)} onRename={() => setCategoryPrompt({ mode: 'rename', categoryId: category.id, initialName: category.name })} />)}
-        <OutcomeCategorySection category={null} outcomes={visible.filter((item) => !item.categoryId)} activeId={selectedForProject?.outcome.id} onOpen={open} onMove={moveOutcome} onTrash={(item) => void archiveOutcome(item)} />
+        {listState === 'error' ? (
+          <InlineError
+            compact
+            title="成果列表加载失败。"
+            hint="成果数据没有丢失，只是暂时读不到。"
+            onRetry={() => void loadOutcomes('initial')}
+            retrying={listRetrying}
+          />
+        ) : listState === 'loading' ? (
+          <QuietLoading compact label="正在加载成果…" />
+        ) : (
+          <>
+            {categories.map((category) => <OutcomeCategorySection key={category.id} category={category} outcomes={visible.filter((item) => item.categoryId === category.id)} activeId={selectedForProject?.outcome.id} onOpen={open} onMove={moveOutcome} onTrash={(item) => void archiveOutcome(item)} onRename={() => setCategoryPrompt({ mode: 'rename', categoryId: category.id, initialName: category.name })} />)}
+            <OutcomeCategorySection category={null} outcomes={visible.filter((item) => !item.categoryId)} activeId={selectedForProject?.outcome.id} onOpen={open} onMove={moveOutcome} onTrash={(item) => void archiveOutcome(item)} />
+            {items.length === 0 && (
+              <EmptyState
+                compact
+                title="还没有成果"
+                description="成果是当前项目的正式交付物（论文、PPT、报告）。用上方「新建成果」或导入 Word/PPTX 开始。"
+              />
+            )}
+          </>
+        )}
       </div>
       <div className="outcomes-tree-footer">
         <button className="outcomes-new-category" type="button" onClick={() => setCategoryPrompt({ mode: 'create' })}><Plus size={14} />新建分类</button>
@@ -627,7 +759,7 @@ export default function OutcomesPage({ onNavigateToSubmissions }: { onNavigateTo
     <main className="outcomes-editor">
       {operationNotice && <p className="outcomes-operation-notice" role="status">{operationNotice}</p>}
       {!selectedForProject || !editorDocument ? <div className="outcomes-empty outcomes-empty--editor"><FileText size={34} /><h2>打开或创建成果</h2><p>成果是当前项目的正式交付物，不自动存放运行日志、缓存或工具中间结果。</p><button className="primary" type="button" onClick={() => setCreateOpen(true)}>新建成果</button></div> : <>
-         <header className="outcomes-editor-head"><div>{kindIcon(selectedForProject.outcome.kind)}<div><input defaultValue={selectedForProject.outcome.title} key={selectedForProject.outcome.id} aria-label="成果名称" onBlur={async (event) => { const title = event.currentTarget.value.trim(); if (title && title !== selectedForProject.outcome.title && window.metis) { await window.metis.renameOutcome({ projectId, outcomeId: selectedForProject.outcome.id, title }); await refresh(); } }} /><small>v{selectedForProject.version.version} · {selectedForProject.outcome.status === 'final' ? '最终版' : '草稿'}</small></div></div><div className="outcomes-editor-head__actions"><button className="primary" type="button" onClick={() => void save(editorDocument.type === 'ppt' ? withoutPristineFallbackPages(editorDocument) : editorDocument)}><Save size={15} />保存版本</button>{selectedForProject.outcome.kind === 'word' && <button type="button" onClick={() => setFormattingOpenRequest((value) => value + 1)}><SlidersHorizontal size={14} />排版</button>}{selectedForProject.outcome.kind === 'word' && <button type="button" onClick={() => void exportWordDocx()}><FileText size={14} />导出 DOCX</button>}{selectedForProject.outcome.kind === 'ppt' && <button type="button" onClick={() => void exportPptx()} disabled={isPptxExporting}>{isPptxExporting ? <LoaderCircle size={14} className="spin" /> : <Presentation size={14} />}导出 PPTX</button>}<button type="button" onClick={() => setSubmissionOpen(true)} title="以当前版本创建投稿事务"><Send size={14} />投稿</button><button type="button" onClick={() => void duplicateCurrent()}><Copy size={14} />复制</button><button type="button" onClick={async () => { if (!window.metis) return; await window.metis.markOutcomeFinal({ projectId, outcomeId: selectedForProject.outcome.id, version: selectedForProject.outcome.currentVersion }); await refresh(); await open(selectedForProject.outcome.id); }}><Check size={14} />标记最终版</button></div></header>
+         <header className="outcomes-editor-head"><div>{kindIcon(selectedForProject.outcome.kind)}<div><input defaultValue={selectedForProject.outcome.title} key={selectedForProject.outcome.id} aria-label="成果名称" onBlur={async (event) => { const title = event.currentTarget.value.trim(); if (title && title !== selectedForProject.outcome.title && window.metis) { try { await window.metis.renameOutcome({ projectId, outcomeId: selectedForProject.outcome.id, title }); } catch (error) { console.error('[OutcomesPage] rename failed:', error); setOperationNotice('重命名未完成，标题未改动；请重试。'); return; } await refresh(); } }} /><small>v{selectedForProject.version.version} · {selectedForProject.outcome.status === 'final' ? '最终版' : '草稿'}</small></div></div><div className="outcomes-editor-head__actions"><button className="primary" type="button" disabled={saveBusy} onClick={() => void save(editorDocument.type === 'ppt' ? withoutPristineFallbackPages(editorDocument) : editorDocument)}>{saveBusy ? <LoaderCircle size={15} className="spin" aria-hidden="true" /> : <Save size={15} />}保存版本</button>{selectedForProject.outcome.kind === 'word' && <button type="button" onClick={() => setFormattingOpenRequest((value) => value + 1)}><SlidersHorizontal size={14} />排版</button>}{selectedForProject.outcome.kind === 'word' && <button type="button" onClick={() => void exportWordDocx()}><FileText size={14} />导出 DOCX</button>}{selectedForProject.outcome.kind === 'ppt' && <button type="button" onClick={() => void exportPptx()} disabled={isPptxExporting}>{isPptxExporting ? <LoaderCircle size={14} className="spin" /> : <Presentation size={14} />}导出 PPTX</button>}<button type="button" onClick={() => setSubmissionOpen(true)} title="以当前版本创建投稿事务"><Send size={14} />投稿</button><button type="button" disabled={duplicateBusy} onClick={() => void duplicateCurrent()}><Copy size={14} />复制</button><button type="button" disabled={markFinalBusy} onClick={async () => { if (!window.metis || markFinalBusy) return; setMarkFinalBusy(true); try { await window.metis.markOutcomeFinal({ projectId, outcomeId: selectedForProject.outcome.id, version: selectedForProject.outcome.currentVersion }); await refresh(); await open(selectedForProject.outcome.id); } catch (error) { console.error('[OutcomesPage] markOutcomeFinal failed:', error); setOperationNotice('标记最终版未完成，状态未改动；请重试。'); } finally { setMarkFinalBusy(false); } }}><Check size={14} />标记最终版</button></div></header>
          {['word', 'ppt', 'spreadsheet', 'pdf'].includes(selectedForProject.outcome.kind) && <section className="outcomes-external-editor-actions" aria-label="Metis Office"><div><strong>Metis Office 原生编辑</strong><small>在 Metis Office 中使用原生 Ribbon 编辑；保存并关闭后自动同步回 METIS 创建新版本，也可手动立即同步。</small></div>{externalEditorSession?.outcomeId === selectedForProject.outcome.id ? <div><button type="button" onClick={() => void syncFromGenoffice()} disabled={externalEditorBusy}>同步回 METIS</button><button type="button" onClick={() => void closeGenofficeEditor()} disabled={externalEditorBusy}>放弃会话</button><span>当前文件：{externalEditorSession.fileName}</span></div> : <><button type="button" onClick={() => void openInGenoffice()} disabled={externalEditorBusy} title="在独立窗口中用原生 Ribbon 编辑当前文件"><FileSpreadsheet size={14} />Metis Office</button></>}</section>}
            {nativeEmbeddedActive && <div ref={embeddedStageRef} className="genoffice-embedded-stage" aria-label="Metis Office 原生编辑区"><span>Metis Office 原生编辑器正在此区域运行；在该画布中直接编辑，保存后回到右侧“同步回 METIS”。</span></div>}
            {!nativeEmbeddedActive && editorDocument.type === 'word' && <WordEditor key={`${selectedForProject.outcome.id}-word-${selectedForProject.version.version}`} projectId={projectId} outcomeId={selectedForProject.outcome.id} hasUnsavedChanges={hasUnsavedChanges} document={editorDocument} onChange={setEditorDocument} onSave={(next, note) => save(next, note)} onNotice={setOperationNotice} onSelectionChange={updateAssistantSelection} onAssistantApplied={applyAssistantVersion} onConversationChanged={() => setAssistantHistoryRevision((revision) => revision + 1)} />}
@@ -644,7 +776,7 @@ export default function OutcomesPage({ onNavigateToSubmissions }: { onNavigateTo
       onKeyDelta={(delta) => setAssistantWidth((current) => Math.min(520, Math.max(260, current - delta)))}
     />
     <OutcomeAssistant key={`${projectId}-${selectedForProject?.outcome.id ?? 'none'}`} projectId={projectId} projectName={project?.title ?? projectId} detail={selectedForProject} selection={assistantSelection} hasUnsavedChanges={hasUnsavedChanges} historyRevision={assistantHistoryRevision} onOpenOutcomeVersion={openOutcomeSource} onLocate={locateSource} onApplied={(applied) => void applyAssistantVersion(applied)} onConversationChanged={() => setAssistantHistoryRevision((revision) => revision + 1)} />
-    {createOpen && <CreateDialog categories={categories} close={() => setCreateOpen(false)} create={create} />}
+    {createOpen && <CreateDialog categories={categories} close={() => setCreateOpen(false)} create={create} busy={createBusy} />}
     {submissionOpen && selectedForProject && <SubmissionDialog
       close={() => setSubmissionOpen(false)}
       onCreated={() => { setSubmissionOpen(false); setOperationNotice('投稿事务已创建；已转到投稿页。'); onNavigateToSubmissions?.(); }}
@@ -663,15 +795,15 @@ function OutcomeCategorySection({ category, outcomes, activeId, onOpen, onMove, 
   return <section className="outcomes-category" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const outcomeId = event.dataTransfer.getData('application/x-metis-outcome'); if (outcomeId) onMove(outcomeId, categoryId); }}><div className="outcomes-category-title"><span>{category?.name ?? '未分类'}</span>{category && <button type="button" onClick={() => void onRename?.()} title="重命名分类" aria-label={`重命名${category.name}`}><MoreHorizontal size={15} /></button>}</div>{outcomes.map((item) => <OutcomeRow key={item.id} item={item} active={activeId === item.id} open={onOpen} trash={onTrash} />)}</section>;
 }
 function OutcomeRow({ item, active, open, trash }: { item: OutcomeSummary; active: boolean; open: (id: string) => void; trash: (item: OutcomeSummary) => void }) {
-  return <div className={`outcome-tree-item ${active ? 'selected' : ''}`} role="button" tabIndex={0} draggable onDragStart={(event) => event.dataTransfer.setData('application/x-metis-outcome', item.id)} onClick={() => open(item.id)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); open(item.id); } }} title="拖动到分类以整理成果"><GripVertical size={13} className="outcome-tree-item__grip" />{kindIcon(item.kind)}<span>{item.title}</span><small>v{item.currentVersion}</small><button className="outcome-tree-item__trash" type="button" onClick={(event) => { event.stopPropagation(); trash(item); }} title="移入回收站（保留 7 天）" aria-label={`将${item.title}移入回收站`}><Trash2 size={13} /></button></div>;
+  return <div className={`outcome-tree-item ${active ? 'selected' : ''}`} role="button" tabIndex={0} draggable onDragStart={(event) => event.dataTransfer.setData('application/x-metis-outcome', item.id)} onClick={() => open(item.id)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); open(item.id); } }} title="拖动到分类以整理成果"><GripVertical size={13} className="outcome-tree-item__grip" />{kindIcon(item.kind)}<span>{item.title}</span><small>v{item.currentVersion}</small><span className="outcome-tree-item__actions" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}><RowActionsMenu label={`成果「${item.title}」的更多操作`} items={[{ id: 'trash', label: '移入回收站', danger: true, onSelect: () => trash(item) }]} /></span></div>;
 }
 function OutcomeTrashDialog({ items, now, confirmId, setConfirmId, close, onRestore, onDeleteForever }: { items: OutcomeTrashEntry[]; now: number; confirmId: string | null; setConfirmId: (id: string | null) => void; close: () => void; onRestore: (outcomeId: string) => void; onDeleteForever: (outcomeId: string) => void }) {
   const remainingDays = (expiresAt: number) => Math.max(0, Math.ceil((expiresAt - now) / (24 * 60 * 60 * 1000)));
   return <div className="outcomes-modal-backdrop" role="presentation"><div className="outcomes-modal outcomes-trash-modal" role="dialog" aria-modal="true" aria-label="成果回收站"><header><strong>成果回收站</strong><button type="button" onClick={close} aria-label="关闭"><X size={16} /></button></header><p className="outcomes-trash-modal__hint">删除的成果在此保留 7 天，到期自动彻底删除（含源文件），彻底删除后不可恢复。</p>{items.length === 0 ? <p className="outcomes-trash-modal__empty">回收站是空的。</p> : <ul className="outcomes-trash-list">{items.map((entry) => <li key={entry.outcome.id} className="outcomes-trash-item"><div className="outcomes-trash-item__meta">{kindIcon(entry.outcome.kind)}<div><strong>{entry.outcome.title}</strong><small>删除于 {new Date(entry.deletedAt).toLocaleString()} · 剩余 {remainingDays(entry.expiresAt)} 天</small></div></div><div className="outcomes-trash-item__actions">{confirmId === entry.outcome.id ? <><span className="outcomes-trash-item__warn">不可恢复</span><button className="danger" type="button" onClick={() => onDeleteForever(entry.outcome.id)}>确认彻底删除</button><button type="button" onClick={() => setConfirmId(null)}>取消</button></> : <><button type="button" onClick={() => onRestore(entry.outcome.id)}><RotateCcw size={13} />恢复</button><button type="button" onClick={() => setConfirmId(entry.outcome.id)}><Trash2 size={13} />彻底删除</button></>}</div></li>)}</ul>}</div></div>;
 }
-function CreateDialog({ categories, close, create }: { categories: OutcomeCategory[]; close: () => void; create: (kind: OutcomeKind, title: string, categoryId: string | null) => void }) {
+function CreateDialog({ categories, close, create, busy }: { categories: OutcomeCategory[]; close: () => void; create: (kind: OutcomeKind, title: string, categoryId: string | null) => void; busy: boolean }) {
   const [kind, setKind] = useState<OutcomeKind>('word'); const [title, setTitle] = useState(''); const [categoryId, setCategoryId] = useState('');
-  return <div className="outcomes-modal-backdrop" role="presentation"><form className="outcomes-modal" onSubmit={(event) => { event.preventDefault(); create(kind, title, categoryId || null); }}><header><strong>新建成果</strong><button type="button" onClick={close} aria-label="关闭"><X size={16} /></button></header><label>成果名称<input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} /></label><label>成果类型<select value={kind} onChange={(event) => setKind(event.target.value as OutcomeKind)}><option value="word">Word 论文 / 报告</option><option value="ppt">PPT 演示文稿</option><option value="spreadsheet">Excel 工作簿</option><option value="pdf">PDF</option><option value="image">图片</option><option value="chart">图表</option><option value="other">其他正式交付物</option></select></label><label>分类<select value={categoryId} onChange={(event) => setCategoryId(event.target.value)}><option value="">未分类</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label><footer><button type="button" onClick={close}>取消</button><button className="primary">创建</button></footer></form></div>;
+  return <div className="outcomes-modal-backdrop" role="presentation"><form className="outcomes-modal" onSubmit={(event) => { event.preventDefault(); create(kind, title, categoryId || null); }}><header><strong>新建成果</strong><button type="button" onClick={close} aria-label="关闭" disabled={busy}><X size={16} /></button></header><label>成果名称<input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} disabled={busy} /></label><label>成果类型<select value={kind} onChange={(event) => setKind(event.target.value as OutcomeKind)} disabled={busy}><option value="word">Word 论文 / 报告</option><option value="ppt">PPT 演示文稿</option><option value="spreadsheet">Excel 工作簿</option><option value="pdf">PDF</option><option value="image">图片</option><option value="chart">图表</option><option value="other">其他正式交付物</option></select></label><label>分类<select value={categoryId} onChange={(event) => setCategoryId(event.target.value)} disabled={busy}><option value="">未分类</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label><footer><button type="button" onClick={close} disabled={busy}>取消</button><button className="primary" disabled={busy || !title.trim()}>{busy ? '创建中…' : '创建'}</button></footer></form></div>;
 }
 /** 准备投稿：以当前成果版本创建 Submission Case（匹配期刊 / 指定期刊）。 */
 function SubmissionDialog({ close, onCreated, projectId, outcomeId, outcomeTitle, outcomeVersion }: {

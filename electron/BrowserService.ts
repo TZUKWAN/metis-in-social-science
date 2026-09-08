@@ -89,11 +89,45 @@ export class BrowserService {
   private currentUrl = '';
   private currentTitle = '';
   private pendingDownloads = new Map<string, PendingDownload>();
+  /**
+   * 任务2 上下文隔离：共享浏览器当前页的归属标记（由导航调用方显式声明）。
+   * null 表示归属未知——AI 消费该页内容时必须显式声明「归属未知」，不得
+   * 默认其属于当前项目。
+   */
+  private ownership: { projectId: string | null; markedAt: number } | null = null;
 
   constructor(options: { window: BrowserWindow; dataDir: string; store: PersistenceStore | null }) {
     this.window = options.window;
     this.dataDir = options.dataDir;
     this.store = options.store;
+  }
+
+  /** 导航调用方声明当前页归属（切项目/未知来源导航时传 null）。 */
+  setActiveOwnership(projectId: string | null): void {
+    this.ownership = { projectId: projectId?.trim() || null, markedAt: Date.now() };
+  }
+
+  getActiveOwnership(): { projectId: string | null; markedAt: number } | null {
+    return this.ownership ? { ...this.ownership } : null;
+  }
+
+  /**
+   * 带归属校验的页面提取（任务2）：请求项目与页面归属都已知且不一致时拒绝
+   * （browser_scope_mismatch，fail-closed）；归属未知时放行但携带
+   * ownershipKnown:false，由调用方显式声明，绝不静默当作本项目内容。
+   */
+  async extractScoped(requestProjectId: string | null): Promise<
+    | { ok: true; page: ExtractedPage; ownershipKnown: boolean }
+    | { ok: false; error: string; scopeMismatch?: boolean }
+  > {
+    const owned = this.ownership?.projectId?.trim() || null;
+    const requested = requestProjectId?.trim() || null;
+    if (owned && requested && owned !== requested) {
+      return { ok: false, error: 'browser_scope_mismatch', scopeMismatch: true };
+    }
+    const result = await this.extract();
+    if (!result.ok || !result.page) return { ok: false, error: result.error ?? 'browser_extract_failed' };
+    return { ok: true, page: result.page, ownershipKnown: Boolean(owned) };
   }
 
   // ─── Lifecycle ──────────────────────────────────────────────

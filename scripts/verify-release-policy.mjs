@@ -43,6 +43,35 @@ export function evaluateAuthenticode(records, windowsPolicy) {
   return issues;
 }
 
+// Task 5 (§5/§6): update trust gate. A STABLE release (version without a
+// prerelease tag) may never ship unsigned installers — the gate rejects it
+// instead of trusting an unverifiable update. Alpha/prerelease releases may
+// ship unsigned artifacts but are disclosed as UNSIGNED in the report.
+export function releaseChannelFor(version) {
+  const prerelease = String(version ?? '').split('-').slice(1).join('-');
+  return prerelease.length > 0 ? 'alpha' : 'stable';
+}
+
+export function evaluateUpdateTrust(metadata, windowsPolicy, signatures) {
+  const channel = releaseChannelFor(metadata.version);
+  const allSigned = (signatures ?? []).every((record) => record.status === 'Valid');
+  const issues = [];
+  const notices = [];
+  if (channel === 'stable' && !allSigned) {
+    issues.push({
+      code: 'stable_unsigned_update_blocked',
+      detail: 'Stable releases must ship Authenticode-signed installers; set windows.requireAuthenticode and sign the artifacts (see docs/UPDATE_TRUST_MODEL.md).',
+    });
+  }
+  if (channel === 'alpha' && !allSigned && windowsPolicy.requireAuthenticode !== true) {
+    notices.push({
+      code: 'unsigned_alpha_release',
+      detail: 'UNSIGNED ALPHA — NOT RELEASE SAFE. Artifacts are unsigned; in-app updates disclose this state and stable keeps install blocked until a certificate exists.',
+    });
+  }
+  return { channel, allSigned, issues, notices };
+}
+
 export function validateArtifactSet(artifacts, windowsPolicy, metadata, inspectFile) {
   const issues = [];
   const requiredKinds = new Set(windowsPolicy.requiredArtifacts || []);
@@ -249,6 +278,8 @@ export function main() {
 
   const signatures = readAuthenticode(artifacts);
   issues.push(...evaluateAuthenticode(signatures, policy.windows));
+  const updateTrust = evaluateUpdateTrust(metadata, policy.windows, signatures);
+  issues.push(...updateTrust.issues);
   const report = {
     schemaVersion: 1,
     generatedAt: utcNow(),
@@ -265,6 +296,14 @@ export function main() {
       sha256: artifact.sha256,
     })),
     signatures,
+    updateTrust: {
+      channel: updateTrust.channel,
+      allSigned: updateTrust.allSigned,
+      notices: updateTrust.notices,
+      trustLabel: updateTrust.channel === 'stable'
+        ? (updateTrust.allSigned ? 'SIGNED / RELEASE SAFE' : 'UNSIGNED STABLE — BLOCKED BY GATE')
+        : (updateTrust.allSigned ? 'SIGNED (alpha)' : 'UNSIGNED ALPHA — DEV ONLY / NOT RELEASE SAFE'),
+    },
     packageScan: {
       scannedFiles: scan.scannedFiles,
       scannedDirectories: scan.scannedDirectories,

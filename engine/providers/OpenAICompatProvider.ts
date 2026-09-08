@@ -212,7 +212,7 @@ export class OpenAICompatProvider extends BaseProvider {
     const response = await this.withRetry(() =>
       this.rateLimiter.execute(() =>
         this.callFetch('/chat/completions', this.buildRequestBody(messages, tools, params, false), signal)
-      ),
+      , signal),
       signal,
     );
     const json = await response.json() as Record<string, unknown>;
@@ -232,7 +232,7 @@ export class OpenAICompatProvider extends BaseProvider {
       response = await this.withRetry(() =>
         this.rateLimiter.execute(() =>
           this.callFetch('/chat/completions', this.buildRequestBody(messages, tools, params, true), signal)
-        ),
+        , signal),
         signal,
       );
     } catch (error) {

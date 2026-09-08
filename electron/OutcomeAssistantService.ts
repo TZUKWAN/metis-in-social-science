@@ -439,6 +439,9 @@ export class OutcomeAssistantService {
       projectId: request.projectId,
       outcomeId: request.outcomeId,
       instruction: request.instruction,
+      // 任务2（Artifact Context）：本入口暂无显式 artifact 选择通道，必须
+      // 声明「无选中成果」——禁止暗中把最近更新的 artifact 替代用户选择。
+      activeArtifactIds: [],
     });
     const sources: OutcomeSource[] = [
       { kind: 'outcome_version', id: detail.outcome.id, version: detail.version.version, label: `${detail.outcome.title} v${detail.version.version}` },

@@ -4,7 +4,11 @@
  */
 
 import Database from 'better-sqlite3';
-import { SCHEMA_SQL } from './schema.js';
+import { createHash } from 'node:crypto';
+import { MigrationRunner, type MigrationResult } from './MigrationRunner.js';
+import { UNIFIED_MIGRATIONS, ensureBaselineSchema } from './migrations.js';
+import { runStartupHealthChecks, type StartupHealthReport } from './StartupHealth.js';
+import { PersistenceStartupError, type PersistenceStartupFailureCode } from './errors.js';
 import type { ChatMessage, ToolResult } from '../core/types.js';
 import { ArtifactContentSchema } from '../runtime/ArtifactRuntimeContract.js';
 import { AgentExecutionEventSchema, CHAT_RUNTIME_LIMITS, type AgentExecutionEvent } from '../runtime/ChatRuntimeContract.js';
@@ -69,6 +73,31 @@ export interface ArtifactContentRecord {
   createdAt: number;
 }
 
+/** Raw legacy `artifacts` row shape (session-owned historical table). */
+interface LegacyArtifactRow {
+  id: string;
+  session_id: string;
+  name: string;
+  type: string;
+  path: string | null;
+  size: string | null;
+  content: string | null;
+  metadata: string;
+  created_at: number;
+}
+
+/**
+ * Project that takes ownership of artifacts from project-less sessions when such a
+ * session is deleted, so no user-produced artifact is ever destroyed by a
+ * conversation deletion (task 1 §五, 刘总 2026-09-06 decision).
+ */
+export const UNASSIGNED_ARTIFACT_PROJECT_ID = 'proj-unassigned-artifacts';
+
+/** Deterministic project-owned mirror id for a legacy session artifact. */
+function projectArtifactMirrorId(legacyArtifactId: string): string {
+  return `ra-${legacyArtifactId}`;
+}
+
 // --- Literature triage helpers (round 304) ---
 
 function splitIntoSentences(text: string): string[] {
@@ -126,12 +155,34 @@ function classifyEvidence(abstract: string): 'empirical' | 'theoretical' | 'mixe
 
 export class PersistenceStore {
   private readonly db: Database.Database;
+  private readonly dbPath: string;
+  private lastMigrationResult: MigrationResult | null = null;
+  private lastHealthReport: StartupHealthReport | null = null;
 
   constructor(dbPath: string) {
+    this.dbPath = dbPath;
     this.db = new Database(dbPath);
-    this.db.pragma('journal_mode = WAL');
-    this.db.pragma('foreign_keys = ON');
-    this.initializeSchema();
+    try {
+      // SQLite opens lazily: a corrupt or non-database file only fails here, on the
+      // first real page read. That is an integrity failure (controlled recovery), not
+      // an environment failure like a native-module ABI mismatch (which throws from
+      // `new Database` above and keeps its original type for graceful degradation).
+      this.db.pragma('journal_mode = WAL');
+      this.db.pragma('foreign_keys = ON');
+      this.initializeSchema();
+    } catch (err) {
+      // Fail-closed: never leak an open handle to a database the app must not use.
+      try { this.db.close(); } catch { /* already closed */ }
+      if (err instanceof PersistenceStartupError) throw err;
+      const code = (err as { code?: unknown } | null)?.code;
+      if (typeof code === 'string' && code.startsWith('SQLITE_')) {
+        throw new PersistenceStartupError(
+          { code: 'integrity_check_failed' },
+          `database could not be opened: ${(err as Error).message}`,
+        );
+      }
+      throw err;
+    }
   }
 
   /**
@@ -153,7 +204,13 @@ export class PersistenceStore {
     return undefined;
   }
 
-  searchLibrary(query: string, limit = 5): Array<{
+  /**
+   * 任务2 上下文隔离：options.projectId 存在时（工具链从 ToolContext 传入），
+   * 只返回「未归属项目的全局文献」或「归属当前项目」的 papers/notes——
+   * 排除归属其他项目的文献（含 PDF 全文命中），堵住 A 项目会话检索并读出
+   * B 项目文献片段的跨项目泄漏。缺省（管理页/导入去重等显式全局调用）行为不变。
+   */
+  searchLibrary(query: string, limit = 5, options?: { projectId?: string }): Array<{
     type: 'paper' | 'note';
     id: string;
     title: string;
@@ -174,13 +231,26 @@ export class PersistenceStore {
     if (tokens.length === 0) return [];
 
     const likePatterns = tokens.map((t) => `%${t}%`);
+    const scopeProjectId = typeof options?.projectId === 'string' && options.projectId.trim()
+      ? options.projectId.trim()
+      : undefined;
+    // paper_project_links 是权威归属关系：有任意链接的 paper 按「链接到当前
+    // 项目」放行，链接到其他项目的排除；完全未链接的属于用户全局文献库。
+    const paperScopeClause = scopeProjectId
+      ? 'AND (NOT EXISTS (SELECT 1 FROM paper_project_links l WHERE l.paper_id = papers.id) OR EXISTS (SELECT 1 FROM paper_project_links l WHERE l.paper_id = papers.id AND l.project_id = ?))'
+      : '';
+    const paperScopeParams = scopeProjectId ? [scopeProjectId] : [];
+    const noteScopeClause = scopeProjectId
+      ? 'AND (project_id IS NULL OR project_id = ?)'
+      : '';
+    const noteScopeParams = scopeProjectId ? [scopeProjectId] : [];
 
     const paperRows = this.db
       .prepare(
         `SELECT id, title, authors, year, abstract, pdf_text, doi, arxiv_id, notes FROM papers
-         WHERE ${tokens.map(() => '(title LIKE ? OR abstract LIKE ? OR pdf_text LIKE ? OR notes LIKE ?)').join(' OR ')}`,
+         WHERE ${tokens.map(() => '(title LIKE ? OR abstract LIKE ? OR pdf_text LIKE ? OR notes LIKE ?)').join(' OR ')} ${paperScopeClause}`,
       )
-      .all(...likePatterns.flatMap((p) => [p, p, p, p])) as Array<{
+      .all(...likePatterns.flatMap((p) => [p, p, p, p]), ...paperScopeParams) as Array<{
         id: string;
         title: string;
         authors: string;
@@ -195,9 +265,9 @@ export class PersistenceStore {
     const noteRows = this.db
       .prepare(
         `SELECT id, title, content, tags, linked_paper_ids FROM notes
-         WHERE ${tokens.map(() => '(title LIKE ? OR content LIKE ? OR tags LIKE ?)').join(' OR ')}`,
+         WHERE ${tokens.map(() => '(title LIKE ? OR content LIKE ? OR tags LIKE ?)').join(' OR ')} ${noteScopeClause}`,
       )
-      .all(...likePatterns.flatMap((p) => [p, p, p])) as Array<{
+      .all(...likePatterns.flatMap((p) => [p, p, p]), ...noteScopeParams) as Array<{
         id: string;
         title: string;
         content: string;
@@ -239,63 +309,78 @@ export class PersistenceStore {
       .slice(0, limit);
   }
 
+  /**
+   * Startup schema pipeline (the authoritative one — see migrations.ts):
+   *   1. baseline shape (SCHEMA_SQL, transactional, idempotent, every startup)
+   *   2. versioned migrations (MigrationRunner + UNIFIED_MIGRATIONS, the single source
+   *      of truth for column/index/data evolution beyond the baseline)
+   *   3. startup health checks (quick_check / foreign_key_check / schema invariants)
+   *
+   * Any failure throws PersistenceStartupError so the main process can stop fail-closed
+   * with a structured recovery state — this constructor never degrades into a
+   * partially-migrated store.
+   */
   private initializeSchema(): void {
-    // METIS-F12 (pre-schema patch): the memory table gained a project_id
-    // column, and SCHEMA_SQL creates an index on it. On a pre-existing DB the
-    // CREATE TABLE IF NOT EXISTS is a no-op (column stays missing), but the
-    // CREATE INDEX ... ON memory(project_id) inside SCHEMA_SQL then fails with
-    // 'no such column: project_id'. Patch the column BEFORE exec(SCHEMA_SQL)
-    // so the index creation succeeds. Idempotent.
-    this.migrateMemoryProjectId();
-    this.db.exec(SCHEMA_SQL);
-    this.migratePapersPdfText();
-    this.migratePapersProjectId();
-    this.migratePapersReferenceIds();
-    this.migratePaperProjectLinks();
-    this.migrateNoteScopes();
-    this.migrateSessionsProjectId();
-    this.migrateSessionsScenarioColumns();
-    this.migrateSubmissionTargeting();
-    this.migrateSubmissionCorrespondenceAttachments();
-    this.migrateCollections();
-    this.migrateArtifactContent();
-    this.migrateFtsIndex();
-  }
-
-  /** Idempotent: add project_id to memory if missing (METIS-F12). Must run
-   *  before SCHEMA_SQL because the index on memory(project_id) is in there. */
-  private migrateMemoryProjectId(): void {
-    const tables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='memory'").all() as Array<{ name: string }>;
-    if (tables.length === 0) return; // fresh DB: SCHEMA_SQL creates it with the column
-    const cols = (this.db.prepare('PRAGMA table_info(memory)').all() as Array<{ name: string }>).map((row) => row.name);
-    if (!cols.includes('project_id')) {
-      this.db.exec('ALTER TABLE memory ADD COLUMN project_id TEXT');
-    const officeProfileColumns = this.db.prepare('PRAGMA table_info(office_prompt_profiles)').all() as Array<{ name: string }>;
-    if (officeProfileColumns.length > 0 && !officeProfileColumns.some((column) => column.name === 'global_prompt')) {
-      this.db.exec("ALTER TABLE office_prompt_profiles ADD COLUMN global_prompt TEXT NOT NULL DEFAULT ''");
-    }
-    }
-  }
-
-  /** Create the FTS5 full-text index for papers (idempotent). Contentless
-   *  mode: no per-row triggers (which slow bulk inserts); call
-   *  `reindexPapersFts()` after large imports or before search. */
-  private migrateFtsIndex(): void {
-    const ftsExists = this.db.prepare(
-      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'papers_fts'",
-    ).get();
-    if (ftsExists) return;
+    // 1. Baseline shape. Whole new tables keep arriving in SCHEMA_SQL; running it on
+    //    every startup keeps any database's table set current. Fail-closed on error.
+    let baseline: { createdObjects: number };
     try {
-      this.db.exec(`
-        CREATE VIRTUAL TABLE papers_fts USING fts5(
-          title, authors, abstract, pdf_text,
-          content='papers', content_rowid='rowid'
-        );
-      `);
-      this.reindexPapersFts();
-    } catch {
-      // FTS5 not available in this SQLite build — fall back to LIKE search.
+      baseline = ensureBaselineSchema(this.db);
+    } catch (err) {
+      throw new PersistenceStartupError(
+        { code: 'schema_migration_failed' },
+        `baseline schema failed: ${(err as Error).message}`,
+      );
     }
+
+    // 2. Versioned migrations. A failure rolls back its own transaction and stops the
+    //    pipeline; the DB stays at the last good version (plus the runner's .bak file).
+    const runner = new MigrationRunner(this.db, this.dbPath, UNIFIED_MIGRATIONS);
+    const result = runner.run();
+    this.lastMigrationResult = result;
+    if (result.failed) {
+      throw new PersistenceStartupError(
+        {
+          code: 'schema_migration_failed',
+          failedVersion: result.failed.version,
+          backupPath: result.backupPath,
+        },
+        `migration v${result.failed.version} (${result.failed.description}) failed: ${result.failed.error}`,
+      );
+    }
+    if (baseline.createdObjects > 0) {
+      try {
+        this.db.prepare(`
+          INSERT INTO migration_log
+            (run_at, from_version, to_version, applied_versions, elapsed_ms, status, failed_version, error, recovery_action, backup_path)
+          VALUES (?, ?, ?, ?, 0, 'baseline_applied', NULL, NULL, '', NULL)
+        `).run(Date.now(), result.toVersion, result.toVersion, JSON.stringify([`baseline+${baseline.createdObjects}`]));
+      } catch { /* observability only */ }
+    }
+
+    // 3. Startup health checks. Failures here mean the database must not be used.
+    const health = runStartupHealthChecks(this.db);
+    this.lastHealthReport = health;
+    if (!health.ok) {
+      const failed = health.checks.filter((check) => !check.ok);
+      const code: PersistenceStartupFailureCode = failed.some((check) => check.name === 'schema_invariants')
+        ? 'schema_invariant_violation'
+        : 'integrity_check_failed';
+      throw new PersistenceStartupError(
+        { code, report: health },
+        `startup health check failed: ${failed.map((check) => `${check.name}: ${check.detail}`).slice(0, 5).join(' | ')}`,
+      );
+    }
+  }
+
+  /** Migration result of this store's startup (for diagnostics / IPC). */
+  getLastMigrationResult(): MigrationResult | null {
+    return this.lastMigrationResult;
+  }
+
+  /** Startup health report of this store (for diagnostics / IPC). */
+  getStartupHealthReport(): StartupHealthReport | null {
+    return this.lastHealthReport;
   }
 
   /** Rebuild the FTS5 index from the papers table (idempotent, fast). */
@@ -305,211 +390,6 @@ export class PersistenceStore {
         INSERT INTO papers_fts(papers_fts) VALUES('rebuild');
       `);
     } catch { /* FTS5 unavailable */ }
-  }
-
-  private migrateArtifactContent(): void {
-    const contentColumn = this.db.prepare(
-      "SELECT 1 FROM pragma_table_info('artifacts') WHERE name = 'content'",
-    ).get();
-    if (!contentColumn) {
-      this.db.exec('ALTER TABLE artifacts ADD COLUMN content TEXT;');
-    }
-  }
-
-  private migratePapersPdfText(): void {
-    const col = this.db.prepare(
-      "SELECT 1 FROM pragma_table_info('papers') WHERE name = 'pdf_text'",
-    ).get();
-    if (!col) {
-      this.db.exec("ALTER TABLE papers ADD COLUMN pdf_text TEXT NOT NULL DEFAULT '';");
-    }
-    const citationCol = this.db.prepare(
-      "SELECT 1 FROM pragma_table_info('papers') WHERE name = 'citation_count'",
-    ).get();
-    if (!citationCol) {
-      this.db.exec('ALTER TABLE papers ADD COLUMN citation_count INTEGER NOT NULL DEFAULT 0;');
-    }
-    const pdfUrlCol = this.db.prepare(
-      "SELECT 1 FROM pragma_table_info('papers') WHERE name = 'pdf_url'",
-    ).get();
-    if (!pdfUrlCol) {
-      this.db.exec('ALTER TABLE papers ADD COLUMN pdf_url TEXT;');
-    }
-  }
-
-  private migratePapersReferenceIds(): void {
-    const col = this.db.prepare(
-      "SELECT 1 FROM pragma_table_info('papers') WHERE name = 'reference_ids'",
-    ).get();
-    if (!col) {
-      this.db.exec("ALTER TABLE papers ADD COLUMN reference_ids TEXT NOT NULL DEFAULT '[]';");
-    }
-  }
-
-  private migratePapersProjectId(): void {
-    const col = this.db.prepare(
-      "SELECT 1 FROM pragma_table_info('papers') WHERE name = 'project_id'",
-    ).get();
-    if (!col) {
-      this.db.exec("ALTER TABLE papers ADD COLUMN project_id TEXT;");
-    }
-    const idx = this.db.prepare(
-      "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_papers_project_id'",
-    ).get();
-    if (!idx) {
-      this.db.exec('CREATE INDEX idx_papers_project_id ON papers (project_id);');
-    }
-  }
-
-  /** Split legacy global notes from project-scoped research memos. */
-  private migrateNoteScopes(): void {
-    const columns = (this.db.prepare('PRAGMA table_info(notes)').all() as Array<{ name: string }>)
-      .map((row) => row.name);
-    if (!columns.includes('project_id')) this.db.exec('ALTER TABLE notes ADD COLUMN project_id TEXT');
-    if (!columns.includes('scope')) this.db.exec("ALTER TABLE notes ADD COLUMN scope TEXT NOT NULL DEFAULT 'global'");
-    this.db.exec(`
-      UPDATE notes SET scope = 'global' WHERE project_id IS NULL AND scope <> 'global';
-      UPDATE notes SET scope = 'research' WHERE project_id IS NOT NULL AND scope <> 'research';
-      CREATE INDEX IF NOT EXISTS idx_notes_project_scope ON notes(project_id, scope, updated_at DESC);
-    `);
-  }
-
-  /**
-   * Upgrade the legacy one-paper/one-project pointer to a reusable many-to-many
-   * relation. Existing source rows that used source.id === paper.id are tagged
-   * with their canonical library paper without changing their ids, so evidence
-   * and artifact references remain valid.
-   */
-  private migratePaperProjectLinks(): void {
-    const sourceColumn = this.db.prepare(
-      "SELECT 1 FROM pragma_table_info('sources') WHERE name = 'library_paper_id'",
-    ).get();
-    if (!sourceColumn) {
-      this.db.exec('ALTER TABLE sources ADD COLUMN library_paper_id TEXT;');
-    }
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS paper_project_links (
-        paper_id TEXT NOT NULL,
-        project_id TEXT NOT NULL,
-        linked_at INTEGER NOT NULL,
-        PRIMARY KEY (paper_id, project_id),
-        FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE,
-        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
-      );
-      CREATE INDEX IF NOT EXISTS idx_paper_project_links_project
-        ON paper_project_links(project_id, linked_at DESC);
-      INSERT OR IGNORE INTO paper_project_links (paper_id, project_id, linked_at)
-        SELECT papers.id, papers.project_id, papers.added_at
-        FROM papers
-        INNER JOIN projects ON projects.id = papers.project_id
-        WHERE papers.project_id IS NOT NULL;
-      UPDATE sources
-        SET library_paper_id = id
-        WHERE library_paper_id IS NULL
-          AND EXISTS (
-            SELECT 1 FROM papers
-            WHERE papers.id = sources.id
-              AND papers.project_id = sources.project_id
-          );
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_sources_project_library_paper
-        ON sources(project_id, library_paper_id)
-        WHERE library_paper_id IS NOT NULL;
-    `);
-  }
-
-  private migrateSessionsProjectId(): void {
-    const col = this.db.prepare(
-      "SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'project_id'",
-    ).get();
-    if (!col) {
-      this.db.exec("ALTER TABLE sessions ADD COLUMN project_id TEXT;");
-    }
-    const idx = this.db.prepare(
-      "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_sessions_project_id'",
-    ).get();
-    if (!idx) {
-      this.db.exec('CREATE INDEX idx_sessions_project_id ON sessions (project_id);');
-    }
-  }
-
-  /** 多对话架构(2026-09-04 刘总要求):scenarioId/activeArtifactIds 正式列。 */
-  private migrateSessionsScenarioColumns(): void {
-    const cols = new Set(
-      (this.db.prepare("SELECT name FROM pragma_table_info('sessions')").all() as Array<{ name: string }>).map((row) => row.name),
-    );
-    if (!cols.has('scenario_id')) {
-      this.db.exec('ALTER TABLE sessions ADD COLUMN scenario_id TEXT;');
-    }
-    if (!cols.has('active_artifact_ids')) {
-      this.db.exec('ALTER TABLE sessions ADD COLUMN active_artifact_ids TEXT;');
-    }
-  }
-
-  /** Idempotent: submission_cases gained targeting_json (投稿选刊前置条件). */
-  private migrateSubmissionTargeting(): void {
-    const tables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='submission_cases'").all() as Array<{ name: string }>;
-    if (tables.length === 0) return; // fresh DB: SCHEMA_SQL creates it with the column
-    const col = this.db.prepare(
-      "SELECT 1 FROM pragma_table_info('submission_cases') WHERE name = 'targeting_json'",
-    ).get();
-    if (!col) {
-      this.db.exec("ALTER TABLE submission_cases ADD COLUMN targeting_json TEXT NOT NULL DEFAULT '';");
-    }
-  }
-
-  /** Idempotent: submission_correspondence gained attachment columns（决定信附件解析）. */
-  private migrateSubmissionCorrespondenceAttachments(): void {
-    const tables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='submission_correspondence'").all() as Array<{ name: string }>;
-    if (tables.length === 0) return; // fresh DB: SCHEMA_SQL creates it with the columns
-    for (const column of ['attachment_names', 'attachment_texts'] as const) {
-      const col = this.db.prepare(
-        `SELECT 1 FROM pragma_table_info('submission_correspondence') WHERE name = '${column}'`,
-      ).get();
-      if (!col) {
-        this.db.exec(`ALTER TABLE submission_correspondence ADD COLUMN ${column} TEXT NOT NULL DEFAULT '[]';`);
-      }
-    }
-  }
-
-  private migrateCollections(): void {
-    const table = this.db.prepare(
-      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'collections'",
-    ).get();
-    if (!table) {
-      this.db.exec(`
-        CREATE TABLE collections (
-          id TEXT PRIMARY KEY,
-          name TEXT NOT NULL,
-          description TEXT NOT NULL DEFAULT '',
-          paper_ids TEXT NOT NULL DEFAULT '[]',
-          created_at INTEGER NOT NULL
-        );
-      `);
-    }
-    const linkedPaperIdsCol = this.db.prepare(
-      "SELECT 1 FROM pragma_table_info('experiments') WHERE name = 'linked_paper_ids'",
-    ).get();
-    if (!linkedPaperIdsCol) {
-      this.db.exec("ALTER TABLE experiments ADD COLUMN linked_paper_ids TEXT NOT NULL DEFAULT '[]';");
-    }
-    const scriptPathCol = this.db.prepare(
-      "SELECT 1 FROM pragma_table_info('experiments') WHERE name = 'script_path'",
-    ).get();
-    if (!scriptPathCol) {
-      this.db.exec('ALTER TABLE experiments ADD COLUMN script_path TEXT;');
-    }
-    const scriptTypeCol = this.db.prepare(
-      "SELECT 1 FROM pragma_table_info('experiments') WHERE name = 'script_type'",
-    ).get();
-    if (!scriptTypeCol) {
-      this.db.exec('ALTER TABLE experiments ADD COLUMN script_type TEXT;');
-    }
-    const experimentStarredCol = this.db.prepare(
-      "SELECT 1 FROM pragma_table_info('experiments') WHERE name = 'starred'",
-    ).get();
-    if (!experimentStarredCol) {
-      this.db.exec('ALTER TABLE experiments ADD COLUMN starred INTEGER NOT NULL DEFAULT 0;');
-    }
   }
 
   /** Get the raw database instance (for advanced queries). */
@@ -575,7 +455,7 @@ export class PersistenceStore {
     this.db.prepare('UPDATE sessions SET last_activity = ? WHERE id = ?').run(Date.now(), sessionId);
   }
 
-  updateSession(sessionId: string, patch: Partial<Pick<SessionRecord, 'lastActivity' | 'messageCount' | 'scenarioId' | 'activeArtifactIds'> & { metadata: Record<string, unknown> }>): void {
+  updateSession(sessionId: string, patch: Partial<Pick<SessionRecord, 'lastActivity' | 'messageCount' | 'scenarioId' | 'activeArtifactIds' | 'projectId'> & { metadata: Record<string, unknown> }>): void {
     const existing = this.getSession(sessionId);
     if (!existing) return;
     const metadata = { ...existing.metadata, ...(patch.metadata ?? {}) };
@@ -583,13 +463,29 @@ export class PersistenceStore {
     const messageCount = patch.messageCount ?? existing.messageCount;
     const scenarioId = patch.scenarioId !== undefined ? patch.scenarioId : existing.scenarioId ?? null;
     const activeArtifactIds = patch.activeArtifactIds !== undefined ? JSON.stringify(patch.activeArtifactIds) : (existing.activeArtifactIds ? JSON.stringify(existing.activeArtifactIds) : null);
+    // 任务2：projectId 仅在 patch 显式给出时更新（ChatTurnService 只允许
+    // 无主 session 的首次显式绑定，改绑由 scope_mismatch 校验拒绝）。
+    const projectId = patch.projectId !== undefined ? patch.projectId : existing.projectId ?? null;
     this.db.prepare(
-      'UPDATE sessions SET last_activity = ?, message_count = ?, metadata = ?, scenario_id = ?, active_artifact_ids = ? WHERE id = ?',
-    ).run(lastActivity, messageCount, JSON.stringify(metadata), scenarioId, activeArtifactIds, sessionId);
+      'UPDATE sessions SET last_activity = ?, message_count = ?, metadata = ?, scenario_id = ?, active_artifact_ids = ?, project_id = ? WHERE id = ?',
+    ).run(lastActivity, messageCount, JSON.stringify(metadata), scenarioId, activeArtifactIds, projectId, sessionId);
   }
 
+  /**
+   * Deletes a conversation. Messages, transient runs and checkpoints go away with the
+   * session, but the artifacts the session produced are PROJECT assets: they are
+   * migrated (idempotently, into the owning project or the system unassigned project)
+   * to research_artifacts/artifact_versions inside the same transaction before the
+   * session row goes away and the legacy session-owned cascade fires.
+   */
   deleteSession(sessionId: string): void {
     this.db.transaction(() => {
+      const session = this.db.prepare('SELECT project_id FROM sessions WHERE id = ?').get(sessionId) as { project_id: string | null } | undefined;
+      const artifacts = this.db.prepare('SELECT * FROM artifacts WHERE session_id = ?').all(sessionId) as LegacyArtifactRow[];
+      const targetProjectId = session?.project_id ?? UNASSIGNED_ARTIFACT_PROJECT_ID;
+      for (const artifact of artifacts) {
+        this.mirrorLegacyArtifactToProject(artifact, targetProjectId, { migrated: true });
+      }
       this.db.prepare('DELETE FROM agent_events WHERE session_id = ?').run(sessionId);
       this.db.prepare('DELETE FROM agent_runs WHERE session_id = ?').run(sessionId);
       this.db.prepare('DELETE FROM tool_results WHERE session_id = ?').run(sessionId);
@@ -2774,6 +2670,12 @@ export class PersistenceStore {
    * Atomically persists generated artifacts. A deterministic id may be replayed
    * only when every persisted field is identical; conflicting content is never
    * silently overwritten.
+   *
+   * Every artifact created inside a project-scoped session is mirrored (same
+   * transaction) into the project-owned research_artifacts/artifact_versions store,
+   * so conversation deletion can never destroy a project asset. Artifacts of
+   * project-less sessions are mirrored when their session is deleted (they land in
+   * the system unassigned project).
    */
   createArtifacts(records: ArtifactCreateRecord[]): void {
     const select = this.db.prepare(
@@ -2782,6 +2684,7 @@ export class PersistenceStore {
     const insert = this.db.prepare(
       'INSERT INTO artifacts (id, session_id, name, type, path, size, content, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
     );
+    const sessionProject = this.db.prepare('SELECT project_id FROM sessions WHERE id = ?');
     const persist = this.db.transaction((batch: ArtifactCreateRecord[]) => {
       const createdAt = Date.now();
       for (const record of batch) {
@@ -2823,9 +2726,93 @@ export class PersistenceStore {
           metadataValue,
           createdAt,
         );
+        // Project-owned mirror (task 1 §五): session-scoped rows stay for the
+        // conversation UI; the project asset must survive conversation deletion.
+        const session = sessionProject.get(record.sessionId) as { project_id: string | null } | undefined;
+        const projectId = session?.project_id;
+        if (projectId) {
+          this.mirrorLegacyArtifactToProject({
+            id: record.id,
+            session_id: record.sessionId,
+            name: record.name,
+            type: record.type,
+            path: pathValue,
+            size: sizeValue,
+            content: contentValue,
+            metadata: metadataValue,
+            created_at: createdAt,
+          }, projectId);
+        }
       }
     });
     persist(records);
+  }
+
+  /**
+   * Make sure the artifact-owning project exists (the system unassigned project is
+   * created lazily on first use; real projects always exist before their sessions).
+   */
+  private ensureArtifactOwnerProject(projectId: string): void {
+    if (projectId !== UNASSIGNED_ARTIFACT_PROJECT_ID) return;
+    this.db.prepare(`
+      INSERT OR IGNORE INTO projects (id, title, original_intent, lifecycle, metadata, created_at, updated_at, version, source)
+      VALUES (?, ?, '', 'archived', '{}', ?, ?, 1, 'system')
+    `).run(
+      UNASSIGNED_ARTIFACT_PROJECT_ID,
+      '系统收容成果（未归属会话）',
+      Date.now(),
+      Date.now(),
+    );
+  }
+
+  /**
+   * Idempotently mirror a legacy session-owned artifact row into the project-owned
+   * store. The mirror carries the original session id as provenance; the owner is
+   * always the project (never switched back to a session).
+   */
+  private mirrorLegacyArtifactToProject(artifact: LegacyArtifactRow, projectId: string, options?: { migrated?: boolean }): void {
+    this.ensureArtifactOwnerProject(projectId);
+    const now = Date.now();
+    const mirrorId = projectArtifactMirrorId(artifact.id);
+    const provenance = JSON.stringify({
+      createdBySessionId: artifact.session_id,
+      sourceArtifactId: artifact.id,
+      ...(options?.migrated ? { migratedFrom: 'legacy_artifacts', migratedAt: now } : {}),
+    });
+    const inserted = this.db.prepare(`
+      INSERT INTO research_artifacts (id, project_id, title, artifact_type, review_status, content_ref, provenance, metadata, version, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 'draft', ?, ?, ?, 1, ?, ?)
+      ON CONFLICT(id) DO NOTHING
+    `).run(
+      mirrorId,
+      projectId,
+      artifact.name,
+      artifact.type || 'other',
+      artifact.path,
+      provenance,
+      artifact.metadata || '{}',
+      artifact.created_at,
+      now,
+    );
+    if (Number(inserted.changes) === 0) return; // already mirrored (dual-write or earlier migration)
+    const content = artifact.content ?? '';
+    this.db.prepare(`
+      INSERT INTO artifact_versions (artifact_id, version, manifest, content, content_hash, created_at, created_by)
+      VALUES (?, 1, ?, ?, ?, ?, 'session')
+    `).run(
+      mirrorId,
+      JSON.stringify({
+        name: artifact.name,
+        type: artifact.type,
+        path: artifact.path,
+        size: artifact.size,
+        sessionId: artifact.session_id,
+        sourceArtifactId: artifact.id,
+      }),
+      content,
+      createHash('sha256').update(content, 'utf8').digest('hex'),
+      artifact.created_at,
+    );
   }
 
   listArtifacts(sessionId: string): Array<{
@@ -2875,8 +2862,17 @@ export class PersistenceStore {
     };
   }
 
+  /**
+   * Explicit user deletion of one artifact removes both the session-scoped row and
+   * its project-owned mirror (soft delete, keeping version history rows).
+   */
   deleteArtifact(id: string): void {
-    this.db.prepare('DELETE FROM artifacts WHERE id = ?').run(id);
+    const now = Date.now();
+    this.db.transaction(() => {
+      this.db.prepare('DELETE FROM artifacts WHERE id = ?').run(id);
+      this.db.prepare('UPDATE research_artifacts SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL')
+        .run(now, now, projectArtifactMirrorId(id));
+    })();
   }
 
   // ─── Agent execution runs and event ledger ───────────────────
@@ -2924,12 +2920,45 @@ export class PersistenceStore {
     return Number(result.changes) > 0;
   }
 
+  /** 任务2 Context Provenance：记录一次重要 run 装入了哪些 scope 的上下文（幂等覆盖写）。 */
+  recordContextProvenance(input: {
+    runId: string;
+    sessionId: string;
+    projectId?: string;
+    provenance: object;
+  }): void {
+    this.db.prepare(
+      `INSERT INTO context_provenance (run_id, session_id, project_id, provenance_json, created_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(run_id) DO UPDATE SET provenance_json = excluded.provenance_json, project_id = excluded.project_id`,
+    ).run(
+      input.runId,
+      input.sessionId,
+      input.projectId ?? null,
+      JSON.stringify(input.provenance),
+      Date.now(),
+    );
+  }
+
+  getContextProvenance(runId: string): { runId: string; sessionId: string; projectId?: string; provenance: Record<string, unknown>; createdAt: number } | undefined {
+    const row = this.db.prepare('SELECT * FROM context_provenance WHERE run_id = ?').get(runId) as Record<string, unknown> | undefined;
+    if (!row) return undefined;
+    let provenance: Record<string, unknown> = {};
+    try { const parsed = JSON.parse((row.provenance_json as string) || '{}'); if (parsed && typeof parsed === 'object') provenance = parsed; } catch { provenance = {}; }
+    return {
+      runId: row.run_id as string,
+      sessionId: row.session_id as string,
+      ...(typeof row.project_id === 'string' ? { projectId: row.project_id } : {}),
+      provenance,
+      createdAt: row.created_at as number,
+    };
+  }
+
   getAgentRun(runId: string, sessionId?: string): AgentRunRecord | undefined {
     const row = this.db.prepare(
       `SELECT * FROM agent_runs WHERE run_id = ?${sessionId === undefined ? '' : ' AND session_id = ?'}`,
     ).get(...(sessionId === undefined ? [runId] : [runId, sessionId])) as Record<string, unknown> | undefined;
-    if (!row) return undefined;
-    let metadata: Record<string, unknown> = {};
+    if (!row) return undefined;    let metadata: Record<string, unknown> = {};
     try {
       const parsed = JSON.parse((row.metadata as string) || '{}');
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) metadata = parsed as Record<string, unknown>;
@@ -3023,6 +3052,14 @@ export class PersistenceStore {
   async backupTo(destinationPath: string): Promise<{ destination: string; totalPages: number }> {
     const meta = await this.db.backup(destinationPath);
     return { destination: destinationPath, totalPages: meta.totalPages };
+  }
+
+  /**
+   * Flush the WAL back into the main database file (used before a backup-file swap,
+   * so the on-disk file is self-contained without its -wal sidecar).
+   */
+  checkpointWal(): void {
+    this.db.pragma('wal_checkpoint(TRUNCATE)');
   }
 
   close(): void {

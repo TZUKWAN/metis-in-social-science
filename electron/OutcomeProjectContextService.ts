@@ -120,7 +120,7 @@ export class OutcomeProjectContextService {
     private readonly projectMetisReader?: OutcomeProjectMetisReader,
   ) {}
 
-  collect(input: { projectId: string; outcomeId: string; instruction: string }): OutcomeProjectContext {
+  collect(input: { projectId: string; outcomeId: string; instruction: string; /** 任务2：会话显式选中的 artifact（activeArtifactIds）。undefined=调用方未提供（兼容旧路径）；空数组=明确无选中成果，禁止按最近更新抓取。 */ activeArtifactIds?: string[] }): OutcomeProjectContext {
     const requested = requestedKinds(input.instruction);
     if (!requested.otherOutcomes && !requested.history && !requested.artifacts && !requested.metis) {
       return { sources: [], prompt: '', diagnostics: [] };
@@ -137,10 +137,16 @@ export class OutcomeProjectContextService {
           includeHistory: requested.history,
           includeArtifacts: requested.artifacts,
           candidateLimit: MAX_CANDIDATES_PER_KIND,
+          ...(input.activeArtifactIds !== undefined ? { artifactIds: input.activeArtifactIds } : {}),
         });
       } catch {
         diagnostics.push(diagnostic('project_context_unavailable', '当前项目上下文读取失败；本轮未参考其他成果、历史版本或项目资料。'));
       }
+    }
+    // 任务2（Artifact Context）：请求项目资料但没有显式选中的 artifact 时，
+    // 必须明确「无选中成果」，不得暗中用「最近更新的 artifact」替代用户选择。
+    if (requested.artifacts && input.activeArtifactIds?.length === 0) {
+      diagnostics.push(diagnostic('project_context_unavailable', '当前会话没有选中的项目资料（active artifact 为空）；本轮未自动抓取最近项目资料。'));
     }
 
     // “项目资料” may use the durable Artifact store and peer Outcomes, but a

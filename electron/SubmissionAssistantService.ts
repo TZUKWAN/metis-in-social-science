@@ -108,9 +108,20 @@ export class SubmissionAssistantService {
       : '（尚未确认偏好；若影响推荐请用围栏块追问）';
     let browserContext = '（浏览器尚未打开页面）';
     try {
-      const extract = await this.options.browser.extract();
-      if (extract.ok && extract.page) {
-        browserContext = `URL：${extract.page.url}\n标题：${extract.page.title}\n可见文本：\n${extract.page.text.slice(0, BROWSER_TEXT_CHARS)}`;
+      // 任务2 上下文隔离：优先带归属校验提取。页面属于其他项目 → 拒绝注入；
+      // 归属未知 → 放行但显式声明，绝不默认当作本项目的上下文。
+      const scoped = this.options.browser.extractScoped
+        ? await this.options.browser.extractScoped(request.projectId ?? null)
+        : await this.options.browser.extract().then((result) => result.ok && result.page
+          ? { ok: true as const, page: result.page, ownershipKnown: false }
+          : { ok: false as const, error: result.error ?? 'browser_unavailable' });
+      if (scoped.ok && scoped.page) {
+        const ownershipNote = 'ownershipKnown' in scoped && scoped.ownershipKnown
+          ? ''
+          : '\n（注意：该页面来自共享浏览器，归属项目未知；若与本课题无关请忽略。）';
+        browserContext = `URL：${scoped.page.url}\n标题：${scoped.page.title}\n可见文本：\n${scoped.page.text.slice(0, BROWSER_TEXT_CHARS)}${ownershipNote}`;
+      } else if (!scoped.ok && 'scopeMismatch' in scoped && scoped.scopeMismatch) {
+        browserContext = '（共享浏览器当前页属于其他项目，已按上下文隔离规则排除，不作为本课题参考。）';
       }
     } catch { /* 浏览器未打开时如实降级 */ }
     const shortlistText = request.shortlist && request.shortlist.length > 0

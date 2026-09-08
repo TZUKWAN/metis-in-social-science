@@ -10,6 +10,7 @@ import { useTranslation } from '../i18n';
 import { useOverlayDialog } from '../hooks/useOverlayDialog';
 import { useResearchWorkspaceStore } from '../research/researchWorkspaceStore';
 import { setPendingChatIntent } from '../lib/chatIntent';
+import { navigate } from '../shell/navigation';
 import './MethodsPanel.css';
 
 interface MethodView {
@@ -87,8 +88,8 @@ export default function MethodsPanel({ onClose }: { onClose: () => void }) {
     setNotice(t('methods.appliedNotice'));
     void reload();
     onClose();
-    // 跳到项目聊天模式执行。
-    window.dispatchEvent(new CustomEvent('metis:navigate-projects', { detail: {} }));
+    // 跳到项目聊天模式执行（任务4：typed navigation contract）。
+    navigate({ kind: 'workspace' });
   }, [activeMethod, paramValues, activeProjectId, t, reload, onClose]);
 
   const createMethod = useCallback(async () => {

@@ -97,6 +97,12 @@ export class AgentExecutionEventBridge {
       }
       this.publishAction('model.request', 'running', 'model.request');
     });
+    // 2026-09-05 无声卡死修复：首字节前的定期心跳，让 UI 能区分「在等」与「挂死」。
+    this.register(loop, 'model.waiting', 'agent-execution-model-waiting', (context) => {
+      if (!isForSession(context, this.options.sessionId)) return;
+      const elapsed = typeof context.elapsedSeconds === 'number' ? context.elapsedSeconds : undefined;
+      this.publishAction('model.waiting', 'running', elapsed === undefined ? 'model.waiting' : `model.waiting ${elapsed}s`);
+    });
     this.register(loop, 'model.response', 'agent-execution-model-response', (context) => {
       if (!isForSession(context, this.options.sessionId)) return;
       this.publishAction('model.response', 'completed', 'model.response');

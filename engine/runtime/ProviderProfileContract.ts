@@ -44,6 +44,9 @@ export const ProviderProfileSummarySchema = z.strictObject({
   isActive: z.boolean(),
   createdAt: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   updatedAt: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  // 传输层可调参数回显（2026-09-06 P0 遗留：设置页表单需要回填当前值）。
+  timeout: z.number().int().min(1_000).max(1_800_000).optional(),
+  maxRetries: z.number().int().min(0).max(SETUP_RUNTIME_LIMITS.strategyRetries).optional(),
 });
 export type ProviderProfileSummary = z.infer<typeof ProviderProfileSummarySchema>;
 

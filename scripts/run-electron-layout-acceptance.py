@@ -334,7 +334,7 @@ def is_safe_markdown_security_pass(value: Any) -> bool:
     return True
 
 
-CURRENT_SURFACE_NAMES = ('converse', 'projects', 'outcomes', 'scenes')
+CURRENT_SURFACE_NAMES = ('projects', 'topics', 'outcomes', 'scenes')
 
 
 def is_complete_acceptance_pass(

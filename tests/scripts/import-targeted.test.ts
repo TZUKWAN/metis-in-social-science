@@ -1,5 +1,5 @@
 /** 运维脚本：定向导入 6 个新增 WenyuChiou 技能源 + 重导 5 个扁平/目录形态源。 */
-import fs from 'node:fs';
+
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
@@ -34,7 +34,8 @@ function makeFetcher() {
   };
 }
 
-describe('定向导入', () => {
+// Real-network drill (hits GitHub): skip without provisioned credentials.
+   describe.skipIf(!TOKEN)('定向导入', () => {
   it('imports 6 new wenyuchiou repos + re-imports 5 flat/catalog sources', { timeout: 900_000 }, async () => {
     const db = new Database(DB_PATH);
     db.pragma('journal_mode = WAL');

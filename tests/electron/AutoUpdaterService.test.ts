@@ -43,7 +43,9 @@ describe('AutoUpdaterService', () => {
     service.on('event', (e: { type: string; version?: string }) => events.push(e));
     service.init();
     updater.emit('update-available', { version: '0.2.0' } as never);
-    expect(events).toContainEqual({ type: 'available', version: '0.2.0' });
+    // Legacy (no-options) construction resolves to the alpha channel, which is
+    // now disclosed on availability events.
+    expect(events).toContainEqual({ type: 'available', version: '0.2.0', channel: 'alpha' });
   });
 
   it('downloads once and only once, then quits-and-installs', async () => {

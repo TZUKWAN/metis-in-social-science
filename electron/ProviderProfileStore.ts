@@ -478,6 +478,8 @@ export class ProviderProfileStore {
       model: profile.model,
       vision: profile.vision,
       maxContextTokens: profile.maxContextTokens,
+      timeout: profile.timeout,
+      maxRetries: profile.maxRetries,
       apiKeyStored: true,
       isActive: profile.id === activeId,
       createdAt: profile.createdAt,

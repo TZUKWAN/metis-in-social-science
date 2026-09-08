@@ -11,7 +11,6 @@ import path from 'node:path';
 import os from 'node:os';
 import Database from 'better-sqlite3';
 import { PersistenceStore } from '../../engine/persistence/PersistenceStore.js';
-import { MigrationRunner, METIS_MIGRATIONS } from '../../engine/persistence/MigrationRunner.js';
 import { MemoryManager } from '../../engine/memory/MemoryManager.js';
 import {
   MEMORY_REMEMBER_TOOL,
@@ -84,8 +83,8 @@ describe('PersistenceStore project-scoped memory', () => {
   });
 });
 
-describe('memory migration for legacy databases (METIS-F12)', () => {
-  it('adds the project_id column idempotently', () => {
+describe('memory migration for legacy databases (METIS-F12, unified pipeline v112)', () => {
+  it('adds the project_id column through the real startup pipeline, idempotently', () => {
     const dir = tempDir();
     const dbPath = path.join(dir, 'legacy.db');
     const db = new Database(dbPath);
@@ -101,20 +100,28 @@ describe('memory migration for legacy databases (METIS-F12)', () => {
       INSERT INTO memory (key, value, category, created_at, updated_at)
         VALUES ('legacy', 'data', 'general', 1, 1);
     `);
-    const runner = new MigrationRunner(db, dbPath, METIS_MIGRATIONS);
-    const result = runner.run();
-    expect(result.appliedVersions).toContain(3);
+    db.close();
 
-    const cols = (db.prepare('PRAGMA table_info(memory)').all() as Array<{ name: string }>).map((row) => row.name);
+    // The real startup path: PersistenceStore runs baseline + migrations + health checks.
+    const store = new PersistenceStore(dbPath);
+    const raw = store.raw;
+    const cols = (raw.prepare('PRAGMA table_info(memory)').all() as Array<{ name: string }>).map((row) => row.name);
     expect(cols).toContain('project_id');
     // Legacy rows remain visible as global memory.
-    const row = db.prepare('SELECT * FROM memory WHERE key = ?').get('legacy') as { project_id: unknown };
+    const row = raw.prepare('SELECT * FROM memory WHERE key = ?').get('legacy') as { project_id: unknown };
     expect(row.project_id).toBeNull();
+    // The migration was recorded.
+    expect((raw.prepare('SELECT MAX(version) v FROM schema_migrations').get() as { v: number }).v)
+      .toBeGreaterThanOrEqual(112);
+    store.close();
 
-    // Second run is a no-op for version 3.
-    const again = new MigrationRunner(db, dbPath, METIS_MIGRATIONS).run();
-    expect(again.appliedVersions).not.toContain(3);
-    db.close();
+    // Reopening is a no-op: no pending migrations, row untouched.
+    const store2 = new PersistenceStore(dbPath);
+    const again = store2.getLastMigrationResult();
+    expect(again?.appliedVersions).toEqual([]);
+    const row2 = store2.raw.prepare('SELECT * FROM memory WHERE key = ?').get('legacy') as { project_id: unknown };
+    expect(row2.project_id).toBeNull();
+    store2.close();
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });
@@ -147,13 +154,38 @@ describe('MemoryManager project scoping', () => {
     expect(contextB).not.toContain('chunk size 512');
   });
 
-  it('keeps global decisions visible to every project', () => {
+  it('keeps global decisions out of project contexts; only explicit global calls see them', () => {
     manager.recordKeyDecision('Global policy: never fabricate citations');
     manager.recordKeyDecision('Project specific note', undefined, 'proj-a');
 
+    // 任务2 上下文隔离（默认隔离，显式共享）：全局行可能来自其他项目对话的
+    // 自动提取（key_decision/preference），不得混入任何项目的 prompt——项目
+    // 上下文只含本项目 scoped 行；仅显式 global 调用（无 projectId）读全局行。
     const contextA = manager.buildMemoryContext('proj-a');
-    expect(contextA).toContain('never fabricate citations');
     expect(contextA).toContain('Project specific note');
+    expect(contextA).not.toContain('never fabricate citations');
+
+    const contextB = manager.buildMemoryContext('proj-b');
+    expect(contextB).not.toContain('never fabricate citations');
+
+    const globalContext = manager.buildMemoryContext();
+    expect(globalContext).toContain('never fabricate citations');
+    expect(globalContext).not.toContain('Project specific note');
+  });
+
+  it('isolates per-project memory files from the global CLAUDE_MEMORY.md and each other', () => {
+    manager.saveProjectMemory('全局记忆 g77：跨项目通用说明');
+    manager.saveProjectMemory('A-only-file-marker-k3：A 项目专用记忆', 'proj-a');
+    manager.saveProjectMemory('B-only-file-marker-m8：B 项目专用记忆', 'proj-b');
+
+    expect(manager.buildMemoryContext('proj-a')).toContain('A-only-file-marker-k3');
+    expect(manager.buildMemoryContext('proj-a')).not.toContain('B-only-file-marker-m8');
+    expect(manager.buildMemoryContext('proj-a')).not.toContain('全局记忆 g77');
+    expect(manager.buildMemoryContext('proj-b')).toContain('B-only-file-marker-m8');
+    expect(manager.buildMemoryContext('proj-b')).not.toContain('A-only-file-marker-k3');
+    // 显式 global 调用（无 projectId）读全局文件。
+    expect(manager.buildMemoryContext()).toContain('全局记忆 g77');
+    expect(manager.buildMemoryContext()).not.toContain('A-only-file-marker-k3');
   });
 
   it('scopes preferences via the manager API', () => {

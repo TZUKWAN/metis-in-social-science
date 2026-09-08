@@ -18,6 +18,15 @@ import {
 export class TopicRepository {
   constructor(private readonly db: Database) {}
 
+  /**
+   * 任务1（§七）：跨 repository 的用户动作（候选 → 项目转换）需要统一事务边界。
+   * 在外层事务内调用其它 repository 时，better-sqlite3 会把它们的内层事务降级为
+   * SAVEPOINT，整体保持原子。
+   */
+  runInTransaction<T>(fn: () => T): T {
+    return this.db.transaction(fn)();
+  }
+
   // ── sessions ──
 
   createSession(session: TopicSessionDto): void {

@@ -170,26 +170,31 @@ export class CloudSyncService {
     }
   }
 
-  /** App 启动时调用：存在暂存则（备份当前库后）替换。返回是否执行了替换。 */
-  applyStagedRestoreIfNeeded(): boolean {
+  /** App 启动时调用：存在暂存则（备份当前库后）替换。返回是否执行了替换。
+   *  任务1（§八）：必须早于 PersistenceStore 构造调用（main.ts 启动管线第一步），
+   *  替换后的数据库由 PersistenceStore 的启动健康检查校验；返回 rollbackPath 供
+   *  main.ts 写 restore intent，替换库损坏时用户可回滚。 */
+  applyStagedRestoreIfNeeded(): { applied: boolean; rollbackPath?: string } {
     try {
       const staging = this.stagingPath();
-      if (!fs.existsSync(staging)) return false;
+      if (!fs.existsSync(staging)) return { applied: false };
       const bytes = fs.readFileSync(staging);
       if (bytes.subarray(0, 15).toString('utf8') !== SQLITE_HEADER) {
         fs.rmSync(staging, { force: true });
-        return false;
+        return { applied: false };
       }
+      let rollbackPath: string | undefined;
       if (fs.existsSync(this.dbPath)) {
-        fs.copyFileSync(this.dbPath, path.join(this.dataDir, `metis-pre-restore-${Date.now()}.db`));
+        rollbackPath = path.join(this.dataDir, `metis-pre-restore-${Date.now()}.db`);
+        fs.copyFileSync(this.dbPath, rollbackPath);
       }
       fs.copyFileSync(staging, this.dbPath);
       fs.rmSync(staging, { force: true });
       console.log('[CloudSync] Staged restore applied; previous database kept as metis-pre-restore-*.db');
-      return true;
+      return { applied: true, rollbackPath };
     } catch (err) {
       console.warn('[CloudSync] Staged restore failed:', (err as Error).message);
-      return false;
+      return { applied: false };
     }
   }
 

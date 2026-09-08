@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from
 import { createPortal } from 'react-dom';
 import ModelThinkingSelector from '../components/ModelThinkingSelector';
 import { AssistantTurn, UserTurn } from '../conversation/ConversationTurns';
+import { StreamingMarkdown } from '../presentation/StreamingMarkdown';
 import '../conversation/conversation.css';
 import { autoResizeTextarea } from '../lib/textareaAutosize.js';
 import { isScenarioCompileActive, onScenarioCompileUpdate } from '../lib/scenarioCompileCoordinator.js';
@@ -195,10 +196,17 @@ export default function ScenarioConfigurationAssistant({
     const subscribe = typeof window !== 'undefined' ? window.metis?.onScenarioStreamChunk : undefined;
     if (!subscribe) return;
     return subscribe((chunk) => {
-      setStreamTail((previous) => ({
-        reasoning: typeof chunk.reasoning === 'string' && chunk.reasoning ? (previous.reasoning + chunk.reasoning).slice(-400) : previous.reasoning,
-        content: typeof chunk.content === 'string' && chunk.content ? (previous.content + chunk.content).slice(-400) : previous.content,
-      }));
+      // P0 2026-09-06：移除 400 字双重截断——完整累积交给 StreamingMarkdown
+      // 增量渲染（frozen prefix 不重复解析）；上限仅作内存保护。
+      setStreamTail((previous) => {
+        const reasoning = typeof chunk.reasoning === 'string' && chunk.reasoning
+          ? (previous.reasoning + chunk.reasoning).slice(-8_000)
+          : previous.reasoning;
+        const content = typeof chunk.content === 'string' && chunk.content
+          ? (previous.content + chunk.content).slice(-20_000)
+          : previous.content;
+        return { reasoning, content };
+      });
     });
   }, []);
 
@@ -482,8 +490,17 @@ ${zh ? '现在直接输入你的要求（例如：帮我生成这份申报书的
         <p>{zh ? '正在将本轮要求编译到场景草稿…' : 'Compiling this turn into the scenario draft…'}</p>
         <div className="scenario-assistant__stages" data-testid="sw-assistant-stages" aria-live="polite">
           {stages.slice(-4).map((stage, index) => <small key={index + '-' + stage}>{stage}</small>)}
-          {streamTail.reasoning && <small className="scenario-assistant__stream-tail" title={zh ? '模型推理流' : 'Model reasoning stream'}>{zh ? '思考中：' : 'Reasoning: '}{streamTail.reasoning.slice(-220)}</small>}
-          {streamTail.content && <small className="scenario-assistant__stream-tail" title={zh ? '输出流' : 'Output stream'}>{zh ? '输出中：' : 'Writing: '}{streamTail.content.slice(-220)}</small>}
+          {streamTail.reasoning && (
+            <details className="scenario-assistant__stream-tail" title={zh ? '模型推理流' : 'Model reasoning stream'}>
+              <summary><small>{zh ? '思考中…' : 'Reasoning…'}</small></summary>
+              <small>{streamTail.reasoning}</small>
+            </details>
+          )}
+          {streamTail.content && (
+            <div className="scenario-assistant__stream-content" title={zh ? '输出流' : 'Output stream'}>
+              <StreamingMarkdown text={streamTail.content} streaming locale={zh ? 'zh' : 'en'} />
+            </div>
+          )}
           <small>{zh ? '已用时 ' + elapsedSeconds + ' 秒' : elapsedSeconds + 's elapsed'}</small>
         </div>
       </article>}

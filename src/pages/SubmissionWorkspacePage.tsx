@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Components } from 'react-markdown';
-import { ArrowLeft, ArrowRight, ExternalLink, PanelLeftClose, PanelLeftOpen, Plus, RotateCw, Send, Sparkles, Star, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, ExternalLink, PanelLeftClose, PanelLeftOpen, Plus, RotateCw, Sparkles, Star, X } from 'lucide-react';
 import SplitHandle from '../components/SplitHandle';
 import ModelThinkingSelector from '../components/ModelThinkingSelector';
-import { SafeMarkdown } from '../presentation/SafeMarkdown';
+
 import { AssistantTurn, UserTurn } from '../conversation/ConversationTurns';
 import '../conversation/conversation.css';
 import { autoResizeTextarea } from '../lib/textareaAutosize.js';
 import { useResearchWorkspaceStore } from '../research/researchWorkspaceStore';
+import { EmptyState, InlineError, QuietLoading, StaleDataNotice } from '../components/async/AsyncFeedback';
+import { navigate } from '../shell/navigation';
 import './SubmissionWorkspacePage.css';
 
 /**
@@ -61,15 +63,64 @@ export default function SubmissionWorkspacePage() {
   const [sending, setSending] = useState(false);
   const [intent, setIntent] = useState<Record<string, unknown>>({});
   const [shortlist, setShortlist] = useState<Array<{ name: string; source?: string }>>([]);
+  // 任务4 统一 Async View State：成果列表与短名单的加载失败不再静默。
+  const [outcomesState, setOutcomesState] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [outcomesStale, setOutcomesStale] = useState(false);
+  const [outcomesRetrying, setOutcomesRetrying] = useState(false);
+  const [shortlistState, setShortlistState] = useState<'loading' | 'ready' | 'error'>('loading');
+  // 任务4：创建投稿记录防双击。
+  const [creatingCase, setCreatingCase] = useState(false);
+
+  const loadOutcomesList = useCallback(async () => {
+    const metis = window.metis;
+    if (!metis?.listOutcomes) return;
+    if (!projectId) {
+      // 无活动项目：这不是"加载中"，直接进入就绪空态（任务4：禁止用永久 loading 伪装）。
+      setOutcomes([]);
+      setActiveOutcomeId(null);
+      setOutcomesState('ready');
+      setOutcomesStale(false);
+      return;
+    }
+    setOutcomesRetrying(true);
+    try {
+      const rows = await metis.listOutcomes({ projectId, query: '' });
+      if (!Array.isArray(rows)) throw new Error('submission outcomes payload invalid');
+      const mapped = rows.map((row: { id: string; title: string; currentVersion: number }) => ({ id: row.id, title: row.title, currentVersion: row.currentVersion }));
+      setOutcomes(mapped);
+      setActiveOutcomeId((current) => current ?? mapped[0]?.id ?? null);
+      setOutcomesState('ready');
+    } catch (error) {
+      console.error('[SubmissionWorkspace] listOutcomes failed:', error);
+      // 已有数据（重载失败）时保留旧列表并标 stale；首次失败呈 error + retry。
+      setOutcomesState((state) => {
+        if (state === 'ready') setOutcomesStale(true);
+        else return 'error';
+        return 'ready';
+      });
+    } finally {
+      setOutcomesRetrying(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    void loadOutcomesList();
+  }, [loadOutcomesList]);
+
   // 任务6(2026-09-05):短名单正式持久化(SQLite submission_shortlists),重启恢复。
   useEffect(() => {
     let alive = true;
     if (!projectId || !window.metis?.submissionShortlistList) return () => { alive = false; };
+    setShortlistState('loading');
     void window.metis.submissionShortlistList(projectId).then((rows) => {
       if (alive && Array.isArray(rows)) {
         setShortlist(rows.map((row) => ({ name: String(row.name), source: String(row.source || '') })));
+        setShortlistState('ready');
       }
-    }).catch(() => undefined);
+    }).catch((error) => {
+      console.error('[SubmissionWorkspace] shortlist load failed:', error);
+      if (alive) setShortlistState('error');
+    });
     return () => { alive = false; };
   }, [projectId]);
 
@@ -146,9 +197,10 @@ export default function SubmissionWorkspacePage() {
 
   useEffect(() => {
     // 首次进入：把第一个 tab 的默认页打开（持久分区保留登录态，重复 navigate 幂等）。
+    // 任务2：显式声明导航归属当前项目，供参谋注入浏览器上下文前校验。
     const metis = window.metis;
     if (!metis?.browserNavigate) return;
-    void metis.browserNavigate(DEFAULT_TABS[0]!.url).catch(() => undefined);
+    void metis.browserNavigate(DEFAULT_TABS[0]!.url, projectId ?? null).catch(() => undefined);
     return () => {
       visibleRef.current = false;
       void window.metis?.browserHide?.().catch(() => undefined);
@@ -172,7 +224,7 @@ export default function SubmissionWorkspacePage() {
   const openInBrowser = useCallback(async (url: string) => {
     const metis = window.metis;
     if (!metis?.browserNavigate || !/^https?:\/\//iu.test(url)) return;
-    await metis.browserNavigate(url).catch(() => undefined);
+    await metis.browserNavigate(url, projectId ?? null).catch(() => undefined);
     setTabs((current) => current.map((tab) => (tab.id === activeTabId ? { ...tab, url, title: tab.title } : tab)));
   }, [activeTabId]);
 
@@ -229,7 +281,9 @@ export default function SubmissionWorkspacePage() {
   const createSubmissionCase = useCallback(async (card: SubmissionCardData) => {
     const metis = window.metis;
     if (!metis?.createSubmissionCase || !projectId || !activeOutcomeId) return;
+    if (creatingCase) return; // 任务4：防双击——同一次确认只创建一条投稿记录。
     const outcome = activeOutcome;
+    setCreatingCase(true);
     try {
       const result = await metis.createSubmissionCase({
         projectId,
@@ -249,13 +303,15 @@ export default function SubmissionWorkspacePage() {
         role: 'assistant',
         content: created
           ? `已创建正式投稿记录「投稿 ${card.name}」（${created.status}）。接下来我可以在浏览器里帮你核对投稿要求、检查成果差距；在投稿系统里提交这类不可逆操作前，我都会先请你确认。`
-          : '投稿记录创建未完成（可能已有同刊进行中的投稿）。',
+          : '投稿记录创建未完成（可能已有同刊进行中的投稿），未产生重复记录。',
       }]);
-      addToShortlist(card.name, '目标期刊');
+      if (created) addToShortlist(card.name, '目标期刊');
     } catch {
-      setMessages((current) => [...current, { id: `ai-${Date.now()}`, role: 'assistant', content: '投稿记录创建请求未完成，请重试。' }]);
+      setMessages((current) => [...current, { id: `ai-${Date.now()}`, role: 'assistant', content: '投稿记录创建请求未完成，未产生记录；请重试。' }]);
+    } finally {
+      setCreatingCase(false);
     }
-  }, [activeOutcome, activeOutcomeId, addToShortlist, projectId]);
+  }, [activeOutcome, activeOutcomeId, addToShortlist, creatingCase, projectId]);
 
   // ── 围栏块渲染（对话内的原生交互组件） ──
   const codeComponent = useMemo<Components['code']>(() => function SubmissionChatCode({ className, children, ...props }) {
@@ -335,7 +391,7 @@ export default function SubmissionWorkspacePage() {
             <strong>设「{card.name}」为目标期刊？</strong>
             {card.note && <p>{card.note}</p>}
             <footer>
-              <button type="button" className="primary" onClick={() => void createSubmissionCase(card)}>确认创建投稿记录</button>
+              <button type="button" className="primary" disabled={creatingCase} onClick={() => void createSubmissionCase(card)}>{creatingCase ? '创建中…' : '确认创建投稿记录'}</button>
             </footer>
           </div>
         );
@@ -375,7 +431,31 @@ export default function SubmissionWorkspacePage() {
         </div>
         <section aria-label={zh ? '可投稿成果' : 'Outcomes'}>
           <h3>{zh ? '可投稿成果' : 'Outcomes'}</h3>
-          {outcomes.length === 0 && <p className="submission-workspace__muted">{zh ? '当前项目暂无成果。' : 'No outcomes in this project.'}</p>}
+          {outcomesStale && <StaleDataNotice onRetry={() => void loadOutcomesList()} retrying={outcomesRetrying} />}
+          {outcomesState === 'error' && (
+            <InlineError
+              compact
+              title={zh ? '成果列表加载失败。' : 'Could not load outcomes.'}
+              hint={zh ? '成果数据没有丢失，只是暂时读不到。' : 'Data is safe; retry when ready.'}
+              onRetry={() => void loadOutcomesList()}
+              retrying={outcomesRetrying}
+            />
+          )}
+          {outcomesState === 'loading' && outcomes.length === 0 && <QuietLoading compact label={zh ? '正在加载成果…' : 'Loading outcomes…'} />}
+          {outcomesState === 'ready' && outcomes.length === 0 && (
+            <EmptyState
+              compact
+              title={projectId ? (zh ? '当前项目还没有成果' : 'No outcomes yet') : (zh ? '成果属于科研项目' : 'Outcomes belong to a project')}
+              description={projectId
+                ? (zh ? '投稿从成果出发：先到成果工作台创建或导入论文 / 报告。' : 'Create or import a paper in the Outcomes workspace first.')
+                : (zh ? '请先选择一个科研项目，再管理论文、PPT、报告与正式交付物。' : 'Select a project first, then manage papers and reports.')}
+              action={projectId ? (
+                <button type="button" onClick={() => navigate({ kind: 'standalone', page: 'outcomes' })}>
+                  {zh ? '去成果工作台' : 'Open Outcomes'}
+                </button>
+              ) : undefined}
+            />
+          )}
           <ul>
             {outcomes.map((outcome) => (
               <li key={outcome.id}>
@@ -394,7 +474,22 @@ export default function SubmissionWorkspacePage() {
         </section>
         <section aria-label={zh ? '候选期刊' : 'Shortlist'}>
           <h3>{zh ? '候选期刊' : 'Shortlist'}</h3>
-          {shortlist.length === 0 && <p className="submission-workspace__muted">{zh ? '收藏或确定候选后会出现在这里。' : 'Star journals to collect them.'}</p>}
+          {shortlistState === 'error' && (
+            <InlineError
+              compact
+              title={zh ? '候选名单加载失败。' : 'Could not load the shortlist.'}
+              onRetry={() => {
+                setShortlistState('loading');
+                void window.metis?.submissionShortlistList?.(projectId ?? '').then((rows) => {
+                  if (Array.isArray(rows)) {
+                    setShortlist(rows.map((row) => ({ name: String(row.name), source: String(row.source || '') })));
+                    setShortlistState('ready');
+                  }
+                }).catch(() => setShortlistState('error'));
+              }}
+            />
+          )}
+          {shortlistState !== 'error' && shortlist.length === 0 && <p className="submission-workspace__muted">{zh ? '收藏或确定候选后会出现在这里。' : 'Star journals to collect them.'}</p>}
           <ul>
             {shortlist.map((item) => (
               <li key={item.name} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>

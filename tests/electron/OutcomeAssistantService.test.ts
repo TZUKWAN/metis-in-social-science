@@ -375,20 +375,29 @@ describe('OutcomeAssistantService', () => {
     expect(result.sources).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'outcome_version', id: current.outcome.id, version: 1 }),
       expect.objectContaining({ kind: 'outcome_version', id: peer.outcome.id, version: 1 }),
-      expect.objectContaining({ kind: 'artifact', id: 'artifact-a-1', version: 1 }),
     ]));
     expect(result.sources.some((source) => source.id === foreign.outcome.id || source.id === 'artifact-b-1')).toBe(false);
+    // 任务2（Artifact Context，2026-09-05 刘总规格书）：成果助手入口没有显式
+    // artifact 选择通道——即使指令包含「项目资料」，也不得暗中按最近更新抓取
+    // artifact 替代用户选择；必须如实产出「无选中成果」诊断且零 artifact 来源。
+    expect(result.sources.some((source) => source.kind === 'artifact')).toBe(false);
+    expect(result.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'project_context_unavailable',
+        message: expect.stringContaining('没有选中的项目资料'),
+      }),
+    ]));
     expect(provider.calls).toHaveLength(1);
     const prompt = provider.calls[0]?.messages.map((message) => message.content).join('\n') ?? '';
     expect(prompt).toContain('同项目关键结论：访谈显示制度信任影响参与。');
-    expect(prompt).toContain('项目资料原文：样本访谈的共同主题是制度信任。');
     expect(prompt).toContain('原始段落');
     expect(prompt).not.toContain('跨项目秘密成果');
     expect(prompt).not.toContain('跨项目秘密资料正文');
+    expect(prompt).not.toContain('项目资料原文：样本访谈的共同主题是制度信任。');
     expect(repository.get('project-a', current.outcome.id)?.version.content).toMatchObject({ type: 'word', blocks: [{ id: 'p-1', text: '综合同项目访谈资料后的当前稿。' }] });
     expect(repository.get('project-b', foreign.outcome.id)?.outcome.currentVersion).toBe(1);
     expect(repository.listConversation({ projectId:'project-a', scope:'outcome', outcomeId:current.outcome.id, scenarioId:null })[0]?.sources)
-      .toEqual(expect.arrayContaining([expect.objectContaining({ id:'artifact-a-1' })]));
+      .toEqual(expect.not.arrayContaining([expect.objectContaining({ kind: 'artifact' })]));
   });
 
   it('caps explicitly requested peer-outcome context while including a verified Project Metis.md source', async () => {

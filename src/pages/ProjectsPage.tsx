@@ -10,8 +10,14 @@
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from '../i18n';
+import { FolderPlus } from 'lucide-react';
 import { researchWorkspaceStore, useResearchWorkspaceStore } from '../research/researchWorkspaceStore';
+
 import { Button, Input, Select } from '../components/ui';
+import ConfirmDialog from '../components/ConfirmDialog';
+import { EmptyState, InlineError, OperationNotice, QuietLoading, RowActionsMenu, StaleDataNotice, type OperationNoticeState } from '../components/async/AsyncFeedback';
+import { usePendingAction } from '../components/async/asyncViewState';
+import { usePersistentScroll } from '../hooks/workspacePersistence';
 import TaskBoardPage from './TaskBoardPage';
 import LibraryPage from './LibraryPage';
 import { ProjectMaterialsPanel } from './ProjectMaterialsPanel';
@@ -95,6 +101,9 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
   const projects = useResearchWorkspaceStore((s) => s.projects);
   const activeProjectId = useResearchWorkspaceStore((s) => s.activeProjectId);
   const loadingProjects = useResearchWorkspaceStore((s) => s.loading.projects);
+  // 任务4：消费 store 的结构化错误与 stale 标记——加载失败不再冒充空列表。
+  const loadError = useResearchWorkspaceStore((s) => s.error);
+  const projectsStale = useResearchWorkspaceStore((s) => s.projectsStale);
   const [creating, setCreating] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [projectDir, setProjectDir] = useState('');
@@ -110,6 +119,14 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
   const [previewWidth, setPreviewWidth] = useState(() => loadWidth(PREVIEW_KEY, 520, 360, 800));
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => loadBool(SIDEBAR_COLLAPSED_KEY, false));
   const [showArchived, setShowArchived] = useState(false);
+  // ── 行内操作（任务4 第五/六节）：归档/恢复/删除收进 ···，防双击 + 失败可见 ──
+  const rowAction = usePendingAction();
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
+  const pageRef = useRef<HTMLDivElement>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [sidebarNotice, setSidebarNotice] = useState<OperationNoticeState | null>(null);
+  // 项目清单滚动位置保持（任务4 第十一节）：切走再回来不重置。
+  const sidebarScroll = usePersistentScroll<HTMLUListElement>('metis-projects-sidebar-scroll', showArchived ? 'archived' : 'active');
   // ── 多对话架构第二期(2026-09-05):Project → Conversation 树 ──
   const [projectSessions, setProjectSessions] = useState<Array<{ id: string; title: string; lastActivity: number; messageCount: number }>>([]);
   const activeTreeProjectId = showArchived ? null : activeProjectId;
@@ -130,40 +147,72 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
       })));
     }).catch(() => { if (alive) setProjectSessions([]); });
   }, [activeTreeProjectId, showArchived]);
-  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
-  const pageRef = useRef<HTMLDivElement>(null);
   const collapsedBeforePreviewRef = useRef<boolean | null>(null);
   const sidebarCollapsedRef = useRef(sidebarCollapsed);
   sidebarCollapsedRef.current = sidebarCollapsed;
 
   const previewOpen = Boolean(previewPanel);
 
-  const handleArchive = useCallback(async (projectId: string) => {
-    const result = await window.metis?.archiveProject?.(projectId);
-    if (result?.ok) {
-      if (activeProjectId === projectId) await researchWorkspaceStore.getState().setActiveProject(null);
-    }
-    await researchWorkspaceStore.getState().loadProjects();
-  }, [activeProjectId]);
+  // ── 归档/恢复（可逆操作）：防双击；失败给出可见提示，成功静默刷新 ──
+  const handleArchive = useCallback((projectId: string) => {
+    void rowAction.run(async () => {
+      try {
+        const result = await window.metis?.archiveProject?.(projectId);
+        if (!result?.ok) {
+          setSidebarNotice({ kind: 'error', text: locale === 'zh' ? '归档未完成，项目仍在原列表，可直接重试。' : 'Archive did not complete. The project is unchanged; you can retry.' });
+          return;
+        }
+        if (researchWorkspaceStore.getState().activeProjectId === projectId) {
+          await researchWorkspaceStore.getState().setActiveProject(null);
+        }
+        await researchWorkspaceStore.getState().loadProjects();
+      } catch (error) {
+        console.error('[ProjectsPage] archiveProject failed:', error);
+        setSidebarNotice({ kind: 'error', text: locale === 'zh' ? '归档未完成，项目仍在原列表，可直接重试。' : 'Archive did not complete. The project is unchanged; you can retry.' });
+      }
+    });
+  }, [rowAction, locale]);
 
-  const handleRestore = useCallback(async (projectId: string) => {
-    await window.metis?.restoreProject?.(projectId);
-    await researchWorkspaceStore.getState().loadProjects();
-  }, []);
+  const handleRestore = useCallback((projectId: string) => {
+    void rowAction.run(async () => {
+      try {
+        const result = await window.metis?.restoreProject?.(projectId);
+        if (!result?.ok) {
+          setSidebarNotice({ kind: 'error', text: locale === 'zh' ? '恢复未完成，项目仍在归档列表，可直接重试。' : 'Restore did not complete. The project is still archived; you can retry.' });
+          return;
+        }
+        await researchWorkspaceStore.getState().loadProjects();
+      } catch (error) {
+        console.error('[ProjectsPage] restoreProject failed:', error);
+        setSidebarNotice({ kind: 'error', text: locale === 'zh' ? '恢复未完成，项目仍在归档列表，可直接重试。' : 'Restore did not complete. The project is still archived; you can retry.' });
+      }
+    });
+  }, [rowAction, locale]);
 
-  const handleDelete = useCallback(async (projectId: string) => {
-    // 两段式确认：第一次点击进入确认态，再次点击执行。
-    if (deleteConfirmId === projectId) {
-      await window.metis?.deleteProject?.(projectId);
-      if (activeProjectId === projectId) await researchWorkspaceStore.getState().setActiveProject(null);
-      setDeleteConfirmId(null);
+  // ── 删除（软删除，可经项目侧栏「回收站」恢复）：结构化确认 + busy 防双击 ──
+  const confirmDelete = useCallback(async () => {
+    if (!deleteTarget) return;
+    setDeleteBusy(true);
+    try {
+      const result = await window.metis?.deleteProject?.(deleteTarget.id);
+      if (!result?.ok) {
+        // IPC 缺失或主进程未执行删除（ok:false）→ 数据未动，如实告知。
+        setSidebarNotice({ kind: 'error', text: locale === 'zh' ? '删除未完成，项目未被改动，可直接重试。' : 'Delete did not complete. The project is unchanged; you can retry.' });
+        return;
+      }
+      if (researchWorkspaceStore.getState().activeProjectId === deleteTarget.id) {
+        await researchWorkspaceStore.getState().setActiveProject(null);
+      }
       await researchWorkspaceStore.getState().loadProjects();
-      return;
+      setSidebarNotice({ kind: 'success', text: locale === 'zh' ? `「${deleteTarget.title}」已移入回收站，可在项目侧栏「回收站」恢复。` : `“${deleteTarget.title}” moved to the recycle bin. Restore it from the sidebar Recycle Bin.` });
+      setDeleteTarget(null);
+    } catch (error) {
+      console.error('[ProjectsPage] deleteProject failed:', error);
+      setSidebarNotice({ kind: 'error', text: locale === 'zh' ? '删除未完成，项目未被改动，可直接重试。' : 'Delete did not complete. The project is unchanged; you can retry.' });
+    } finally {
+      setDeleteBusy(false);
     }
-    setDeleteConfirmId(projectId);
-    // 5 秒后自动退出确认态，避免误触累积。
-    setTimeout(() => setDeleteConfirmId((current) => (current === projectId ? null : current)), 5000);
-  }, [deleteConfirmId, activeProjectId]);
+  }, [deleteTarget, locale]);
 
   const handleSidebarDrag = useCallback((clientX: number) => {
     const rect = pageRef.current?.getBoundingClientRect();
@@ -239,21 +288,38 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
       projectId: makeProjectId(),
       title,
     });
-    // 创建后若指定了自定义目录，写入 metadata.projectDir（PDF 归档位置）。
-    if (result.success && projectDir && result.resourceId) {
-      await window.metis?.setProjectDir?.(result.resourceId, projectDir);
+    if (!result.success) {
+      // 任务4：创建失败必须可见（此前静默），标题保留以便直接重试。
+      setCreateBusy(false);
+      setSidebarNotice({
+        kind: 'error',
+        text: locale === 'zh' ? '项目创建未完成，标题已保留，可直接重试。' : 'Project creation did not complete. The title is kept; you can retry.',
+        ...(result.code ? { code: result.code } : {}),
+      });
+      return;
     }
-    const newProjectId = result.success ? result.resourceId : null;
-    if (result.success && createScenarioId && newProjectId) {
-      // 多对话架构(2026-09-04):默认场景正式持久化到项目(defaultScenarioId);
-      // legacy localStorage 仅作兼容残留(读取路径会自动迁移并清理)。
-      if (createScenarioId) {
-        await window.metis?.setDefaultScenario?.(newProjectId, createScenarioId);
+    const newProjectId = result.resourceId ?? null;
+    // 创建后若指定了自定义目录，写入 metadata.projectDir（PDF 归档位置）。
+    // 次级偏好写入失败不阻塞项目创建本身，但必须提示而非静默。
+    try {
+      if (projectDir && newProjectId) {
+        const dirResult = await window.metis?.setProjectDir?.(newProjectId, projectDir);
+        if (dirResult && dirResult.ok === false) {
+          setSidebarNotice({ kind: 'error', text: locale === 'zh' ? '项目已创建，但自定义目录设置未完成，可在稍后重试。' : 'Project created, but setting the custom folder failed. You can retry later.' });
+        }
       }
-      try {
-        window.localStorage.setItem('metis:active-scenario-id', createScenarioId);
-        window.localStorage.setItem(`metis:project-scenario:${newProjectId}`, createScenarioId);
-      } catch { /* preference persistence is best-effort */ }
+      if (createScenarioId && newProjectId) {
+        // 多对话架构(2026-09-04):默认场景正式持久化到项目(defaultScenarioId);
+        // legacy localStorage 仅作兼容残留(读取路径会自动迁移并清理)。
+        await window.metis?.setDefaultScenario?.(newProjectId, createScenarioId);
+        try {
+          window.localStorage.setItem('metis:active-scenario-id', createScenarioId);
+          window.localStorage.setItem(`metis:project-scenario:${newProjectId}`, createScenarioId);
+        } catch { /* preference persistence is best-effort */ }
+      }
+    } catch (error) {
+      console.error('[ProjectsPage] post-create preference write failed:', error);
+      setSidebarNotice({ kind: 'error', text: locale === 'zh' ? '项目已创建，但部分偏好设置未保存。' : 'Project created, but some preferences were not saved.' });
     }
     setCreateBusy(false);
     if (result.success) {
@@ -261,6 +327,14 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
       setProjectDir('');
       setCreateScenarioId('');
       setCreating(false);
+      // 任务4 第十二节：新建后 focus 主输入区——聚焦新项目条目，
+      // 让键盘用户立刻感知创建结果并可直接 Enter 进入。
+      requestAnimationFrame(() => {
+        const row = newProjectId
+          ? document.querySelector<HTMLElement>(`[data-project-id="${newProjectId}"]`)
+          : null;
+        row?.focus();
+      });
     }
   };
 
@@ -385,7 +459,20 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
             <p className="projects-page__create-hint">{t('projects.projectDirHint')}</p>
           </div>
         )}
-        <ul className="projects-page__list">
+        <ul className="projects-page__list" ref={sidebarScroll.ref}>
+          {projectsStale && !loadingProjects && (
+            <li>
+              <StaleDataNotice
+                onRetry={() => void researchWorkspaceStore.getState().loadProjects()}
+                code={loadError?.code}
+              />
+            </li>
+          )}
+          {sidebarNotice && (
+            <li>
+              <OperationNotice notice={sidebarNotice} onClear={() => setSidebarNotice(null)} />
+            </li>
+          )}
           {projects
             .filter((project) => (showArchived ? project.lifecycle === 'archived' : project.lifecycle !== 'archived'))
             .map((project) => (
@@ -405,37 +492,34 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
                       : t('projects.projectUpdated', { time: formatUpdated(project.updatedAt, locale) })}
                   </span>
                 </button>
+                {/* 归档/删除等低频操作收进 ···（任务4 第六节），不再常驻行内。 */}
                 <div className="projects-page__item-actions">
-                  {showArchived ? (
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      title={t('projects.restore')}
-                      data-testid="projects-restore"
-                      onClick={() => void handleRestore(project.id)}
-                    >
-                      {t('projects.restore')}
-                    </Button>
-                  ) : (
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      title={t('projects.archive')}
-                      data-testid="projects-archive"
-                      onClick={() => void handleArchive(project.id)}
-                    >
-                      {t('projects.archive')}
-                    </Button>
-                  )}
-                  <Button
-                    variant={deleteConfirmId === project.id ? 'danger' : 'secondary'}
-                    size="sm"
-                    title={t('projects.delete')}
-                    data-testid="projects-delete"
-                    onClick={() => void handleDelete(project.id)}
-                  >
-                    {deleteConfirmId === project.id ? t('projects.confirmDelete') : t('projects.delete')}
-                  </Button>
+                  <RowActionsMenu
+                    label={locale === 'zh' ? `项目「${project.title}」的更多操作` : `More actions for ${project.title}`}
+                    testId="projects-row-menu"
+                    items={[
+                      showArchived
+                        ? {
+                            id: 'restore',
+                            label: t('projects.restore'),
+                            disabled: rowAction.pending,
+                            onSelect: () => handleRestore(project.id),
+                          }
+                        : {
+                            id: 'archive',
+                            label: t('projects.archive'),
+                            disabled: rowAction.pending,
+                            onSelect: () => handleArchive(project.id),
+                          },
+                      {
+                        id: 'delete',
+                        label: t('projects.delete'),
+                        danger: true,
+                        disabled: rowAction.pending,
+                        onSelect: () => setDeleteTarget({ id: project.id, title: project.title }),
+                      },
+                    ]}
+                  />
                 </div>
                 {activeProjectId === project.id && !showArchived && (
                   <div className="projects-page__conversations" data-testid="projects-conversation-tree">
@@ -463,9 +547,37 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
                 )}
               </li>
             ))}
-          {projects.filter((project) => (showArchived ? project.lifecycle === 'archived' : project.lifecycle !== 'archived')).length === 0 && !loadingProjects && (
+          {loadingProjects && projects.length === 0 && (
+            <li><QuietLoading compact label={locale === 'zh' ? '正在加载项目…' : 'Loading projects…'} /></li>
+          )}
+          {/* 任务4：首次加载失败 ≠ 空列表。error 可重试，empty 给用途 + 第一动作。 */}
+          {!loadingProjects && loadError && projects.length === 0 && (
+            <li>
+              <InlineError
+                title={locale === 'zh' ? '项目列表加载失败。' : 'Could not load the project list.'}
+                hint={locale === 'zh' ? '项目数据没有丢失，只是暂时读不到。' : 'Your projects are safe; they just could not be read right now.'}
+                code={loadError.code}
+                compact
+                retrying={false}
+                onRetry={() => void researchWorkspaceStore.getState().loadProjects()}
+              />
+            </li>
+          )}
+          {!loadingProjects && !loadError && projects.filter((project) => (showArchived ? project.lifecycle === 'archived' : project.lifecycle !== 'archived')).length === 0 && (
             <li className="projects-page__empty">
-              {showArchived ? t('projects.noArchived') : t('projects.emptyProjects')}
+              <EmptyState
+                compact
+                icon={<FolderPlus size={20} />}
+                title={showArchived ? t('projects.noArchived') : t('projects.emptyProjects')}
+                description={showArchived
+                  ? (locale === 'zh' ? '归档的项目会显示在这里，可随时恢复。' : 'Archived projects will appear here and can be restored anytime.')
+                  : (locale === 'zh' ? '项目是研究的家：聊天、任务、资料与成果都在项目里组织。' : 'A project is home to your chat, tasks, materials, and outcomes.')}
+                action={!showArchived && (
+                  <Button variant="secondary" size="sm" data-testid="projects-empty-create" onClick={() => setCreating(true)}>
+                    {t('projects.newProject')}
+                  </Button>
+                )}
+              />
             </li>
           )}
         </ul>
@@ -555,6 +667,22 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
           )}
         </div>
       </div>
+      {deleteTarget && (
+        <ConfirmDialog
+          title={locale === 'zh' ? '删除项目' : 'Delete project'}
+          message={locale === 'zh'
+            ? `确定删除项目「${deleteTarget.title}」吗？`
+            : `Delete project “${deleteTarget.title}”?`}
+          impacts={[
+            locale === 'zh' ? '项目将从项目列表中移除，聊天、任务与资料随之隐藏。' : 'The project is removed from the list; its chat, tasks, and materials are hidden.',
+            locale === 'zh' ? '删除进入回收站，可在项目侧栏「回收站」中恢复。' : 'The delete goes to the recycle bin and can be restored from the sidebar Recycle Bin.',
+          ]}
+          confirmLabel={t('projects.confirmDelete')}
+          busy={deleteBusy}
+          onConfirm={() => void confirmDelete()}
+          onCancel={() => { if (!deleteBusy) setDeleteTarget(null); }}
+        />
+      )}
     </div>
   );
 }

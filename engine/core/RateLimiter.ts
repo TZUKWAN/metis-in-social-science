@@ -14,6 +14,8 @@ interface QueueItem {
   reject: (e: Error) => void;
   timer: ReturnType<typeof setTimeout>;
   cancelled: boolean;
+  /** Detaches the cancellation listener once the item leaves the queue. */
+  detach?: () => void;
 }
 
 export class RateLimiter {
@@ -37,9 +39,11 @@ export class RateLimiter {
 
   /**
    * Execute a function under the rate limit. If at capacity,
-   * the call is queued until a slot frees up.
+   * the call is queued until a slot frees up. A queued item honours
+   * `signal`: aborting removes it from the queue immediately instead of
+   * leaving a ghost entry that blocks later callers until the queue timer.
    */
-  async execute<T>(fn: () => Promise<T>): Promise<T> {
+  async execute<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     if (this.running < this.maxConcurrency) {
       this.running++;
       try {
@@ -56,11 +60,28 @@ export class RateLimiter {
         resolve: resolve as (v: unknown) => void,
         reject,
         timer: setTimeout(() => {
+          item.detach?.();
           item.cancelled = true;
           reject(new Error(`RateLimiter: request timed out after ${MAX_TIMEOUT_MS}ms`));
         }, MAX_TIMEOUT_MS),
         cancelled: false,
       };
+
+      if (signal) {
+        const abortFromQueue = (): void => {
+          const index = this.queue.indexOf(item);
+          if (index >= 0) this.queue.splice(index, 1);
+          clearTimeout(item.timer);
+          item.cancelled = true;
+          reject(signal.reason instanceof Error ? signal.reason : new Error('The operation was aborted'));
+        };
+        if (signal.aborted) {
+          abortFromQueue();
+          return;
+        }
+        signal.addEventListener('abort', abortFromQueue, { once: true });
+        item.detach = () => signal.removeEventListener('abort', abortFromQueue);
+      }
 
       this.queue.push(item);
     });
@@ -78,6 +99,7 @@ export class RateLimiter {
     }
 
     clearTimeout(next.timer);
+    next.detach?.();
     this.running++;
     next.fn()
       .then((v) => next.resolve(v))
@@ -94,6 +116,7 @@ export class RateLimiter {
       const item = this.queue.shift();
       if (item) {
         clearTimeout(item.timer);
+        item.detach?.();
         item.cancelled = true;
         item.reject(new Error('RateLimiter: cleared'));
       }

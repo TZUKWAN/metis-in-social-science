@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import { PersistenceStore } from '../../engine/persistence/PersistenceStore.js';
 import { ResearchRepository } from '../../engine/persistence/ResearchRepository.js';
 import type { Project } from '../../engine/persistence/researchModel.js';
@@ -151,9 +152,19 @@ describe('library paper project linking', () => {
         created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run('paper-1', 'project-a', 'paper', 'Shared paper', '[]', '10.1000/shared', 'doi', 1, 1);
-    store.raw.prepare('DELETE FROM paper_project_links').run();
-
     store.close();
+
+    // Simulate a genuinely pre-v105 database: the links table does not exist yet and
+    // the migration ledger does not claim v105 ran. (Deleting only the link rows on an
+    // already-migrated database must NOT resurrect them — versioned migrations run once.)
+    const raw = new Database(path.join(dir, 'metis.db'));
+    raw.exec(`
+      DROP TABLE paper_project_links;
+      DROP INDEX IF EXISTS idx_sources_project_library_paper;
+      DELETE FROM schema_migrations WHERE version >= 105;
+    `);
+    raw.close();
+
     store = new PersistenceStore(path.join(dir, 'metis.db'));
     repository = new ResearchRepository(store.raw);
 

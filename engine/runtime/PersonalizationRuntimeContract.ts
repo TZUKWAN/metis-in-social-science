@@ -1257,7 +1257,7 @@ function normalizeDeliverableSectionEnums(entries: unknown, topLevel: boolean): 
 export function parsePersonalizationDefinitionLenient(
   definition: PersonalizationDefinition,
 ): { ok: true; definition: PersonalizationDefinition; removed: string[] } | { ok: false; issues: string[] } {
-  let candidate: unknown = JSON.parse(JSON.stringify(definition)) as unknown;
+  const candidate: unknown = JSON.parse(JSON.stringify(definition)) as unknown;
   const removed: string[] = [];
   {
     const deliverable = (candidate as { deliverable?: { sections?: unknown } }).deliverable;

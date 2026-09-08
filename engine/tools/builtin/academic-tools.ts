@@ -1031,14 +1031,17 @@ function formatBibtexNative(authors: string[], year: number, title: string, jour
 // ─── Semantic Scholar search handler ──────────────────────────
 
 /** T2：本地文献库全文检索 handler（确定性 SQL 检索，零模型调用）。 */
-export const searchPaperTextHandler: ToolHandler = async (args) => {
+export const searchPaperTextHandler: ToolHandler = async (args, context) => {
   const query = String(args.query ?? '').trim();
   if (!query) return 'Error: query is required.';
   const limit = Math.min(Math.max(Number(args.limit ?? 8), 1), 20);
   if (!sharedStore) {
     return JSON.stringify({ query, available: false, results: [], note: '本地文献库不可用（持久化未初始化）。' });
   }
-  const hits = sharedStore.searchLibrary(query, limit).filter((hit) => hit.type === 'paper');
+  // 任务2 上下文隔离：按运行 scope 排除归属其他项目的文献（含 PDF 全文），
+  // 防止 A 项目会话检索读出 B 项目文献片段。
+  const hits = sharedStore.searchLibrary(query, limit, { projectId: context?.projectId })
+    .filter((hit) => hit.type === 'paper');
   return JSON.stringify({
     query,
     available: true,
@@ -1473,7 +1476,7 @@ export const styleCalibrationHandler: ToolHandler = async (args) => {
 
 // ─── Library search handler ───────────────────────────────────
 
-export const searchLibraryHandler: ToolHandler = async (args) => {
+export const searchLibraryHandler: ToolHandler = async (args, context) => {
   const query = String(args.query ?? '');
   if (!query.trim()) return 'Error: query is required.';
 
@@ -1484,7 +1487,8 @@ export const searchLibraryHandler: ToolHandler = async (args) => {
   }
 
   try {
-    const results = sharedStore.searchLibrary(query, limit);
+    // 任务2 上下文隔离：按运行 scope 排除归属其他项目的文献/笔记。
+    const results = sharedStore.searchLibrary(query, limit, { projectId: context?.projectId });
     const items = results.map((item) => ({
       id: item.id,
       type: item.type,

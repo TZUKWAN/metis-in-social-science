@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Database } from 'better-sqlite3';
-import { ARTIFACT_PROMPT_DEFINITIONS, getArtifactPromptDefinition } from '../engine/artifacts/prompts/ArtifactPromptRegistry.js';
+import { getArtifactPromptDefinition } from '../engine/artifacts/prompts/ArtifactPromptRegistry.js';
 import { OFFICE_CAPABILITY_DEFINITIONS, OFFICE_SLOT_TO_BASE_PROMPT, getOfficeCapability } from '../engine/artifacts/prompts/OfficeCapabilityRegistry.js';
 
 /**
@@ -217,10 +217,13 @@ export class OfficePromptProfileService {
     if (content.trim()) nextSlots[slotId] = content;
     else delete nextSlots[slotId];
     const now = Date.now();
-    this.db.prepare('UPDATE office_prompt_profiles SET slots_json = ?, updated_at = ? WHERE id = ?').run(JSON.stringify(nextSlots), now, profileId);
-    this.db.prepare(
-      'INSERT INTO office_prompt_profile_revisions (id, profile_id, slot_id, content, created_at, source) VALUES (?, ?, ?, ?, ?, ?)',
-    ).run(`orev_${randomUUID().replace(/-/g, '').slice(0, 16)}`, profileId, slotId, content, now, source);
+    // 任务1（§七）：profile mutation + revision 是一次用户动作跨两表，必须同事务。
+    this.db.transaction(() => {
+      this.db.prepare('UPDATE office_prompt_profiles SET slots_json = ?, updated_at = ? WHERE id = ?').run(JSON.stringify(nextSlots), now, profileId);
+      this.db.prepare(
+        'INSERT INTO office_prompt_profile_revisions (id, profile_id, slot_id, content, created_at, source) VALUES (?, ?, ?, ?, ?, ?)',
+      ).run(`orev_${randomUUID().replace(/-/g, '').slice(0, 16)}`, profileId, slotId, content, now, source);
+    })();
     return { ok: true, profile: this.getProfile(profileId)! };
   }
 
@@ -269,10 +272,13 @@ export class OfficePromptProfileService {
     const profile = this.getProfile(profileId);
     if (!profile) return null;
     const now = Date.now();
-    this.db.prepare('UPDATE office_prompt_profiles SET global_prompt = ?, updated_at = ? WHERE id = ?')
-      .run(content.slice(0, MAX_SLOT_CHARS), now, profileId);
-    this.db.prepare('INSERT INTO office_prompt_profile_revisions (id, profile_id, slot_id, content, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(`opr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`, profileId, '__global__', content.slice(0, MAX_SLOT_CHARS), now);
+    // 任务1（§七）：mutation + revision 同事务（与 setSlot 同理）。
+    this.db.transaction(() => {
+      this.db.prepare('UPDATE office_prompt_profiles SET global_prompt = ?, updated_at = ? WHERE id = ?')
+        .run(content.slice(0, MAX_SLOT_CHARS), now, profileId);
+      this.db.prepare('INSERT INTO office_prompt_profile_revisions (id, profile_id, slot_id, content, created_at) VALUES (?, ?, ?, ?, ?)')
+        .run(`opr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`, profileId, '__global__', content.slice(0, MAX_SLOT_CHARS), now);
+    })();
     return this.getProfile(profileId);
   }
 

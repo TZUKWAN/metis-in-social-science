@@ -93,7 +93,17 @@ function clearCustomAccent(): void {
   }
 }
 export type TopLevelEntry = 'projects' | 'settings';
-export type Page = TopLevelEntry | 'dashboard' | 'chat' | 'goal' | 'graph' | 'timeline' | 'latex' | 'pdf' | 'notes' | 'experiments' | 'evals' | 'artifacts' | 'kanban' | 'autonomous' | 'outcomes' | 'submissions' | 'topics';
+/**
+ * Page —— 持久化导航/深链契约（任务4 Page Reachability 收敛后）。
+ *
+ * - ACTIVE：topics / outcomes / submissions（一级目的地）+ dashboard / goal /
+ *   timeline / latex / experiments（GlobalSearch 与页内跳转可达）+ evals（诊断模式）。
+ * - COMPAT 别名：chat / pdf / kanban（旧入口，经 LEGACY_PAGE_ALIASES 迁移到
+ *   科研项目工作台对应模式页签）；autonomous 深链在别名表内迁移为 outcomes。
+ * - 已删除的 dead id：graph / artifacts（从未有路由实现，点击会静默落空）。
+ * 导航一律通过 src/shell/navigation.ts 的 typed NavigationIntent，不要再散落 event string。
+ */
+export type Page = TopLevelEntry | 'dashboard' | 'chat' | 'goal' | 'timeline' | 'latex' | 'pdf' | 'notes' | 'experiments' | 'evals' | 'kanban' | 'outcomes' | 'submissions' | 'topics';
 
 export interface NoteItem {
   id: string;

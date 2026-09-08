@@ -9,6 +9,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import type { PersistenceStore } from '../persistence/PersistenceStore.js';
 
 export interface MemoryEntry {
@@ -22,27 +23,45 @@ export interface MemoryEntry {
 export class MemoryManager {
   private readonly store: PersistenceStore;
   private readonly projectMemoryPath: string;
+  private readonly dataDir: string;
 
   constructor(store: PersistenceStore, dataDir: string) {
     this.store = store;
     this.projectMemoryPath = path.join(dataDir, 'CLAUDE_MEMORY.md');
+    this.dataDir = dataDir;
   }
 
   // ─── Project Memory ─────────────────────────────────────────
 
-  loadProjectMemory(): string {
+  /**
+   * 任务2 上下文隔离：projectId 存在时读 per-project 记忆文件
+   * （project-memory/<sha256(projectId)>/MEMORY.md，与 WorkspaceAgentsManager
+   * 同一目录隔离方案）；仅显式 global 调用（无 projectId）才读全局
+   * CLAUDE_MEMORY.md。此前单个全局文件会注入所有项目的 prompt——A 项目的
+   * 「项目记忆」必然串进 B 项目，本方法收敛该泄漏。
+   */
+  loadProjectMemory(projectId?: string): string {
+    const target = this.projectMemoryFile(projectId);
     try {
-      if (fs.existsSync(this.projectMemoryPath)) {
-        return fs.readFileSync(this.projectMemoryPath, 'utf-8');
+      if (fs.existsSync(target)) {
+        return fs.readFileSync(target, 'utf-8');
       }
     } catch { /* ignore */ }
     return '';
   }
 
-  saveProjectMemory(content: string): void {
+  saveProjectMemory(content: string, projectId?: string): void {
+    const target = this.projectMemoryFile(projectId);
     try {
-      fs.writeFileSync(this.projectMemoryPath, content, 'utf-8');
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, content, 'utf-8');
     } catch { /* ignore */ }
+  }
+
+  private projectMemoryFile(projectId?: string): string {
+    if (!projectId?.trim()) return this.projectMemoryPath;
+    const dirName = createHash('sha256').update(projectId.trim(), 'utf8').digest('hex');
+    return path.join(this.dataDir, 'project-memory', dirName, 'MEMORY.md');
   }
 
   // ─── Conversation Summary ───────────────────────────────────
@@ -125,8 +144,11 @@ export class MemoryManager {
    * 构建注入 AgentLoop system prompt 的记忆上下文。
    * 包含 project memory + 最近的关键决策 + 用户偏好。
    *
-   * METIS-F12: pass a projectId to restrict injection to that project's memories
-   * (global memories remain included for backward compatibility).
+   * 任务2 上下文隔离（默认隔离，显式共享）：projectId 存在时只注入
+   * 「该项目的 per-project 记忆文件 + 该项目 scope 的 DB 行」；全局行与全局
+   * CLAUDE_MEMORY.md 只在显式 global 调用（无 projectId）时注入。此前
+   * mergeScopedAndGlobal 会把其他项目对话自动提取的全局 key_decision /
+   * preference 行合进每个项目的 prompt——已删除该合并。
    *
    * STATUS: WIRED.
    * The Electron main process appends this context to the skillPrompt /
@@ -138,25 +160,13 @@ export class MemoryManager {
   buildMemoryContext(projectId?: string): string {
     const parts: string[] = [];
 
-    const projectMemory = this.loadProjectMemory();
+    const projectMemory = this.loadProjectMemory(projectId);
     if (projectMemory.trim()) {
       parts.push('## Project Memory\n' + projectMemory.trim());
     }
 
-    // METIS-F12: within a project, inject that project's memories plus global ones
-    // (legacy rows carry no project); outside any project, global memories only.
-    const mergeScopedAndGlobal = (
-      category: string,
-      limit: number,
-      sortDesc: (a: MemoryEntry, b: MemoryEntry) => number,
-    ): MemoryEntry[] => {
-      const scoped = projectId ? this.store.getMemoryByCategory(category, projectId) : [];
-      const global = this.store.getMemoryByCategory(category);
-      return [...scoped, ...global].sort(sortDesc).slice(0, limit);
-    };
     const byUpdatedDesc = (a: MemoryEntry, b: MemoryEntry) => b.updatedAt - a.updatedAt;
-
-    const decisions = mergeScopedAndGlobal('key_decision', 10, byUpdatedDesc);
+    const decisions = this.store.getMemoryByCategory('key_decision', projectId).sort(byUpdatedDesc).slice(0, 10);
     if (decisions.length > 0) {
       parts.push(
         '## Recent Key Decisions\n' +
@@ -164,7 +174,7 @@ export class MemoryManager {
       );
     }
 
-    const prefs = mergeScopedAndGlobal('preference', 50, byUpdatedDesc);
+    const prefs = this.store.getMemoryByCategory('preference', projectId).sort(byUpdatedDesc).slice(0, 50);
     if (prefs.length > 0) {
       parts.push(
         '## User Preferences\n' +

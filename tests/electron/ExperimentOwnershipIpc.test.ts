@@ -13,12 +13,18 @@ import {
 import { isAuthorizedRendererMainFrame } from '../../electron/RendererAuthorization.js';
 
 const mainSource = fs.readFileSync(path.resolve(process.cwd(), 'electron/main.ts'), 'utf8');
+// 任务3：experiment 域 handler 已迁至 registerExperimentIpc.ts——ownership
+// 断言的扫描范围随之覆盖 registrar（channel 集合不变，仅物理位置变化）。
+const registrarSource = fs.readFileSync(path.resolve(process.cwd(), 'electron/ipc/registerExperimentIpc.ts'), 'utf8');
 
 function handlerSource(channel: string): string {
-  const start = mainSource.indexOf(`ipcMain.handle('${channel}'`);
+  const source = mainSource.includes(`ipcMain.handle('${channel}'`) ? mainSource : registrarSource;
+  const startMarker = source === registrarSource ? `dom.handle('${channel}'` : `ipcMain.handle('${channel}'`;
+  const nextMarker = source === registrarSource ? 'dom.handle(' : 'ipcMain.handle(';
+  const start = source.indexOf(startMarker);
   if (start < 0) return '';
-  const end = mainSource.indexOf('ipcMain.handle(', start + 1);
-  return mainSource.slice(start, end < 0 ? mainSource.length : end);
+  const end = source.indexOf(nextMarker, start + 1);
+  return source.slice(start, end < 0 ? source.length : end);
 }
 
 describe('experiment IPC ownership boundary', () => {

@@ -425,6 +425,12 @@ export interface ResearchWorkspaceState {
   projectQuery: string;
   loading: ResearchWorkspaceLoadingState;
   error: ResearchWorkspaceError | null;
+  /**
+   * 任务4 stale 语义：已有项目列表时刷新失败 → 保留旧列表并置 true，
+   * UI 必须提示"当前显示上次成功加载的数据"；首次加载失败仍为 false
+   * （此时 projects 为空、error 非 null → UI 呈 error + retry）。
+   */
+  projectsStale: boolean;
   lastMutation: ResearchMutationResult | null;
   isCreateProjectOpen: boolean;
   isRecycleBinOpen: boolean;
@@ -555,6 +561,7 @@ export function createResearchWorkspaceStore(
       projectQuery: '',
       loading: emptyLoading(),
       error: null,
+      projectsStale: false,
       lastMutation: null,
       isCreateProjectOpen: false,
       isRecycleBinOpen: false,
@@ -609,14 +616,24 @@ export function createResearchWorkspaceStore(
         }
         if (generation !== projectGeneration) return;
         if (!result.success) {
-          set({ projects: [], error: projectListError() });
+          // 任务4 stale 语义：已有列表时刷新失败保留旧数据（stale notice 由
+          // projectsStale 驱动）；首次加载失败保持空列表 + error（UI 呈 error+retry）。
+          set((state) => ({
+            projects: state.projects,
+            error: projectListError(),
+            projectsStale: state.projects.length > 0,
+          }));
           setLoading({ projects: false });
           return;
         }
         const safeProjects = decodeLegacyResearchEntityList('project', result.projects);
         const normalizedProjects = projectListFromEntityResult(safeProjects);
         if (!normalizedProjects.success) {
-          set({ projects: [], error: projectListError() });
+          set((state) => ({
+            projects: state.projects,
+            error: projectListError(),
+            projectsStale: state.projects.length > 0,
+          }));
           setLoading({ projects: false });
           return;
         }
@@ -629,6 +646,7 @@ export function createResearchWorkspaceStore(
         set((state) => ({
           projects,
           activeProjectId,
+          projectsStale: false,
           snapshot: state.snapshot?.project.id === activeProjectId ? state.snapshot : null,
           selection: state.snapshot?.project.id === activeProjectId
             ? state.selection

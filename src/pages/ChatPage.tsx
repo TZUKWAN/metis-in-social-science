@@ -7,7 +7,9 @@ import { matchSlashCommand, SLASH_COMMANDS, filterSlashCommands } from '../lib/s
 import { CodeBlock } from '../components/CodeBlock';
 import { ScenarioStepCard, parseScenarioStepCard, type ScenarioStepCardData } from '../components/ScenarioStepCard';
 import { ScenarioStepCardWithActions } from '../conversation/ScenarioStepCardWithActions';
-import { formatTargetContext } from '../conversation/scenarioStepActions';
+
+import { ConversationController } from '../conversation/runtime/ConversationController.js';
+import { ingestChatStreamChunk } from '../conversation/runtime/chatStreamAdapter.js';
 import { useTranslation } from '../i18n';
 import { researchWorkspaceStore, useResearchWorkspaceStore } from '../research/researchWorkspaceStore';
 import {
@@ -1225,15 +1227,9 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
     pinToBottom: pinChatToBottom,
     engageFollow,
   } = useFollowScroll({ containerRef: chatMessagesRef, trackingReadyRef: historyReadyRef });
-  const streamBatchRef = useRef<{
-    content: string;
-    reasoning: string;
-    isFinished: boolean;
-    startedAt: number;
-    turnId: string;
-    events: AgentActivityEvent[];
-  } | null>(null);
-  const streamBatchFrameRef = useRef<number | null>(null);
+  // P0 2026-09-05：对话流式 V2 运行时——累积权威、attempt 身份、3 帧合并发布、
+  // immediate 权威结算全部由 ConversationController 承担（见 conversation/runtime/）。
+  const chatStreamControllerRef = useRef<ConversationController | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // 输入框随内容自动增高，最多约 10 行，超出后内部滚动查看。
   useEffect(() => {
@@ -2390,40 +2386,43 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
     });
   }, [applyAgentExecutionEnvelope, isCurrentChatRequest]);
 
-  // Streamed model tokens: collect chunks until the next animation frame so a
-  // fast provider cannot force one React render per token. Reasoning tokens
-  // render as the thinking process; the elapsed timer runs until settlement.
+  // Streamed model tokens: the V2 conversation runtime (2026-09-05 P0) owns the
+  // accumulation authority — chunks flow into the ConversationController
+  // (attempt identity + dense index + resync self-heal), publications are
+  // coalesced across three animation frames, and settlement publishes
+  // immediately with the authoritative payload. This effect bridges controller
+  // publications onto the existing messages array so the list renderer stays
+  // untouched while cadence/content/settlement all become V2-authoritative.
   useEffect(() => {
     const metis = window.metis;
     if (!metis?.onChatStreamChunk) return;
 
-    const flushStreamBatch = () => {
-      streamBatchFrameRef.current = null;
-      const batch = streamBatchRef.current;
-      streamBatchRef.current = null;
-      if (!batch) return;
+    const flushFromController = () => {
       const request = activeChatRequestRef.current;
-      if (!request || request.turnId !== batch.turnId || !isCurrentChatRequest(request)) return;
+      if (!request || !isCurrentChatRequest(request)) return;
+      const node = chatStreamControllerRef.current?.nodeSource(request.turnId).get();
+      if (!node || node.status === 'abandoned') return;
+      const finished = node.status !== 'streaming';
 
       if (streamingIndexRef.current < 0) {
         // UX-CHAT-002: empty terminal events must not create an air bubble.
-        if (!batch.content && !batch.reasoning) return;
+        if (!node.content && !node.reasoning) return;
         const message: ChatMessage = {
           id: nextMessageId(),
           role: 'assistant',
-          content: batch.content,
+          content: node.content,
           timestamp: now(),
-          startedAt: batch.startedAt,
-          streaming: !batch.isFinished,
+          startedAt: request.startedAt,
+          streaming: !finished,
           run: {
-            status: batch.isFinished ? 'completed' : 'running',
+            status: finished ? 'completed' : 'running',
             events: activeRunPartsRef.current.run.events.slice(-AGENT_EXECUTION_EVENT_LIMIT),
             parts: activeRunPartsRef.current,
-            turnId: batch.turnId,
+            turnId: request.turnId,
           },
-          reasoning: batch.reasoning,
-          ...(batch.isFinished ? { durationMs: Date.now() - batch.startedAt } : {}),
-          ...(batch.isFinished ? { citations: extractDoiCitations(batch.content) } : {}),
+          reasoning: node.reasoning || undefined,
+          ...(finished ? { durationMs: Date.now() - request.startedAt } : {}),
+          ...(finished ? { citations: extractDoiCitations(node.content) } : {}),
         };
         const index = messagesRef.current.length;
         messagesRef.current = [...messagesRef.current, message];
@@ -2435,21 +2434,23 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
       const streamedIndex = streamingIndexRef.current;
       const nextMessages = messagesRef.current.map((message, index) => {
         if (index !== streamedIndex) return message;
-        const nextContent = message.content + batch.content;
         return {
           ...message,
-          content: nextContent,
-          reasoning: `${message.reasoning ?? ''}${batch.reasoning}`,
-          streaming: !batch.isFinished,
-          ...(batch.isFinished ? { durationMs: Date.now() - batch.startedAt } : {}),
-          ...(batch.isFinished ? { citations: extractDoiCitations(nextContent) } : {}),
+          content: node.content,
+          reasoning: node.reasoning || undefined,
+          streaming: !finished,
+          ...(finished ? { durationMs: Date.now() - request.startedAt } : {}),
+          ...(finished ? { citations: extractDoiCitations(node.content) } : {}),
         };
       });
       messagesRef.current = nextMessages;
       setMessages(nextMessages);
     };
 
-    const scheduleStreamBatch = (data: {
+    const controller = new ConversationController({ onPublish: flushFromController });
+    chatStreamControllerRef.current = controller;
+
+    const handleStreamChunk = (data: {
       turnId: string;
       sessionId: string;
       content: string;
@@ -2461,27 +2462,14 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
         || data.turnId !== request.turnId
         || data.sessionId !== request.sessionId
         || !isCurrentChatRequest(request)) return;
-      const current = streamBatchRef.current;
-      streamBatchRef.current = {
-        content: `${current?.content ?? ''}${data.content}`,
-        reasoning: `${current?.reasoning ?? ''}${data.reasoning ?? ''}`,
-        isFinished: Boolean(current?.isFinished || data.isFinished),
-        startedAt: request.startedAt,
-        turnId: request.turnId,
-        events: activeRunPartsRef.current.run.events,
-      };
-      if (streamBatchFrameRef.current === null) {
-        streamBatchFrameRef.current = window.requestAnimationFrame(flushStreamBatch);
-      }
+      // isFinished 只代表流通道关闭；权威结算由 chat 响应回调通过 settleTurn 完成。
+      ingestChatStreamChunk(controller, data);
     };
 
-    const unsubscribe = metis.onChatStreamChunk(scheduleStreamBatch);
+    const unsubscribe = metis.onChatStreamChunk(handleStreamChunk);
     return () => {
-      if (streamBatchFrameRef.current !== null) {
-        window.cancelAnimationFrame(streamBatchFrameRef.current);
-        streamBatchFrameRef.current = null;
-      }
-      streamBatchRef.current = null;
+      controller.dispose();
+      chatStreamControllerRef.current = null;
       unsubscribe();
     };
   }, [isCurrentChatRequest, nextMessageId]);
@@ -2589,6 +2577,20 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
         { mode: 'send', turnId: request.turnId, ...(scenarioId ? { scenarioId } : {}), projectId: request.projectId },
       ));
       if (!isCurrentChatRequest(request)) return;
+
+      // P0 V2：以持久层权威内容结算流式 attempt（immediate 发布——不等帧）。
+      // interrupted/error 路径同样结算：保留已生成的部分内容并标记终态（规格四十六/四十七）。
+      const v2Controller = chatStreamControllerRef.current;
+      if (v2Controller && (streamingIndexRef.current >= 0 || v2Controller.nodeSource(request.turnId).get())) {
+        const v2Status = response.status === 'completed'
+          ? 'completed'
+          : (response.status === 'interrupted' || response.status === 'cancelled')
+            ? 'interrupted'
+            : 'failed';
+        // 空 answer（如 unverified/error）沿用流式累积内容作为终态呈现。
+        const accumulated = v2Controller.nodeSource(request.turnId).get();
+        v2Controller.settleTurn(request.turnId, response.answer || accumulated?.content || '', '', v2Status);
+      }
 
       if (response.status !== 'completed') {
         // UX-CHAT-002: 先结算流式占位消息（空内容删除、部分内容标记草稿），

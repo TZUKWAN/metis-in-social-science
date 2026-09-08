@@ -3,34 +3,33 @@
  * assistant output, adapted from deepseek-harness's IncrementalMarkdownParser
  * (dsh `packages/client/ui-primitives/src/markdown/incremental.ts`, MIT).
  *
+ * 2026-09-05 P0 升级（规格五/九十九.5）：旧实现每帧对**全文**重新 remark parse
+ * 再按块 memo——那只是 React Render Incremental；本版换用真正的
+ * IncrementalMarkdownParser（src/conversation/markdown/）：冻结前缀不再重新
+ * parse，每帧只解析 frozenUntil 之后的尾部，累计解析成本 O(最终长度 × 小常数)。
+ *
  * Strategy:
- *  - Split the accumulated text into top-level markdown blocks using the real
- *    remark parser (remark-parse + remark-gfm, already transitive deps of
- *    react-markdown), so fenced code blocks, tables, lists and blockquotes are
- *    never split apart — correctness over a heuristic line splitter.
- *  - Each block renders through a memoized SafeMarkdown wrapper keyed by its
- *    absolute source start offset. React reconciles by key (no remount) and
- *    the memo compares the block's source by value, so a block re-renders only
- *    while its own text is still growing. This subsumes dsh's
- *    UNSTABLE_TAIL_BLOCKS = 2 freeze window: every block whose text stopped
- *    changing is effectively frozen, and in practice only the trailing 1–2
- *    blocks re-render per frame.
- *  - Non-append updates (e.g. settle replacing the draft) need no explicit
- *    cache reset: block keys are offsets and memoization is by content, so
- *    changed blocks re-render and unchanged ones stay frozen automatically.
- *  - When `streaming` flips false, the whole document renders once through
- *    the plain SafeMarkdown path so reference-style links/footnotes resolve
- *    exactly like the historical settled renderer.
+ *  - IncrementalMarkdownParser 维护冻结前缀：除尾部 UNSTABLE_TAIL_BLOCKS=2 块外
+ *    全部冻结，每帧只对尾部做 remark parse（解析器自身的 position.end.offset 切割）；
+ *  - 每个冻结块用 SafeMarkdown 渲染一次并缓存 React element（key = 全文绝对起始
+ *    偏移，跨冻结边界 reconcile 而非 remount——DOM identity 保证）；
+ *  - 尾部 ≤2 块 + 本帧增长每帧重解析重渲染，成本有界；
+ *  - transform（emoji strip + DOI linkify）只应用于渲染时的块文本，不进入解析器
+ *    输入：原始文本严格 append-only，且 transform 对历史区域的改写（DOI 完整出现
+ *    后才 linkify）不破坏冻结偏移；块仍在尾部时其文本必然已完整；
+ *  - 当 `streaming` flips false，整篇走一次 SafeMarkdown 全文管线（settled full
+ *    parse），自愈流式期的已知偏差（跨冻结边界的引用式链接/脚注）。
  *
  * Sanitization, allowedElements and the custom link/image/code renderers all
  * stay inside SafeMarkdown — nothing is forked here.
  */
-import { memo, useMemo } from 'react';
+import { memo, useRef, type ReactElement } from 'react';
 import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
 import { SafeMarkdown, type SafeMarkdownMode, type SafeMarkdownProps } from './SafeMarkdown';
 import type { PresentationLocale } from './executionPresentation';
+import { IncrementalMarkdownParser } from '../conversation/markdown/IncrementalMarkdownParser';
 
 interface MdastPositionShape {
   start: { offset?: number };
@@ -122,6 +121,13 @@ export interface StreamingMarkdownProps {
 
 const identityTransform = (value: string): string => value;
 
+interface RendererState {
+  parser: IncrementalMarkdownParser;
+  frozenElements: Map<number, ReactElement>;
+  /** 缓存失效键：这些 props 变化时冻结元素全部重建（DSH labels 陷阱的同款防御）。 */
+  signature: string;
+}
+
 export function StreamingMarkdown({
   text,
   streaming,
@@ -131,13 +137,11 @@ export function StreamingMarkdown({
   onOpenPaper,
   transform = identityTransform,
 }: StreamingMarkdownProps) {
-  const transformed = transform(text);
-  const blocks = useMemo(() => splitMarkdownBlocks(transformed), [transformed]);
-
+  // settled：全文一次渲染自愈（引用式链接/脚注/复杂数学）。
   if (!streaming) {
     return (
       <SafeMarkdown
-        content={transformed}
+        content={transform(text)}
         uiMode={uiMode}
         locale={locale}
         codeComponent={codeComponent}
@@ -145,20 +149,79 @@ export function StreamingMarkdown({
       />
     );
   }
+  return (
+    <StreamingPipeline
+      text={text}
+      uiMode={uiMode}
+      locale={locale}
+      codeComponent={codeComponent}
+      onOpenPaper={onOpenPaper}
+      transform={transform}
+    />
+  );
+}
+
+function StreamingPipeline({
+  text,
+  uiMode,
+  locale,
+  codeComponent,
+  onOpenPaper,
+  transform,
+}: Omit<StreamingMarkdownProps, 'streaming'>) {
+  const stateRef = useRef<RendererState | null>(null);
+
+  // 缓存失效签名：locale/模式变化 ⇒ 冻结元素全部重建（元素捕获了旧 props）。
+  const signature = `${locale}|${uiMode ?? ''}`;
+  let state = stateRef.current;
+  if (state === null || state.signature !== signature) {
+    state = {
+      parser: new IncrementalMarkdownParser(),
+      frozenElements: new Map<number, ReactElement>(),
+      signature,
+    };
+    stateRef.current = state;
+  }
+
+  const result = state.parser.update(text);
+  if (result.reset) {
+    state.frozenElements.clear();
+  }
+  const applyTransform = transform ?? identityTransform;
+  const renderBlock = (source: string, key: number): ReactElement => (
+    <StreamingBlock
+      key={key}
+      content={applyTransform(source)}
+      uiMode={uiMode}
+      locale={locale}
+      codeComponent={codeComponent}
+      onOpenPaper={onOpenPaper}
+    />
+  );
+  for (const block of result.newlyFrozen) {
+    state.frozenElements.set(block.key, renderBlock(text.slice(block.start, block.end), block.key));
+  }
+
+  const frozenElements = result.frozen.map((block) => {
+    const cached = state.frozenElements.get(block.key);
+    if (cached) return cached;
+    // 防御：签名外的缓存丢失后按需重建（正常路径不触发）。
+    const element = renderBlock(text.slice(block.start, block.end), block.key);
+    state.frozenElements.set(block.key, element);
+    return element;
+  });
+  const tailElements = result.tail.map((block) => renderBlock(text.slice(block.start, block.end), block.key));
+
+  // 关键：frozen 与 tail 必须合并在**同一个 children 数组**里输出。
+  // 若分成两个数组（两个 React children 槽位），块从 tail 跨入 frozen 时
+  // 会被视为不同位置而 remount，memo 缓存与 DOM identity 全部失效。
+  const elements = [...frozenElements, ...tailElements];
 
   return (
     <>
-      {blocks.map((block) => (
-        <StreamingBlock
-          key={block.start}
-          content={transformed.slice(block.start, block.end)}
-          uiMode={uiMode}
-          locale={locale}
-          codeComponent={codeComponent}
-          onOpenPaper={onOpenPaper}
-        />
-      ))}
+      {elements}
       <span className="streaming-caret" data-testid="streaming-caret" aria-hidden="true" />
     </>
   );
 }
+

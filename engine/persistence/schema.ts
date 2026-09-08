@@ -63,6 +63,17 @@ CREATE TABLE IF NOT EXISTS agent_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_runs_session ON agent_runs(session_id, started_at);
 
+-- 任务2 Context Provenance：重要 run 的轻量上下文出处（哪些 scope 的内容被
+-- 装进请求），用于事后诊断上下文串线；不保存隐藏推理链。
+CREATE TABLE IF NOT EXISTS context_provenance (
+  run_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  project_id TEXT,
+  provenance_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_context_provenance_session ON context_provenance(session_id, created_at);
+
 CREATE TABLE IF NOT EXISTS tool_results (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   session_id TEXT NOT NULL,
@@ -184,7 +195,10 @@ CREATE TABLE IF NOT EXISTS memory (
 );
 
 CREATE INDEX IF NOT EXISTS idx_memory_category ON memory(category);
-CREATE INDEX IF NOT EXISTS idx_memory_project ON memory(project_id);
+-- NOTE: idx_memory_project is NOT created here on purpose. Pre-baseline databases may
+-- carry a memory table without project_id; creating that index inside the baseline
+-- would fail the whole startup with "no such column". Migration v112 (migrations.ts)
+-- adds the column (when missing) and then this index, for both fresh and old databases.
 
 CREATE TABLE IF NOT EXISTS mcp_servers (
   id TEXT PRIMARY KEY,

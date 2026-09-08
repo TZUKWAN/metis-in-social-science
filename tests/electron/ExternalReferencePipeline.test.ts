@@ -119,11 +119,11 @@ describe('ExternalReferenceService 存储与零越界', () => {
     const other = service.add({ ...VALID, projectId: 'project-2' });
     expect(other.ok && other.duplicate === false).toBe(true);
 
-    const rows = service.list({ projectId: 'project-1' });
+    const rows = service.listForProject('project-1');
     expect(rows).toHaveLength(1);
     expect(rows[0]!.model).toBe('ChatGPT');
     expect(service.remove(rows[0]!.id)).toBe(true);
-    expect(service.list({ projectId: 'project-1' })).toHaveLength(0);
+    expect(service.listForProject('project-1')).toHaveLength(0);
   });
 
   it('keeps external references physically isolated from the evidence chain', () => {

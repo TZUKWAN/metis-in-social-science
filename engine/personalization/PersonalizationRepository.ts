@@ -72,7 +72,9 @@ export interface ScenarioMemoryRecordQuery {
   limit?: number;
 }
 
-const PERSONALIZATION_SCHEMA_SQL = `
+/** Shared with the unified migration pipeline (v116); the constructor re-runs it as an
+ *  idempotent safety net for tests that build a repository on a bare database. */
+export const PERSONALIZATION_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS personalization_definitions (
   id TEXT PRIMARY KEY,
   kind TEXT NOT NULL,
@@ -403,30 +405,10 @@ export class PersonalizationRepository {
       ? Buffer.from(scenarioRunIntegritySecret)
       : null;
     this.#db.exec(PERSONALIZATION_SCHEMA_SQL);
-    const definitionColumns = this.#db.prepare('PRAGMA table_info(personalization_definitions)').all() as Array<{ name: string }>;
-    if (!definitionColumns.some((column) => column.name === 'archived_at')) {
-      this.#db.exec('ALTER TABLE personalization_definitions ADD COLUMN archived_at INTEGER');
-    }
-    // Historic archive rows predate explicit retention tracking.  Their last
-    // archive mutation timestamp is the closest truthful deletion time we
-    // have, so use it once during migration rather than extending retention.
-    this.#db.prepare(`
-      UPDATE personalization_definitions
-      SET archived_at = updated_at
-      WHERE archived = 1 AND archived_at IS NULL
-    `).run();
-    this.#db.exec(`
-      CREATE INDEX IF NOT EXISTS idx_personalization_archived_retention
-      ON personalization_definitions(kind, archived, archived_at)
-    `);
-    const manifestColumns = this.#db.prepare('PRAGMA table_info(personalization_run_manifests)').all() as Array<{ name: string }>;
-    if (!manifestColumns.some((column) => column.name === 'integrity_tag')) {
-      this.#db.exec('ALTER TABLE personalization_run_manifests ADD COLUMN integrity_tag TEXT');
-    }
-    const runColumns = this.#db.prepare('PRAGMA table_info(personalization_scenario_runs)').all() as Array<{ name: string }>;
-    if (!runColumns.some((column) => column.name === 'integrity_tag')) {
-      this.#db.exec('ALTER TABLE personalization_scenario_runs ADD COLUMN integrity_tag TEXT');
-    }
+    // Legacy column patches (archived_at / integrity_tag, the archived_at backfill and
+    // the retention index) live in the unified migration pipeline as v116
+    // (engine/persistence/migrations.ts). This constructor only re-applies the
+    // idempotent DDL above so tests can build a repository on a bare database.
   }
 
   seedBuiltins(definitions: readonly PersonalizationDefinition[]): void {

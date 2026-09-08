@@ -77,6 +77,9 @@ function selectWordText(container: HTMLElement, start: number, end: number) {
 
 describe('OutcomesPage', () => {
   beforeEach(() => {
+    // 任务4：OutcomesPage 现在会把“上次选中的成果”持久化到 localStorage；
+    // 用例之间必须清掉，避免上一个用例的选中状态被 sticky 恢复进下一个用例。
+    window.localStorage.clear();
     researchWorkspaceStore.setState({
       activeProjectId: 'project-1',
       projects: [{ id: 'project-1', title: '实证研究项目' }] as never,
@@ -1266,7 +1269,9 @@ describe('OutcomesPage', () => {
     const deletedAt = Date.now();
     metis.listOutcomes.mockResolvedValue([]);
     metis.listOutcomeTrash.mockResolvedValue([{ outcome, deletedAt, expiresAt: deletedAt + 7 * 24 * 60 * 60 * 1000 }]);
-    fireEvent.click(screen.getByRole('button', { name: '将研究论文移入回收站' }));
+    // 任务4 第六节：行内删除按钮已收纳进 ··· 菜单——先开菜单，再点「移入回收站」。
+    fireEvent.click(screen.getByRole('button', { name: '成果「研究论文」的更多操作' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: '移入回收站' }));
     await waitFor(() => expect(metis.archiveOutcome).toHaveBeenCalledWith({ projectId: 'project-1', outcomeId: 'out-1' }));
     expect(await screen.findByText(/已移入回收站/u)).toBeTruthy();
     expect(screen.queryByText('原始段落。')).toBeNull();

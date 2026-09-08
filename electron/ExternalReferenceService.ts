@@ -6,6 +6,11 @@
  * 证据装配永远不读本表。
  * 写入路径强制经 Human Confirmation（IPC 层的确认卡），服务层只做净化校验与
  * digest 去重（同 digest + 同 project 的重复引用幂等返回已有条目）。
+ *
+ * 【任务2 上下文隔离】读取 API 必须显式声明 scope（listForScope /
+ * listForProject / listForSession）；空 scope 抛 scope_required——null 不等于
+ * 「所有 scope」，杜绝「空 query → 全局最近记录 → 装入 prompt」的串线路径。
+ * listGlobal() 仅限管理/审计页显式浏览，禁止其返回值进入任何 LLM 上下文。
  */
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
@@ -60,21 +65,63 @@ export class ExternalReferenceService {
     return { ok: true, reference: { ...reference, id }, duplicate: false };
   }
 
-  list(query: { projectId?: string | null; sessionId?: string | null; limit?: number } = {}): ExternalModelReference[] {
-    const clauses: string[] = [];
-    const params: Array<string | number> = [];
-    if (query.projectId !== undefined) {
-      clauses.push(query.projectId === null ? "COALESCE(project_id, '') = ''" : 'project_id = ?');
-      if (query.projectId !== null) params.push(query.projectId);
+  /**
+   * 【任务2 上下文隔离】按显式 scope 读取——进入 prompt 的唯一许可路径。
+   * 语义（默认隔离，显式共享；null scope 不等于所有 scope）：
+   * - sessionId + projectId 同时给出：本会话捕获的引用（会话后来挂到项目时
+   *   project_id 允许为空或等于该项目）；绝不包含其他会话/其他项目的引用。
+   * - 仅 sessionId：该会话捕获的引用。
+   * - 仅 projectId：该项目名下的引用（项目级浏览）。
+   * - 两者都缺省：抛错 scope_required——不再返回「全局最近」。
+   */
+  listForScope(scope: { projectId?: string; sessionId?: string; limit?: number }): ExternalModelReference[] {
+    const projectId = typeof scope.projectId === 'string' && scope.projectId.trim() ? scope.projectId.trim() : undefined;
+    const sessionId = typeof scope.sessionId === 'string' && scope.sessionId.trim() ? scope.sessionId.trim() : undefined;
+    if (!projectId && !sessionId) {
+      throw new Error('scope_required: external reference reads require an explicit projectId and/or sessionId');
     }
-    if (query.sessionId !== undefined) {
-      clauses.push(query.sessionId === null ? "COALESCE(session_id, '') = ''" : 'session_id = ?');
-      if (query.sessionId !== null) params.push(query.sessionId);
+    if (sessionId && projectId) {
+      return this.query({
+        clauses: ["session_id = ?", "(project_id IS NULL OR project_id = ?)"],
+        params: [sessionId, projectId],
+        limit: scope.limit,
+      });
     }
-    const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
+    if (sessionId) {
+      return this.query({ clauses: ['session_id = ?'], params: [sessionId], limit: scope.limit });
+    }
+    return this.query({ clauses: ['project_id = ?'], params: [projectId!], limit: scope.limit });
+  }
+
+  /** 项目级读取（显式）：只返回 project_id 精确匹配的引用。 */
+  listForProject(projectId: string): ExternalModelReference[] {
+    if (!projectId?.trim()) {
+      throw new Error('scope_required: listForProject requires a non-empty projectId');
+    }
+    return this.query({ clauses: ['project_id = ?'], params: [projectId.trim()] });
+  }
+
+  /** 会话级读取（显式）：只返回捕获时绑定该会话的引用。 */
+  listForSession(sessionId: string): ExternalModelReference[] {
+    if (!sessionId?.trim()) {
+      throw new Error('scope_required: listForSession requires a non-empty sessionId');
+    }
+    return this.query({ clauses: ['session_id = ?'], params: [sessionId.trim()] });
+  }
+
+  /**
+   * 全局浏览（仅限管理/审计页面显式调用）；返回全部最近记录。
+   * 禁止把本方法的返回值装入任何 LLM 上下文。
+   */
+  listGlobal(limit?: number): ExternalModelReference[] {
+    return this.query({ clauses: [], params: [], limit });
+  }
+
+  private query(input: { clauses: string[]; params: Array<string | number>; limit?: number }): ExternalModelReference[] {
+    const where = input.clauses.length > 0 ? `WHERE ${input.clauses.join(' AND ')}` : '';
     const rows = this.db.prepare(
       `SELECT * FROM external_references ${where} ORDER BY captured_at DESC LIMIT ?`,
-    ).all(...params, Math.min(query.limit ?? 100, 500)) as ExternalRefRow[];
+    ).all(...input.params, Math.min(input.limit ?? 100, 500)) as ExternalRefRow[];
     return rows.map(rowToReference);
   }
 

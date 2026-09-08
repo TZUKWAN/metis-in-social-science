@@ -15,7 +15,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import SplitHandle from '../components/SplitHandle';
+
 import {
   CHATBOT_LAST_AI_KEY,
   CHATBOT_SITES_STORAGE_KEY,
@@ -55,7 +55,6 @@ export default function ChatbotCollabPanel({
   projectId,
   sessionId,
   splitRatio,
-  onSplitRatioChange,
   onReferenceConfirmed,
   onClose,
 }: ChatbotCollabPanelProps) {

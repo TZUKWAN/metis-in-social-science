@@ -6,13 +6,21 @@
  * are hidden and reachable only under 设置 > 高级 > 开发者诊断.
  */
 
+/**
+ * 任务4 注释收敛：本文件历史上同时残留过「三个 top-level」「两个 top-level」
+ * 等互相矛盾的注释。当前实际结构（2026-09-05 刘总规格）：
+ * - TopLevelEntry 持久化入口只有两个：projects / settings；
+ * - 顶层可见导航 = 科研项目（workspace）+ 选题/成果/投稿（research）+ 场景中心（preference toggle）；
+ * - 「协同对话」一级工作区已取消，Chatbot 迁入选题工作区。
+ */
+
 import { isNavVisible } from '../../engine/capabilities/DiagnosticMode.js';
 
 export interface NavEntry {
   id: string;
   /** User-facing label key (METIS-107 dictionary — no technical jargon). */
   labelKey: string;
-  /** The three top-level entries (METIS-103). */
+  /** 持久化 top-level 入口（projects/settings）；research/preference 目的地同样是顶层视觉位置。 */
   isTopLevel: boolean;
   /**
    * Optional one-line "what is this workspace for" tooltip key (O11). When
@@ -23,13 +31,8 @@ export interface NavEntry {
 }
 
 /**
- * The canonical normal-mode nav. Three top-level entries + research sub-entries that live
- * inside a project. Every entry here is user-facing-research terminology; nothing technical.
- */
-/**
- * The canonical normal-mode nav. Two top-level entries + research sub-entries that live
- * inside a project. Every entry here is user-facing-research terminology; nothing technical.
- */
+ * The canonical normal-mode nav：两个持久化 top-level 入口（projects/settings）。
+ * 注释收敛说明见文件头（任务4）。 */
 const NORMAL_NAV: NavEntry[] = [
   { id: 'projects', labelKey: 'nav.projects', descriptionKey: 'nav.projectsDesc', isTopLevel: true },
   { id: 'settings', labelKey: 'nav.settings', descriptionKey: 'nav.settingsDesc', isTopLevel: true },

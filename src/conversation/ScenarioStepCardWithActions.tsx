@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ScenarioStepCard, type ScenarioStepCardData } from '../components/ScenarioStepCard';
+import { type ScenarioStepCardData } from '../components/ScenarioStepCard';
 
 export interface StepCardActionsProps {
   card: ScenarioStepCardData;

@@ -1,4 +1,4 @@
-import { before, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { ArtifactPromptService } from '../../electron/ArtifactPromptService.js';
 import { ARTIFACT_PROMPT_DEFINITIONS } from '../../engine/artifacts/prompts/ArtifactPromptRegistry.js';

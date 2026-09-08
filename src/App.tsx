@@ -12,6 +12,7 @@ import ShortcutsHelp from './components/ShortcutsHelp'
 import ErrorBoundary from './components/ErrorBoundary'
 import type { WorkspaceMode } from './shell/ProjectShell'
 import { getPreferenceNav, getPrimaryResearchNav, getPrimaryWorkspaceNav, getTopLevelNav } from './shell/navConfig'
+import { decodeNavigationIntent, LEGACY_PAGE_ALIASES, NAVIGATE_EVENT, navigate, type NavigationIntent } from './shell/navigation'
 import CommandBar, { type CommandItem, type CommandGroup } from './shell/CommandBar'
 import { getDiagnosticMode, setDiagnosticMode, type UIMode } from '../engine/capabilities/DiagnosticMode'
 import {
@@ -121,7 +122,6 @@ function legacyPageToEntry(page: Page): { entry: TopLevelEntry; mode: WorkspaceM
     case 'settings':
       return { entry: 'settings', mode: 'projects' };
     case 'kanban':
-    case 'autonomous':
     case 'outcomes':
     case 'timeline':
     case 'experiments':
@@ -147,10 +147,9 @@ function resolveStandalonePage(page: Page, diagnosticMode: boolean): StandaloneP
     case 'experiments':
     case 'kanban':
       return page;
-    // Keep persisted legacy links viable, but never revive the removed
-    // autonomous-research product surface. Goals/workflows remain in the
+    // 旧 'autonomous' 深链已在 LEGACY_PAGE_ALIASES 统一迁移为 outcomes，
+    // 这里不再出现已移除的自主研究产品面。Goals/workflows remain in the
     // project runtime; the user-facing destination is Outcomes.
-    case 'autonomous':
     case 'outcomes':
       return 'outcomes';
     case 'submissions':
@@ -564,67 +563,145 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
   useEffect(() => {
     navigateLegacyRef.current = navigateLegacy;
     navigateWorkspaceModeRef.current = navigateWorkspaceMode;
+    applyNavigationIntentRef.current = applyNavigationIntent;
   });
-  useEffect(() => {
-    function handleOpenGoal(event: Event) {
-      const goalId = (event as CustomEvent<{ goalId?: string }>).detail?.goalId;
-      if (!goalId) return;
-      try { window.sessionStorage.setItem('metis-pending-goal', goalId); } catch { /* session storage unavailable */ }
-      // 任务卡片的“在对话中继续”必须回到当前科研项目的对话（2026-08-29 刘总要求），
-      // 而不是跳到协同对话；仅在没有任何活动项目时才退回协同对话。
-      if (researchWorkspaceStore.getState().activeProjectId) {
+
+  /**
+   * 任务4 typed navigation contract：唯一的导航状态应用入口。
+   * 新代码用 `navigate(intent)`（shell/navigation.ts）发起；
+   * 旧 `metis:*` 事件由下方兼容层翻译成同一 intent 后也走这里。
+   */
+  function applyNavigationIntent(intent: NavigationIntent) {
+    switch (intent.kind) {
+      case 'workspace':
         leavePersonalizationGuard(() => {
           setPersonalizationOpen(false);
           setCurrentEntry('projects');
           setStandalonePage(null);
+          if (intent.tab) {
+            setWorkspaceMode('projects');
+            setProjectViewMode(intent.tab);
+          }
+        });
+        break;
+      case 'settings':
+        leavePersonalizationGuard(() => {
+          setPersonalizationOpen(false);
+          setStandalonePage(null);
+          setCurrentEntry('settings');
+        });
+        break;
+      case 'personalization':
+        leavePersonalizationGuard(() => {
+          setStandalonePage(null);
+          setPersonalizationOpen(true);
+        });
+        break;
+      case 'standalone':
+      case 'diagnostic':
+        navigateLegacyRef.current(intent.page);
+        break;
+      case 'paper': {
+        if (intent.paperId) useMetisStore.setState({ selectedPaperId: intent.paperId });
+        if (typeof intent.page === 'number') useMetisStore.setState({ pendingPaperPage: intent.page });
+        navigateLegacyRef.current('pdf');
+        break;
+      }
+      case 'project': {
+        const workspace = researchWorkspaceStore.getState();
+        void workspace.setActiveProject(intent.projectId).then(() => {
+          const validSections = new Set<ResearchWorkspaceSection>([
+            'project', 'sources', 'evidence', 'note_codes', 'claims',
+            'artifacts', 'runs', 'goals', 'recycle_bin',
+          ]);
+          const section = intent.section as ResearchWorkspaceSection | undefined;
+          if (section && validSections.has(section)) {
+            researchWorkspaceStore.getState().setActiveSection(section);
+          }
+        });
+        navigateWorkspaceModeRef.current('projects');
+        break;
+      }
+      case 'goal': {
+        const goalId = intent.goalId;
+        try { window.sessionStorage.setItem('metis-pending-goal', goalId); } catch { /* session storage unavailable */ }
+        // 任务卡片的“在对话中继续”回到当前科研项目的对话（2026-08-29 刘总要求）。
+        if (researchWorkspaceStore.getState().activeProjectId) {
+          leavePersonalizationGuard(() => {
+            setPersonalizationOpen(false);
+            setCurrentEntry('projects');
+            setStandalonePage(null);
+            setWorkspaceMode('projects');
+            setProjectViewMode('chat');
+          });
+        } else {
           setWorkspaceMode('projects');
           setProjectViewMode('chat');
-        });
-      } else {
-        setWorkspaceMode('projects');
-        setProjectViewMode('chat');
+        }
+        // ChatPage may already be mounted; if not, its mount effect consumes
+        // the sessionStorage fallback.
+        window.dispatchEvent(new CustomEvent('metis:goal-focus', { detail: { goalId } }));
+        break;
       }
-      // ChatPage may already be mounted (converse is the default workspace);
-      // if not, its mount effect consumes the sessionStorage fallback.
-      window.dispatchEvent(new CustomEvent('metis:goal-focus', { detail: { goalId } }));
+      case 'kanban': {
+        if (intent.goalId) {
+          try { window.sessionStorage.setItem('metis-pending-goal-focus', intent.goalId); } catch { /* session storage unavailable */ }
+        }
+        navigateLegacyRef.current('kanban');
+        break;
+      }
+      case 'search':
+        setSearchOpen(true);
+        break;
+      case 'shortcuts':
+        setShortcutsOpen(true);
+        break;
+      case 'external-url':
+        void window.metis?.openExternal?.(intent.url);
+        break;
+    }
+  }
+  const applyNavigationIntentRef = useRef(applyNavigationIntent);
+
+  // Typed navigation bus（任务4）：`navigate(intent)` 的唯一入口。
+  useEffect(() => {
+    function handleNavigateIntent(event: Event) {
+      const intent = decodeNavigationIntent((event as CustomEvent).detail);
+      if (!intent) {
+        // 未知的导航载荷：拒绝应用（fail-closed），但留下诊断日志而非静默。
+        console.warn('[navigation] rejected invalid navigation intent payload');
+        return;
+      }
+      applyNavigationIntentRef.current(intent);
+    }
+    window.addEventListener(NAVIGATE_EVENT, handleNavigateIntent);
+    return () => window.removeEventListener(NAVIGATE_EVENT, handleNavigateIntent);
+  }, []);
+
+  useEffect(() => {
+    function handleOpenGoal(event: Event) {
+      const goalId = (event as CustomEvent<{ goalId?: string }>).detail?.goalId;
+      if (!goalId) return;
+      // 兼容层：旧 metis:open-goal → typed intent（任务4，行为不变）。
+      applyNavigationIntentRef.current({ kind: 'goal', goalId });
     }
     function handleOpenKanban(event: Event) {
       const goalId = (event as CustomEvent<{ goalId?: string }>).detail?.goalId;
-      if (goalId) {
-        try { window.sessionStorage.setItem('metis-pending-goal-focus', goalId); } catch { /* session storage unavailable */ }
-      }
-      navigateLegacyRef.current('kanban');
+      // 兼容层：旧 metis:open-kanban → typed intent（任务4，行为不变）。
+      applyNavigationIntentRef.current({ kind: 'kanban', ...(goalId ? { goalId } : {}) });
     }
     function handleOpenProject(event: Event) {
       const detail = (event as CustomEvent<{ projectId?: string; section?: string }>).detail;
       const projectId = detail?.projectId;
       if (!projectId) return;
-      const workspace = researchWorkspaceStore.getState();
-      void workspace.setActiveProject(projectId).then(() => {
-        const validSections = new Set<ResearchWorkspaceSection>([
-          'project', 'sources', 'evidence', 'note_codes', 'claims',
-          'artifacts', 'runs', 'goals', 'recycle_bin',
-        ]);
-        const section = detail?.section as ResearchWorkspaceSection | undefined;
-        if (section && validSections.has(section)) {
-          researchWorkspaceStore.getState().setActiveSection(section);
-        }
-      });
-      // Project entities are rendered by the research/write workspace. Sending
-      // this event to the conversation workspace only updated hidden store state,
-      // so links such as "open project research outputs" appeared to do nothing.
-      navigateWorkspaceModeRef.current('projects');
+      // 兼容层：旧 metis:open-project → typed intent（任务4，行为不变）。
+      applyNavigationIntentRef.current({ kind: 'project', projectId, ...(detail?.section ? { section: detail.section } : {}) });
     }
     function handleOpenPaper(event: Event) {
       const detail = (event as CustomEvent<{ paperId?: string; page?: number }>).detail;
-      if (detail?.paperId) {
-        useMetisStore.setState({ selectedPaperId: detail.paperId });
-      }
-      // O8: carry the citation's page number through to the PDF reader.
-      if (typeof detail?.page === 'number') {
-        useMetisStore.setState({ pendingPaperPage: detail.page });
-      }
-      navigateLegacyRef.current('pdf');
+      if (!detail?.paperId) return;
+      // 兼容层：旧 metis:open-paper → typed intent（任务4，行为不变）。
+      applyNavigationIntentRef.current({ kind: 'paper', paperId: detail.paperId, ...(typeof detail.page === 'number' ? { page: detail.page } : {}) });
     }
     function handleOpenMcpInstaller() {
       setPersonalizationOpen(true);
@@ -705,29 +782,11 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
   }
 
   function navigateLegacy(page: Page) {
-    // Migrate old deep links and any stale persisted navigation state without
-    // exposing the removed Autonomous Research page again.
-    if (page === 'autonomous') page = 'outcomes';
-    // 任务看板不再是顶层入口：统一落到科研项目工作台的看板模式页签。
-    if (page === 'kanban') {
-      leavePersonalizationGuard(() => {
-        setPersonalizationOpen(false);
-        setCurrentEntry('projects');
-        setStandalonePage(null);
-        setWorkspaceMode('projects');
-        setProjectViewMode('kanban');
-      });
-      return;
-    }
-    // 文献阅读（旧 pdf/library 入口）落在科研项目工作台的「资料」模式页签。
-    if (page === 'pdf') {
-      leavePersonalizationGuard(() => {
-        setPersonalizationOpen(false);
-        setCurrentEntry('projects');
-        setStandalonePage(null);
-        setWorkspaceMode('projects');
-        setProjectViewMode('materials');
-      });
+    // 任务4：旧 Page id 的兼容别名（autonomous/chat/kanban/pdf）收敛到
+    // navigation.ts 的 LEGACY_PAGE_ALIASES，不再散落各自的迁移分支。
+    const aliased = LEGACY_PAGE_ALIASES[page];
+    if (aliased) {
+      applyNavigationIntent(aliased);
       return;
     }
     const location = legacyPageToEntry(page);
@@ -932,14 +991,15 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
   }
 
   // O1: command palette registry — navigation + research runs + library + search.
+  // 任务4：命令面板全部改用 typed navigate(intent)，不再直接操作散落状态。
   const commandItems: CommandItem[] = [
-    { id: 'goto-projects', label: t('nav.projects'), description: t('cmdbar.gotoWorkspace'), group: 'nav', onExecute: () => navigateWorkspaceMode('projects'), keywords: ['project', '项目', '科研', '看板'] },
-    { id: 'goto-outcomes', label: t('nav.outcomes'), description: t('nav.outcomesDesc'), group: 'nav', onExecute: () => navigateLegacy('outcomes'), keywords: ['成果', '论文', 'PPT', '报告'] },
-    { id: 'goto-topics', label: t('nav.topics'), description: t('nav.topicsDesc'), group: 'nav', onExecute: () => navigateLegacy('topics'), keywords: ['topic', '选题', '研究方向', '题目'] },
-    { id: 'goto-submissions', label: t('nav.submissions'), description: t('nav.submissionsDesc'), group: 'nav', onExecute: () => navigateLegacy('submissions'), keywords: ['投稿', '期刊', '审稿', 'submission', 'journal'] },
-    { id: 'goto-kanban', label: t('nav.kanban'), description: t('cmdbar.gotoResearch'), group: 'nav', onExecute: () => navigateLegacy('kanban'), keywords: ['board', '看板', '任务'] },
-    { id: 'goto-materials', label: t('projects.modeMaterials'), description: t('nav.projectsDesc'), group: 'nav', onExecute: () => leavePersonalizationGuard(() => { setPersonalizationOpen(false); setStandalonePage(null); setCurrentEntry('projects'); setWorkspaceMode('projects'); setProjectViewMode('materials'); }), keywords: ['papers', '文献', '资料', 'library'] },
-    { id: 'goto-settings', label: t('nav.settings'), description: t('cmdbar.gotoLibrary'), group: 'nav', onExecute: () => leavePersonalizationGuard(() => { setPersonalizationOpen(false); setStandalonePage(null); setCurrentEntry('settings'); }), keywords: ['config', '设置', '配置'] },
+    { id: 'goto-projects', label: t('nav.projects'), description: t('cmdbar.gotoWorkspace'), group: 'nav', onExecute: () => navigate({ kind: 'workspace' }), keywords: ['project', '项目', '科研', '看板'] },
+    { id: 'goto-outcomes', label: t('nav.outcomes'), description: t('nav.outcomesDesc'), group: 'nav', onExecute: () => navigate({ kind: 'standalone', page: 'outcomes' }), keywords: ['成果', '论文', 'PPT', '报告'] },
+    { id: 'goto-topics', label: t('nav.topics'), description: t('nav.topicsDesc'), group: 'nav', onExecute: () => navigate({ kind: 'standalone', page: 'topics' }), keywords: ['topic', '选题', '研究方向', '题目'] },
+    { id: 'goto-submissions', label: t('nav.submissions'), description: t('nav.submissionsDesc'), group: 'nav', onExecute: () => navigate({ kind: 'standalone', page: 'submissions' }), keywords: ['投稿', '期刊', '审稿', 'submission', 'journal'] },
+    { id: 'goto-kanban', label: t('nav.kanban'), description: t('cmdbar.gotoResearch'), group: 'nav', onExecute: () => navigate({ kind: 'workspace', tab: 'kanban' }), keywords: ['board', '看板', '任务'] },
+    { id: 'goto-materials', label: t('projects.modeMaterials'), description: t('nav.projectsDesc'), group: 'nav', onExecute: () => navigate({ kind: 'workspace', tab: 'materials' }), keywords: ['papers', '文献', '资料', 'library'] },
+    { id: 'goto-settings', label: t('nav.settings'), description: t('cmdbar.gotoLibrary'), group: 'nav', onExecute: () => navigate({ kind: 'settings' }), keywords: ['config', '设置', '配置'] },
     { id: 'cmd-search', label: t('cmdbar.openSearch'), description: t('cmdbar.openSearchDesc'), group: 'actions', onExecute: () => setSearchOpen(true), keywords: ['find', '搜索', '全局'] },
     { id: 'cmd-shortcuts', label: t('cmdbar.openShortcuts'), description: t('cmdbar.openShortcutsDesc'), group: 'actions', onExecute: () => setShortcutsOpen(true), keywords: ['help', '快捷键', '帮助'] },
   ];

@@ -228,7 +228,7 @@ function healScenarioReferenceKinds(
   for (const id of [...scenario.agentIds]) moveTopLevel(id, 'agent');
 
   const workflow = scenario.workflow.map((step) => {
-    let next = step;
+    const next = step;
     let stepAgentId = next.agentId;
     let stepSkillIds = [...next.skillIds];
     let stepMcpIds = [...next.mcpIds];

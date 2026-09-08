@@ -1,6 +1,6 @@
 import React from 'react';
 import { AssistantTurn, UserTurn } from '../conversation/ConversationTurns';
-import { SafeMarkdown } from '../presentation/SafeMarkdown';
+import { StreamingMarkdown } from '../presentation/StreamingMarkdown';
 import { ChevronRight, Plus } from 'lucide-react';
 import './TopicWorkspacePage.css';
 import type { TopicCandidateDto, TopicResearchBrief, TopicSessionDto } from '../../engine/runtime/TopicRuntimeContract.js';
@@ -94,12 +94,23 @@ export default function TopicWorkspacePage() {
     sessionIdRef.current = activeSessionId;
   }, [activeSessionId]);
 
-  const refreshExternalRefs = React.useCallback(async () => {
+  const refreshExternalRefs = React.useCallback(async (scope?: { sessionId?: string | null; projectId?: string | null }) => {
     try {
-      const result = await window.metis?.externalRefList?.({ limit: 50 });
+      // 任务2 上下文隔离：只取当前选题会话（+其来源项目）捕获的外部参考。
+      // 空 scope 的全局拉取已被 runtime 禁止（scope_required）——那会把其他
+      // Topic/Project 的 Chatbot 引用串进本会话上下文。
+      const sessionId = scope?.sessionId ?? sessionIdRef.current;
+      const projectId = scope?.projectId ?? session?.sourceProjectId ?? null;
+      if (!sessionId) { setExternalRefs([]); return; }
+      const result = await window.metis?.externalRefList?.({
+        sessionId,
+        ...(projectId ? { projectId } : {}),
+        limit: 50,
+      });
       if (result?.ok && result.references) setExternalRefs(result.references);
+      else if (result && !result.ok) setExternalRefs([]);
     } catch { /* 列表失败保留现状 */ }
-  }, []);
+  }, [session?.sourceProjectId]);
 
   const refreshSessions = React.useCallback(async () => {
     try {
@@ -121,13 +132,24 @@ export default function TopicWorkspacePage() {
   React.useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot session list load
     void refreshSessions();
+  }, [refreshSessions]);
+
+  // 任务2 上下文隔离：会话/项目切换时按新 scope 重新拉取外部参考，
+  // 保证 context package 只含当前 Topic（+来源项目）的引用。
+  React.useEffect(() => {
     void refreshExternalRefs();
-  }, [refreshSessions, refreshExternalRefs]);
+  }, [refreshExternalRefs, activeSessionId]);
 
   React.useEffect(() => {
     const unsubscribe = window.metis?.onTopicStreamChunk?.((chunk: TopicStreamChunk) => {
       if (chunk.sessionId !== sessionIdRef.current) return; // 事件按会话隔离
-      setStreamTail(chunk.content.length > 400 ? chunk.content.slice(-400) : chunk.content);
+      // P0 2026-09-05：保存完整累积内容交给 StreamingMarkdown 增量渲染
+      // （旧版截断 400 字导致用户看不到完整流式回答）。上限仅作内存保护：
+      // 超限时尾部截断会触发解析器一代重置，单帧全量解析，可接受。
+      setStreamTail((previous) => {
+        const next = previous + (chunk.content ?? '');
+        return next.length > 20_000 ? next.slice(-20_000) : next;
+      });
     });
     return () => unsubscribe?.();
   }, []);
@@ -369,7 +391,7 @@ export default function TopicWorkspacePage() {
             <div className="conv-assistant" data-status="streaming">
               <div className="conv-assistant__body">
                 {streamTail
-                  ? <SafeMarkdown content={streamTail} locale="zh" />
+                  ? <StreamingMarkdown text={streamTail} streaming locale="zh" />
                   : <span style={{ color: 'var(--conversation-muted)', fontSize: 13 }}>正在检索与研究……</span>}
                 <span className="conv-caret" aria-hidden>▌</span>
               </div>

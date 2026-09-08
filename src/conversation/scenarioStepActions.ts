@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ScenarioStepCard, type ScenarioStepCardData } from '../components/ScenarioStepCard';
+import { type ScenarioStepCardData } from '../components/ScenarioStepCard';
 import type { ConversationTarget } from './types';
 
 /**

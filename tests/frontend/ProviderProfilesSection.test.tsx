@@ -12,6 +12,8 @@ const profile = (overrides: Record<string, unknown> = {}) => ({
   model: 'qwen3.5-122b-a10b',
   vision: false,
   maxContextTokens: 131072,
+  timeout: 600_000,
+  maxRetries: 3,
   apiKeyStored: true,
   isActive: true,
   createdAt: 1,
@@ -137,6 +139,44 @@ describe('ProviderProfilesSection', () => {
     fireEvent.click(screen.getByTestId('connection-mode-manual'));
     await waitFor(() => expect(screen.queryByTestId('connection-mode-manual')).toBeNull());
     expect(await screen.findByLabelText('连接名称')).toBeTruthy();
+  });
+
+  it('backfills timeout and retries from the saved profile into the form', async () => {
+    list.mockResolvedValue(okList([profile({ timeout: 480_000, maxRetries: 5 })]));
+    render(<ProviderProfilesSection />);
+
+    const timeoutInput = (await screen.findByTestId('provider-profile-timeout')) as HTMLInputElement;
+    const retriesInput = screen.getByTestId('provider-profile-maxretries') as HTMLInputElement;
+    await waitFor(() => expect(timeoutInput.value).toBe('480000'));
+    expect(retriesInput.value).toBe('5');
+  });
+
+  it('falls back to defaults when the saved profile has no timeout or retries', async () => {
+    list.mockResolvedValue(okList([profile({ timeout: undefined, maxRetries: undefined })]));
+    render(<ProviderProfilesSection />);
+
+    const timeoutInput = (await screen.findByTestId('provider-profile-timeout')) as HTMLInputElement;
+    const retriesInput = screen.getByTestId('provider-profile-maxretries') as HTMLInputElement;
+    await waitFor(() => expect(timeoutInput.value).toBe('600000'));
+    expect(retriesInput.value).toBe('2');
+  });
+
+  it('persists edited timeout and retries through the save request', async () => {
+    list.mockResolvedValue(okList([profile({ timeout: 600_000, maxRetries: 2 })]));
+    save.mockResolvedValue({ ok: true, contractVersion: 1, operationId: 'save', action: 'saved', revision: 2, profile: profile(), activeId: profile().id });
+    render(<ProviderProfilesSection />);
+
+    const timeoutInput = await screen.findByTestId('provider-profile-timeout');
+    await waitFor(() => expect((timeoutInput as HTMLInputElement).value).toBe('600000'));
+    fireEvent.change(timeoutInput, { target: { value: '180000' } });
+    const retriesInput = screen.getByTestId('provider-profile-maxretries');
+    fireEvent.change(retriesInput, { target: { value: '1' } });
+    fireEvent.click(screen.getByTestId('provider-profile-save'));
+
+    await waitFor(() => expect(save).toHaveBeenCalled());
+    const request = save.mock.calls[0]![0] as { timeout: number; maxRetries: number };
+    expect(request.timeout).toBe(180_000);
+    expect(request.maxRetries).toBe(1);
   });
 });
 

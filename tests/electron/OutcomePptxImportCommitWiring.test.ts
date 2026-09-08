@@ -6,12 +6,15 @@
  * boundary so the DB-free preview and the save-time-only media commit cannot
  * silently regress into renderer-owned binaries or preview writes.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const mainSource = readFileSync(path.resolve(process.cwd(), 'electron/main.ts'), 'utf8');
-const preloadSource = readFileSync(path.resolve(process.cwd(), 'electron/preload.ts'), 'utf8');
+const preloadSource = [
+  'electron/preload.ts',
+  ...readdirSync(path.resolve(process.cwd(), 'electron/preload')).filter((f) => f.endsWith('.ts')).map((f) => 'electron/preload/' + f),
+].map((f) => readFileSync(path.resolve(process.cwd(), f), 'utf8')).join('\n');
 
 function handlerBlock(source: string, channel: string): string {
   const start = source.indexOf(`ipcMain.handle('${channel}'`);
