@@ -95,18 +95,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Install Rust toolchain (GenOffice Sheets sidecar)
-        uses: dtolnay/rust-toolchain@stable
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin
-            ~/.cargo/registry
-            ~/.cargo/git
-            tools/genoffice/apps/sheets/native/xlsx-engine/target
-          key: ${{ runner.os }}-cargo-xlsx-engine-${{ hashFiles('tools/genoffice/apps/sheets/native/xlsx-engine/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-xlsx-engine-
+      - name: Build note
+        run: echo "METIS_SKIP_GENOFFICE=1 — CI validates compilation health; GenOffice packaging is verified by the local release chain"
+      - env:
+          METIS_SKIP_GENOFFICE: '1'
       - run: npm ci
       - name: Build
         run: npm run build

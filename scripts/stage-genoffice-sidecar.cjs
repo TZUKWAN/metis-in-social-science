@@ -1,6 +1,16 @@
 const { cpSync, existsSync, mkdirSync } = require('node:fs');
 const { spawnSync } = require('node:child_process');
 const path = require('node:path');
+// Optional component: the GenOffice source tree lives OUTSIDE this repo
+// (../tools/genoffice). CI build jobs set METIS_SKIP_GENOFFICE=1 to validate
+// compilation health without the sidecar/runtime staging; the packaged
+// release chain (local / release.yml) stages it for real. The running app
+// degrades gracefully when staged artifacts are absent (existing existsSync
+// guards in main.ts).
+if (process.env.METIS_SKIP_GENOFFICE === '1') {
+  console.log('[genoffice] METIS_SKIP_GENOFFICE=1 - staging skipped');
+  process.exit(0);
+}
 
 const root = path.resolve(__dirname, '..');
 const genofficeRoot = process.env.METIS_GENOFFICE_ROOT
