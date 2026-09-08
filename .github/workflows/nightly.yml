@@ -39,6 +39,18 @@ jobs:
         run: npm run rebuild:node
       - name: Tier 1 sanity before expensive work
         run: npm run verify:reliability
+      - name: Install Rust toolchain (GenOffice Sheets sidecar)
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+            tools/genoffice/apps/sheets/native/xlsx-engine/target
+          key: ${{ runner.os }}-cargo-xlsx-engine-${{ hashFiles('tools/genoffice/apps/sheets/native/xlsx-engine/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-xlsx-engine-
       - name: Production build (needed for desktop-tier gates)
         run: npm run build:electron
       - name: Tier 3 nightly reliability gate
