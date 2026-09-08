@@ -25,7 +25,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -56,13 +56,20 @@ function eslintJson(targetArgs) {
   return JSON.parse(stdout || '[]');
 }
 
+function stableKey(filePath) {
+  // Machine-independent key: path relative to the repo root with forward
+  // slashes. (Splitting on the checkout directory name breaks on CI where the
+  // runner folder differs.)
+  return relative(ROOT, filePath).split(sep).join('/');
+}
+
 function errorCounts(json) {
   const counts = new Map();
   let total = 0;
   for (const file of json) {
     for (const message of file.messages ?? []) {
       if ((message.severity ?? 1) < 2) continue;
-      const key = `${file.filePath.split('metis-alpha2-release').pop()}|${message.ruleId ?? '(parse)'}`;
+      const key = `${stableKey(file.filePath)}|${message.ruleId ?? '(parse)'}`;
       counts.set(key, (counts.get(key) ?? 0) + 1);
       total += 1;
     }
@@ -99,7 +106,7 @@ async function main() {
       for (const message of file.messages ?? []) {
         if ((message.severity ?? 1) < 2) continue;
         total += 1;
-        offenders.push(`${file.filePath.split('metis-alpha2-release').pop()}:${message.line} [${message.ruleId}] ${message.message.slice(0, 120)}`);
+        offenders.push(`${stableKey(file.filePath)}:${message.line} [${message.ruleId}] ${message.message.slice(0, 120)}`);
       }
     }
     if (total > 0) {
