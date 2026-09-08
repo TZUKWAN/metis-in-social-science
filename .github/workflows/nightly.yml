@@ -29,6 +29,11 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Resolve real TEMP path (CI runners expose 8.3 short TMP)
+        shell: pwsh
+        run: |
+          Add-Content $env:GITHUB_ENV "TMP=$((node -e "process.stdout.write(require('fs').realpathSync.native(require('os').tmpdir()))"))"
+          Add-Content $env:GITHUB_ENV "TEMP=$((node -e "process.stdout.write(require('fs').realpathSync.native(require('os').tmpdir()))"))"
       - run: npm ci
       - name: Rebuild SQLite for Node.js
         run: npm run rebuild:node
