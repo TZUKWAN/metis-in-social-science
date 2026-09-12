@@ -888,7 +888,7 @@ export default function OutcomesPage({ onNavigateToSubmissions }: { onNavigateTo
       onDrag={handleAssistantDrag}
       onKeyDelta={(delta) => setAssistantWidth((current) => Math.min(520, Math.max(260, current - delta)))}
     />
-    <OutcomeAssistant key={`${projectId}-${selectedForProject?.outcome.id ?? 'none'}`} projectId={projectId} projectName={project?.title ?? projectId} detail={selectedForProject} selection={assistantSelection} hasUnsavedChanges={hasUnsavedChanges} historyRevision={assistantHistoryRevision} onOpenOutcomeVersion={openOutcomeSource} onLocate={locateSource} onApplied={(applied) => void applyAssistantVersion(applied)} onConversationChanged={() => setAssistantHistoryRevision((revision) => revision + 1)} />
+    <OutcomeAssistant key={`${projectId}-${selectedForProject?.outcome.id ?? 'none'}`} projectId={projectId} projectName={project?.title ?? projectId} detail={selectedForProject} selection={assistantSelection} hasUnsavedChanges={hasUnsavedChanges} historyRevision={assistantHistoryRevision} onOpenOutcomeVersion={openOutcomeSource} onLocate={locateSource} onApplied={(applied) => void applyAssistantVersion(applied)} onConversationChanged={() => setAssistantHistoryRevision((revision) => revision + 1)} onDraftContentUpdated={(content) => setEditorDocument(content)} />
     {createOpen && <CreateDialog categories={categories} close={() => setCreateOpen(false)} create={create} busy={createBusy} />}
     {submissionOpen && selectedForProject && <SubmissionDialog
       close={() => setSubmissionOpen(false)}
@@ -1787,7 +1787,8 @@ function MediaEditor({ projectId, outcomeId, kind, hasUnsavedChanges, document, 
 function VersionPanel({ versions, activeVersion, onOpen, onRestore }: { versions: OutcomeVersion[]; activeVersion: number; onOpen: (value: OutcomeVersion) => void; onRestore: (value: OutcomeVersion) => void }) {
   return <aside className="outcome-version-panel" aria-label="成果版本"><header><strong>版本</strong><span>{versions.length} 个</span></header><div>{versions.map((version) => <article key={version.version} className={version.version === activeVersion ? 'active' : ''}><button type="button" onClick={() => onOpen(version)}><b>v{version.version}</b><span>{version.note || '未填写说明'}</span><small>{version.createdBy === 'ai' ? 'AI 修改' : version.createdBy === 'restore' ? '恢复' : '人工修改'}</small></button>{version.version !== activeVersion && <button type="button" className="outcome-version-panel__restore" onClick={() => onRestore(version)} title={`恢复 v${version.version}`}><RotateCcw size={13} /></button>}</article>)}</div></aside>;
 }
-function OutcomeAssistant({ projectId, projectName, detail, selection, hasUnsavedChanges, historyRevision, onOpenOutcomeVersion, onLocate, onApplied, onConversationChanged }: { projectId: string; projectName: string; detail: OutcomeDetail | null; selection: AssistantSelection; hasUnsavedChanges: boolean; historyRevision: number; onOpenOutcomeVersion: (source: OutcomeSource) => void; onLocate?: (source: OutcomeSource) => void; onApplied: (applied: AssistantApplied | undefined) => void; onConversationChanged: () => void }) {
+function OutcomeAssistant({ projectId, projectName, detail, selection, hasUnsavedChanges, historyRevision, onOpenOutcomeVersion, onLocate, onApplied, onConversationChanged, onDraftContentUpdated }: { projectId: string; projectName: string; detail: OutcomeDetail | null; selection: AssistantSelection; hasUnsavedChanges: boolean; historyRevision: number; onOpenOutcomeVersion: (source: OutcomeSource) => void; onLocate?: (source: OutcomeSource) => void; onApplied: (applied: AssistantApplied | undefined) => void; onConversationChanged: () => void; onDraftContentUpdated?: (content: OutcomeDocument) => void }) {
+  const [proposedBundle, setProposedBundle] = useState<{ set: { id: string; instruction: string; createdBy: string; status: 'pending' | 'partially_accepted' | 'accepted' | 'rejected' | 'stale' | 'cancelled' }; revisions: never[] } | undefined>(undefined);
   const [messages, setMessages] = useState<ScopedMessage[]>([]);
   const [instruction, setInstruction] = useState('');
   const [isSending, setIsSending] = useState(false);
@@ -1901,6 +1902,14 @@ function OutcomeAssistant({ projectId, projectName, detail, selection, hasUnsave
     } catch { setNotice('无法载入该会话的记录。'); }
   };
 
+  const loadDraftIntoEditor = async () => {
+    if (!projectId || !detail) return;
+    try {
+      const draft = await window.metis?.outcome2DraftGet?.({ projectId, outcomeId: detail.outcome.id }) as { content?: OutcomeDocument } | null;
+      if (draft?.content && onDraftContentUpdated) onDraftContentUpdated(draft.content);
+    } catch { /* 读取失败保持当前编辑器内容 */ }
+  };
+
   const send = async () => {
     if (!detail || !instruction.trim() || isSending) return;
     if (hasUnsavedChanges) { setNotice('当前成果有未保存的编辑。请先保存为新版本，再让 AI 协同，避免覆盖本地草稿。'); return; }
@@ -1914,6 +1923,12 @@ function OutcomeAssistant({ projectId, projectName, detail, selection, hasUnsave
       if (result.status === 'completed') {
         setMessages((previous) => mergeMessages(previous, [result.userMessage, result.assistantMessage]));
         onConversationChanged();
+        if (result.proposed) {
+          // Outcomes 2.0（T05.04）：对话回答可直接生成修改建议（Revision Set），不写版本。
+          setProposedBundle(result.proposed as { set: { id: string; instruction: string; createdBy: string; status: 'pending' | 'partially_accepted' | 'accepted' | 'rejected' | 'stale' | 'cancelled' }; revisions: never[] });
+          setNotice('已根据本轮回答生成修改建议（未改动正文，未创建版本）。请核对后接受或拒绝。');
+          return;
+        }
         if (result.applied) { onApplied(result.applied); setNotice('AI 已将经过校验的修改保存为新版本；你可在版本面板随时回退。'); }
         else setNotice('AI 已回复。本轮没有生成可安全应用的结构化修改，因此成果内容未被改动。');
         return;
@@ -1955,6 +1970,7 @@ function OutcomeAssistant({ projectId, projectName, detail, selection, hasUnsave
       <div className="outcome-assistant__messages" aria-live="polite">
         {messages.length === 0 ? <div className="outcome-assistant__starter"><p>可以直接说：</p><button type="button" onClick={() => setInstruction('检查当前成果的结构、论证和表达问题，并给出可直接应用的修改。')}>检查当前成果</button><button type="button" onClick={() => setInstruction('根据当前项目已有资料，改进当前选中的内容。')}>根据项目资料修改</button></div> : messages.slice(-8).map((message) => <article key={message.id} className={`outcome-assistant__message outcome-assistant__message--${message.role}`} aria-label={`${message.role === 'user' ? '用户' : message.role === 'assistant' ? 'METIS' : '系统'}协作记录`}><span>{message.role === 'user' ? '你' : message.role === 'assistant' ? 'METIS' : '系统'}</span><p>{message.content}</p><OutcomeSourceList sources={message.sources} label="本条实际来源" onOpenOutcomeVersion={onOpenOutcomeVersion} onLocate={onLocate} /></article>)}
       </div>
+      {proposedBundle && <RevisionProposalCard projectId={projectId} set={proposedBundle.set} revisions={proposedBundle.revisions} onDraftUpdated={(content) => { if (content && onDraftContentUpdated) onDraftContentUpdated(content as OutcomeDocument); else void loadDraftIntoEditor(); }} onNotice={setNotice} />}
       {notice && <p className="outcome-assistant__notice" role="status">{notice}</p>}
       <div className="outcome-assistant__composer"><textarea ref={instructionRef} value={instruction} onChange={(event) => setInstruction(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void send(); } }} placeholder="例如：根据项目中的实验结果重写当前段落" disabled={isSending} /><div className="outcome-assistant__composer-tools" data-testid="outcome-assistant-toolbar"><ModelThinkingSelector zh={true} disabled={isSending} /><span style={{ flex: 1 }} /><span>Ctrl / ⌘ + Enter 发送</span><button className="primary" type="button" onClick={() => void send()} disabled={isSending || !instruction.trim()}>{isSending ? <LoaderCircle size={15} className="spin" /> : <Send size={15} />}发送</button></div></div>
     </>}
