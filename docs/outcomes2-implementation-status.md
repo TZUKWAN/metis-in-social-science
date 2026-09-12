@@ -166,7 +166,7 @@ Status: DONE
 ## Phase 14 METIS Office Bridge
 
 - T14.01 文案 — 存量 DONE（「Metis Office 原生编辑」）。
-- T14.02 打开前 Draft 处理 — 部分 BLOCKED（打开 Office 前未强制处理草稿；sync 后冲突已对账）。
+- T14.02 打开前 Draft 处理 — DONE（有草稿时确认对话框：保存为新版本并打开 / 取消保留草稿）。
 - T14.03 Office Sync 对账 — DONE（sync 后 draft baseVersion 对账 + revision 逐条 hash 检查 + review issue stale）。
 - T14.04 Stale Revision — DONE（标记 + 提案卡 stale 文案「基于旧内容，不能直接应用」）。
 - T14.05 格式变更不污染 Revision — DONE（Office sync 走版本体系 actor/import，不生成 Revision）。
@@ -222,5 +222,4 @@ Status: DONE
 4. T07.04 Memory 注入 Assistant prompt（数据+服务就绪，接线未做）。
 5. T09.07/T12.05 Graph AI 抽取任务编排；T10.04/T10.05 图谱↔正文互定位；T11.06 overlay。
 6. T13.02/13.13 树计数与响应式专项；T13.01 深度拆分。
-7. T14.02 打开 Office 前的草稿 Modal。
 8. T18 性能专项。
