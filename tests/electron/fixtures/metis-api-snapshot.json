@@ -363,6 +363,7 @@
   "outcome2GraphConfirmNode",
   "outcome2GraphDedupCandidate",
   "outcome2GraphEdges",
+  "outcome2GraphExtractFromOutcome",
   "outcome2GraphNodes",
   "outcome2GraphProjectArgument",
   "outcome2GraphProjectClaimEvidence",

@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "counts": {
-    "invoke": 543,
-    "rendererInvoke": 535,
+    "invoke": 544,
+    "rendererInvoke": 536,
     "send": 13
   },
   "invoke": [
@@ -236,6 +236,7 @@
     "outcomes2:graph:confirmNode",
     "outcomes2:graph:dedupCandidate",
     "outcomes2:graph:edges",
+    "outcomes2:graph:extractFromOutcome",
     "outcomes2:graph:nodes",
     "outcomes2:graph:projectArgument",
     "outcomes2:graph:projectClaimEvidence",
@@ -777,6 +778,7 @@
     "outcomes2:graph:confirmNode",
     "outcomes2:graph:dedupCandidate",
     "outcomes2:graph:edges",
+    "outcomes2:graph:extractFromOutcome",
     "outcomes2:graph:nodes",
     "outcomes2:graph:projectArgument",
     "outcomes2:graph:projectClaimEvidence",
