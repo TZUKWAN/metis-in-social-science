@@ -15,6 +15,7 @@ import { SCHEMA_SQL } from '../../engine/persistence/schema.js';
 import { OutcomeAssistantService } from '../../electron/OutcomeAssistantService.js';
 import { OutcomeRepository } from '../../electron/OutcomeRepository.js';
 import { OutcomeWorkbenchService, outcomeContentHash } from '../../electron/OutcomeWorkbenchService.js';
+import { OutcomeMemoryService } from '../../electron/OutcomeMemoryReviewGraphService.js';
 
 class ControlledProvider extends BaseProvider {
   constructor(private readonly response: string) { super(); }
@@ -118,3 +119,50 @@ describe('OutcomeAssistant 默认 Revision 路径（T03.01）', () => {
     expect(result.diagnostics.some((item) => item.code === 'edit_target_not_found')).toBe(true);
   });
 });
+
+describe('T07.04 成果记忆注入 Assistant prompt', () => {
+  it('injects confirmed memory into the model prompt (terminology first), absent memory adds nothing', async () => {
+    const db = new Database(':memory:');
+    db.exec(SCHEMA_SQL);
+    db.prepare("INSERT INTO projects (id,title,original_intent,lifecycle,created_at,updated_at,source) VALUES ('project-m','P','','active',1,1,'user')").run();
+    const repository = new OutcomeRepository(db);
+    const workbench = new OutcomeWorkbenchService(db, repository);
+    const memoryService = new OutcomeMemoryService(db);
+    const created = repository.create({
+      projectId: 'project-m', categoryId: null, title: '论文 M', kind: 'word', note: '', actor: 'human',
+      content: { type: 'word', blocks: [{ id: 'p-1', kind: 'paragraph', text: '正文。' }], page: {}, header: '', footer: '' },
+    });
+    workbench.openForEdit('project-m', created.outcome.id);
+    memoryService.save({
+      outcomeId: created.outcome.id, projectId: 'project-m', goal: '投 CSSCI', audience: '', venueTarget: '',
+      coreJudgments: [], terminology: [{ preferred: '职业能力形成', avoid: ['技能提升'] }], writingRules: [],
+      confirmedDecisions: ['保留混合方法设计'], rejectedApproaches: [], unresolvedIssues: [], revision: 1, updatedAt: 0,
+    });
+    const seen: string[] = [];
+    const provider = new (class extends BaseProvider {
+      capabilities(): ProviderCapabilities {
+        return { providerType: 'Capture', model: 'm', nativeToolCalling: false, jsonSchemaOutput: false, streaming: false, thinking: false, maxContextTokens: 32_000, maxOutputTokens: 4_096, retryableStatusCodes: [] };
+      }
+      async complete(messages: ChatMessage[]): Promise<NormalizedResponse> {
+        seen.push(messages.map((message) => message.content).join('\n'));
+        return { content: JSON.stringify({ answer: '好的。', edit: null }), toolCalls: [], finishReason: 'stop', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+      }
+      async *completeStream(): AsyncGenerator<StreamChunk, void, unknown> { /* not used */ }
+    })();
+    const assistant = new OutcomeAssistantService({
+      repository,
+      agentLoop: new AgentLoop({ provider, registry: new ToolRegistry(), dispatcher: new ToolDispatcher(new ToolRegistry()) }),
+      modelName: 'm',
+      workbench,
+      memoryProvider: (pid, oid) => memoryService.get(pid, oid),
+    });
+    const result = await assistant.chat({ projectId: 'project-m', outcomeId: created.outcome.id, instruction: '继续' });
+    expect(result.status).toBe('completed');
+    const prompt = seen.join('\n');
+    expect(prompt).toContain('【成果记忆（用户确认过的长期上下文，必须遵守）】');
+    expect(prompt).toContain('职业能力形成（避免：技能提升）');
+    expect(prompt).toContain('保留混合方法设计');
+    expect(prompt).toContain('投 CSSCI');
+  });
+});
+

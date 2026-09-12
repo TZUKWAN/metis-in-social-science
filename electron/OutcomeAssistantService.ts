@@ -80,6 +80,9 @@ export interface OutcomeAssistantServiceOptions {
   /** Outcomes 2.0（T03.01）：提供时 AI 修改默认产生 Revision Set（不写版本）；
    * 缺省（自动化管线如 SubmissionOptimization）保留旧的直接应用路径。 */
   workbench?: import('./OutcomeWorkbenchService.js').OutcomeWorkbenchService;
+  /** Outcomes 2.0（T07.04）：成果记忆读取器——每轮按优先级注入 prompt。 */
+  memoryProvider?: (projectId: string, outcomeId: string) =>
+    import('../engine/runtime/OutcomeWorkbenchContract.js').OutcomeMemory | null;
 }
 
 interface ResolvedSelection {
@@ -419,6 +422,8 @@ function assistantPrompt(input: {
   /** 成果提示词工程(任务4/5):行为段 Override 解析(带 outcomeId)。 */
   resolveBehaviorPrompt?: (promptId: string, outcomeId?: string | null) => string | null;
   getGlobalPrompt?: (officeKind: string, outcomeId?: string | null) => string | null;
+  /** Outcomes 2.0（T07.04/T15.01）：成果记忆（已按任务书优先级在调用侧排序）。 */
+  memory?: import('../engine/runtime/OutcomeWorkbenchContract.js').OutcomeMemory | null;
 }): string {
   const scope = input.selection
     ? `\n${input.selection.prompt}\n`
@@ -433,8 +438,27 @@ function assistantPrompt(input: {
         '你是 METIS 成果协同助手。只根据本提示中提供的当前成果、当前项目内成果协同历史、当前选区和明确列出的项目上下文回答。',
         '不要声称使用了没有提供的文件、资料、联网信息或来源；不要调用工具。',
       ];
+  // T07.04 记忆注入优先级：terminology → confirmed decisions → core judgments →
+  // writing rules → unresolved issues → venue/audience。记忆是用户确认过的长期上下文。
+  const memoryLines: string[] = [];
+  const memoryValue = input.memory;
+  if (memoryValue) {
+    if (memoryValue.terminology.length > 0) {
+      memoryLines.push(`术语规范：${memoryValue.terminology.map((term: { preferred: string; avoid?: string[] }) => term.avoid && term.avoid.length > 0 ? `${term.preferred}（避免：${term.avoid.join('、')}）` : term.preferred).join('；')}`);
+    }
+    if (memoryValue.confirmedDecisions.length > 0) memoryLines.push(`已确认决定：${memoryValue.confirmedDecisions.join('；')}`);
+    if (memoryValue.coreJudgments.length > 0) memoryLines.push(`核心判断：${memoryValue.coreJudgments.join('；')}`);
+    if (memoryValue.writingRules.length > 0) memoryLines.push(`写作规范：${memoryValue.writingRules.join('；')}`);
+    if (memoryValue.unresolvedIssues.length > 0) memoryLines.push(`未解决问题：${memoryValue.unresolvedIssues.join('；')}`);
+    if (memoryValue.venueTarget || memoryValue.audience) memoryLines.push(`目标：${memoryValue.venueTarget || '未指定'} / 读者：${memoryValue.audience || '未指定'}`);
+    if (memoryValue.goal) memoryLines.push(`成果目标：${memoryValue.goal}`);
+  }
+  const memorySection = memoryLines.length > 0
+    ? `\n【成果记忆（用户确认过的长期上下文，必须遵守）】\n${memoryLines.join('\n')}\n`
+    : '';
   return [
     ...behaviorLines,
+    ...(memorySection ? [memorySection] : []),
     ...((globalPrompt ?? '').trim() ? [`【内容规范·全局风格（本 Profile 全部动作共同遵守）】
 ${(globalPrompt ?? '').trim()}`] : []),
     `当前成果：${input.title}；类型：${input.kind}；当前版本：v${input.currentVersion}。`,
@@ -450,7 +474,6 @@ ${(globalPrompt ?? '').trim()}`] : []),
     scope,
   ].join('\n');
 }
-
 export class OutcomeAssistantService {
   constructor(private readonly options: OutcomeAssistantServiceOptions) {}
 
@@ -534,6 +557,7 @@ export class OutcomeAssistantService {
       ...(this.options.providerProfileBinding ? { providerProfileBinding: this.options.providerProfileBinding } : {}),
       ...(this.options.signal ? { signal: this.options.signal } : {}),
       skillPrompt: assistantPrompt({
+        memory: this.options.memoryProvider?.(request.projectId, request.outcomeId) ?? null,
         title: detail.outcome.title,
         kind: detail.outcome.kind,
         outcomeId: detail.outcome.id,
