@@ -670,13 +670,9 @@ export default function OutcomesPage({ onNavigateToSubmissions }: { onNavigateTo
       : null;
     if (workbenchDraft?.content) {
       const choice = window.confirm(
-        `当前成果有未保存的工作草稿（基于 v${workbenchDraft.baseVersion ?? selectedForProject.version.version}）。
-
-` +
-        '确定=保存草稿为新版本并打开 Office
-取消=留在 METIS（草稿保留）
-' +
-        '（如需以当前正式版本打开并保留草稿，请先在历史中处理草稿）',
+        `当前成果有未保存的工作草稿（基于 v${workbenchDraft.baseVersion ?? selectedForProject.version.version}）。` +
+        '\n\n确定=保存草稿为新版本并打开 Office；取消=留在 METIS（草稿保留）。' +
+        '\n（如需以当前正式版本打开并保留草稿，请先在历史中处理草稿）',
       );
       if (!choice) { setOperationNotice('已取消打开 Metis Office；工作草稿原样保留。'); return; }
       const saved = await save(workbenchDraft.content, '打开 Metis Office 前保存工作草稿', 'human');
