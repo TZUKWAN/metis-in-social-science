@@ -589,7 +589,12 @@ export const OutcomeAssistantChatResultSchema = z.discriminatedUnion('status', [
     assistantMessage: ScopedConversationMessageSchema,
     sources: z.array(OutcomeSourceSchema).max(OUTCOME_LIMITS.sourceCount),
     diagnostics: z.array(OutcomeAssistantDiagnosticSchema).max(16),
+    /** 旧直改路径（自动化管线显式保留）。普通交互路径不再使用。 */
     applied: OutcomeAssistantAppliedEditSchema.optional(),
+    /** Outcomes 2.0（T03.01）：默认路径——AI 修改以 Revision Set 提案返回，不写版本。
+     * 传输面 unknown（避免与 OutcomeWorkbenchContract 循环 import）；主进程
+     * OutcomeAssistantService 在放入前已用 OutcomeRevisionSet/Revision schema 严格校验。 */
+    proposed: z.unknown().optional(),
   }),
   z.strictObject({
     status: z.literal('error'),

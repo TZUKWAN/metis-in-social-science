@@ -112,7 +112,7 @@ export interface RevisionProposalInput {
 }
 
 /** 分布式 Omit：保持 discriminated union 的窄化能力（TS 内建 Omit 会塌缩 union）。 */
-type RevisionTargetInput = OutcomeRevisionTarget extends infer T
+export type RevisionTargetInput = OutcomeRevisionTarget extends infer T
   ? T extends unknown ? Omit<T, 'beforeHash'> : never
   : never;
 

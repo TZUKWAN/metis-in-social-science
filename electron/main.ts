@@ -4886,6 +4886,15 @@ function setupIPC(): void {
         isRuntimeCurrent: () => runtimeGeneration === requestRuntimeGeneration
           && agentLoop === requestAgentLoop
           && provider === requestProvider,
+        // Outcomes 2.0（T03.01）：交互助手默认产生 Revision 提案，不直接写版本。
+        workbench: (outcomes2Services ?? (store && requestRepository
+          ? (outcomes2Services = {
+              workbench: new OutcomeWorkbenchService(store.raw, requestRepository),
+              memory: new OutcomeMemoryService(store.raw),
+              review: new OutcomeReviewService(store.raw),
+              graph: new ResearchGraphService(store.raw),
+            })
+          : undefined))?.workbench,
       }).chat(parsed.data);
     } finally {
       tracked.cleanup();

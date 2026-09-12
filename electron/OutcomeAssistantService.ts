@@ -31,6 +31,37 @@ const EDITABLE_WORD_BLOCKS = new Set([
 
 type AssistantRunner = Pick<AgentLoop, 'run'>;
 
+/** T03.01/T15.03：模型 edit → Runtime 修订提案（beforeHash 由 Workbench 从草稿计算）。 */
+function proposalsFromEdit(edit: OutcomeAssistantEdit): Array<{
+  target: import('./OutcomeWorkbenchService.js').RevisionTargetInput;
+  after: unknown;
+  reason: string;
+}> {
+  if (edit.kind === 'word') {
+    return edit.replacements.map((replacement) => (
+      replacement.row !== undefined && replacement.column !== undefined
+        ? {
+            target: { kind: 'word_table_cell' as const, blockId: replacement.blockId, row: replacement.row, column: replacement.column },
+            after: { text: replacement.text },
+            reason: edit.note,
+          }
+        : {
+            target: { kind: 'word_block' as const, blockId: replacement.blockId },
+            after: { text: replacement.text, ...(replacement.style ? { style: replacement.style } : {}) },
+            reason: edit.note,
+          }
+    ));
+  }
+  return [{
+    target: { kind: 'ppt_page' as const, pageId: edit.replacePage.pageId },
+    after: {
+      ...(edit.replacePage.title !== undefined ? { title: edit.replacePage.title } : {}),
+      ...(edit.replacePage.elements !== undefined ? { elements: edit.replacePage.elements } : {}),
+    },
+    reason: edit.note,
+  }];
+}
+
 export interface OutcomeAssistantServiceOptions {
   repository: OutcomeRepository;
   agentLoop: AssistantRunner;
@@ -46,6 +77,9 @@ export interface OutcomeAssistantServiceOptions {
   /** 成果提示词工程(任务4):行为段 Override 解析。 */
   resolveBehaviorPrompt?: (promptId: string, outcomeId?: string | null) => string | null;
   getGlobalPrompt?: (officeKind: string, outcomeId?: string | null) => string | null;
+  /** Outcomes 2.0（T03.01）：提供时 AI 修改默认产生 Revision Set（不写版本）；
+   * 缺省（自动化管线如 SubmissionOptimization）保留旧的直接应用路径。 */
+  workbench?: import('./OutcomeWorkbenchService.js').OutcomeWorkbenchService;
 }
 
 interface ResolvedSelection {
@@ -557,6 +591,45 @@ export class OutcomeAssistantService {
       return this.result({ status: 'completed', model: this.options.modelName, answer: model.answer, userMessage, assistantMessage, sources, diagnostics });
     }
 
+    // ── Outcomes 2.0 默认路径（T03.01）：修改即提案，绝不直接写版本。 ──
+    if (this.options.workbench) {
+      const opened = this.options.workbench.openForEdit(request.projectId, request.outcomeId);
+      if (!opened) {
+        return this.result({
+          status: 'completed', model: this.options.modelName, answer: model.answer, userMessage, assistantMessage, sources,
+          diagnostics: [...diagnostics, diagnostic('outcome_not_found', '成果不存在，无法生成修改建议。')],
+        });
+      }
+      // 用 applyEdit 的既有验证逻辑在 draft 上做 target 存在性校验（不采用其产物）。
+      const verified = applyEdit(opened.draft.content, model.edit, selection);
+      if (!verified.content) {
+        return this.result({
+          status: 'completed', model: this.options.modelName, answer: model.answer, userMessage, assistantMessage, sources,
+          diagnostics: [...diagnostics, verified.diagnostic ?? diagnostic('model_response_contract_error', 'AI 修改未能定位目标。')],
+        });
+      }
+      const proposals = proposalsFromEdit(model.edit);
+      const created = this.options.workbench.createRevisionSet({
+        projectId: request.projectId,
+        outcomeId: request.outcomeId,
+        instruction: request.instruction,
+        createdBy: 'ai',
+        proposals,
+      });
+      if (!created.ok) {
+        return this.result({
+          status: 'completed', model: this.options.modelName, answer: model.answer, userMessage, assistantMessage, sources,
+          diagnostics: [...diagnostics, diagnostic('edit_target_not_found',
+            created.code === 'outcome_revision_target_missing'
+              ? 'AI 修改所指向的内容在当前草稿中已变化或不存在，未生成修改建议。'
+              : `修改建议生成失败（${created.code}）。`)],
+        });
+      }
+      return this.result({
+        status: 'completed', model: this.options.modelName, answer: model.answer, userMessage, assistantMessage, sources, diagnostics,
+        proposed: created.value,
+      });
+    }
     const applied = applyEdit(detail.version.content, model.edit, selection);
     if (!applied.content) {
       return this.result({
