@@ -1,9 +1,9 @@
 /**
- * LibraryPage — 内置文献检索 + 我的文献管理（LIT-SEARCH-01）。
+ * LibraryPage — 我的文献管理（资料页定位：项目/对话的资料管理库）。
  *
- * 覆盖：检索区结构、桥接调用与结果渲染、导入文献库、部分来源失败提示、
- * 服务不可用降级；以及无 PDF 条目的题录详情、编辑保存、收藏、删除、
- * 搜索过滤与阅读入口。
+ * 手动检索区已移除（检索由 AI 对话/自主科研路径调用），本文件覆盖：
+ * 无 PDF 条目的题录详情、编辑保存、收藏、删除、搜索过滤与阅读入口、
+ * 「打开原文」经 window.metis.openExternal 打开与无链接提示、标签展示中文化。
  *
  * @vitest-environment jsdom
  */
@@ -14,40 +14,6 @@ import LibraryPage from '../../src/pages/LibraryPage';
 import { useMetisStore } from '../../src/store';
 import type { PaperItem } from '../../engine/research/PaperItem';
 import { researchWorkspaceStore } from '../../src/research/researchWorkspaceStore';
-
-type SearchRequest = { query: string; sources: Array<'ncpssd' | 'openalex'>; page?: number; pageSize?: number; coreOnly?: boolean };
-
-interface SearchItemFixture {
-  id: string;
-  source: 'ncpssd' | 'openalex';
-  title: string;
-  authors: string[];
-  year: number;
-  venue: string;
-  abstract: string;
-  doi?: string;
-  url?: string;
-  pdfUrl?: string;
-  citationCount?: number;
-  tags: string[];
-  core: boolean;
-}
-
-function makeItem(overrides?: Partial<SearchItemFixture>): SearchItemFixture {
-  return {
-    id: 'ncpssd:fixture-1',
-    source: 'ncpssd',
-    title: '论中国式现代化的制度基础',
-    authors: ['张三', '李四'],
-    year: 2024,
-    venue: '中国社会科学',
-    abstract: '摘要……',
-    url: 'https://www.ncpssd.org/Literature/articleinfo?id=fixture-1',
-    tags: ['现代化', '制度'],
-    core: true,
-    ...overrides,
-  };
-}
 
 function makePaper(overrides?: Partial<PaperItem>): PaperItem {
   return {
@@ -68,23 +34,14 @@ function makePaper(overrides?: Partial<PaperItem>): PaperItem {
   };
 }
 
-const literatureSearch = vi.fn();
 const savePaper = vi.fn(async () => true);
 const deletePaper = vi.fn(async () => true);
 const linkPaperToProject = vi.fn(async () => ({ ok: true }));
-const browserNavigate = vi.fn(async () => ({ ok: true }));
-const browserShow = vi.fn(async () => ({ ok: true }));
-const browserHide = vi.fn(async () => ({ ok: true }));
-const browserSetBounds = vi.fn(async () => ({ ok: true }));
-const browserListDownloads = vi.fn(async () => []);
-const onBrowserState = vi.fn(() => () => {});
-const onBrowserDownloadRequest = vi.fn(() => () => {});
+const openExternal = vi.fn(async () => ({ success: true }));
 
-function browserMetisMock() {
+function libraryMetisMock() {
   return {
-    literatureSearch, savePaper, deletePaper, linkPaperToProject,
-    browserNavigate, browserShow, browserHide, browserSetBounds, browserListDownloads,
-    onBrowserState, onBrowserDownloadRequest,
+    savePaper, deletePaper, linkPaperToProject, openExternal,
   } as unknown as typeof window.metis;
 }
 
@@ -110,109 +67,14 @@ function resetStore() {
   researchWorkspaceStore.setState({ activeProjectId: null });
 }
 
-describe('LibraryPage — 检索区', () => {
-  beforeEach(() => {
-    resetStore();
-    literatureSearch.mockReset();
-    savePaper.mockClear();
-    window.metis = { literatureSearch, savePaper } as unknown as typeof window.metis;
-  });
-
-  afterEach(() => {
-    cleanup();
-    delete (window as { metis?: unknown }).metis;
-  });
-
-  it('渲染检索区与我的文献空状态', () => {
-    render(<LibraryPage />);
-    expect(screen.getByTestId('library-search-input')).toBeTruthy();
-    expect(screen.getByTestId('library-search-submit')).toBeTruthy();
-    expect(screen.getByTestId('library-source-ncpssd')).toBeTruthy();
-    expect(screen.getByTestId('library-source-openalex')).toBeTruthy();
-    expect(screen.getByTestId('library-core-only')).toBeTruthy();
-    expect(screen.getByTestId('library-empty')).toBeTruthy();
-  });
-
-  it('检索成功时渲染结果并传递核心过滤参数', async () => {
-    const item = makeItem();
-    literatureSearch.mockResolvedValue({ ok: true, results: [item], total: 42, warnings: [] });
-    render(<LibraryPage />);
-
-    fireEvent.change(screen.getByTestId('library-search-input'), { target: { value: '现代化' } });
-    fireEvent.click(screen.getByTestId('library-search-submit'));
-
-    await waitFor(() => {
-      expect(screen.getByTestId('library-results')).toBeTruthy();
-    });
-    const request = literatureSearch.mock.calls[0]![0] as SearchRequest;
-    expect(request.query).toBe('现代化');
-    expect(request.sources).toEqual(['ncpssd', 'openalex']);
-    expect(request.coreOnly).toBe(true);
-    expect(screen.getByText('论中国式现代化的制度基础')).toBeTruthy();
-  });
-
-  it('导入结果条目时写入本地文献库并标记已导入', async () => {
-    const item = makeItem({ id: 'ncpssd:import-1' });
-    literatureSearch.mockResolvedValue({ ok: true, results: [item], total: 1, warnings: [] });
-    render(<LibraryPage />);
-
-    fireEvent.change(screen.getByTestId('library-search-input'), { target: { value: '现代化' } });
-    fireEvent.click(screen.getByTestId('library-search-submit'));
-    await waitFor(() => {
-      expect(screen.getByTestId('library-import')).toBeTruthy();
-    });
-
-    fireEvent.click(screen.getByTestId('library-import'));
-    await waitFor(() => {
-      expect(screen.getByTestId('library-paper-item')).toBeTruthy();
-      expect(screen.getByTestId('library-import').textContent).toContain('已导入');
-    });
-    expect(savePaper).toHaveBeenCalledTimes(1);
-    const saved = savePaper.mock.calls[0]![0] as { title: string; venue: string; projectId?: string };
-    expect(saved.title).toBe('论中国式现代化的制度基础');
-    expect(saved.venue).toBe('中国社会科学');
-    expect(saved.projectId).toBeUndefined();
-  });
-
-  it('检索失败时展示错误且不渲染结果', async () => {
-    literatureSearch.mockResolvedValue({ ok: false, code: 'literature_source_unavailable', recovery: 'retry_later' });
-    render(<LibraryPage />);
-
-    fireEvent.change(screen.getByTestId('library-search-input'), { target: { value: '现代化' } });
-    fireEvent.click(screen.getByTestId('library-search-submit'));
-
-    await waitFor(() => {
-      expect(screen.getByTestId('library-search-error')).toBeTruthy();
-    });
-    expect(document.querySelector('[data-testid="library-results"]')).toBeNull();
-  });
-
-  it('桥接不可用时给出降级提示', async () => {
-    delete (window as { metis?: unknown }).metis;
-    render(<LibraryPage />);
-
-    fireEvent.change(screen.getByTestId('library-search-input'), { target: { value: '现代化' } });
-    fireEvent.click(screen.getByTestId('library-search-submit'));
-
-    await waitFor(() => {
-      expect(screen.getByTestId('library-search-error')).toBeTruthy();
-    });
-    expect(literatureSearch).not.toHaveBeenCalled();
-  });
-});
-
 describe('LibraryPage — 我的文献', () => {
   beforeEach(() => {
     resetStore();
-    literatureSearch.mockReset();
     savePaper.mockClear();
     deletePaper.mockClear();
     linkPaperToProject.mockClear();
-    browserNavigate.mockClear();
-    browserShow.mockClear();
-    browserHide.mockClear();
-    browserListDownloads.mockClear().mockResolvedValue([]);
-    window.metis = browserMetisMock();
+    openExternal.mockClear();
+    window.metis = libraryMetisMock();
     seedPapers([
       makePaper(),
       makePaper({
@@ -252,6 +114,12 @@ describe('LibraryPage — 我的文献', () => {
     const readButtons = screen.queryAllByTestId('library-paper-read');
     expect(readButtons).toHaveLength(0);
     expect(screen.getAllByTestId('library-paper-source')).toHaveLength(2);
+  });
+
+  it('不再渲染手动检索区（检索由 AI 路径调用）', () => {
+    render(<LibraryPage />);
+    expect(screen.queryByTestId('library-search-input')).toBeNull();
+    expect(screen.queryByTestId('library-search-submit')).toBeNull();
   });
 
   it('点击无 PDF 条目打开题录详情并展示全部字段', async () => {
@@ -359,19 +227,41 @@ describe('LibraryPage — 我的文献', () => {
       expect(paper.starred).toBe(true);
     });
   });
+
+  it('内部英文标签 scenario-imported 展示为中文「场景导入」', () => {
+    seedPapers([makePaper({ id: 'paper-tag-1', title: '场景导入的文献', tags: ['collected', 'scenario-imported'] })]);
+    render(<LibraryPage />);
+    expect(screen.getByText('场景导入')).toBeTruthy();
+    expect(screen.queryByText('scenario-imported')).toBeNull();
+  });
+
+  it('打开原文经 openExternal 打开来源链接', async () => {
+    render(<LibraryPage />);
+    // 列表按添加时间倒序：第二篇是「已采集的知网文献」（pdfUrl 为知网链接）。
+    fireEvent.click(screen.getAllByTestId('library-paper-source')[1]!);
+    await waitFor(() => {
+      expect(openExternal).toHaveBeenCalledWith('https://kns.cnki.net/example');
+    });
+  });
+
+  it('没有链接的文献点击「打开原文」如实提示', async () => {
+    seedPapers([makePaper({ id: 'paper-nolink', title: '无链接文献', pdfUrl: undefined })]);
+    render(<LibraryPage />);
+    fireEvent.click(screen.getByTestId('library-paper-source'));
+    await waitFor(() => {
+      expect(screen.getByTestId('library-source-notice').textContent).toContain('该文献没有可打开的原文链接');
+    });
+    expect(openExternal).not.toHaveBeenCalled();
+  });
 });
 
 describe('LibraryPage — 项目资料模式', () => {
   beforeEach(() => {
     resetStore();
-    literatureSearch.mockReset();
     savePaper.mockClear();
     linkPaperToProject.mockClear();
-    browserNavigate.mockClear();
-    browserShow.mockClear();
-    browserHide.mockClear();
-    browserListDownloads.mockClear().mockResolvedValue([]);
-    window.metis = browserMetisMock();
+    openExternal.mockClear();
+    window.metis = libraryMetisMock();
     seedPapers([
       makePaper({ id: 'paper-proj-1', title: '属于项目的文献', projectId: 'proj-9' }),
       makePaper({ id: 'paper-other', title: '其他项目的文献', projectId: 'proj-8' }),
@@ -398,33 +288,11 @@ describe('LibraryPage — 项目资料模式', () => {
     expect(screen.getByTestId('library-empty').textContent).toContain('这个项目还没有文献');
   });
 
-  it('检索导入自动关联项目并写入项目资料源', async () => {
-    const item = makeItem({ id: 'ncpssd:proj-import-1' });
-    literatureSearch.mockResolvedValue({ ok: true, results: [item], total: 1, warnings: [] });
-    render(<LibraryPage projectId="proj-9" />);
-
-    fireEvent.change(screen.getByTestId('library-search-input'), { target: { value: '现代化' } });
-    fireEvent.click(screen.getByTestId('library-search-submit'));
-    await waitFor(() => {
-      expect(screen.getByTestId('library-import')).toBeTruthy();
-    });
-    fireEvent.click(screen.getByTestId('library-import'));
-
-    await waitFor(() => {
-      expect(linkPaperToProject).toHaveBeenCalledTimes(1);
-    });
-    const request = linkPaperToProject.mock.calls[0]![0] as { paperId: string; projectId: string; link: boolean };
-    expect(request.projectId).toBe('proj-9');
-    expect(request.link).toBe(true);
-  });
-
-  it('打开原文弹出内嵌浏览浮层而非系统浏览器', async () => {
+  it('项目模式下打开原文同样经 openExternal', async () => {
     render(<LibraryPage projectId="proj-9" />);
     fireEvent.click(screen.getByTestId('library-paper-source'));
     await waitFor(() => {
-      expect(screen.getByTestId('browser-overlay')).toBeTruthy();
+      expect(openExternal).toHaveBeenCalledWith('https://kns.cnki.net/example');
     });
-    expect(browserNavigate).toHaveBeenCalledWith('https://kns.cnki.net/example');
-    expect(browserShow).toHaveBeenCalled();
   });
 });

@@ -93,7 +93,7 @@ describe('IpcRegistry ledger', () => {
     expect(owners.get('mailbox:add')).toBe('freeModel');
     expect(snapshot.entries).toEqual([...snapshot.entries].sort((a, b) => a.channel.localeCompare(b.channel)));
     expect(snapshot.conflicts).toEqual([]);
-    expect(ctx.registry.channelsByOwner('topic')).toHaveLength(10);
+    expect(ctx.registry.channelsByOwner('topic')).toHaveLength(12);
     disposeTopic();
     disposeFreeModel();
   });
@@ -121,7 +121,7 @@ describe('IpcRegistry ledger', () => {
   it('disposeAll removes every channel and clears the ledger', () => {
     const ctx = makeContext(ipcMain);
     registerTopicIpc(ctx);
-    expect(ipcMain.handlers.size).toBe(10);
+    expect(ipcMain.handlers.size).toBe(12);
     ctx.registry.disposeAll();
     expect(ipcMain.handlers.size).toBe(0);
     expect(ctx.registry.snapshot().entries).toEqual([]);
@@ -213,9 +213,15 @@ describe('registerTopicIpc handler behavior (migrated)', () => {
     capturedHook!({ sessionId: 'topic_s1', content: 'tok', isFinished: false });
     capturedHook!({ sessionId: 'other_session', content: 'must-not-leak', isFinished: false });
     await promise;
-    expect(sent).toEqual([
-      { channel: 'topic:stream-chunk', payload: { sessionId: 's1', content: 'tok', reasoning: undefined, isFinished: false } },
-    ]);
+    // 2026-09 topic stream pipeline: content now passes through TopicStreamGate
+    // (plain prose without a dots_function_call prefix is HELD as an ambiguous
+    // tail, so short tokens may not be emitted immediately). The gate flushes
+    // on stream end. The cross-session token must never appear.
+    const streamChunks = sent.filter((s) => s.channel === 'topic:stream-chunk');
+    const leaked = streamChunks.filter((s) => JSON.stringify(s.payload).includes('must-not-leak'));
+    expect(leaked).toEqual([]);
+    // stream-end is always sent when the chat turn completes.
+    expect(sent.some((s) => s.channel === 'topic:stream-end')).toBe(true);
     expect(unregisterHook).toHaveBeenCalled();
     dispose();
   });
@@ -237,6 +243,7 @@ describe('registerTopicIpc handler behavior (migrated)', () => {
     await Promise.resolve();
     capturedHook!({ sessionId: 'topic_s1', content: 'tok', isFinished: false });
     await p;
+    // Destroyed renderer: the registrar checks isDestroyed before every send.
     expect(send).not.toHaveBeenCalled();
     dispose();
   });
@@ -249,7 +256,7 @@ describe('registrar dispose cycles (item 6)', () => {
     const ctx = makeContext(ipcMain);
     for (let cycle = 0; cycle < 100; cycle++) {
       const dispose = registerTopicIpc(ctx);
-      expect(ctx.registry.snapshot().entries).toHaveLength(10);
+      expect(ctx.registry.snapshot().entries).toHaveLength(12);
       dispose();
       expect(ctx.registry.snapshot().entries).toHaveLength(0);
     }

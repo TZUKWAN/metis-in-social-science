@@ -164,6 +164,7 @@ import { createSubmissionBrowserTools } from './SubmissionBrowserTools.js';
 import { SubmissionAssistantService } from './SubmissionAssistantService.js';
 import { parseGuidelineFormatting, type MutableFormattingDraft, type MutableFormattingSlot } from '../engine/outcomes/GuidelineFormatting.js';
 import { buildFundingTemplateSeed } from '../engine/personalization/FundingTemplateSeed.js';
+import { buildFindSkillsSeed } from '../engine/personalization/FindSkillsBuiltinDraft.js';
 import type { WordFormattingConfig } from '../engine/outcomes/WordDocumentFormatting.js';
 
 /** 字段级校验并写入排版配置槽；非法值返回 false 由调用方计数丢弃。 */
@@ -193,6 +194,7 @@ function setFormattingField(slot: MutableFormattingSlot, field: string, value: s
 }
 import { OutcomePptGenerationService } from './OutcomePptGenerationService.js';
 import { OutcomePptxService } from './OutcomePptxService.js';
+import { GordenPptService } from './GordenPptService.js';
 import { GENOFFICE_PPTX_ORIGINAL_ARCHIVE_KEY } from './office/genofficePptxBridge.js';
 import { OutcomeExternalEditorService } from './OutcomeExternalEditorService.js';
 import { externalDocumentFromSavedBytes, externalEditorExtension, externalEditorKindForOutcome, isExternalEditorDocumentBytes, parseSpreadsheetWorkbook, validatePdfBytes } from './OutcomeExternalEditorBridge.js';
@@ -310,6 +312,7 @@ import { parseLatexLog } from '../engine/latex/LatexLogParser.js';
 import type { WorkflowDefinition, WorkflowHooks, WorkflowRun } from '../engine/workflow/types.js';
 import { MCPManager } from '../engine/mcp/MCPManager.js';
 import { SkillRegistry, registerDefaultSkills } from '../engine/skills/SkillRegistry.js';
+import { createGordenPptSkill, GORDEN_PPT_SKILL_ID, shouldAutoMountPptSkill } from '../engine/skills/PptDeckSkill.js';
 import { SkillExtractor, type ExtractedSkill } from '../engine/skills/SkillExtractor.js';
 import { PersonalizationRepository } from '../engine/personalization/PersonalizationRepository.js';
 import { isFundingTemplateBuiltinDraftReady } from '../engine/personalization/FundingTemplateBuiltinDraft.js';
@@ -5271,6 +5274,65 @@ function setupIPC(): void {
   });
   // PPTX import is deliberately DB-free. The short-lived token keeps the
   // selected package in the main process until an explicit renderer save.
+  // ── Gorden PPT Skill（2026-09-11 刘总要求）：METIS Office PPT 的模板生成 ──
+  let gordenPptService: GordenPptService | null = null;
+  const getGordenPptService = () => {
+    if (!gordenPptService) gordenPptService = new GordenPptService(path.join(DATA_DIR, 'ppt-skill'));
+    return gordenPptService;
+  };
+  ipcMain.handle('gordenPpt:listTemplates', async (event) => {
+    try {
+      requireRendererMainFrame(event);
+      const ensured = await getGordenPptService().ensureSkillPackage();
+      if (!ensured.ok) return { ok: false, code: 'skill_unavailable', message: ensured.message, templates: [] };
+      const templates = await getGordenPptService().listTemplates();
+      return { ok: true, templates, cloned: ensured.cloned };
+    } catch (error) {
+      return { ok: false, code: 'list_failed', message: error instanceof Error ? error.message : String(error), templates: [] };
+    }
+  });
+  ipcMain.handle('gordenPpt:buildFromBrief', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = raw as { slug?: unknown; title?: unknown; points?: unknown; maxSlides?: unknown };
+      const slug = typeof request?.slug === 'string' ? request.slug : '';
+      const title = typeof request?.title === 'string' ? request.title.trim().slice(0, 120) : '';
+      const points = Array.isArray(request?.points)
+        ? request.points.filter((point): point is string => typeof point === 'string' && point.trim().length > 0).slice(0, 24)
+        : [];
+      const maxSlides = typeof request?.maxSlides === 'number' && request.maxSlides >= 1 && request.maxSlides <= 20
+        ? Math.round(request.maxSlides) : 3;
+      if (!slug || !title) return { ok: false, code: 'invalid_request', message: '请选择模板并填写演示文稿标题。' };
+      return await getGordenPptService().buildFromBrief({ slug, title, points, maxSlides });
+    } catch (error) {
+      return { ok: false, code: 'build_error', message: error instanceof Error ? error.message : String(error) };
+    }
+  });
+  ipcMain.handle('gordenPpt:build', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const request = raw as { slug?: unknown; selectedSlides?: unknown; edits?: unknown; outName?: unknown };
+      const slug = typeof request?.slug === 'string' ? request.slug : '';
+      const selectedSlides = Array.isArray(request?.selectedSlides) ? request.selectedSlides.filter((n): n is number => typeof n === 'number' && Number.isInteger(n) && n > 0).slice(0, 500) : [];
+      const edits = Array.isArray(request?.edits)
+        ? request.edits
+          .filter((e): e is { slide: number; slot_id: string; new_text: string } => (
+            typeof e === 'object' && e !== null
+            && typeof (e as { slide?: unknown }).slide === 'number'
+            && typeof (e as { slot_id?: unknown }).slot_id === 'string'
+            && typeof (e as { new_text?: unknown }).new_text === 'string'
+          ))
+          .slice(0, 5000)
+          .map((e) => ({ slide: e.slide, slot_id: e.slot_id, new_text: e.new_text }))
+        : [];
+      const outName = typeof request?.outName === 'string' ? request.outName : undefined;
+      if (!slug) return { ok: false, code: 'invalid_request', message: '缺少模板标识。' };
+      if (selectedSlides.length === 0) return { ok: false, code: 'invalid_request', message: '至少选择一页模板页。' };
+      return await getGordenPptService().buildDeck({ slug, selectedSlides, edits, outName });
+    } catch (error) {
+      return { ok: false, code: 'build_error', message: error instanceof Error ? error.message : String(error) };
+    }
+  });
   ipcMain.handle('outcomes:pptx:import', async (event, raw: unknown) => {
     try {
       const window = requireRendererMainFrame(event);
@@ -6210,8 +6272,13 @@ function setupIPC(): void {
 
   // ── Startup health & diagnostic bundle (Task 5) ─────────────
   const collectMetisStartupHealth = () => {
-    // P0-8: reconciliation already retired crash-era 'running' rows at boot;
-    // probe what is STILL running now (a live turn is legitimate).
+    // P0-8: lazy reconciliation — trigger once on first health report query.
+    if (store && reconciledOrphanRuns === null) {
+      try {
+        reconciledOrphanRuns = store.reconcileOrphanRunningRuns(Date.now());
+      } catch { reconciledOrphanRuns = 0; }
+    }
+    // Probe what is STILL running now (a live turn is legitimate).
     const stillRunningNow = (() => {
       try {
         return (store?.raw.prepare("SELECT COUNT(*) AS n FROM agent_runs WHERE status = 'running'").get() as { n: number } | undefined)?.n ?? 0;
@@ -6974,6 +7041,19 @@ function setupIPC(): void {
       const skill = skillRegistry.get(skillId);
       if (skill) {
         skillPrompt = skill.systemPrompt;
+      }
+    } else if (skillRegistry) {
+      // Gorden PPT Skill 默认挂载（2026-09-11 刘总要求）：用户没有显式选择
+      // 技能、且本条消息命中 PPT 意图时，自动挂载本体 PPT 构建技能。
+      // 用户显式选择的任何技能都不被覆盖；挂载说明写入 skillPrompt，
+      // 由模型在回答中告知用户（可随时切换/取消技能）。
+      const lastUserMessage = [...(messages ?? [])].reverse()
+        .find((message) => message.role === 'user')?.content;
+      if (shouldAutoMountPptSkill(skillId ?? null, typeof lastUserMessage === 'string' ? lastUserMessage : null)) {
+        const pptSkill = skillRegistry.get(GORDEN_PPT_SKILL_ID);
+        if (pptSkill) {
+          skillPrompt = pptSkill.systemPrompt;
+        }
       }
     }
 
@@ -9888,7 +9968,8 @@ function buildFundingTemplateDigest(pkg: { source?: { sourceFormat?: string; pag
   ipcMain.handle('submission:assistant:chat', async (event, raw: unknown) => {
     try {
       requireRendererMainFrame(event);
-      if (!agentLoop || !outcomeRepository) return { ok: false as const, answer: '', error: 'AI 或成果服务尚未就绪。' };
+      if (!agentLoop) return { ok: false as const, answer: '', error: '模型连接尚未配置或尚未就绪。请先在「设置 → 模型连接」完成配置，再使用投稿参谋。' };
+      if (!outcomeRepository) return { ok: false as const, answer: '', error: '成果服务尚未就绪，请稍后重试。' };
       const parsedInput = z.object({
         projectId: z.string().min(1),
         outcomeId: z.string().min(1),
@@ -10920,6 +11001,9 @@ ${definition.description}`.toLowerCase();
     }
   });
 
+  // 场景构建进行中（供 scenario:abort 中断用）
+  const scenarioRunning = new Map<string, { abort: () => void; startedAt: number }>();
+  let scenarioRunningKey: string | null = null;
   ipcMain.handle('scenario:compileHarness', async (event, rawRequest: unknown) => {
     try {
       requireRendererMainFrame(event);
@@ -10978,6 +11062,14 @@ ${effectiveInstruction}`;
         rejection: { ok: false, code: 'application_shutting_down' },
       });
       if (!tracked.admitted) return tracked.rejection;
+      // 场景构建进行中注册（2026-09-12 刘总要求）：供 scenario:abort 中断。
+      const scenarioAbortKey = `scenario:compileHarness:${requestCounter}`;
+      const scenarioAbortController = new AbortController();
+      scenarioRunning.set(scenarioAbortKey, { abort: () => scenarioAbortController.abort(), startedAt: Date.now() });
+      scenarioRunningKey = scenarioAbortKey;
+      const combinedSignal = tracked.signal
+        ? AbortSignal.any([tracked.signal, scenarioAbortController.signal])
+        : scenarioAbortController.signal;
       // 历史可找回（2026-08-25 刘总要求）：编译开始即落库用户指令——
       // 哪怕本轮失败或被中断，历史记录里也能看到这轮指令。
       const persistUserInstruction = () => {
@@ -11160,7 +11252,7 @@ ${effectiveInstruction}`;
                 allowedTools: [SCENARIO_APPLY_UPDATE_TOOL_NAME],
                 maxTurns: 8,
                 acceptUnverified: true,
-                signal: tracked.signal,
+                signal: combinedSignal,
               });
               if (tracked.signal.aborted) return { ok: false, code: 'application_shutting_down' };
               if (wpAnswer.status !== 'completed') {
@@ -11174,7 +11266,7 @@ ${effectiveInstruction}`;
                   allowedTools: [SCENARIO_APPLY_UPDATE_TOOL_NAME],
                   maxTurns: 8,
                   acceptUnverified: true,
-                  signal: tracked.signal,
+                  signal: combinedSignal,
                 });
                 if (tracked.signal.aborted) return { ok: false, code: 'application_shutting_down' };
               }
@@ -11206,7 +11298,7 @@ ${effectiveInstruction}`;
               allowedTools: [planTool],
               maxTurns: 6,
               acceptUnverified: true,
-              signal: tracked.signal,
+              signal: combinedSignal,
             });
             if (tracked.signal.aborted) return { ok: false, code: 'application_shutting_down' };
             if (phase === 'workflow') {
@@ -11264,7 +11356,7 @@ ${effectiveInstruction}`;
                 allowedTools: [SCENARIO_APPLY_UPDATE_TOOL_NAME],
                 maxTurns: 8,
                 acceptUnverified: true,
-                signal: tracked.signal,
+                signal: combinedSignal,
               });
               if (tracked.signal.aborted) return { ok: false, code: 'application_shutting_down' };
               if (giAnswer.status !== 'completed' && patchSession.appliedCount === appliedBeforeGi) {
@@ -11277,7 +11369,7 @@ ${effectiveInstruction}`;
                   allowedTools: [SCENARIO_APPLY_UPDATE_TOOL_NAME],
                   maxTurns: 8,
                   acceptUnverified: true,
-                  signal: tracked.signal,
+                  signal: combinedSignal,
                 });
                 if (tracked.signal.aborted) return { ok: false, code: 'application_shutting_down' };
               }
@@ -11308,7 +11400,7 @@ ${effectiveInstruction}`;
                 allowedTools: [SCENARIO_APPLY_UPDATE_TOOL_NAME],
                 maxTurns: 8,
                 acceptUnverified: true,
-                signal: tracked.signal,
+                signal: combinedSignal,
               });
               if (tracked.signal.aborted) return { ok: false, code: 'application_shutting_down' };
               // 兜底 B4：loop detected 中断但该目标已写入 → 放行继续。
@@ -11328,7 +11420,7 @@ ${effectiveInstruction}`;
                   allowedTools: [SCENARIO_APPLY_UPDATE_TOOL_NAME],
                   maxTurns: 8,
                   acceptUnverified: true,
-                  signal: tracked.signal,
+                  signal: combinedSignal,
                 });
                 if (tracked.signal.aborted) return { ok: false, code: 'application_shutting_down' };
                 if (fillAnswer.status !== 'completed') {
@@ -11369,7 +11461,7 @@ ${effectiveInstruction}`;
                 allowedTools: COMPILE_TOOLS,
                 maxTurns: 12,
                 acceptUnverified: true,
-                signal: tracked.signal,
+                signal: combinedSignal,
               });
               if (tracked.signal.aborted) return { ok: false, code: 'application_shutting_down' };
               console.warn(`[scenario:compileHarness] ${label} 能力获取轮 status=${capabilityAnswer.status} installed=${installedDefinitions.length}`);
@@ -11399,7 +11491,7 @@ ${effectiveInstruction}`;
               allowedTools: COMPILE_TOOLS,
               maxTurns: phase === 'basics' || phase === 'output_plan' ? 6 : 10,
               acceptUnverified: true,
-              signal: tracked.signal,
+              signal: combinedSignal,
             });
             if (tracked.signal.aborted) return { ok: false, code: 'application_shutting_down' };
             // 兜底 B4：loop 中断但本阶段内容已达标 → 放行。
@@ -11442,12 +11534,20 @@ ${effectiveInstruction}`;
               ];
               continue;
             }
-            persistAssistantMessage(`场景编译未完成（阶段验收未通过）：阶段 ${label} 在 ${MAX_PHASE_RETRIES + 1} 次尝试后仍未通过验收。${gate.issues.slice(0, 4).map((issue) => issue.slice(0, 120)).join(' ｜ ')}`);
+            // 2026-09-12 刘总要求「场景构建 100% 成功」：最后一次尝试用宽容
+            // 验收——只拦硬错误（name/workflow/description 完全缺失），软性
+            // 问题由 ScenarioHarness 默认值补全，构建绝不整体失败。
+            const finalGate = checkPhaseGate(phase, patchSession.getDraft() ?? normalizeScenarioHarness(current.data), { final: true });
+            if (finalGate.ok) {
+              console.warn(`[scenario:compileHarness] ${label} 最终宽容验收放行（软性问题自动补全）：${gate.issues.slice(0, 3).join(' | ')}`);
+              break;
+            }
+            persistAssistantMessage(`场景编译未完成（阶段验收未通过）：阶段 ${label} 在 ${MAX_PHASE_RETRIES + 1} 次尝试后仍未通过验收。${finalGate.issues.slice(0, 4).map((issue) => issue.slice(0, 120)).join(' ｜ ')}`);
             return {
               ok: false,
               code: 'phase_gate_failed',
-              issues: gate.issues,
-              message: `阶段 ${label} 在 ${MAX_PHASE_RETRIES + 1} 次尝试后仍未通过验收：${gate.issues.slice(0, 4).map((issue) => issue.slice(0, 120)).join(' ｜ ')}`,
+              issues: finalGate.issues,
+              message: `阶段 ${label} 在 ${MAX_PHASE_RETRIES + 1} 次尝试后仍未通过验收（硬性骨架缺失）：${finalGate.issues.slice(0, 4).map((issue) => issue.slice(0, 120)).join(' ｜ ')}`,
             };
           }
         }
@@ -11488,7 +11588,7 @@ ${effectiveInstruction}`;
               allowedTools: [SCENARIO_APPLY_UPDATE_TOOL_NAME],
               maxTurns: 12,
               acceptUnverified: true,
-              signal: tracked.signal,
+              signal: combinedSignal,
             });
             continue;
           }
@@ -11609,6 +11709,22 @@ ${effectiveInstruction}`;
     } catch (error) {
       return { ok: false, code: 'generation_failed', error: String((error as Error).message ?? error).slice(0, 200) };
     }
+  });
+
+  ipcMain.handle('scenario:abort', (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      if (!isRecord(rawRequest) || typeof rawRequest.key !== 'string') return { ok: false, code: 'invalid_request' };
+      const run = scenarioRunning.get(rawRequest.key);
+      if (!run) return { ok: true as const, aborted: false };
+      run.abort();
+      return { ok: true as const, aborted: true };
+    } catch {
+      return { ok: false, code: 'abort_failed' };
+    }
+  });
+  ipcMain.handle('scenario:running', () => {
+    return { count: scenarioRunning.size, keys: [...scenarioRunning.keys()] };
   });
 
   ipcMain.handle('scenario:aiRefine', async (event, rawRequest: unknown) => {
@@ -12469,23 +12585,9 @@ app.whenReady().then(async () => {
     pid: process.pid,
     startedAt: new Date().toISOString(),
   });
-  // P0-8 startup reconciliation: rows still 'running' belong to a dead
-  // process (single-instance lock guarantees no concurrent writer). Retire
-  // them NOW — before any renderer can query run state — so no UI ever shows
-  // a zombie "running" task after a crash. The count feeds the health report.
+  // P0-8 startup reconciliation runs AFTER the main store is initialized
+  // (below), where the full migration pipeline has already completed.
   reconciledOrphanRuns = null;
-  try {
-    const recoveredAt = Date.now();
-    const storeProbe = new PersistenceStore(DB_PATH);
-    reconciledOrphanRuns = storeProbe.reconcileOrphanRunningRuns(recoveredAt);
-    storeProbe.close();
-    if (reconciledOrphanRuns > 0) {
-      console.warn(`[Main] reconciled ${reconciledOrphanRuns} orphan running run(s) from a previous session`);
-    }
-  } catch (error) {
-    console.warn('[Main] orphan-run reconciliation skipped:', (error as Error)?.message);
-    reconciledOrphanRuns = null;
-  }
   executionCapabilities = new ExecutionCapabilityRegistry({
     allowedCwdRoots: [DATA_DIR],
     allowedEnvironmentKeys: ['ELECTRON_RUN_AS_NODE'],
@@ -12627,6 +12729,9 @@ app.whenReady().then(async () => {
       console.log('[Main] restored database passed startup health checks; restore intent cleared.');
     }
     setSharedStore(store);
+    // P0-8 startup reconciliation: lazy — triggered on first getHealthReport()
+    // call rather than blocking startup. The store handles it via the
+    // reconcileOrphanRunningRuns method.
     outcomeTemplateService = new OutcomeTemplateService(store);
     jobQueueService.attachStore(store);
     literatureWatch.attachStore(store);
@@ -12696,9 +12801,13 @@ app.whenReady().then(async () => {
     // 首次真正进入生产目录。seedBuiltins 幂等（digest 未变跳过），funding-template
     // 草稿仅在三个只读工具全部通过注册审计后才会以 enabled 状态落库。
     try {
-      const seeded = buildFundingTemplateSeed(new Set(builtinToolNames()));
+      // find-skills 元技能（刘总 2026-09 要求预装）：无工具依赖，始终播种。
+      const seeded = [
+        ...buildFundingTemplateSeed(new Set(builtinToolNames())),
+        ...buildFindSkillsSeed(),
+      ];
       personalizationRepository.seedBuiltins(seeded);
-      if (seeded.length > 0) console.log(`[Main] seeded ${seeded.length} funding-template builtin definition(s)`);
+      if (seeded.length > 0) console.log(`[Main] seeded ${seeded.length} builtin personalization definition(s)`);
     } catch (seedError) {
       console.warn('[Main] builtin personalization seeding failed:', seedError instanceof Error ? seedError.message : seedError);
     }
@@ -13331,6 +13440,14 @@ app.whenReady().then(async () => {
   // Initialize skill registry with default skills + reload any custom skills
   // the user generated in a previous session (persisted in the memory store).
   skillRegistry = registerDefaultSkills();
+  // Gorden PPT Skill（2026-09-11 刘总要求）：本体做 PPT 的默认挂载技能。
+  // 技能资产（约 100MB 第三方模板）不进安装包，首次使用由 agent 经
+  // execute_command 自举克隆；这里只注册技能定义（协议提示词+工具白名单）。
+  {
+    const gordenPpt = createGordenPptSkill({ skillRoot: path.join(DATA_DIR, 'ppt-skill') });
+    if (skillRegistry.has(gordenPpt.id)) skillRegistry.unregister(gordenPpt.id);
+    skillRegistry.register(gordenPpt);
+  }
   skillExtractor = new SkillExtractor(provider ?? undefined);
   loadAndInstallCustomSkills();
 

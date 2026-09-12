@@ -52,6 +52,8 @@ export const TopicSessionCreateRequestSchema = z.object({
   sourceProjectId: z.string().max(160).nullable().optional(),
   discipline: z.string().max(120).optional(),
   constraints: TopicConstraintsSchema.optional(),
+  /** 会话分类(刘总 2026-09 选题 tab 化:可空=未分类,旧数据无此字段向后兼容)。 */
+  category: z.string().max(60).nullable().optional(),
 }).strict();
 
 export const TopicSessionDtoSchema = z.object({
@@ -64,6 +66,8 @@ export const TopicSessionDtoSchema = z.object({
   status: TopicSessionStatusSchema,
   selectedCandidateId: z.string().max(160).nullable().default(null),
   researchBrief: z.string().max(200_000).nullable().default(null),
+  /** 会话分类(可空=未分类;旧库行无此列,迁移补列后默认 null)。 */
+  category: z.string().max(60).nullable().default(null),
   createdAt: z.number().int().min(0),
   updatedAt: z.number().int().min(0),
 });
@@ -114,6 +118,7 @@ export const TopicSessionUpdatePatchSchema = z.object({
   discipline: z.string().max(120).optional(),
   constraints: TopicConstraintsSchema.nullable().optional(),
   selectedCandidateId: z.string().max(160).nullable().optional(),
+  category: z.string().max(60).nullable().optional(),
 }).strict();
 
 export const TopicCandidateUpsertSchema = z.object({

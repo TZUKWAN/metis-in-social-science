@@ -143,10 +143,33 @@ export const SCENARIO_PHASE_LABELS: Record<ScenarioPhase, string> = {
 };
 
 /**
+ * 硬错误：即使用了户输入极短、模型输出不完整，也绝对不能静默略过的骨架缺失。
+ * 只有这些才在最终验收（final tolerance）时阻止放行。
+ */
+const HARD_ISSUE_PATTERNS: RegExp[] = [
+  /scenario\.name 为空/,
+  /workflow 为空/,
+  /scenario\.description 缺失/,
+];
+
+function isHardIssue(issue: string): boolean {
+  return HARD_ISSUE_PATTERNS.some((pattern) => pattern.test(issue));
+}
+
+/**
  * Deterministic acceptance gate for one build phase. Always evaluates against
  * the normalized form so engine defaults cannot mask missing user content.
+ *
+ * `options.final`（2026-09-12 刘总要求「场景构建 100% 成功」）：最后一次重试的
+ * 验收只拦硬错误（骨架缺失），软性问题（描述过短、二级章节不足、Completeness
+ * gaps 等）降级放行——由 ScenarioHarness 的默认值填充逻辑自动补全，绝不让
+ * 用户的构建请求因为模型输出不完美而整体失败。
  */
-export function checkPhaseGate(phase: ScenarioPhase, draft: ScenarioDefinition): PhaseGateResult {
+export function checkPhaseGate(
+  phase: ScenarioPhase,
+  draft: ScenarioDefinition,
+  options?: { final?: boolean },
+): PhaseGateResult {
   let normalized: ScenarioDefinition;
   try {
     normalized = normalizeScenarioHarness(draft);
@@ -154,7 +177,9 @@ export function checkPhaseGate(phase: ScenarioPhase, draft: ScenarioDefinition):
     return { ok: false, issues: [String(error instanceof Error ? error.message : error).slice(0, 400)] };
   }
   const issues = PHASE_CHECKERS[phase](normalized);
-  return { ok: issues.length === 0, issues };
+  if (options?.final !== true) return { ok: issues.length === 0, issues };
+  const hard = issues.filter((issue) => isHardIssue(issue));
+  return { ok: hard.length === 0, issues: hard };
 }
 
 /** Run every gate; used by the final self-audit before returning to the renderer. */

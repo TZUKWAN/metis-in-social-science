@@ -175,6 +175,23 @@ describe('Topic structured blocks (2026-09-04 选题模块)', () => {
     expect(stored?.candidateId).toBe(candidate.id);
   });
 
+  it('session category persists on create and updates via updateSession (会话分类)', () => {
+    const repo = createMemoryRepo();
+    const service = new TopicService({
+      repository: repo,
+      runTurn: async (): Promise<TopicAgentResponse> => ({ status: 'completed', answer: 'ok' }),
+    });
+    // 旧数据兼容:不传分类 → null(未分类)。
+    const legacy = service.createSession({ initialIntent: '意图' });
+    expect(legacy.category).toBeNull();
+    const categorized = service.createSession({ initialIntent: '意图', category: '劳动研究' });
+    expect(categorized.category).toBe('劳动研究');
+    const moved = service.updateSession(categorized.id, { category: '平台经济' });
+    expect(moved?.category).toBe('平台经济');
+    const cleared = service.updateSession(categorized.id, { category: null });
+    expect(cleared?.category).toBeNull();
+  });
+
   it('session DTO round-trips through the strict schema (persistence contract)', () => {
     const session = TopicSessionDtoSchema.safeParse({
       id: 'topic_x', title: 't', initialIntent: '', sourceProjectId: null, discipline: '',

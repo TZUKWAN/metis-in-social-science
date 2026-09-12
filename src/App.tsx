@@ -877,9 +877,9 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
               <ProjectsPage
                 mode={projectViewMode}
                 onModeChange={setProjectViewMode}
-                chatContent={projectViewMode === 'chat' ? workspace : null}
-                chatRightPanel={projectViewMode === 'chat' ? rightPanel : null}
-                previewPanel={projectViewMode === 'chat' ? previewPanel : null}
+                chatContent={projectViewMode === 'chat' || projectViewMode === 'kanban' ? workspace : null}
+                chatRightPanel={projectViewMode === 'chat' || projectViewMode === 'kanban' ? rightPanel : null}
+                previewPanel={projectViewMode === 'chat' || projectViewMode === 'kanban' ? previewPanel : null}
               />
             );
           }
@@ -1016,7 +1016,38 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
           <span className="topbar-brand__name">{t('app.title')}</span>
         </div>
         <nav className="topbar-nav" aria-label={t('app.title')}>
-          <div className="topbar-nav__group" aria-label={locale === 'zh' ? '研究工作区' : 'Research workspace'}>
+          <div className="topbar-nav__group" aria-label={locale === 'zh' ? '研究工作流' : 'Research workflow'}>
+            {/* 刘总规格（2026-09）：选题 → 场景 → 研究 → 成果 → 投稿 */}
+            {RESEARCH_NAV_ITEMS.filter((item) => item.id === 'topics').map((item) => {
+              const active = !personalizationOpen && standalonePage === item.id;
+              const tooltip = item.descriptionKey ? (t(item.descriptionKey) || t(item.labelKey)) : t(item.labelKey);
+              return (
+                <button
+                  key={item.id}
+                  className={`topbar-nav__item ${active ? 'active' : ''}`}
+                  onClick={() => navigateLegacy(item.id as 'outcomes')}
+                  aria-current={active ? 'page' : undefined}
+                  aria-label={t(item.labelKey)}
+                  title={tooltip}
+                  data-nav-id={item.id}
+                >{t(item.labelKey)}</button>
+              );
+            })}
+            {PREFERENCE_NAV_ITEMS.map((item) => {
+              const tooltip = item.descriptionKey ? (t(item.descriptionKey) || t(item.labelKey)) : t(item.labelKey);
+              return (
+                <button
+                  key={item.id}
+                  className={`topbar-nav__item ${personalizationOpen ? 'active' : ''}`}
+                  onClick={() => { setPersonalizationOpen(true); setStandalonePage(null); }}
+                  aria-current={personalizationOpen ? 'page' : undefined}
+                  aria-label={t(item.labelKey)}
+                  title={tooltip}
+                  data-nav-id={item.id}
+                  data-testid="personalization-trigger"
+                >{t(item.labelKey)}</button>
+              );
+            })}
             {WORKSPACE_NAV_ITEMS.map((item) => {
               const active = !personalizationOpen && currentEntry === 'projects' && standalonePage === null && workspaceMode === item.id;
               const tooltip = item.descriptionKey ? (t(item.descriptionKey) || t(item.labelKey)) : t(item.labelKey);
@@ -1034,18 +1065,14 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
                 </button>
               );
             })}
-          </div>
-          <span className="topbar-nav__divider" aria-hidden="true" />
-          <div className="topbar-nav__group" aria-label={locale === 'zh' ? '研究运行' : 'Research runs'}>
-            {RESEARCH_NAV_ITEMS.map((item) => {
-              const page = item.id as 'outcomes';
-              const active = !personalizationOpen && standalonePage === page;
+            {RESEARCH_NAV_ITEMS.filter((item) => item.id === 'outcomes' || item.id === 'submissions').map((item) => {
+              const active = !personalizationOpen && standalonePage === item.id;
               const tooltip = item.descriptionKey ? (t(item.descriptionKey) || t(item.labelKey)) : t(item.labelKey);
               return (
                 <button
                   key={item.id}
                   className={`topbar-nav__item ${active ? 'active' : ''}`}
-                  onClick={() => navigateLegacy(page)}
+                  onClick={() => navigateLegacy(item.id as 'outcomes')}
                   aria-current={active ? 'page' : undefined}
                   aria-label={t(item.labelKey)}
                   title={tooltip}
@@ -1055,7 +1082,7 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
             })}
           </div>
           <span className="topbar-nav__divider" aria-hidden="true" />
-          <div className="topbar-nav__group" aria-label={locale === 'zh' ? '资料与偏好' : 'Library and preferences'}>
+          <div className="topbar-nav__group" aria-label={locale === 'zh' ? '设置' : 'Settings'}>
             {NAV_ITEMS.filter((item) => item.id !== 'projects').map((item) => {
               const active = !personalizationOpen && currentEntry === item.id;
               const tooltip = item.descriptionKey ? (t(item.descriptionKey) || t(item.labelKey)) : t(item.labelKey);
@@ -1071,21 +1098,6 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
                 >
                   {t(item.labelKey)}
                 </button>
-              );
-            })}
-            {PREFERENCE_NAV_ITEMS.map((item) => {
-              const tooltip = item.descriptionKey ? (t(item.descriptionKey) || t(item.labelKey)) : t(item.labelKey);
-              return (
-                <button
-                  key={item.id}
-                  className={`topbar-nav__item ${personalizationOpen ? 'active' : ''}`}
-                  onClick={() => { setPersonalizationOpen(true); setStandalonePage(null); }}
-                  aria-current={personalizationOpen ? 'page' : undefined}
-                  aria-label={t(item.labelKey)}
-                  title={tooltip}
-                  data-nav-id={item.id}
-                  data-testid="personalization-trigger"
-                >{t(item.labelKey)}</button>
               );
             })}
           </div>

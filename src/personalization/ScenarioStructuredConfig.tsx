@@ -33,7 +33,6 @@ export default function ScenarioStructuredConfig({
           <label><span>{zh ? '能力类型' : 'Capability'}</span><select value={draft.capability} onChange={(event) => mutateDraft((scenario) => { scenario.capability = event.target.value as ScenarioDefinition['capability']; })}><option value="research">{zh ? '研究' : 'Research'}</option><option value="writing">{zh ? '写作' : 'Writing'}</option><option value="analysis">{zh ? '分析' : 'Analysis'}</option><option value="funding">{zh ? '申报' : 'Funding'}</option><option value="custom">{zh ? '自定义' : 'Custom'}</option></select></label>
           <label className="sw-config-grid__wide"><span>{zh ? '目标与适用边界' : 'Purpose and boundary'}</span><textarea rows={4} value={draft.description} placeholder={zh ? '例如：从可验证文献检索到完成一篇可投稿的实证论文；不用于纯理论研究。' : 'Describe the full objective and excluded uses.'} onChange={(event) => mutateDraft((scenario) => { scenario.description = event.target.value; })} data-testid="sw-scenario-description" /></label>
           <label><span>{zh ? '标签（每行一项）' : 'Tags (one per line)'}</span><textarea rows={3} value={draft.tags.join('\n')} onChange={(event) => mutateDraft((scenario) => { scenario.tags = setLines(event.target.value); })} /></label>
-          <label><span>{zh ? '触发短语（每行一项）' : 'Trigger phrases'}</span><textarea rows={3} value={draft.triggerPhrases.join('\n')} onChange={(event) => mutateDraft((scenario) => { scenario.triggerPhrases = setLines(event.target.value); })} /></label>
         </div>
       </section>
 

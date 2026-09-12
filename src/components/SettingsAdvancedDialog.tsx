@@ -19,6 +19,7 @@ export interface SettingsAdvancedDialogProps {
   open: boolean;
   onClose: () => void;
   uiMode: UIMode;
+  onUIModeChange: (mode: UIMode) => void;
   issnNotice: string;
   onIssnImport: () => void;
 }
@@ -27,6 +28,7 @@ export default function SettingsAdvancedDialog({
   open,
   onClose,
   uiMode,
+  onUIModeChange,
   issnNotice,
   onIssnImport,
 }: SettingsAdvancedDialogProps) {
@@ -59,7 +61,24 @@ export default function SettingsAdvancedDialog({
             </div>
           )}
           {activeTab === 'tokens' && <SettingsMarketTokensSection />}
-          {activeTab === 'diagnostics' && <SettingsDiagnosticSection />}
+          {activeTab === 'diagnostics' && (
+            <>
+              {/* 诊断开关收进高级设置（刘总 2026-09：主页不再单独占一块）。 */}
+              <div className="settings-group">
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={uiMode === 'diagnostic'}
+                    onChange={(event) => onUIModeChange(event.target.checked ? 'diagnostic' : 'normal')}
+                    data-testid="diagnostic-mode-toggle"
+                  />
+                  开发者诊断
+                </label>
+                <p className="cloud-sync__hint">开发者诊断仅用于排查连接与运行问题。普通研究工作无需开启。</p>
+              </div>
+              <SettingsDiagnosticSection />
+            </>
+          )}
         </div>
       </section>
     </div>

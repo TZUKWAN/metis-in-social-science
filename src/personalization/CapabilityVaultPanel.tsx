@@ -30,14 +30,17 @@ interface VaultSourceInfo {
 
 interface VaultStats { total: number; skills: number; mcps: number; installed: number; sources: number }
 
-export function CapabilityVaultPanel({ zh, initialKind = 'skill', onInstalled }: {
+export function CapabilityVaultPanel({ zh, initialKind = 'skill', lockKind = false, onInstalled }: {
   zh: boolean;
   initialKind?: VaultKind;
+  /** 刘总 2026-09：技能页只保留技能条目、MCP 页只保留 MCP 目录，锁定时隐藏切换 tab。 */
+  lockKind?: boolean;
   onInstalled?: (definitionId: string) => void;
 }) {
   const [stats, setStats] = useState<VaultStats | null>(null);
   const [sources, setSources] = useState<VaultSourceInfo[]>([]);
   const [entries, setEntries] = useState<VaultEntryMeta[]>([]);
+  const [visibleCount, setVisibleCount] = useState(48);
   const [kind, setKind] = useState<VaultKind>(initialKind);
   const [keyword, setKeyword] = useState('');
   const [sourceId, setSourceId] = useState('');
@@ -71,6 +74,7 @@ export function CapabilityVaultPanel({ zh, initialKind = 'skill', onInstalled }:
   useEffect(() => {
     if (debounceRef.current !== null) window.clearTimeout(debounceRef.current);
     debounceRef.current = window.setTimeout(() => {
+      setVisibleCount(48);
       void loadEntries(kind, keyword, sourceId);
     }, 250);
     return () => {
@@ -126,7 +130,7 @@ export function CapabilityVaultPanel({ zh, initialKind = 'skill', onInstalled }:
     try {
       const res = await window.metis?.capabilityVaultInstall?.(entry.id);
       if (res?.ok && res.definitionId) {
-        setMessage({ tone: 'ok', text: zh ? `「${entry.name}」已入库为可绑定技能。它不会注入任何对话——只有在场景步骤中绑定后，执行时才加载。` : `Installed as bindable skill.` });
+        setMessage({ tone: 'ok', text: zh ? `「${entry.name}」已安装，可在场景步骤中选用。` : `Installed as bindable skill.` });
         onInstalled?.(res.definitionId);
       } else if (res?.code === 'already_installed') {
         setMessage({ tone: 'ok', text: zh ? '该技能已安装。' : 'Already installed.' });
@@ -182,7 +186,7 @@ export function CapabilityVaultPanel({ zh, initialKind = 'skill', onInstalled }:
       </div>
 
       <div className="vault-filters">
-        <div className="vault-filters__kind" role="tablist">
+        {!lockKind && <div className="vault-filters__kind" role="tablist">
           <button
             type="button"
             className={kind === 'skill' ? 'vault-kind-btn vault-kind-btn--active' : 'vault-kind-btn'}
@@ -197,7 +201,7 @@ export function CapabilityVaultPanel({ zh, initialKind = 'skill', onInstalled }:
           >
             {zh ? '目录条目（MCP）' : 'Vault MCP catalog'}
           </button>
-        </div>
+        </div>}
         <input
           type="search"
           className="vault-filters__search"
@@ -263,7 +267,9 @@ export function CapabilityVaultPanel({ zh, initialKind = 'skill', onInstalled }:
         {kind === 'skill' ? (zh ? '技能条目' : 'Skill entries') : (zh ? 'MCP 目录条目（仅元数据，不安装不启动）' : 'MCP catalog entries (metadata only)')}
       </h5>
       <div className="personalization-cards" data-testid="vault-entries">
-        {entries.map((entry) => (
+        {/* 刘总 2026-09：默认只渲染前 48 张卡片，其余搜索/「显示更多」按需展开，
+            不再整页铺 200 行全宽长条。 */}
+        {entries.slice(0, visibleCount).map((entry) => (
           <article key={entry.id} className="personalization-card vault-card" data-testid="vault-entry">
             <div className="personalization-card__body">
               <div className="personalization-card__meta">
@@ -295,7 +301,7 @@ export function CapabilityVaultPanel({ zh, initialKind = 'skill', onInstalled }:
                     disabled={busyId === entry.id}
                     onClick={() => void install(entry)}
                   >
-                    {busyId === entry.id ? (zh ? '安装中…' : 'Installing…') : (zh ? '安装为可绑定技能' : 'Install as bindable skill')}
+                    {busyId === entry.id ? (zh ? '安装中…' : 'Installing…') : (zh ? '安装' : 'Install')}
                   </button>
                 )}
                 {entry.kind === 'skill' && entry.installedDefinitionId && (
@@ -326,6 +332,16 @@ export function CapabilityVaultPanel({ zh, initialKind = 'skill', onInstalled }:
           </p>
         )}
       </div>
+      {entries.length > visibleCount && (
+        <button
+          type="button"
+          className="btn-secondary vault-card__more"
+          data-testid="vault-show-more"
+          onClick={() => setVisibleCount((count) => count + 48)}
+        >
+          {zh ? `显示更多（还有 ${entries.length - visibleCount} 条，可用上方搜索缩小范围）` : `Show more (${entries.length - visibleCount} remaining)`}
+        </button>
+      )}
 
       {detail && (
         <div className="vault-detail" data-testid="vault-detail-body">

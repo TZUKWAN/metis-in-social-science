@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback, useMemo, useLayoutEffect, mem
 import type { Components } from 'react-markdown';
 import { useMetisStore } from '../store';
 import { autoResizeTextarea } from '../lib/textareaAutosize.js';
+import { showToast } from '../lib/toast';
 import ModelThinkingSelector from '../components/ModelThinkingSelector';
 import { matchSlashCommand, SLASH_COMMANDS, filterSlashCommands } from '../lib/slashCommands';
 import { CodeBlock } from '../components/CodeBlock';
@@ -17,7 +18,7 @@ import {
   consumePendingChatIntent,
   peekPendingChatIntent,
 } from '../lib/chatIntent.js';
-import { PaperclipIcon, TerminalIcon, BrainIcon, TagIcon, ClockIcon } from '../components/Icons';
+import { PaperclipIcon, BrainIcon, TagIcon, ClockIcon } from '../components/Icons';
 import GoalCardInline, { isInternalExecutionCopy, type GoalCardData } from '../components/GoalCardInline';
 import AgentActivityTimeline, {
   type AgentActivityEvent,
@@ -33,7 +34,6 @@ import {
   type AssistantToolPart,
   type LegacyAssistantToolCall,
 } from '../lib/assistantMessagePartsReducer';
-import TerminalPanel from '../components/TerminalPanel';
 import RightPanel, { type RightPanelTab } from '../components/RightPanel';
 import ArtifactPreviewPane from '../components/ArtifactPreviewPane';
 import { getDiagnosticMode, type UIMode } from '../../engine/capabilities/DiagnosticMode';
@@ -1240,6 +1240,9 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
   }, [historyReady]);
   const activeSessionIdRef = useRef('');
   const sessionGenerationRef = useRef(0);
+  // P0（2026-09-12）：历史局部损坏的一次性 toast 防重——记录上次提示过的会话，
+  // 避免 StrictMode 双跑 effect 或来回切换会话时重复弹「部分历史加载失败」。
+  const partialRecoveryToastRef = useRef<string | null>(null);
   const activeChatRequestRef = useRef<{
     token: symbol;
     turnId: string;
@@ -1288,7 +1291,6 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
   const sendInFlightRef = useRef(false);
   const goalEventSequenceRef = useRef<Map<string, number>>(new Map());
 
-  const [terminalVisible, setTerminalVisible] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [previewContent, setPreviewContent] = useState('');
@@ -2042,7 +2044,15 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
         if (!isCurrentSessionGeneration(sessionId, generation)) return;
         // O16: rehydrate fork siblings from the side table. The main-process
         // history only kept the final answer; older branches come back here.
-        const restored = decodeHistoryPayload(msgs).map((item): ChatMessage => {
+        const decodedHistoryItems = decodeHistoryPayload(msgs);
+        // P0（2026-09-12）：recovery 占位规模统计——局部损坏走「静默丢弃 +
+        // 一次性 toast」；整个历史全部无法解码才落错误占位（error 状态）。
+        const recoveryTotal = decodedHistoryItems.reduce(
+          (count, item) => (item.kind === 'recovery' ? count + 1 : count),
+          0,
+        );
+        let skippedRecoveryCount = 0;
+        const restored = decodedHistoryItems.map((item): ChatMessage | null => {
           if (item.kind === 'message') {
             const metadata = item.metadata;
             const runId = typeof metadata?.runId === 'string' ? metadata.runId : undefined;
@@ -2084,6 +2094,13 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
           const recoveryCode = item.kind === 'recovery'
             ? item.code
             : 'goal_snapshot_unavailable';
+          // 单条历史记录损坏的占位（history_item_unavailable）连成片刷屏，
+          // 内容反正不可恢复——正常模式直接丢弃（计数后统一 toast 一次），
+          // 诊断模式保留技术码逐条展示。
+          if (item.kind === 'recovery' && item.code === 'history_item_unavailable' && !diagnosticMode) {
+            skippedRecoveryCount += 1;
+            return null;
+          }
           return {
             role: 'system',
             content: diagnosticMode
@@ -2091,7 +2108,28 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
               : t('chat.historyRecoveryFailed'),
             timestamp: now(),
           };
-        });
+        }).filter((message): message is ChatMessage => message !== null);
+        // P0（2026-09-12 刘总截图）收尾反馈，仅正常模式、且仍是当前会话时：
+        // 1) 部分损坏（混有正常消息）：一次性 error toast，不逐条刷占位；
+        // 2) 全部损坏（restored 为空）：落一条错误占位，而不是空白对话流。
+        // history_unavailable（整个 payload 解码失败）已在上方产出一条系统
+        // 消息，restored 非空，自然落到分支 2 之外，不会重复。
+        if (!diagnosticMode && isCurrentSessionGeneration(sessionId, generation)) {
+          if (recoveryTotal > 0 && recoveryTotal === decodedHistoryItems.length && restored.length === 0) {
+            restored.push({
+              role: 'system',
+              content: t('chat.historyRecoveryFailed'),
+              timestamp: now(),
+            });
+          } else if (skippedRecoveryCount > 0 && partialRecoveryToastRef.current !== sessionId) {
+            partialRecoveryToastRef.current = sessionId;
+            showToast({
+              kind: 'error',
+              text: t('chat.historyPartialLoadFailed'),
+              durationMs: 8000,
+            });
+          }
+        }
         const hydrated = await Promise.all(restored.map(async (message) => {
           if (message.role !== 'assistant' || !message.run?.turnId) return message;
           const run = await hydrateAgentRunHistory(
@@ -3294,6 +3332,24 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
     return () => window.removeEventListener('metis:switch-session', handler);
   }, [currentSessionId, sessions, activateSession]);
 
+  // 项目工作台侧栏可右键删除会话（ProjectsPage, 2026-09-12）：同步移除本地
+  // 列表；若删除的正是当前打开的会话，自动切到剩余最近会话（或清空），
+  // 避免界面停留在已删除的「幽灵会话」上继续发送消息。
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const sessionId = (event as CustomEvent<{ sessionId?: string }>).detail?.sessionId;
+      if (!sessionId) return;
+      setSessions((prev) => prev.filter((item) => item.id !== sessionId));
+      if (sessionId === currentSessionId) {
+        const remaining = sessions.filter((item) => item.id !== sessionId);
+        if (remaining.length > 0 && remaining[0]) activateSession(remaining[0].id);
+        else activateSession('');
+      }
+    };
+    window.addEventListener('metis:session-deleted', handler);
+    return () => window.removeEventListener('metis:session-deleted', handler);
+  }, [currentSessionId, sessions, activateSession]);
+
   async function runSendTurn(raw: string, scenarioOverride?: string) {
 
     // Slash commands: intercept before scenario matching / task detection.
@@ -4145,27 +4201,6 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
             )}
           </div>
         )}
-        {diagnosticMode && (
-          <div style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-            padding: '4px 16px', borderBottom: '1px solid var(--border)',
-            background: 'var(--bg-secondary)',
-          }}>
-            <button
-              className="terminal-panel-toggle"
-              data-testid="diagnostic-terminal-toggle"
-              onClick={() => setTerminalVisible(!terminalVisible)}
-              style={{
-                fontSize: 12, padding: '3px 10px', borderRadius: 4,
-                border: '1px solid var(--border)', background: 'var(--bg-primary)',
-                color: 'var(--text-secondary)', cursor: 'pointer',
-              }}
-              title={t('chat.toggleTerminal')}
-            >
-              <TerminalIcon size={12} /> {t('chat.terminal')}
-            </button>
-          </div>
-        )}
         <div className="chat-messages" ref={chatMessagesRef}>
           {messages.length === 0 && !isLoading && (
             <div className="chat-empty">
@@ -4398,28 +4433,9 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
             </div>
           )}
           <div className="chat-input-grid">
-            <button
-              className="chat-tool-icon chat-side-upload"
-              onClick={handleFileUpload}
-              title="上传文件"
-              aria-label="上传文件"
-              disabled={isLoading}
-            >
-              <PaperclipIcon size={16} />
-            </button>
             <div className="chat-input-maincol">
               <div className="chat-input-topbar" data-testid="chat-toolbar-row">
-                <button
-                  className="chat-top-tool"
-                  onClick={() => void handleLearnConversationSkill(messages.length - 1)}
-                  title={t('chat.learnSkill')}
-                  aria-label={t('chat.learnSkill')}
-                  data-testid="learn-conversation-skill"
-                  disabled={isLoading || messages.length === 0}
-                >
-                  <BrainIcon size={14} />
-                  <span>{locale === 'zh' ? '学习技能' : 'Learn'}</span>
-                </button>
+                {/* 学习技能按钮已按刘总要求移除（2026-09）。 */}
                 <button
                   className="chat-top-tool"
                   onClick={handleAutoNameSession}
@@ -4434,6 +4450,15 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
                 <ModelThinkingSelector zh={locale === 'zh'} labeled disabled={isLoading} />
               </div>
               <div className="chat-input-row">
+                <button
+                  className="chat-tool-icon chat-side-upload"
+                  onClick={handleFileUpload}
+                  title="上传文件"
+                  aria-label="上传文件"
+                  disabled={isLoading}
+                >
+                  <PaperclipIcon size={16} />
+                </button>
                 <textarea
                   ref={inputRef}
                   value={input}
@@ -4498,12 +4523,6 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
              </div>
            )}
          </div>
-         {diagnosticMode && (
-          <TerminalPanel
-            visible={terminalVisible}
-            onToggle={() => setTerminalVisible(!terminalVisible)}
-          />
-        )}
     </div>
   );
 

@@ -4,7 +4,7 @@
  * remain runtime concerns rather than user-facing configuration.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Plus, RotateCcw, Trash2, X } from 'lucide-react';
+import { ChevronRight, FolderOpen, Plus, RotateCcw, Trash2, X } from 'lucide-react';
 import type {
   ArchivedPersonalizationDefinition,
   DeliverableSpec,
@@ -96,8 +96,6 @@ function mutationMessage(code: string | undefined, zh: boolean): string {
 }
 
 const CATEGORY_PREFIX = 'category:';
-const UNCATEGORIZED = '__uncategorized__';
-const ALL_CATEGORIES = '__all__';
 
 function scenarioCategory(scenario: ScenarioDefinition): string {
   const marker = scenario.tags.find((tag) => tag.startsWith(CATEGORY_PREFIX));
@@ -202,7 +200,6 @@ export default function ScenarioWorkbench({
   const [acquisition, setAcquisition] = useState<Acquisition>(null);
   const [aiUndoStack, setAiUndoStack] = useState<ScenarioDefinition[]>([]);
   const aiUndoStackRef = useRef<ScenarioDefinition[]>([]);
-  const [categoryFilter, setCategoryFilter] = useState(ALL_CATEGORIES);
   const [libraryMode, setLibraryMode] = useState<'scenarios' | 'trash'>('scenarios');
   // Let a newly typed category become visible in the left library immediately;
   // it still reaches durable storage only through the normal Save action.
@@ -211,13 +208,15 @@ export default function ScenarioWorkbench({
   )), [draft, scenarios]);
   const categories = useMemo(() => [...new Set(libraryScenarios.map(scenarioCategory).filter(Boolean))]
     .sort((left, right) => left.localeCompare(right, zh ? 'zh-CN' : 'en')), [libraryScenarios, zh]);
-  const displayedScenarios = useMemo(() => libraryScenarios.filter((scenario) => (
-    categoryFilter === ALL_CATEGORIES
-      || (categoryFilter === UNCATEGORIZED ? !scenarioCategory(scenario) : scenarioCategory(scenario) === categoryFilter)
-  )), [categoryFilter, libraryScenarios]);
   const trashScenarios = useMemo(() => archivedScenarios
     .filter((item): item is ArchivedPersonalizationDefinition & { definition: ScenarioDefinition } => item.definition.kind === 'scenario')
     .sort((left, right) => right.archivedAt - left.archivedAt), [archivedScenarios]);
+
+  // ── 分类树（2026-09 刘总规格）：分类竖排成组、场景嵌在组内，
+  // 场景可直接拖到某个分类组上完成归类；组头点击折叠/展开。
+  const SCENARIO_DRAG_TYPE = 'application/x-metis-scenario';
+  const [collapsedGroups, setCollapsedGroups] = useState<ReadonlySet<string>>(new Set());
+  const [dragOverGroup, setDragOverGroup] = useState<string | null>(null);
 
   useEffect(() => {
     const apply = (next: ScenarioDefinition | null, revision: number | null) => {
@@ -259,6 +258,40 @@ export default function ScenarioWorkbench({
     setDraft(next);
     writeStoredScenarioDraft(next);
   }, []);
+
+  const scenarioGroups = useMemo(() => {
+    const groups = categories.map((category) => ({
+      key: category,
+      label: category,
+      items: libraryScenarios.filter((scenario) => scenarioCategory(scenario) === category),
+    }));
+    groups.push({
+      key: '__uncategorized__',
+      label: zh ? '未分类' : 'Uncategorized',
+      items: libraryScenarios.filter((scenario) => !scenarioCategory(scenario)),
+    });
+    return groups;
+  }, [categories, libraryScenarios, zh]);
+
+  const moveScenarioToCategory = useCallback(async (scenarioId: string, category: string) => {
+    // 正在编辑的场景走草稿（保存按钮统一落盘）；其余直接保存。
+    if (draft && draft.id === scenarioId) {
+      mutateDraft((scenario) => updateScenarioCategory(scenario, category));
+      return;
+    }
+    const target = scenarios.find((item) => item.id === scenarioId);
+    if (!target) return;
+    const next = cloneDefinition(target);
+    updateScenarioCategory(next, category);
+    setBusy(true);
+    try {
+      const result = await save(next, target.revision);
+      if (!result?.ok) setNotice(zh ? '分类更新失败，请重试。' : 'Failed to update the category.');
+      else await reload();
+    } finally {
+      setBusy(false);
+    }
+  }, [draft, scenarios, save, reload, zh, mutateDraft]);
 
   const saveDraft = useCallback(async (): Promise<ScenarioDefinition | null> => {
     const current = draftRef.current;
@@ -738,11 +771,51 @@ ${identity.fundingStructureText}
             {libraryMode === 'scenarios' && <button type="button" className="btn-primary btn-sm" onClick={createScenario} disabled={busy} data-testid="sw-new-scenario"><Plus size={14} />{zh ? '新建' : 'New'}</button>}
           </div>
         </header>
-        {libraryMode === 'scenarios' && <section className="scenario-library__categories" aria-label={zh ? '场景分类' : 'Scenario categories'}><span>{zh ? '分类' : 'Categories'}</span><div><button type="button" className={categoryFilter === ALL_CATEGORIES ? 'active' : ''} onClick={() => setCategoryFilter(ALL_CATEGORIES)}>{zh ? '全部' : 'All'}<small>{libraryScenarios.length}</small></button><button type="button" className={categoryFilter === UNCATEGORIZED ? 'active' : ''} onClick={() => setCategoryFilter(UNCATEGORIZED)}>{zh ? '未分类' : 'Uncategorized'}<small>{libraryScenarios.filter((scenario) => !scenarioCategory(scenario)).length}</small></button>{categories.map((category) => <button type="button" key={category} className={categoryFilter === category ? 'active' : ''} onClick={() => setCategoryFilter(category)}>{category}<small>{libraryScenarios.filter((scenario) => scenarioCategory(scenario) === category).length}</small></button>)}</div></section>}
         <div className="scenario-library__list">
           {libraryMode === 'scenarios' ? <>
-            {displayedScenarios.map((scenario) => <article key={scenario.id} className={scenario.id === selectedId ? 'selected' : ''}><button type="button" className="scenario-library__select" disabled={busy} aria-label={scenario.name || (zh ? '未命名场景' : 'Untitled scenario')} onClick={() => onSelect(scenario.id)}><strong>{scenario.name || (zh ? '未命名场景' : 'Untitled scenario')}</strong><span>{scenarioCategory(scenario) || (zh ? '未分类' : 'Uncategorized')} · {scenario.workflow.length}{zh ? ' 步' : ' steps'}</span></button><button type="button" className="scenario-workbench__delete" disabled={busy} aria-label={zh ? `删除场景 ${scenario.name}` : `Delete scenario ${scenario.name}`} title={zh ? '移入回收站' : 'Move to Trash'} onClick={() => void moveToTrash(scenario)}><Trash2 size={14} /></button></article>)}
-            {displayedScenarios.length === 0 && <p className="scenario-library__none">{zh ? '这个分类中还没有场景。' : 'There are no scenarios in this category.'}</p>}
+            {scenarioGroups.map((group) => (
+              <section
+                key={group.key}
+                className={`scenario-library__group${dragOverGroup === group.key ? ' drop-target' : ''}`}
+                onDragOver={(event) => {
+                  if (!event.dataTransfer.types.includes(SCENARIO_DRAG_TYPE)) return;
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = 'move';
+                  if (dragOverGroup !== group.key) setDragOverGroup(group.key);
+                }}
+                onDragLeave={(event) => {
+                  if (!event.currentTarget.contains(event.relatedTarget as Node)) {
+                    setDragOverGroup((current) => (current === group.key ? null : current));
+                  }
+                }}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  setDragOverGroup(null);
+                  const scenarioId = event.dataTransfer.getData(SCENARIO_DRAG_TYPE);
+                  if (scenarioId) void moveScenarioToCategory(scenarioId, group.key === '__uncategorized__' ? '' : group.key);
+                }}
+              >
+                <button
+                  type="button"
+                  className="scenario-library__group-header"
+                  aria-expanded={!collapsedGroups.has(group.key)}
+                  onClick={() => setCollapsedGroups((current) => {
+                    const next = new Set(current);
+                    if (next.has(group.key)) next.delete(group.key);
+                    else next.add(group.key);
+                    return next;
+                  })}
+                >
+                  <ChevronRight size={13} className={collapsedGroups.has(group.key) ? undefined : 'is-open'} />
+                  <FolderOpen size={13} />
+                  <span>{group.label}</span>
+                  <small>{group.items.length}</small>
+                </button>
+                {!collapsedGroups.has(group.key) && group.items.map((scenario) => <article key={scenario.id} className={scenario.id === selectedId ? 'selected' : ''} draggable onDragStart={(event) => { event.dataTransfer.setData(SCENARIO_DRAG_TYPE, scenario.id); event.dataTransfer.effectAllowed = 'move'; }}><button type="button" className="scenario-library__select" disabled={busy} aria-label={scenario.name || (zh ? '未命名场景' : 'Untitled scenario')} onClick={() => onSelect(scenario.id)}><strong>{scenario.name || (zh ? '未命名场景' : 'Untitled scenario')}</strong><span>{scenario.workflow.length}{zh ? ' 步' : ' steps'}</span></button><button type="button" className="scenario-workbench__delete" disabled={busy} aria-label={zh ? `删除场景 ${scenario.name}` : `Delete scenario ${scenario.name}`} title={zh ? '移入回收站' : 'Move to Trash'} onClick={() => void moveToTrash(scenario)}><Trash2 size={14} /></button></article>)}
+                {!collapsedGroups.has(group.key) && group.items.length === 0 && <p className="scenario-library__none">{zh ? '还没有场景——把左侧场景拖进这个分类即可。' : 'Empty — drag a scenario into this category.'}</p>}
+              </section>
+            ))}
+            {libraryScenarios.length === 0 && <p className="scenario-library__none">{zh ? '还没有场景。点上方「新建」开始。' : 'No scenarios yet. Use New above to start.'}</p>}
           </> : <>
             {trashScenarios.map((item) => <article key={item.definition.id} className="scenario-library__trash-item"><div className="scenario-library__select"><strong>{item.definition.name || (zh ? '未命名场景' : 'Untitled scenario')}</strong><span>{zh ? `剩余 ${remainingTrashDays(item.expiresAt)} 天后永久删除` : `${remainingTrashDays(item.expiresAt)} day(s) until permanent deletion`}</span></div><button type="button" className="scenario-library__restore" disabled={busy || !onRestoreScenario} aria-label={zh ? `恢复场景 ${item.definition.name}` : `Restore scenario ${item.definition.name}`} onClick={() => void restoreFromTrash(item)}><RotateCcw size={14} />{zh ? '恢复' : 'Restore'}</button></article>)}
             {trashScenarios.length === 0 && <p className="scenario-library__none">{zh ? '回收站为空。已删除场景会保留 7 天。' : 'Trash is empty. Deleted scenarios remain here for 7 days.'}</p>}
@@ -751,7 +824,7 @@ ${identity.fundingStructureText}
         {libraryMode === 'scenarios' && draft && <label className="scenario-library__category-editor"><span>{zh ? '当前场景分类' : 'Current scenario category'}</span><input value={scenarioCategory(draft)} disabled={busy} list="scenario-category-options" placeholder={zh ? '输入或选择分类' : 'Enter or choose a category'} onChange={(event) => mutateDraft((scenario) => updateScenarioCategory(scenario, event.target.value))} /><datalist id="scenario-category-options">{categories.map((category) => <option key={category} value={category} />)}</datalist><button type="button" onClick={() => mutateDraft((scenario) => updateScenarioCategory(scenario, ''))} disabled={busy || !scenarioCategory(draft)}>{zh ? '移出分类' : 'Remove category'}</button></label>}
       </aside>
       <section className="scenario-workbench__editor" aria-label={zh ? '场景定义' : 'Scenario definition'}>
-        {libraryMode === 'trash' ? <div className="scenario-workbench__trash-panel" data-testid="sw-trash-panel"><span>{zh ? '场景回收站' : 'Scenario Trash'}</span><h2>{zh ? '删除后有 7 天恢复期' : 'Deleted scenarios have a 7-day recovery window'}</h2><p>{zh ? '这里的场景尚未永久删除。点击左侧「恢复」后会原样回到场景列表；到期后由 METIS 持久化层自动永久清理。' : 'Items here have not been permanently deleted. Restore from the left to return an unchanged scenario; METIS permanently removes it after expiry.'}</p></div> : <><div className="scenario-workbench__editor-heading"><div className="scenario-workbench__editor-heading-main"><span>{zh ? '场景定义' : 'Scenario definition'}</span><h2>{draft?.name || (zh ? '请选择或新建场景' : 'Select or create a scenario')}</h2></div>{draft && <div className="scenario-workbench__editor-actions"><button type="button" className="btn-secondary" disabled={busy || revisionConflict} onClick={() => void saveDraft()}>{busy ? (zh ? '处理中…' : 'Working…') : (zh ? '保存' : 'Save')}</button>{revisionConflict && <button type="button" className="btn-secondary" disabled={busy} onClick={() => void saveDraftAsNewScenario()} data-testid="sw-save-as-new">{zh ? '另存为新场景' : 'Save as new scenario'}</button>}<button type="button" className="btn-primary" disabled={busy || revisionConflict} onClick={() => void activateScenario()} data-testid="sw-use">{zh ? '使用场景' : 'Use scenario'}</button></div>}<p>{draft ? (zh ? 'AI 与手动编辑作用于同一份草稿；保存后才成为可运行版本。' : 'AI and manual edits share one draft; save it to make the runnable version.') : (zh ? '从左侧选择已有场景，或新建一个场景后开始配置。' : 'Select an existing scenario on the left, or create one to begin configuration.')}</p></div><div className="scenario-workbench__notice" aria-live="polite">{notice}</div>{draft ? <div className="scenario-workbench__editor-scroll"><ScenarioFocusedEditor zh={zh} busy={busy} draft={draft} definitions={definitions} mutateDraft={mutateDraft} ensureDeliverable={ensureDeliverable} addStep={addStep} removeStep={(id) => mutateDraft((scenario) => removeStepAndDescendants(scenario, id))} reorderSteps={reorderSteps} toggleStepResource={toggleStepResource} acquire={(kind, stepId, mode) => setAcquisition({ kind, stepId, mode })} /></div> : <div className="scenario-workbench__editor-empty" data-testid="sw-empty"><h3>{zh ? '还没有打开场景' : 'No scenario is open'}</h3><p>{zh ? '场景列表和配置助手始终保留在这一页；点击左侧「新建」即可从对话开始构建。' : 'The list and configuration assistant remain on this page. Click “New” on the left to start building in conversation.'}</p></div>}</>}
+        {libraryMode === 'trash' ? <div className="scenario-workbench__trash-panel" data-testid="sw-trash-panel"><span>{zh ? '场景回收站' : 'Scenario Trash'}</span><h2>{zh ? '删除后有 7 天恢复期' : 'Deleted scenarios have a 7-day recovery window'}</h2><p>{zh ? '这里的场景尚未永久删除。点击左侧「恢复」后会原样回到场景列表；到期后由 METIS 持久化层自动永久清理。' : 'Items here have not been permanently deleted. Restore from the left to return an unchanged scenario; METIS permanently removes it after expiry.'}</p></div> : <><div className="scenario-workbench__editor-heading"><div className="scenario-workbench__editor-heading-main"><span>{zh ? '场景定义' : 'Scenario definition'}</span><h2>{draft?.name || (zh ? '请选择或新建场景' : 'Select or create a scenario')}</h2></div>{draft && <div className="scenario-workbench__editor-actions"><button type="button" className="btn-secondary" disabled={busy || revisionConflict} onClick={() => void saveDraft()}>{busy ? (zh ? '处理中…' : 'Working…') : (zh ? '保存' : 'Save')}</button>{revisionConflict && <button type="button" className="btn-secondary" disabled={busy} onClick={() => void saveDraftAsNewScenario()} data-testid="sw-save-as-new">{zh ? '另存为新场景' : 'Save as new scenario'}</button>}<button type="button" className="btn-primary" disabled={busy || revisionConflict} onClick={() => void activateScenario()} data-testid="sw-use">{zh ? '使用场景' : 'Use scenario'}</button></div>}<p>{draft ? (zh ? 'AI 与手动编辑作用于同一份草稿；保存后才成为可运行版本。' : 'AI and manual edits share one draft; save it to make the runnable version.') : (zh ? '从左侧选择已有场景，或新建一个场景后开始配置。' : 'Select an existing scenario on the left, or create one to begin configuration.')}</p></div><div className="scenario-workbench__notice" aria-live="polite">{notice}</div>{draft ? <div className="scenario-workbench__editor-scroll"><ScenarioFocusedEditor zh={zh} busy={busy} draft={draft} definitions={definitions} mutateDraft={mutateDraft} ensureDeliverable={ensureDeliverable} addStep={addStep} removeStep={(id) => mutateDraft((scenario) => removeStepAndDescendants(scenario, id))} reorderSteps={reorderSteps} toggleStepResource={toggleStepResource} acquire={(kind, stepId, mode) => setAcquisition({ kind, stepId, mode })} onInstalled={() => void reload()} /></div> : <div className="scenario-workbench__editor-empty" data-testid="sw-empty"><h3>{zh ? '还没有打开场景' : 'No scenario is open'}</h3><p>{zh ? '场景列表和配置助手始终保留在这一页；点击左侧「新建」即可从对话开始构建。' : 'The list and configuration assistant remain on this page. Click “New” on the left to start building in conversation.'}</p></div>}</>}
       </section>
       {libraryMode === 'trash' ? <aside className="scenario-assistant scenario-assistant--empty" aria-label={zh ? '回收站说明' : 'Trash details'}><header className="scenario-assistant__header"><span className="scenario-assistant__mark"><Trash2 size={15} /></span><div><h2>{zh ? '安全删除' : 'Safe deletion'}</h2><p>{zh ? '先归档，后清理' : 'Archive first, clean up later'}</p></div></header><div className="scenario-assistant__empty"><h3>{zh ? '不会一键不可逆' : 'Never one-click irreversible'}</h3><p>{zh ? '删除场景只会移入这里。恢复不会改动任何 Workflow、材料或配置；超过 7 天未恢复才会永久删除。' : 'Deleting a scenario only moves it here. Restore does not alter its workflow, materials, or configuration; deletion is permanent only after 7 days.'}</p></div></aside> : draft ? <ScenarioConfigurationAssistant key={draft.id} zh={zh} scenarioName={draft.name} materialNames={(draft.materials ?? []).map((material) => material.name)} busy={busy} canUndo={aiUndoStack.length > 0} projectId={projectId} scenarioId={draft.id} onSubmitInstruction={compile} onUploadMaterials={uploadMaterials}
             onUploadFundingTemplate={async () => {

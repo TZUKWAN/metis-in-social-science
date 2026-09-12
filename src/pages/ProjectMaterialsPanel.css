@@ -32,6 +32,15 @@
   color: var(--text-muted, #7a8699);
 }
 
+/* 支持的格式列表：收成一行小字，超出省略（完整内容在 title 里） */
+.project-materials__head p.project-materials__formats {
+  margin-top: 3px;
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .project-materials__upload {
   display: flex;
   align-items: center;
@@ -71,6 +80,22 @@
   background: color-mix(in srgb, var(--primary, #2563eb) 12%, transparent);
   color: var(--primary, #2563eb);
   font-weight: 500;
+}
+
+/* 列表 / 九宫格视图切换：靠右贴在筛选行末尾 */
+.project-materials__view {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 2px;
+}
+
+.project-materials__filter .project-materials__view button {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: var(--radius-sm, 5px);
 }
 
 .project-materials__empty {
@@ -147,6 +172,71 @@
 }
 
 .project-materials__list li button:hover { background: var(--bg-hover, #eef2f6); color: var(--status-failed, #c0392b); }
+
+/* ─── 九宫格卡片视图 ─────────────────────────────────────── */
+.project-materials__grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px;
+}
+
+.project-materials__grid li {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-light, #e3e8ee);
+  border-radius: var(--radius-sm, 5px);
+  background: var(--bg-subtle, #f8fafb);
+  font-size: 12px;
+  color: var(--text-primary, #17243a);
+  min-width: 0;
+}
+
+.project-materials__grid li.binary { opacity: 0.75; }
+
+.project-materials__grid .project-materials__name {
+  width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-weight: 500;
+}
+
+.project-materials__card-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: auto;
+}
+
+.project-materials__card-actions select {
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm, 5px);
+  background: var(--bg-input, #f4f6f8);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.project-materials__card-actions button {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: var(--radius-sm, 5px);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.project-materials__card-actions button:hover { background: var(--bg-hover, #eef2f6); color: var(--status-failed, #c0392b); }
 
 .project-materials__notice {
   margin: 0;

@@ -173,10 +173,13 @@ async function childMain() {
     const mainEntry = path.join(ROOT, 'dist-electron', 'electron', 'main.js');
     if (!fs.existsSync(mainEntry)) { report.status = 'blocked'; report.blocked = { reason: 'electron_build_missing', mainEntry }; writeReport(); app.exit(2); return; }
 
+    console.log('[sweep-child] importing main entry...');
     await import(pathToFileURL(mainEntry).href);
+    console.log('[sweep-child] main entry imported, waiting for whenReady...');
     await app.whenReady();
+    console.log('[sweep-child] whenReady fired, finding window...');
     let win = null;
-    const bootDeadline = Date.now() + 40_000;
+    const bootDeadline = Date.now() + 90_000;
     while (!win && Date.now() < bootDeadline) {
       win = BrowserWindow.getAllWindows().find((c) => !c.isDestroyed()) || null;
       if (!win) await sleep(200);

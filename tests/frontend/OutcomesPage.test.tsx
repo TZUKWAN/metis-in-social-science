@@ -38,7 +38,7 @@ function installMetis() {
     listPptTemplates: vi.fn().mockResolvedValue([]), savePptTemplate: vi.fn(),
     listPptGenerationSkills: vi.fn().mockResolvedValue([]), savePptGenerationSkill: vi.fn(),
     executeOutcomePptGeneration: vi.fn().mockResolvedValue({ status: 'error', code: 'generation_provider_unavailable', message: '未配置生成模型。', answer: '', sources: [], diagnostics: [] }),
-    createOutcomeCategory: vi.fn(), renameOutcomeCategory: vi.fn(), moveOutcome: vi.fn(),
+    createOutcomeCategory: vi.fn(), renameOutcomeCategory: vi.fn(), deleteOutcomeCategory: vi.fn(), moveOutcome: vi.fn(),
     createOutcome: vi.fn(), saveOutcome: vi.fn(), restoreOutcome: vi.fn(), renameOutcome: vi.fn(), markOutcomeFinal: vi.fn(),
     archiveOutcome: vi.fn().mockResolvedValue(true),
     listOutcomeTrash: vi.fn().mockResolvedValue([]),
@@ -1269,9 +1269,8 @@ describe('OutcomesPage', () => {
     const deletedAt = Date.now();
     metis.listOutcomes.mockResolvedValue([]);
     metis.listOutcomeTrash.mockResolvedValue([{ outcome, deletedAt, expiresAt: deletedAt + 7 * 24 * 60 * 60 * 1000 }]);
-    // 任务4 第六节：行内删除按钮已收纳进 ··· 菜单——先开菜单，再点「移入回收站」。
-    fireEvent.click(screen.getByRole('button', { name: '成果「研究论文」的更多操作' }));
-    fireEvent.click(await screen.findByRole('menuitem', { name: '移入回收站' }));
+    // 刘总反馈：单项「···」菜单已简化为行内直接回收站按钮。
+    fireEvent.click(screen.getByRole('button', { name: '将「研究论文」移入回收站' }));
     await waitFor(() => expect(metis.archiveOutcome).toHaveBeenCalledWith({ projectId: 'project-1', outcomeId: 'out-1' }));
     expect(await screen.findByText(/已移入回收站/u)).toBeTruthy();
     expect(screen.queryByText('原始段落。')).toBeNull();
@@ -1575,6 +1574,50 @@ describe('OutcomesPage', () => {
     await waitFor(() => expect(metis.createOutcomeCategory).toHaveBeenCalledWith({ name: '实验数据组' }));
     expect(await screen.findByText('实验数据组')).toBeTruthy();
     expect(screen.queryByRole('dialog', { name: '新建分类' })).toBeNull();
+  });
+
+  it('deletes an outcome category after confirmation so its outcomes fall back to uncategorized', async () => {
+    const metis = installMetis();
+    metis.listOutcomeCategories.mockResolvedValue([{ id: 'cat-1', name: '实验数据' }]);
+    metis.deleteOutcomeCategory.mockImplementation(async () => { metis.listOutcomeCategories.mockResolvedValue([]); return true; });
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const { default: OutcomesPage } = await import('../../src/pages/OutcomesPage');
+    render(<OutcomesPage />);
+    fireEvent.click(await screen.findByRole('button', { name: '删除分类实验数据' }));
+    await waitFor(() => expect(metis.deleteOutcomeCategory).toHaveBeenCalledWith({ categoryId: 'cat-1' }));
+    await waitFor(() => expect(screen.queryByText('实验数据')).toBeNull());
+    confirmSpy.mockRestore();
+  });
+
+  it('does not delete an outcome category when the confirmation is cancelled', async () => {
+    const metis = installMetis();
+    metis.listOutcomeCategories.mockResolvedValue([{ id: 'cat-1', name: '实验数据' }]);
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const { default: OutcomesPage } = await import('../../src/pages/OutcomesPage');
+    render(<OutcomesPage />);
+    fireEvent.click(await screen.findByRole('button', { name: '删除分类实验数据' }));
+    expect(metis.deleteOutcomeCategory).not.toHaveBeenCalled();
+    expect(await screen.findByText('实验数据')).toBeTruthy();
+    confirmSpy.mockRestore();
+  });
+
+  it('moves an outcome into a category via drag and drop with a highlighted drop target', async () => {
+    const metis = installMetis();
+    metis.listOutcomeCategories.mockResolvedValue([{ id: 'cat-1', name: '论文集' }]);
+    metis.moveOutcome.mockResolvedValue({ ...outcome, categoryId: 'cat-1' });
+    const { default: OutcomesPage } = await import('../../src/pages/OutcomesPage');
+    render(<OutcomesPage />);
+    const row = await screen.findByTitle('拖动到分类以整理成果');
+    const section = (await screen.findByText('论文集')).closest('section');
+    expect(section).toBeTruthy();
+    const dataTransfer = { setData: vi.fn(), getData: vi.fn(() => 'out-1'), effectAllowed: '', dropEffect: '' };
+    fireEvent.dragStart(row, { dataTransfer });
+    expect(dataTransfer.setData).toHaveBeenCalledWith('application/x-metis-outcome', 'out-1');
+    fireEvent.dragOver(section as HTMLElement, { dataTransfer });
+    expect((section as HTMLElement).className).toContain('drop-target');
+    fireEvent.drop(section as HTMLElement, { dataTransfer });
+    await waitFor(() => expect(metis.moveOutcome).toHaveBeenCalledWith({ projectId: 'project-1', outcomeId: 'out-1', categoryId: 'cat-1' }));
+    expect((section as HTMLElement).className).not.toContain('drop-target');
   });
 
   it('auto-dismisses the operation notice after eight seconds so it cannot cover the toolbar indefinitely', async () => {

@@ -291,15 +291,15 @@ describe('ScenarioWorkbench focused authoring', () => {
     await waitFor(() => expect(screen.getByTestId('sw-config-name')).toHaveProperty('disabled', false));
   });
 
-  it('exposes local, URL, and online discovery per step and opens the real local MCP importer', async () => {
+  it('exposes search and vault picker per step and opens the real online search', async () => {
     const { props } = harness();
     await renderWorkbench(props);
-    for (const id of ['sw-step-import-package-outline', 'sw-step-url-skill-outline', 'sw-step-search-skill-outline', 'sw-step-import-mcp-outline', 'sw-step-url-mcp-outline', 'sw-step-search-mcp-outline']) {
+    // 刘总 2026-09：每步只留「搜索」「选择内置」两个入口。
+    for (const id of ['sw-step-search-skill-outline', 'sw-step-vault-skill-outline', 'sw-step-search-mcp-outline', 'sw-step-vault-mcp-outline']) {
       expect(screen.getByTestId(id)).toBeTruthy();
     }
-    fireEvent.click(screen.getByTestId('sw-step-import-mcp-outline'));
-    expect(await screen.findByText('选择本地 MCP 包文件夹')).toBeTruthy();
-    expect(screen.getByText(/manifest\.json/u)).toBeTruthy();
+    expect(screen.queryByTestId('sw-step-import-mcp-outline')).toBeNull();
+    expect(screen.queryByTestId('sw-step-url-skill-outline')).toBeNull();
   });
 
   it('binds installed Skill and MCP only to the selected step and rolls them up for resolution', async () => {
@@ -308,8 +308,11 @@ describe('ScenarioWorkbench focused authoring', () => {
     const mcp = definition('mcp', 'user:mcp/citations', '引文 MCP');
     const { props, save } = harness({ definitions: [current, skill, mcp], selectedId: current.id });
     await renderWorkbench(props);
-    fireEvent.click(screen.getByLabelText('提纲 Skill'));
-    fireEvent.click(screen.getByLabelText('引文 MCP'));
+    // 选择内置技能弹窗：已安装区直接选用。
+    fireEvent.click(screen.getByTestId('sw-step-vault-skill-outline'));
+    fireEvent.click(await screen.findByTestId('step-vault-installed-user:skills/outline'));
+    fireEvent.click(screen.getByTestId('sw-step-vault-mcp-outline'));
+    fireEvent.click(await screen.findByTestId('step-vault-installed-user:mcp/citations'));
     fireEvent.click(screen.getByText('保存'));
 
     await waitFor(() => expect(save).toHaveBeenCalledTimes(1));

@@ -181,9 +181,10 @@ describe('Deliverable completeness contract (2026-09-04 刘总要求)', () => {
   });
 
   it('requiredDeliverableFieldsForKind is kind-aware (title/references exemptions)', () => {
-    expect(requiredDeliverableFieldsForKind('chapter')).toEqual(['purpose', 'instructions', 'requirements', 'lengthTarget']);
-    expect(requiredDeliverableFieldsForKind('abstract')).toEqual(['purpose', 'instructions', 'requirements', 'lengthTarget']);
-    expect(requiredDeliverableFieldsForKind('references')).toEqual(['instructions', 'requirements']);
+    // 2026-09 刘总规格：交付物部分只保留 instructions 一个必填字段。
+    expect(requiredDeliverableFieldsForKind('chapter')).toEqual(['instructions']);
+    expect(requiredDeliverableFieldsForKind('abstract')).toEqual(['instructions']);
+    expect(requiredDeliverableFieldsForKind('references')).toEqual(['instructions']);
     expect(requiredDeliverableFieldsForKind('title')).toEqual([]);
   });
 
@@ -200,22 +201,24 @@ describe('Deliverable completeness contract (2026-09-04 刘总要求)', () => {
 
   it('collectDeliverableCompletenessGaps reports missing fields per node', () => {
     const scenario = deliverableScenario();
-    scenario.deliverable!.sections![1]!.purpose = undefined;
-    (scenario.deliverable!.sections![1]!.children![0] as { lengthTarget?: string }).lengthTarget = undefined;
+    scenario.deliverable!.sections![1]!.instructions = undefined;
     const gaps = collectDeliverableCompletenessGaps(scenario);
     expect(gaps.some((gap) => gap.field === 'globalInstructions')).toBe(true);
-    expect(gaps.some((gap) => gap.sectionId === 'chapter-1' && gap.field === 'purpose')).toBe(true);
-    expect(gaps.some((gap) => gap.sectionId === 'chapter-1-1' && gap.field === 'lengthTarget')).toBe(true);
-    // references 无 lengthTarget 不应产生 gap（kind 豁免）。
+    expect(gaps.some((gap) => gap.sectionId === 'chapter-1' && gap.field === 'instructions')).toBe(true);
+    // purpose/requirements/lengthTarget 不再必填（2026-09 刘总规格）。
+    expect(gaps.some((gap) => gap.field === 'purpose')).toBe(false);
+    expect(gaps.some((gap) => gap.field === 'requirements')).toBe(false);
+    expect(gaps.some((gap) => gap.field === 'lengthTarget')).toBe(false);
+    // references 有 instructions 不产生 gap。
     expect(gaps.some((gap) => gap.sectionId === 'references')).toBe(false);
   });
 
   it('assessScenarioHarness blocks on missing globalInstructions/instructions and turns ready when filled', () => {
     const scenario = deliverableScenario();
-    scenario.deliverable!.sections![1]!.purpose = undefined;
+    scenario.deliverable!.sections![1]!.instructions = undefined;
     const blocked = assessScenarioHarness(scenario);
     expect(blocked.issues.map((issue) => issue.code)).toContain('deliverable_global_instructions_missing');
-    expect(blocked.issues.map((issue) => issue.code)).toContain('section_purpose_missing');
+    expect(blocked.issues.map((issue) => issue.code)).toContain('section_instructions_missing');
     expect(blocked.status).toBe('blocked');
     const ready = assessScenarioHarness({
       ...deliverableScenario(),

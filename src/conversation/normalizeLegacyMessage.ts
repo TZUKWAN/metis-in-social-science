@@ -70,9 +70,11 @@ export interface LegacyMessageInput {
 
 /** 旧消息 → ConversationMessage（围栏降级为 parts；纯文本保持单 text part）。 */
 export function normalizeLegacyMessage(message: LegacyMessageInput): ConversationMessage {
-  if (message.role !== 'assistant') {
+  if (message.role === 'user') {
     return { id: message.id, role: message.role, createdAt: message.createdAt, parts: [{ type: 'text', text: message.content }] };
   }
+  // assistant 与 system 都可能带历史 step-card 围栏（系统消息曾以围栏嵌入
+  // 步骤卡，未走 assistant 解码路径会原样裸露 JSON）。
   const hasFence = message.content.includes('```metis-step-card');
   if (!hasFence) {
     return { id: message.id, role: message.role, createdAt: message.createdAt, parts: [{ type: 'text', text: message.content }] };

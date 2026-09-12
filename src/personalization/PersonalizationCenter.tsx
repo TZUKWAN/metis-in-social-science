@@ -18,10 +18,14 @@ import { useResearchWorkspaceStore } from '../research/researchWorkspaceStore';
 import McpActivationPanel, {
   type McpActivationPanelDependencies,
 } from './McpActivationPanel';
-import ProjectMetisRulesEditor from './ProjectMetisRulesEditor';
-import { BuiltinSkillBrowserPanel } from './BuiltinSkillBrowserPanel';
-import { SkillStudioPanel } from './SkillStudioPanel';
-import SplitHandle from '../components/SplitHandle';
+import McpCredentialPanel from './McpCredentialPanel';
+import {
+  missingMcpSecrets,
+  usePersonalizationSecrets,
+  type PersonalizationSecretVaultHandle,
+} from './mcpCredentialVault.js';
+import { SkillStudioDialog, SkillStudioDock, type SkillStudioDraft } from './SkillStudioPanel';
+import { McpBuilderDialog } from './McpBuilderDialog';
 import { availableUserId, createDefinition } from './personalizationLib.js';
 import ScenarioWorkbench from './ScenarioWorkbench.js';
 import { RotateCcw, Trash2, Upload, X } from 'lucide-react';
@@ -30,6 +34,7 @@ import './PersonalizationCenter.css';
 import MarketBrowserPanel from './MarketBrowserPanel.js';
 import { ExtensionInstaller } from './ExtensionInstaller.js';
 import { CapabilityVaultPanel } from './CapabilityVaultPanel';
+import { SkillUnifiedPanel } from './SkillUnifiedPanel';
 
 type Kind = PersonalizationDefinition['kind'];
 
@@ -57,6 +62,13 @@ const LIBRARY_LABELS = {
   zh: { scenario: '场景库', agent: '智能体库', skill: '技能库', mcp: 'MCP 库', rules: 'Metis.md 库' },
   en: { scenario: 'Scenario library', agent: 'Agent library', skill: 'Skill library', mcp: 'MCP library', rules: 'Metis.md library' },
 } as const;
+
+/** 技能分类沿用场景的「category: 标签」机制（刘总 2026-09）：分类名存进定义 tags，随定义持久化。 */
+const SKILL_CATEGORY_PREFIX = 'category:';
+function skillCategoryOf(definition: PersonalizationDefinition): string {
+  const marker = definition.tags.find((tag) => tag.startsWith(SKILL_CATEGORY_PREFIX));
+  return marker?.slice(SKILL_CATEGORY_PREFIX.length).trim() ?? '';
+}
 
 const MEMORY_SCOPE_OPTIONS: ReadonlyArray<{
   value: AgentDefinition['memory']['scope'];
@@ -724,95 +736,44 @@ function SimpleSchemaEditor({
 }
 
 
-function SecretVaultPanel() {
+function SecretVaultPanel({ vault }: { vault: PersonalizationSecretVaultHandle }) {
   const { locale } = useTranslation();
   const zh = locale === 'zh';
-  const [revision, setRevision] = useState(0);
-  const [secrets, setSecrets] = useState<Array<{ name: string; createdAt: number; updatedAt: number }>>([]);
   const [name, setName] = useState('');
   const [value, setValue] = useState('');
   const [status, setStatus] = useState('');
-  const [busy, setBusy] = useState(false);
+  const busy = vault.busy;
 
-  const load = useCallback(async () => {
-    const list = window.metis?.listPersonalizationSecrets;
-    if (!list) {
-      setStatus(zh ? '加密凭据库不可用' : 'Encrypted credential vault is unavailable');
-      return;
-    }
-    try {
-      const response = await list({ contractVersion: 1, operationId: crypto.randomUUID() });
-      if (!response.ok) {
-        setStatus(`${zh ? '无法读取凭据元数据' : 'Credential metadata unavailable'}: ${response.code}`);
-        return;
-      }
-      setRevision(response.revision);
-      setSecrets(response.secrets);
-      setStatus('');
-    } catch {
-      setStatus(zh ? '无法连接加密凭据库，请重试。' : 'The encrypted credential vault could not be reached. Try again.');
-    }
-  }, [zh]);
-
-  useEffect(() => {
-    let cancelled = false;
-    queueMicrotask(() => { if (!cancelled) void load(); });
-    return () => { cancelled = true; };
-  }, [load]);
+  const loadStatus = !vault.available
+    ? (zh ? '加密凭据库不可用' : 'Encrypted credential vault is unavailable')
+    : vault.loadError === 'ipc'
+      ? (zh ? '无法连接加密凭据库，请重试。' : 'The encrypted credential vault could not be reached. Try again.')
+      : vault.loadError
+        ? `${zh ? '无法读取凭据元数据' : 'Credential metadata unavailable'}: ${vault.loadError}`
+        : '';
 
   const save = async () => {
-    const setSecret = window.metis?.setPersonalizationSecret;
-    if (!setSecret) return;
-    setBusy(true);
-    try {
-      const response = await setSecret({
-        contractVersion: 1,
-        operationId: crypto.randomUUID(),
-        expectedRevision: revision,
-        name: name.trim(),
-        value,
-      });
-      if (!response.ok) {
-        setStatus(`${zh ? '保存失败' : 'Save failed'}: ${response.code}`);
-        if (response.code === 'revision_conflict') await load();
-        return;
-      }
-      setValue('');
-      setName('');
-      setRevision(response.revision);
-      setStatus(zh ? '凭据已由操作系统加密保存；值不会回显' : 'Credential encrypted by the operating system; values are never displayed');
-      await load();
-    } catch {
-      setStatus(zh ? '保存未完成，凭据值仍保留在输入框中，可直接重试。' : 'Save did not complete. The credential value remains in the field so you can retry.');
-    } finally {
-      setBusy(false);
+    const result = await vault.save(name.trim(), value);
+    if (!result.ok) {
+      setStatus(result.transport
+        ? (zh ? '保存未完成，凭据值仍保留在输入框中，可直接重试。' : 'Save did not complete. The credential value remains in the field so you can retry.')
+        : `${zh ? '保存失败' : 'Save failed'}: ${result.code}`);
+      return;
     }
+    setValue('');
+    setName('');
+    setStatus(zh ? '凭据已由操作系统加密保存；值不会回显' : 'Credential encrypted by the operating system; values are never displayed');
   };
 
   const remove = async (secretName: string) => {
-    const removeSecret = window.metis?.removePersonalizationSecret;
-    if (!removeSecret) return;
-    setBusy(true);
-    try {
-      const response = await removeSecret({
-        contractVersion: 1,
-        operationId: crypto.randomUUID(),
-        expectedRevision: revision,
-        name: secretName,
-      });
-      if (!response.ok) {
-        setStatus(`${zh ? '删除失败' : 'Remove failed'}: ${response.code}`);
-        if (response.code === 'revision_conflict') await load();
-        return;
-      }
-      setRevision(response.revision);
-      setStatus(zh ? '凭据已删除' : 'Credential removed');
-      await load();
-    } catch {
-      setStatus(zh ? '删除未完成，请重试。' : 'Remove did not complete. Try again.');
-    } finally {
-      setBusy(false);
+    const result = await vault.remove(secretName);
+    if (!result.ok) {
+      setStatus(result.transport
+        ? (zh ? '删除未完成，请重试。' : 'Remove did not complete. Try again.')
+        : `${zh ? '删除失败' : 'Remove failed'}: ${result.code}`);
+      return;
     }
+    setStatus(zh ? '凭据已删除' : 'Credential removed');
   };
 
   return <section className="personalization-installer" aria-label={zh ? '加密凭据库' : 'Encrypted credential vault'}>
@@ -820,17 +781,19 @@ function SecretVaultPanel() {
       <div><span className="personalization-eyebrow">{zh ? '凭据' : 'SECRETS'}</span><h2>{zh ? 'MCP 凭据' : 'MCP credentials'}</h2></div>
       <span>{zh ? '值仅在主进程通过系统安全存储加密；界面和配置包只使用 ${secret:NAME} 引用。' : 'Values are encrypted through OS secure storage in the main process; UI and bundles use only ${secret:NAME} references.'}</span>
     </div>
+    {/* 刘总反馈（2026-10）：全局面板弱化为后备，说明这是不归属任何具体 MCP 的通用凭据。 */}
+    <p className="personalization-installer__mode-help">{zh ? '通用凭据（不属于任何具体 MCP）。单个 MCP 的凭据请在该 MCP 条目的「凭据」入口录入。' : 'Shared credentials (not tied to any specific MCP). Enter per-MCP credentials from the "Credentials" entry on each MCP item.'}</p>
     <div className="personalization-grid personalization-grid--2">
       <label><span>{zh ? '环境变量名称' : 'Environment name'}</span><input value={name} onChange={(event) => setName(event.target.value.toUpperCase())} placeholder="ZOTERO_API_KEY" autoComplete="off" spellCheck={false} /></label>
       <label><span>{zh ? '凭据值' : 'Credential value'}</span><input type="password" value={value} onChange={(event) => setValue(event.target.value)} autoComplete="new-password" /></label>
     </div>
-    <div className="personalization-actions"><button className="btn-primary" type="button" disabled={busy || !name.trim() || !value} onClick={() => void save()}>{zh ? '加密保存' : 'Save encrypted'}</button><span role="status" aria-live="polite">{status}</span></div>
+    <div className="personalization-actions"><button className="btn-primary" type="button" disabled={busy || !name.trim() || !value} onClick={() => void save()}>{zh ? '加密保存' : 'Save encrypted'}</button><span role="status" aria-live="polite">{status || loadStatus}</span></div>
     <div className="personalization-cards">
-      {secrets.map((secret) => <article className="personalization-card" key={secret.name}>
+      {vault.secrets.map((secret) => <article className="personalization-card" key={secret.name}>
         <div className="personalization-card__select"><strong>{secret.name}</strong><span>{zh ? '值已隐藏' : 'Value hidden'} · {new Date(secret.updatedAt).toLocaleString()}</span></div>
         <div className="personalization-card__actions"><button type="button" disabled={busy} onClick={() => void remove(secret.name)}>{zh ? '删除' : 'Remove'}</button></div>
       </article>)}
-      {secrets.length === 0 && <p className="personalization-empty">{zh ? '还没有保存凭据。' : 'No credentials saved.'}</p>}
+      {vault.secrets.length === 0 && <p className="personalization-empty">{zh ? '还没有保存凭据。' : 'No credentials saved.'}</p>}
     </div>
   </section>;
 }
@@ -1374,7 +1337,7 @@ function DefinitionEditor({
 }
 
 export default function PersonalizationCenter({ onActivateScenario }: PersonalizationCenterProps = {}) {
-  const { locale, t } = useTranslation();
+  const { locale } = useTranslation();
   const zh = locale === 'zh';
   const [definitions, setDefinitions] = useState<PersonalizationDefinition[]>([]);
   const [archivedDefinitions, setArchivedDefinitions] = useState<ArchivedPersonalizationDefinition[]>([]);
@@ -1382,7 +1345,13 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
   const [recoveringIntegrityIssueId, setRecoveringIntegrityIssueId] = useState<string | null>(null);
   const [kind, setKind] = useState<Kind>('scenario');
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [browseBuiltinOpen, setBrowseBuiltinOpen] = useState(false);
+  /** 技能工坊常驻对话窗（刘总 2026-09）：停靠在技能页右侧，context 非空表示「选中技能做定制优化」。 */
+  const [skillDockContext, setSkillDockContext] = useState<PersonalizationDefinition | null>(null);
+  const [skillDockCollapsed, setSkillDockCollapsed] = useState(false);
+  /** 技能工坊弹窗形态：从常驻面板「弹窗打开」时使用，与面板共享 context。 */
+  const [skillStudioDialog, setSkillStudioDialog] = useState<{ context: PersonalizationDefinition | null } | null>(null);
+  /** MCP 构建对话弹窗：context 非空表示基于已安装 MCP 优化。 */
+  const [mcpBuilder, setMcpBuilder] = useState<{ context: PersonalizationDefinition | null } | null>(null);
   const [status, setStatus] = useState('');
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
@@ -1393,47 +1362,13 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
   const [libraryMode, setLibraryMode] = useState<'items' | 'trash'>('items');
   /** 回收站条目的两步「彻底删除」确认 id。 */
   const [trashDeleteId, setTrashDeleteId] = useState<string | null>(null);
+  // 刘总反馈（2026-10）：MCP 凭据改为按条目录入；这里共享一份凭据库元数据（仅名称，不含值），
+  // 供全局面板、条目上的「凭据未配置」标记与条目内录入区共用，避免重复 IPC。
+  const mcpSecrets = usePersonalizationSecrets(kind === 'mcp');
+  /** 当前展开凭据录入区的 MCP 条目 id。 */
+  const [secretsEditorId, setSecretsEditorId] = useState<string | null>(null);
   // 模板识别（论文结构）：粘贴模板 → AI 解析为逐节写作指引 → 用户修改后保存。
   const [tplOpen, setTplOpen] = useState(false);
-  // 库面板宽度：用户可拖拽调节，本地持久化。
-  const [libraryWidth, setLibraryWidth] = useState(() => {
-    try {
-      const raw = window.localStorage.getItem('metis-personalization-library-width');
-      const value = raw === null ? NaN : Number(raw);
-      return Number.isFinite(value) ? Math.min(480, Math.max(220, value)) : 330;
-    } catch {
-      return 330;
-    }
-  });
-  const layoutRef = useRef<HTMLDivElement>(null);
-  const [narrowLayout, setNarrowLayout] = useState(() => (
-    typeof window.matchMedia === 'function' ? window.matchMedia('(max-width: 1120px)').matches : false
-  ));
-  useEffect(() => {
-    if (typeof window.matchMedia !== 'function') return;
-    const media = window.matchMedia('(max-width: 1120px)') as MediaQueryList & { addListener?: (listener: (event: MediaQueryListEvent) => void) => void; removeListener?: (listener: (event: MediaQueryListEvent) => void) => void };
-    const listener = (event: MediaQueryListEvent) => setNarrowLayout(event.matches);
-    if (typeof media.addEventListener === 'function') {
-      media.addEventListener('change', listener);
-      return () => media.removeEventListener('change', listener);
-    }
-    // 旧实现/测试桩可能只提供 addListener。
-    media.addListener?.(listener);
-    return () => media.removeListener?.(listener);
-  }, []);
-
-  const handleLibraryDrag = useCallback((clientX: number) => {
-    const rect = layoutRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    setLibraryWidth(Math.min(480, Math.max(220, clientX - rect.left)));
-  }, []);
-
-  const saveLibraryWidth = useCallback((value: number) => {
-    try { window.localStorage.setItem('metis-personalization-library-width', String(Math.round(value))); } catch { /* best-effort */ }
-  }, []);
-
-  // 宽度持久化放 effect：拖动结束时读到的是最新值。
-  useEffect(() => { saveLibraryWidth(libraryWidth); }, [libraryWidth, saveLibraryWidth]);
   const [tplText, setTplText] = useState('');
   const [tplBusy, setTplBusy] = useState(false);
   const [tplStatus, setTplStatus] = useState('');
@@ -1497,6 +1432,11 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
     () => definitions.filter((item) => item.provenance.origin !== 'builtin'),
     [definitions],
   );
+  /** 场景工作台可见定义：用户定义 + 预装技能/MCP（不含预置场景）。 */
+  const workbenchDefinitions = useMemo(
+    () => definitions.filter((item) => item.provenance.origin !== 'builtin' || item.kind === 'skill' || item.kind === 'mcp'),
+    [definitions],
+  );
   const visibleIntegrityIssues = useMemo(() => integrityIssues.filter((issue) => issue.kind === kind), [integrityIssues, kind]);
   const recoverIntegrityIssue = useCallback(async (issue: PersonalizationIntegrityIssue) => {
     if (issue.latestVerifiedRevision === null) {
@@ -1529,22 +1469,10 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
     }
   }, [load, zh]);
   const filtered = useMemo(() => userDefinitions.filter((item) => item.kind === kind), [userDefinitions, kind]);
-  const selected = userDefinitions.find((item) => item.id === selectedId) ?? null;
-
-  // 分类树面板已随库栏移除；保留过滤管线（当前无入口设置过滤值）。
-  const [categoryFilter] = useState<string | null>(null);
-  const categoryFiltered = useMemo(() => {
-    if (kind === 'scenario' || !categoryFilter) return filtered;
-    const map = (() => {
-      try {
-        const raw = localStorage.getItem(`metis-${kind}-category-map:v1`);
-        return raw ? JSON.parse(raw) : {};
-      } catch {
-        return {};
-      }
-    })();
-    return filtered.filter((definition) => map[definition.id] === categoryFilter);
-  }, [filtered, kind, categoryFilter]);
+  /** 已安装管理区含预装/内置定义（卡片标注「内置」）；选中内置项走「创建可编辑副本」流程。 */
+  const libraryDefinitions = useMemo(() => definitions.filter((item) => item.kind === kind), [definitions, kind]);
+  const selected = definitions.find((item) => item.id === selectedId) ?? null;
+  // 技能分类分组（category: 标签）已随统一视图移入 SkillUnifiedPanel（刘总 2026-09）。
   /** 当前 kind 的回收站条目（归档时间倒序由持久层保证）。 */
   const archivedForKind = useMemo(
     () => archivedDefinitions.filter((item) => item.definition.kind === kind),
@@ -1564,6 +1492,28 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
   const afterExtensionInstall = async (definitionId: string) => {
     await load();
     setSelectedId(definitionId);
+  };
+
+  /** 技能工坊保存：把对话产出的 SKILL.md 作为 markdown 技能入库（进入库 ≠ 注册给普通 Agent）。 */
+  const saveSkillStudioDraft = async (draft: SkillStudioDraft) => {
+    await window.metis?.savePersonalization({
+      contractVersion: 1,
+      kind: 'skill',
+      name: draft.name,
+      description: (zh ? '技能工坊沉淀' : 'Skill Studio capture'),
+      enabled: true,
+      tags: ['skill-studio'],
+      sourceMode: 'markdown',
+      markdown: draft.systemPrompt,
+      systemPrompt: draft.systemPrompt,
+      toolIds: [],
+      mcpIds: [],
+      maxTurns: 10,
+      inputSchema: null,
+      outputSchema: null,
+      packageEntry: null,
+    } as never);
+    await load();
   };
 
   const saveNew = async (definition: PersonalizationDefinition) => {
@@ -1808,6 +1758,58 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
     }
   };
 
+  /** 设置技能分类（category: 标签机制）：写入 tags 后走与编辑器一致的签名保存通道。 */
+  const saveSkillCategory = async (definition: PersonalizationDefinition, category: string): Promise<void> => {
+    if (definition.kind !== 'skill') return;
+    const clean = category.trim().replace(/\s+/gu, ' ');
+    if (clean === skillCategoryOf(definition)) return;
+    const tags = [
+      ...definition.tags.filter((tag) => !tag.startsWith(SKILL_CATEGORY_PREFIX)),
+      ...(clean ? [`${SKILL_CATEGORY_PREFIX}${clean}`] : []),
+    ];
+    const next = {
+      ...editableCopy(definition),
+      tags,
+    } as Extract<PersonalizationDefinition, { kind: 'skill' }>;
+    try {
+      if (next.sourceMode === 'markdown' && window.metis?.applyPersonalizationExtension) {
+        const result = await window.metis.applyPersonalizationExtension({
+          contractVersion: 1,
+          mode: 'skill_markdown',
+          operationId: crypto.randomUUID(),
+          expectedRevision: definition.revision,
+          id: next.id,
+          name: next.name,
+          description: next.description,
+          author: next.provenance.author,
+          version: next.provenance.version,
+          markdown: next.markdown,
+          toolIds: next.toolIds,
+          mcpIds: next.mcpIds,
+          tags: next.tags,
+          maxTurns: next.maxTurns,
+          inputSchema: next.inputSchema,
+          outputSchema: next.outputSchema,
+        });
+        setStatus(result.ok
+          ? (zh ? `已归类到「${clean || '未分类'}」` : `Moved to "${clean || 'Uncategorized'}"`)
+          : `${zh ? '分类保存失败' : 'Category save failed'}: ${result.code}`);
+        if (result.ok) await load();
+        return;
+      }
+      const result = await window.metis?.savePersonalization({
+        contractVersion: 1,
+        definition: next,
+        expectedRevision: definition.revision,
+      });
+      if (!result) { setStatus(zh ? '个性化服务不可用' : 'Personalization service is unavailable'); return; }
+      setStatus(result.ok ? (zh ? `已归类到「${clean || '未分类'}」` : `Moved to "${clean || 'Uncategorized'}"`) : resultMessage(result, zh));
+      if (result.ok) await load();
+    } catch {
+      setStatus(zh ? '分类保存未完成，请重试。' : 'Category save did not complete; retry.');
+    }
+  };
+
   /** 恢复回收站中的定义（技能/MCP/Metis.md）：原样恢复，不改动任何已保存内容。 */
   const restoreFromLibraryTrash = async (item: ArchivedPersonalizationDefinition): Promise<void> => {
     try {
@@ -1912,34 +1914,6 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
     }
   };
 
-  const activateScenario = async (definition: ScenarioDefinition) => {
-    if (!definition.enabled || definition.capability === 'presentation_reserved') {
-      setStatus(zh
-        ? '该场景当前不可运行；没有启动任何任务。'
-        : 'This scenario is not executable; no task was started.');
-      return;
-    }
-    if (definition.workflow.length === 0) {
-      setStatus(zh
-        ? '该场景还没有工作流步骤；没有启动任何任务。'
-        : 'This scenario has no workflow steps; no task was started.');
-      return;
-    }
-    if (!onActivateScenario) {
-      setStatus(zh
-        ? '当前壳层尚未接入对话跳转；没有启动任何任务。'
-        : 'Conversation navigation is unavailable; no task was started.');
-      return;
-    }
-    try {
-      await onActivateScenario(definition.id);
-    } catch {
-      setStatus(zh
-        ? '场景未能交给对话工作区；没有启动任何任务。'
-        : 'The scenario could not be handed to the conversation workspace; no task was started.');
-    }
-  };
-
   const exportBundle = async () => {
     if (!selected) {
       setStatus(zh ? '请先选择要导出的根定义' : 'Choose a root definition to export');
@@ -1979,6 +1953,8 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
   };
 
   const isScenarioKind = kind === 'scenario';
+  // 非场景页到此只剩技能/MCP 两种库（Metis.md 标签已移除，场景走工作台）。
+  const libraryKind: 'skill' | 'mcp' = kind === 'mcp' ? 'mcp' : 'skill';
   const scenarioTemplatePanel = isScenarioKind && tplOpen ? (
             <div className="scai-overlay" data-testid="template-parse-modal" role="dialog" aria-modal="true" aria-label={zh ? '模板识别' : 'Template recognition'}>
               <div className="scai-dialog">
@@ -2046,7 +2022,7 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
       {/* 场景是组合主体；技能、MCP 与 Metis.md 仍可直接切换和配置。 */}
       <nav className="personalization-tabs" aria-label={zh ? '场景分类' : 'Scenario categories'}>
         <button type="button" className={kind === 'scenario' ? 'active' : ''} aria-pressed={kind === 'scenario'} onClick={() => { setKind('scenario'); setSelectedId(null); setLibraryMode('items'); }}>{KIND_LABELS[zh ? 'zh' : 'en'].scenario}<span>{userDefinitions.filter((definition) => definition.kind === 'scenario').length}</span></button>
-        {KIND_ORDER.filter((item) => item !== 'scenario').map((item) => <button key={item} type="button" className={kind === item ? 'active' : ''} aria-pressed={kind === item} onClick={() => { setKind(item); setSelectedId(null); setLibraryMode('items'); }}>{KIND_LABELS[zh ? 'zh' : 'en'][item]}{!isScenarioKind && <span>{userDefinitions.filter((definition) => definition.kind === item).length}</span>}</button>)}
+        {KIND_ORDER.filter((item) => item !== 'scenario' && item !== 'rules').map((item) => <button key={item} type="button" className={kind === item ? 'active' : ''} aria-pressed={kind === item} onClick={() => { setKind(item); setSelectedId(null); setLibraryMode('items'); }}>{KIND_LABELS[zh ? 'zh' : 'en'][item]}{!isScenarioKind && <span>{userDefinitions.filter((definition) => definition.kind === item).length}</span>}</button>)}
       </nav>
 
       <div className="personalization-bundle-actions" aria-label={zh ? '配置包导入导出' : 'Bundle import and export'}>
@@ -2074,7 +2050,9 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
       {isScenarioKind ? (
         <ScenarioWorkbench
           zh={zh}
-          definitions={userDefinitions}
+          // 刘总反馈：步骤编辑器要能直接勾选 METIS 预装技能/MCP，因此额外放行 builtin 的 skill/mcp；
+          // 场景库仍只展示用户定义，不暴露工厂预置场景。
+          definitions={workbenchDefinitions}
           projectId={activeProjectId}
           archivedScenarios={archivedDefinitions.filter((item) => item.definition.kind === 'scenario')}
           selectedId={selectedId}
@@ -2095,14 +2073,15 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
           onOpenTemplateRecognize={() => setTplOpen(true)}
         />
       ) : (
-      <div
-        className="personalization-layout"
-        ref={layoutRef}
-        style={narrowLayout ? undefined : { gridTemplateColumns: `${Math.round(libraryWidth)}px 7px minmax(480px, 1fr)` }}
-      >
-        <aside className="personalization-library">
+      <div className={`personalization-layout personalization-layout--single${kind === 'skill' ? ' personalization-layout--with-dock' : ''}`}>
+        <section
+          className="personalization-detail personalization-detail--library"
+          aria-label={zh ? '场景详情' : 'Scenario details'}
+        >
+        {/* A 区：技能页为「全部技能」统一视图（已安装 + 能力库目录，刘总 2026-09）；MCP 页保持已安装管理。 */}
+        <section className="personalization-installed" aria-label={LIBRARY_LABELS[zh ? 'zh' : 'en'][kind]}>
           <div className="personalization-library__header">
-            <div><h2>{LIBRARY_LABELS[zh ? 'zh' : 'en'][kind]}</h2><p>{zh ? '由你创建和安装' : 'Created and installed by you'}</p></div>
+            <div><h2>{kind === 'skill' ? (zh ? '全部技能' : 'All skills') : (zh ? '已安装 MCP' : 'Installed MCPs')}</h2><p>{kind === 'skill' ? (zh ? '已安装的技能与能力库目录在同一视图中' : 'Installed skills and the capability catalog in one view') : (zh ? '你创建、安装的内容与预装内置项' : 'Your creations, installs, and built-in presets')}</p></div>
             <div className="personalization-library__actions">
               <button
                 type="button"
@@ -2168,168 +2147,177 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
              ))}
             </div>
            </>
+          ) : kind === 'skill' ? (
+            // 技能页：统一视图（已安装 + 目录条目合并、搜索、分类分组、显示更多）。
+            <SkillUnifiedPanel
+              zh={zh}
+              definitions={libraryDefinitions}
+              hasNoCustom={!loading && !loadError && filtered.length === 0}
+              selectedId={selectedId}
+              draftIds={draftIds}
+              pendingDeleteId={pendingDeleteId}
+              onSelect={setSelectedId}
+              onFork={(definition) => void fork(definition)}
+              onArchive={(definition) => void archive(definition)}
+              onRequestDelete={setPendingDeleteId}
+              onConfirmDelete={(definition) => void deleteSkillPermanently(definition)}
+              onCancelDelete={() => setPendingDeleteId(null)}
+              onSaveCategory={(definition, category) => void saveSkillCategory(definition, category)}
+              onOptimize={(definition) => { setSkillDockContext(definition); setSkillDockCollapsed(false); }}
+            />
           ) : (
             <>
-          {!loading && !loadError && categoryFiltered.length === 0 && (
-            <p>{categoryFilter
-              ? (zh ? '该分组还没有内容。' : 'No items in this category yet.')
-              : (zh ? '还没有自定义内容。' : 'No custom definitions yet.')}</p>
+          {!loading && !loadError && filtered.length === 0 && (
+            <p>{zh ? '还没有自定义内容。' : 'No custom definitions yet.'}</p>
           )}
-          <div className="personalization-cards">
-            {categoryFiltered.map((definition, index) => {
-              const missingScenarioWorkflow = definition.kind === 'scenario'
-                && definition.enabled
-                && definition.capability !== 'presentation_reserved'
-                && definition.workflow.length === 0;
-              const scenarioUseBlocked = missingScenarioWorkflow;
-              const readinessId = `personalization-scenario-readiness-${index}`;
+          {(() => {
+            // 卡片序号跨分组连续，保证 data-testid 稳定。
+            let cardIndex = 0;
+            const renderCard = (definition: PersonalizationDefinition) => {
+              const index = cardIndex;
+              cardIndex += 1;
+              // 刘总反馈（2026-10）：已启用且声明了凭据但凭据库缺失的 MCP，条目上打「凭据未配置」标记。
+              const mcpMissing = definition.kind === 'mcp' ? missingMcpSecrets(definition, mcpSecrets.secretNames) : [];
+              const isBuiltin = definition.provenance.origin === 'builtin';
               return <article key={definition.id} className={`personalization-card ${selectedId === definition.id ? 'selected' : ''}`}>
                 <button className="personalization-card__select" data-definition-id={definition.id} onClick={() => setSelectedId(definition.id)}>
-                  <span className="personalization-card__meta"><b>{definition.provenance.origin === 'builtin' ? (zh ? '内置' : 'Built-in') : (zh ? '自定义' : 'Custom')}</b><span>r{definition.revision}</span></span>
+                  <span className="personalization-card__meta"><b>{isBuiltin ? (zh ? '内置' : 'Built-in') : (zh ? '自定义' : 'Custom')}</b><span>r{definition.revision}</span></span>
                   <strong>{definition.name}</strong>
                   <span>{definition.description || (zh ? '暂无说明' : 'No description')}</span>
                 </button>
                 <div className="personalization-card__actions">
                   {draftIds.has(definition.id) && <span className="personalization-card__draft">{zh ? '草稿已保留' : 'Draft preserved'}</span>}
-                  {definition.kind === 'scenario'
-                    && definition.enabled
-                    && definition.capability !== 'presentation_reserved'
-                    && (
-                      <button
-                        type="button"
-                        disabled={!onActivateScenario || scenarioUseBlocked}
-                        aria-describedby={scenarioUseBlocked ? readinessId : undefined}
-                        title={missingScenarioWorkflow
-                          ? (zh ? '请先添加至少一个工作流步骤' : 'Add at least one workflow step first')
-                          : undefined}
-                        onClick={() => void activateScenario(definition)}
-                      >
-                        {zh ? '在对话中使用' : 'Use in conversation'}
-                      </button>
-                    )}
-                  {scenarioUseBlocked && (
-                    <span id={readinessId} className="personalization-card__readiness">
-                      {zh
-                        ? '请先添加至少一个工作流步骤，再在对话中使用此场景。'
-                        : 'Add at least one workflow step before using this scenario in conversation.'}
+                  {mcpMissing.length > 0 && (
+                    <span className="personalization-card__secrets-missing" data-testid={`personalization-mcp-secrets-missing-${index}`}>
+                      {zh ? `凭据未配置（${mcpMissing.join('、')}）` : `Credentials missing (${mcpMissing.join(', ')})`}
                     </span>
                   )}
-                  {definition.provenance.origin === 'builtin'
-                    ? <button onClick={() => void fork(definition)}>{zh ? '创建可编辑副本' : 'Create editable copy'}</button>
-                    : <button onClick={() => void archive(definition)}>{zh ? '归档' : 'Archive'}</button>}
-                  {kind === 'skill' && (
-                    pendingDeleteId === definition.id ? (
-                      <span className="personalization-card__delete-confirm">
-                        {zh ? '永久删除？不可恢复' : 'Delete forever? Irreversible'}
-                        <button
-                          className="personalization-card__delete personalization-card__delete--armed"
-                          data-testid={`personalization-skill-delete-confirm-${index}`}
-                          onClick={() => void deleteSkillPermanently(definition)}
-                        >
-                          {zh ? '确认删除' : 'Confirm'}
-                        </button>
-                        <button onClick={() => setPendingDeleteId(null)}>{zh ? '取消' : 'Cancel'}</button>
-                      </span>
-                    ) : (
-                      <button
-                        className="personalization-card__delete"
-                        data-testid={`personalization-skill-delete-${index}`}
-                        title={zh ? '永久删除该技能及其全部版本历史' : 'Permanently delete this skill and its version history'}
-                        onClick={() => setPendingDeleteId(definition.id)}
-                      >
-                        {zh ? '删除' : 'Delete'}
-                      </button>
-                    )
+                  {definition.kind === 'mcp' && (
+                    <button
+                      type="button"
+                      data-testid={`personalization-mcp-secrets-${index}`}
+                      aria-expanded={secretsEditorId === definition.id}
+                      onClick={() => setSecretsEditorId((current) => (current === definition.id ? null : definition.id))}
+                    >
+                      {zh ? '凭据' : 'Credentials'}
+                    </button>
                   )}
+                  <button
+                    type="button"
+                    data-testid={`personalization-studio-optimize-${index}`}
+                    onClick={() => {
+                      if (definition.kind === 'mcp') setMcpBuilder({ context: definition });
+                    }}
+                  >
+                    {zh ? '对话优化' : 'Improve via chat'}
+                  </button>
+                  {isBuiltin
+                    ? <button onClick={() => void fork(definition)}>{zh ? '创建可编辑副本' : 'Create editable copy'}</button>
+                    : <button onClick={() => void archive(definition)}>{zh ? '删除' : 'Delete'}</button>}
                 </div>
+                {definition.kind === 'mcp' && secretsEditorId === definition.id && (
+                  <McpCredentialPanel definition={definition} vault={mcpSecrets} testId={`personalization-mcp-secrets-panel-${index}`} />
+                )}
               </article>;
-            })}
-          </div>
+            };
+            // 技能统一视图已移交 SkillUnifiedPanel；此处只剩 MCP 平铺。
+            return <div className="personalization-cards">{libraryDefinitions.map(renderCard)}</div>;
+          })()}
             </>
           )}
           <div className="personalization-library__status" role="status" aria-live="polite">{status}</div>
-        </aside>
+        </section>
 
-        {!narrowLayout && (
-          <SplitHandle
-            label={zh ? '拖动调整库面板宽度' : 'Drag to resize the library panel'}
-            testId="personalization-split-library"
-            onDrag={handleLibraryDrag}
-            onKeyDelta={(delta) => {
-              setLibraryWidth((current) => Math.min(480, Math.max(220, current + delta)));
+        {/* 选中项详情与编辑器：紧跟已安装管理区。 */}
+        {selected?.kind === 'mcp' && (
+          <McpActivationPanel
+            definition={selected}
+            dependencies={mcpActivationDependencies}
+            onActivated={(definition) => {
+              setDefinitions((current) => current.map((item) => item.id === definition.id ? definition : item));
+              setSelectedId(definition.id);
+              void load();
             }}
           />
         )}
-
-        <section
-          className="personalization-detail"
-          aria-label={zh ? '场景详情' : 'Scenario details'}
-        >
-          {kind === 'rules' && !selected && (
-            <ProjectMetisRulesEditor projectId={activeProjectId} />
-          )}
-          {selected?.kind === 'rules' && (
-            <div className="personalization-rules-back">
-              <button type="button" onClick={() => setSelectedId(null)} data-testid="rules-open-project-editor">{t('personalization.openProjectRules')}</button>
-            </div>
-          )}
-          {kind === 'skill' && (
-            <>
-              <button type="button" className="btn-toggle" onClick={() => setBrowseBuiltinOpen((v) => !v)}>
-                {browseBuiltinOpen ? t('personalization.browseBuiltinHide') : t('personalization.browseBuiltinShow')}
-              </button>
-              {browseBuiltinOpen && <BuiltinSkillBrowserPanel />}
-              <SkillStudioPanel zh={zh} onSave={async (draft) => {
-                await window.metis?.savePersonalization({
-                  contractVersion: 1,
-                  kind: 'skill',
-                  name: draft.name,
-                  description: (zh ? '技能工坊沉淀' : 'Skill Studio capture'),
-                  enabled: true,
-                  tags: ['skill-studio'],
-                  sourceMode: 'markdown',
-                  markdown: draft.systemPrompt,
-                  systemPrompt: draft.systemPrompt,
-                  toolIds: [],
-                  mcpIds: [],
-                  maxTurns: 10,
-                  inputSchema: null,
-                  outputSchema: null,
-                  packageEntry: null,
-                } as never);
-              }} />
-            </>
-          )}
-          {(kind === 'skill' || kind === 'mcp') && (
-            <MarketBrowserPanel kind={kind} zh={zh} definitions={userDefinitions} onInstalled={(definitionId) => afterExtensionInstall(definitionId)} />
-          )}
-          {(kind === 'skill' || kind === 'mcp') && (
-            <CapabilityVaultPanel zh={zh} initialKind={kind} onInstalled={(definitionId) => afterExtensionInstall(definitionId)} />
-          )}
-          {(kind === 'skill' || kind === 'mcp') && <ExtensionInstaller key={kind} kind={kind} definitions={userDefinitions} onInstalled={afterExtensionInstall} onRefresh={load} />}
-          {kind === 'mcp' && <SecretVaultPanel />}
-          {selected?.kind === 'mcp' && (
-            <McpActivationPanel
-              definition={selected}
-              dependencies={mcpActivationDependencies}
-              onActivated={(definition) => {
-                setDefinitions((current) => current.map((item) => item.id === definition.id ? definition : item));
-                setSelectedId(definition.id);
-                void load();
-              }}
-            />
-          )}
-          {!selected && kind !== 'rules' && <div className="personalization-welcome"><h2>{zh ? '选择或新建配置' : 'Choose or create a configuration'}</h2><p>{zh ? '这里只展示你创建或安装的内容。' : 'Only content you create or install is shown here.'}</p></div>}
-          {selected && (isDirectlyEditable(selected) || selected.kind === 'rules') && <DefinitionEditor key={`${selected.id}:${selected.revision}`} definition={selected} definitions={userDefinitions} onSaved={handleEditorSaved} onDraftStateChange={handleDraftStateChange} onQuickCreate={quickCreate} />}
-          {selected && selected.provenance.origin !== 'builtin' && !isDirectlyEditable(selected) && (
-            <div className="personalization-welcome">
-              <h2>{selected.name}</h2>
+        {/* 刘总 2026-09：技能页由常驻对话窗承担引导，不再展示空的「选择或新建配置」区块；MCP 页保留。 */}
+        {!selected && kind !== 'skill' && <div className="personalization-welcome"><h2>{zh ? '选择或新建配置' : 'Choose or create a configuration'}</h2><p>{zh ? '这里只展示你创建或安装的内容。' : 'Only content you create or install is shown here.'}</p></div>}
+        {selected && isDirectlyEditable(selected) && <DefinitionEditor key={`${selected.id}:${selected.revision}`} definition={selected} definitions={userDefinitions} onSaved={handleEditorSaved} onDraftStateChange={handleDraftStateChange} onQuickCreate={quickCreate} />}
+        {selected && !isDirectlyEditable(selected) && (
+          <div className="personalization-welcome">
+            <h2>{selected.name}</h2>
+            {selected.provenance.origin === 'builtin' ? (
+              <>
+                <p>{zh
+                  ? '内置定义受保护，不能直接修改或删除；创建可编辑副本后即可编辑，副本与原内置互不影响。'
+                  : 'Built-in definitions are protected from direct edits and deletion; create an editable copy to customize it.'}</p>
+                <button type="button" onClick={() => void fork(selected)}>{zh ? '创建可编辑副本' : 'Create editable copy'}</button>
+              </>
+            ) : (
               <p>{zh
-                ? '这是由受控安装器或 MCP Builder 管理的定义。来源、安装摘要和启用状态不能手工伪造；请使用上方安装、验证或重新安装流程。'
-                : 'This definition is managed by the controlled installer or MCP Builder. Source provenance, installation digests, and activation state cannot be edited by hand; use the install, verify, or reinstall flow above.'}</p>
+                ? '这是由受控安装器或 MCP Builder 管理的定义。来源、安装摘要和启用状态不能手工伪造；请使用上方安装、验证或重新安装流程，或点卡片上的「对话优化」由 Metis Builder 定制。'
+                : 'This definition is managed by the controlled installer or MCP Builder. Source provenance, installation digests, and activation state cannot be edited by hand; use the install, verify, or reinstall flow above, or "Improve via chat" on the card.'}</p>
+            )}
+          </div>
+        )}
+
+        {/* B 区：搜索并安装在线技能/MCP（市场）。 */}
+        <MarketBrowserPanel kind={libraryKind} zh={zh} definitions={userDefinitions} onInstalled={(definitionId) => afterExtensionInstall(definitionId)} />
+        {/* C 区：安装（本地包 / URL / 配置）；能力库目录已并入技能页「全部技能」，MCP 页保留目录面板。 */}
+        <ExtensionInstaller key={libraryKind} kind={libraryKind} definitions={userDefinitions} onInstalled={afterExtensionInstall} onRefresh={load} />
+        {kind === 'mcp' && <CapabilityVaultPanel key={`vault-${libraryKind}`} zh={zh} initialKind={libraryKind} lockKind onInstalled={(definitionId) => afterExtensionInstall(definitionId)} />}
+        {/* D 区：对话式创造/构建（skill-creator 范式：明确用途/触发 → 萃取草稿 → 沙箱验证 → 迭代）。 */}
+        {kind === 'skill' ? (
+          <section className="personalization-installer" aria-label={zh ? '创建技能' : 'Create skill'}>
+            <div className="personalization-installer__header">
+              <div><span className="personalization-eyebrow">{zh ? '技能工坊' : 'SKILL STUDIO'}</span><h2>{zh ? '创建技能' : 'Create a skill'}</h2></div>
+              <span>{zh ? '在右侧常驻对话窗中迭代式创建：先明确用途与触发条件，AI 萃取结构化草稿，再用真实案例沙箱验证，不满意就补充经验重新萃取，满意后保存入库。' : 'Create iteratively in the docked chat panel: define purpose and triggers, let AI extract a structured draft, verify in the sandbox with a real case, iterate, then save.'}</span>
             </div>
-          )}
+            <div className="personalization-actions">
+              <button type="button" className="btn-primary" data-testid="personalization-skill-studio-open" onClick={() => { setSkillDockContext(null); setSkillDockCollapsed(false); }}>{zh ? '对话创建技能' : 'Create skill via chat'}</button>
+            </div>
+          </section>
+        ) : (
+          <section className="personalization-installer" aria-label={zh ? '构建 MCP' : 'Build MCP'}>
+            <div className="personalization-installer__header">
+              <div><span className="personalization-eyebrow">MCP BUILDER</span><h2>{zh ? '构建 MCP' : 'Build an MCP'}</h2></div>
+              <span>{zh ? '通过对话描述需求，由 Metis Builder 构建、验证并注册；选中已安装 MCP 卡片上的「对话优化」可做定制。' : 'Describe the need in a dialog and Metis Builder constructs, validates, and registers it; use "Improve via chat" on an installed MCP card to customize it.'}</span>
+            </div>
+            <div className="personalization-actions">
+              <button type="button" className="btn-primary" data-testid="personalization-mcp-builder-open" onClick={() => setMcpBuilder({ context: null })}>{zh ? '对话构建 MCP' : 'Build MCP via chat'}</button>
+            </div>
+          </section>
+        )}
+        {/* 刘总反馈（2026-10）：全局凭据面板弱化为后备并移到底部；单个 MCP 的凭据在条目卡片上录入。 */}
+        {kind === 'mcp' && <SecretVaultPanel vault={mcpSecrets} />}
         </section>
+        {/* 技能页常驻对话窗（刘总 2026-09）：右侧停靠、默认展开可收起；「对话优化」把技能送入上下文。 */}
+        {kind === 'skill' && (
+          <SkillStudioDock
+            zh={zh}
+            contextSkill={skillDockContext}
+            collapsed={skillDockCollapsed}
+            onToggleCollapsed={() => setSkillDockCollapsed((value) => !value)}
+            onPopOut={() => setSkillStudioDialog({ context: skillDockContext })}
+            onSave={saveSkillStudioDraft}
+          />
+        )}
+        {skillStudioDialog && (
+          <SkillStudioDialog
+            zh={zh}
+            contextSkill={skillStudioDialog.context}
+            onClose={() => setSkillStudioDialog(null)}
+            onSave={saveSkillStudioDraft}
+          />
+        )}
+        {mcpBuilder && (
+          <McpBuilderDialog
+            zh={zh}
+            contextMcp={mcpBuilder.context}
+            onClose={() => setMcpBuilder(null)}
+            onInstalled={(definitionId) => afterExtensionInstall(definitionId)}
+          />
+        )}
       </div>
       )}
       {scenarioTemplatePanel}

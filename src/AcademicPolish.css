@@ -179,6 +179,17 @@
   box-shadow: var(--shadow-card);
 }
 
+/* 语言 + 外观：一行两列，避免两个矮块竖排浪费空间（刘总规格）。 */
+.settings-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px;
+}
+
+@media (max-width: 720px) {
+  .settings-row { grid-template-columns: 1fr; }
+}
+
 .settings-group h3 {
   font-family: var(--font-serif);
   font-size: 15px;

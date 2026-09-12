@@ -189,9 +189,14 @@ export default function SubmissionWorkspacePage() {
     const observer = new ResizeObserver(() => syncBounds());
     if (hostRef.current) observer.observe(hostRef.current);
     window.addEventListener('resize', syncBounds);
+    // 全局弹层/模态打开时 App 统一 browserHide，关闭后派发恢复事件；
+    // 必须重置可见标记再 syncBounds，否则 visibleRef 停在 true，视图永不恢复。
+    const restore = () => { visibleRef.current = false; syncBounds(); };
+    window.addEventListener('metis:restore-embedded-views', restore);
     return () => {
       observer.disconnect();
       window.removeEventListener('resize', syncBounds);
+      window.removeEventListener('metis:restore-embedded-views', restore);
     };
   }, [syncBounds]);
 

@@ -545,7 +545,7 @@
 }
 
 .chat-tool-icon.chat-side-upload {
-  align-self: flex-end;
+  align-self: center;
   flex: 0 0 28px;
   width: 28px;
   height: 28px;
@@ -894,10 +894,14 @@
   display: flex; align-items: center; gap: 8px;
   padding: 6px 16px; border-bottom: 1px solid var(--border-light);
   background: var(--bg-secondary);
+  flex-wrap: nowrap;
+  overflow: hidden;
 }
-.chat-session-bar label { display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex: 0 1 auto; }
-.chat-session-bar label > span { font-size: 11px; color: var(--text-muted); letter-spacing: .08em; font-weight: 700; }
-.chat-session-bar select { max-width: 320px; padding: 4px 26px 4px 8px; border: 1px solid var(--border-light); border-radius: var(--radius); background: var(--bg-input); color: var(--text-primary); font-size: 12px; }
+/* 刘总 2026-09：窗口变窄时收缩的是下拉框，标签和按钮永远保持一行不折行。 */
+.chat-session-bar label { display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex: 0 1 auto; overflow: hidden; }
+.chat-session-bar label > span { font-size: 11px; color: var(--text-muted); letter-spacing: .08em; font-weight: 700; white-space: nowrap; flex-shrink: 0; }
+.chat-session-bar select { min-width: 0; flex: 1 1 auto; max-width: 320px; padding: 4px 26px 4px 8px; border: 1px solid var(--border-light); border-radius: var(--radius); background: var(--bg-input); color: var(--text-primary); font-size: 12px; text-overflow: ellipsis; }
+.chat-session-bar .btn-sm { flex-shrink: 0; white-space: nowrap; }
 
 /* ─── Streaming chrome (dsh-style incremental rendering) ────── */
 

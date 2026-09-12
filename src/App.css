@@ -3022,6 +3022,7 @@ button.tool-call-header { cursor: pointer; }
   display: flex;
   align-items: center;
   gap: var(--space-1);
+  flex-wrap: wrap;
 }
 
 .projects-page__item-row .projects-page__item {
@@ -3033,6 +3034,117 @@ button.tool-call-header { cursor: pointer; }
   display: flex;
   gap: var(--space-1);
   flex-shrink: 0;
+}
+
+/* 项目下的对话列表：独占一行、左缩进树形展示（此前完全没有样式，
+   被挤在 flex 行里逐字竖排）。 */
+.projects-page__conversations {
+  flex-basis: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 2px 0 6px;
+  padding-left: 16px;
+  border-left: 2px solid var(--border-light);
+}
+
+.projects-page__conversation {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--font-size-sm);
+  text-align: left;
+}
+
+.projects-page__conversation:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.projects-page__conversation-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.projects-page__conversation-meta {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.projects-page__conversation-empty {
+  padding: 4px 8px;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  line-height: 1.5;
+}
+
+/* 右键菜单（2026-09-12 刘总要求）：项目/会话条目 contextmenu，
+   样式对齐 TopicWorkspacePage 的会话右键菜单（fixed 定位 + 全屏透明 backdrop）。 */
+.projects-context-menu__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+}
+
+.projects-context-menu {
+  position: fixed;
+  z-index: 61;
+  min-width: 148px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-modal, var(--bg-card, #fff));
+  box-shadow: var(--shadow-dropdown, 0 10px 38px rgba(0, 0, 0, 0.12));
+}
+
+.projects-context-menu button {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--font-size-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.projects-context-menu button:hover {
+  background: var(--bg-hover);
+}
+
+.projects-context-menu button.projects-context-menu__danger {
+  color: var(--danger, #b3261e);
+}
+
+/* 行内重命名输入框：项目条目 / 会话条目（右键菜单 → 重命名）。 */
+.projects-page__item-rename-input,
+.projects-page__conversation-rename-input {
+  width: 100%;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input, transparent);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--font-size-sm);
 }
 
 .projects-page__new--active {

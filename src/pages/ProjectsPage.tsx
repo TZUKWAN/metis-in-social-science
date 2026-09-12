@@ -18,7 +18,6 @@ import ConfirmDialog from '../components/ConfirmDialog';
 import { EmptyState, InlineError, OperationNotice, QuietLoading, RowActionsMenu, StaleDataNotice, type OperationNoticeState } from '../components/async/AsyncFeedback';
 import { usePendingAction } from '../components/async/asyncViewState';
 import { usePersistentScroll } from '../hooks/workspacePersistence';
-import TaskBoardPage from './TaskBoardPage';
 import LibraryPage from './LibraryPage';
 import { ProjectMaterialsPanel } from './ProjectMaterialsPanel';
 import ProjectHomeBanner from '../components/ProjectHomeBanner';
@@ -41,9 +40,15 @@ export interface ProjectsPageProps {
 
 const MODES: Array<{ id: ProjectViewMode; labelKey: string; testId: string }> = [
   { id: 'chat', labelKey: 'projects.modeChat', testId: 'projects-mode-chat' },
-  { id: 'kanban', labelKey: 'projects.modeKanban', testId: 'projects-mode-kanban' },
+  // 任务看板页签按刘总要求移除（2026-09）；ProjectViewMode 仍保留 'kanban'
+  // 以兼容旧持久化值，渲染时按 chat 处理。
   { id: 'materials', labelKey: 'projects.modeMaterials', testId: 'projects-mode-materials' },
 ];
+
+/** 右键菜单目标（2026-09-12 刘总要求）：项目条目或会话条目，x/y 为视口坐标。 */
+type ProjectsContextMenu =
+  | { kind: 'project'; projectId: string; title: string; x: number; y: number }
+  | { kind: 'session'; sessionId: string; title: string; x: number; y: number };
 
 function makeProjectId(): string {
   try {
@@ -125,6 +130,14 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
   const pageRef = useRef<HTMLDivElement>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [sidebarNotice, setSidebarNotice] = useState<OperationNoticeState | null>(null);
+  // ── 右键菜单（2026-09-12 刘总要求）：项目/会话条目 contextmenu 操作 ──
+  const [contextMenu, setContextMenu] = useState<ProjectsContextMenu | null>(null);
+  const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null);
+  const [projectRenameDraft, setProjectRenameDraft] = useState('');
+  const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
+  const [sessionRenameDraft, setSessionRenameDraft] = useState('');
+  const [deleteSessionTarget, setDeleteSessionTarget] = useState<{ id: string; title: string } | null>(null);
+  const [deleteSessionBusy, setDeleteSessionBusy] = useState(false);
   // 项目清单滚动位置保持（任务4 第十一节）：切走再回来不重置。
   const sidebarScroll = usePersistentScroll<HTMLUListElement>('metis-projects-sidebar-scroll', showArchived ? 'archived' : 'active');
   // ── 多对话架构第二期(2026-09-05):Project → Conversation 树 ──
@@ -213,6 +226,66 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
       setDeleteBusy(false);
     }
   }, [deleteTarget, locale]);
+
+  // ── 右键菜单动作（2026-09-12 刘总要求）──────────────────────────────
+  // 项目重命名走 research:crud update（applyCrud 成功后自动刷新项目列表）；
+  // 会话重命名/删除走 session:update / session:delete IPC，成功后本地同步
+  // 列表；删除另广播 metis:session-deleted，让常驻 ChatPage 若正打开该会话
+  // 则自动切换，避免向已删除会话继续写入。
+  const submitProjectRename = useCallback(async (projectId: string) => {
+    const title = projectRenameDraft.trim().slice(0, 512);
+    setRenamingProjectId(null);
+    if (!title) return;
+    const result = await researchWorkspaceStore.getState().applyCrud({
+      operation: 'update',
+      entityKind: 'project',
+      projectId,
+      entityId: projectId,
+      patch: { title },
+    });
+    if (!result.success) {
+      setSidebarNotice({ kind: 'error', text: locale === 'zh' ? '重命名未完成，标题未改动，可直接重试。' : 'Rename did not complete. The title is unchanged; you can retry.' });
+    }
+  }, [projectRenameDraft, locale]);
+
+  const submitSessionRename = useCallback(async (sessionId: string) => {
+    const title = sessionRenameDraft.trim().slice(0, 120);
+    setRenamingSessionId(null);
+    if (!title) return;
+    const metis = window.metis;
+    const result = metis?.updateSession
+      ? await metis.updateSession(sessionId, { title }).catch(() => null)
+      : null;
+    if (!result?.success) {
+      setSidebarNotice({ kind: 'error', text: locale === 'zh' ? '重命名未完成，标题未改动，可直接重试。' : 'Rename did not complete. The title is unchanged; you can retry.' });
+      return;
+    }
+    setProjectSessions((prev) => prev.map((item) => (item.id === sessionId ? { ...item, title } : item)));
+  }, [sessionRenameDraft, locale]);
+
+  const confirmSessionDelete = useCallback(async () => {
+    if (!deleteSessionTarget) return;
+    setDeleteSessionBusy(true);
+    try {
+      const metis = window.metis;
+      const result = metis?.deleteSession
+        ? await metis.deleteSession(deleteSessionTarget.id).catch(() => null)
+        : null;
+      if (!result?.success) {
+        setSidebarNotice({ kind: 'error', text: locale === 'zh' ? '删除未完成，会话未被改动，可直接重试。' : 'Delete did not complete. The conversation is unchanged; you can retry.' });
+        return;
+      }
+      window.dispatchEvent(new CustomEvent('metis:session-deleted', { detail: { sessionId: deleteSessionTarget.id } }));
+      setSidebarNotice({ kind: 'success', text: locale === 'zh' ? `「${deleteSessionTarget.title}」已删除。` : `“${deleteSessionTarget.title}” deleted.` });
+      setDeleteSessionTarget(null);
+      setProjectSessions((prev) => prev.filter((item) => item.id !== deleteSessionTarget.id));
+    } catch (error) {
+      console.error('[ProjectsPage] deleteSession failed:', error);
+      setSidebarNotice({ kind: 'error', text: locale === 'zh' ? '删除未完成，会话未被改动，可直接重试。' : 'Delete did not complete. The conversation is unchanged; you can retry.' });
+    } finally {
+      setDeleteSessionBusy(false);
+    }
+  }, [deleteSessionTarget, locale]);
 
   const handleSidebarDrag = useCallback((clientX: number) => {
     const rect = pageRef.current?.getBoundingClientRect();
@@ -477,6 +550,20 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
             .filter((project) => (showArchived ? project.lifecycle === 'archived' : project.lifecycle !== 'archived'))
             .map((project) => (
               <li key={project.id} className="projects-page__item-row">
+                {renamingProjectId === project.id ? (
+                  <input
+                    className="projects-page__item-rename-input"
+                    value={projectRenameDraft}
+                    autoFocus
+                    data-testid={`projects-project-rename-${project.id}`}
+                    onChange={(event) => setProjectRenameDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') void submitProjectRename(project.id);
+                      if (event.key === 'Escape') setRenamingProjectId(null);
+                    }}
+                    onBlur={() => void submitProjectRename(project.id)}
+                  />
+                ) : (
                 <button
                   type="button"
                   className={`projects-page__item ${activeProjectId === project.id ? 'active' : ''}`}
@@ -484,6 +571,10 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
                   data-project-id={project.id}
                   aria-current={activeProjectId === project.id ? 'page' : undefined}
                   onClick={() => void researchWorkspaceStore.getState().setActiveProject(project.id)}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    setContextMenu({ kind: 'project', projectId: project.id, title: project.title, x: event.clientX, y: event.clientY });
+                  }}
                 >
                   <span className="projects-page__item-title">{project.title}</span>
                   <span className="projects-page__item-meta">
@@ -492,6 +583,7 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
                       : t('projects.projectUpdated', { time: formatUpdated(project.updatedAt, locale) })}
                   </span>
                 </button>
+                )}
                 {/* 归档/删除等低频操作收进 ···（任务4 第六节），不再常驻行内。 */}
                 <div className="projects-page__item-actions">
                   <RowActionsMenu
@@ -524,21 +616,41 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
                 {activeProjectId === project.id && !showArchived && (
                   <div className="projects-page__conversations" data-testid="projects-conversation-tree">
                     {projectSessions.map((session) => (
-                      <button
-                        key={session.id}
-                        type="button"
-                        className="projects-page__conversation"
-                        data-testid={`projects-conversation-${session.id}`}
-                        onClick={() => {
-                          void researchWorkspaceStore.getState().setActiveProject(project.id).then(() => {
-                            onModeChange('chat');
-                            window.dispatchEvent(new CustomEvent('metis:switch-session', { detail: { sessionId: session.id } }));
-                          });
-                        }}
-                      >
-                        <span className="projects-page__conversation-title">{session.title}</span>
-                        <span className="projects-page__conversation-meta">{session.messageCount}</span>
-                      </button>
+                      renamingSessionId === session.id ? (
+                        <input
+                          key={session.id}
+                          className="projects-page__conversation-rename-input"
+                          value={sessionRenameDraft}
+                          autoFocus
+                          data-testid={`projects-conversation-rename-${session.id}`}
+                          onChange={(event) => setSessionRenameDraft(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') void submitSessionRename(session.id);
+                            if (event.key === 'Escape') setRenamingSessionId(null);
+                          }}
+                          onBlur={() => void submitSessionRename(session.id)}
+                        />
+                      ) : (
+                        <button
+                          key={session.id}
+                          type="button"
+                          className="projects-page__conversation"
+                          data-testid={`projects-conversation-${session.id}`}
+                          onClick={() => {
+                            void researchWorkspaceStore.getState().setActiveProject(project.id).then(() => {
+                              onModeChange('chat');
+                              window.dispatchEvent(new CustomEvent('metis:switch-session', { detail: { sessionId: session.id } }));
+                            });
+                          }}
+                          onContextMenu={(event) => {
+                            event.preventDefault();
+                            setContextMenu({ kind: 'session', sessionId: session.id, title: session.title, x: event.clientX, y: event.clientY });
+                          }}
+                        >
+                          <span className="projects-page__conversation-title">{session.title}</span>
+                          <span className="projects-page__conversation-meta">{session.messageCount}</span>
+                        </button>
+                      )
                     ))}
                     {projectSessions.length === 0 && (
                       <span className="projects-page__conversation-empty">还没有对话——切到「聊天」页签即可开始。</span>
@@ -617,7 +729,7 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
           ))}
         </div>
         <div className="projects-page__content">
-          {mode === 'chat' && (
+          {(mode === 'chat' || mode === 'kanban') && (
             <div className="projects-page__chat">
               <div
                 className="projects-page__chat-workspace"
@@ -650,12 +762,6 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
               )}
             </div>
           )}
-          {mode === 'kanban' && (
-            <TaskBoardPage
-              key={activeProjectId ?? 'no-project'}
-              defaultProjectFilter={activeProjectId ?? undefined}
-            />
-          )}
           {mode === 'materials' && (
             <div className="projects-page__materials">
             <ProjectMaterialsPanel projectId={activeProjectId} />
@@ -682,6 +788,105 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
           onConfirm={() => void confirmDelete()}
           onCancel={() => { if (!deleteBusy) setDeleteTarget(null); }}
         />
+      )}
+      {deleteSessionTarget && (
+        <ConfirmDialog
+          title={locale === 'zh' ? '删除对话' : 'Delete conversation'}
+          message={locale === 'zh'
+            ? `确定删除对话「${deleteSessionTarget.title}」吗？`
+            : `Delete conversation “${deleteSessionTarget.title}”?`}
+          impacts={[
+            locale === 'zh' ? '对话及其全部消息将从本项目中移除。' : 'The conversation and all of its messages are removed from this project.',
+          ]}
+          confirmLabel={t('projects.confirmDelete')}
+          busy={deleteSessionBusy}
+          onConfirm={() => void confirmSessionDelete()}
+          onCancel={() => { if (!deleteSessionBusy) setDeleteSessionTarget(null); }}
+        />
+      )}
+      {contextMenu && (
+        <div
+          className="projects-context-menu__backdrop"
+          role="presentation"
+          onClick={() => setContextMenu(null)}
+        >
+          <div
+            className="projects-context-menu"
+            role="menu"
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+            data-testid="projects-context-menu"
+            onClick={(event) => event.stopPropagation()}
+          >
+            {contextMenu.kind === 'project' ? (
+              <>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setProjectRenameDraft(contextMenu.title);
+                    setRenamingProjectId(contextMenu.projectId);
+                    setContextMenu(null);
+                  }}
+                >
+                  {t('projects.rename')}
+                </button>
+                {showArchived ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => { handleRestore(contextMenu.projectId); setContextMenu(null); }}
+                  >
+                    {t('projects.restore')}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => { handleArchive(contextMenu.projectId); setContextMenu(null); }}
+                  >
+                    {t('projects.archive')}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="projects-context-menu__danger"
+                  onClick={() => {
+                    setDeleteTarget({ id: contextMenu.projectId, title: contextMenu.title });
+                    setContextMenu(null);
+                  }}
+                >
+                  {t('projects.delete')}
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setSessionRenameDraft(contextMenu.title);
+                    setRenamingSessionId(contextMenu.sessionId);
+                    setContextMenu(null);
+                  }}
+                >
+                  {t('projects.rename')}
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="projects-context-menu__danger"
+                  onClick={() => {
+                    setDeleteSessionTarget({ id: contextMenu.sessionId, title: contextMenu.title });
+                    setContextMenu(null);
+                  }}
+                >
+                  {t('projects.delete')}
+                </button>
+              </>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );

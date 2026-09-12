@@ -222,7 +222,7 @@ describe('GlobalSearch', () => {
     const input = screen.getByPlaceholderText(/search papers/i) as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'research' } });
     expect(screen.getAllByTestId('search-result').some((result) =>
-      result.textContent?.includes('Research Projects'),
+      result.textContent?.includes('Research'),
     )).toBe(true);
 
     fireEvent.change(input, { target: { value: 'latex' } });

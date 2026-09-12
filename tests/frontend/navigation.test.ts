@@ -39,7 +39,8 @@ describe('LEGACY_PAGE_ALIASES —— 旧 Page id 兼容迁移表', () => {
 
   it('chat/kanban/pdf 落到科研项目工作台对应模式页签', () => {
     expect(LEGACY_PAGE_ALIASES.chat).toEqual({ kind: 'workspace', tab: 'chat' });
-    expect(LEGACY_PAGE_ALIASES.kanban).toEqual({ kind: 'workspace', tab: 'kanban' });
+    // 任务看板已退出产品（2026-09 刘总规格）：旧 kanban 深链落到聊天页签。
+    expect(LEGACY_PAGE_ALIASES.kanban).toEqual({ kind: 'workspace', tab: 'chat' });
     expect(LEGACY_PAGE_ALIASES.pdf).toEqual({ kind: 'workspace', tab: 'materials' });
   });
 });

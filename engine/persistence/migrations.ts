@@ -281,8 +281,6 @@ export const UNIFIED_MIGRATIONS: Migration[] = [
     up: (db) => {
       db.exec(PERSONALIZATION_SCHEMA_SQL);
       addColumnIfMissing(db, 'personalization_definitions', 'archived_at', 'archived_at INTEGER');
-      // Historic archive rows predate explicit retention tracking: their last archive
-      // mutation timestamp is the closest truthful deletion time. Once-only backfill.
       db.prepare(`
         UPDATE personalization_definitions
         SET archived_at = updated_at
@@ -293,6 +291,14 @@ export const UNIFIED_MIGRATIONS: Migration[] = [
       }
       addColumnIfMissing(db, 'personalization_run_manifests', 'integrity_tag', 'integrity_tag TEXT');
       addColumnIfMissing(db, 'personalization_scenario_runs', 'integrity_tag', 'integrity_tag TEXT');
+    },
+  },
+  {
+    version: 117,
+    description: 'topic_sessions: category column (刘总 2026-09 选题会话分类;旧行默认 NULL=未分类)',
+    precondition: requireTables('topic_sessions'),
+    up: (db) => {
+      addColumnIfMissing(db, 'topic_sessions', 'category', 'category TEXT');
     },
   },
 ];

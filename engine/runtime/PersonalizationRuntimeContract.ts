@@ -447,6 +447,9 @@ export const DeliverableSpecSchema = z.strictObject({
   journalTier: z.enum(['any', 'core', 'general']).optional(),
   /** 整个最终成果共同遵守的成文/表达要求（全文学术化、术语一致、论证连续等）。 */
   globalInstructions: multiline(PERSONALIZATION_LIMITS.descriptionChars).optional(),
+  /** 刘总 2026-09：开启后蓝图中的章节/小节标题仅作默认值，AI 按本次实际
+      研究内容自适应调整各小节标题（结构与数量不变，标题可重命名）。 */
+  adaptiveTitles: z.boolean().optional(),
 }).superRefine((value, context) => {
   let total = 0;
   const visit = (sections: readonly DeliverableSectionInput[], depth: number): void => {

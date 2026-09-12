@@ -1,12 +1,11 @@
 /**
  * LibraryPage — 项目资料 / 文献管理（LIT-SEARCH-01）。
  *
- * 作为科研项目页「资料」模式的内容（也可独立渲染）：
- * - 上半区：内置文献检索（中文 NCPSSD / 英文 OpenAlex，默认核心期刊过滤）
- *   → 一键导入并关联当前项目（写入 project_id + 项目资料源，AI 可读）。
- * - 下半区：项目文献完整管理 —— 题录详情、编辑、收藏、阅读状态、
- *   内嵌浏览器打开原文（登录 NCPSSD 手动下载，PDF 自动归入项目工作空间）、
- *   删除、搜索筛选排序；有本地 PDF 的条目进入阅读器。
+ * 作为科研项目页「资料」模式的内容（也可独立渲染）。
+ * 定位：项目/对话的资料管理库 —— 题录详情、编辑、收藏、阅读状态、
+ * 系统浏览器打开原文、删除、搜索筛选排序；有本地 PDF 的条目进入阅读器。
+ * 文献检索本身由 AI 对话/自主科研路径调用（引擎层保留），
+ * 界面上不再提供用户手动检索入口。
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useMetisStore, findDuplicatePaper } from '../store';
@@ -14,30 +13,11 @@ import type { PaperItem, ReadStatus } from '../../engine/research/PaperItem';
 import { cleanPaperRecord } from '../../engine/research/PaperRecordCleaner';
 import { useTranslation } from '../i18n';
 import { useResearchWorkspaceStore } from '../research/researchWorkspaceStore';
-import EmbeddedBrowserOverlay from '../components/EmbeddedBrowserOverlay';
 import JobsIndicator from '../components/JobsIndicator';
 import MethodsPanel from '../components/MethodsPanel';
 import NotesPanel from '../components/NotesPanel';
 import PdfReaderPage from './PdfReaderPage';
 import './LibraryPage.css';
-
-type SourceId = 'ncpssd' | 'openalex';
-
-interface SearchItem {
-  id: string;
-  source: SourceId;
-  title: string;
-  authors: string[];
-  year: number;
-  venue: string;
-  abstract: string;
-  doi?: string;
-  url?: string;
-  pdfUrl?: string;
-  citationCount?: number;
-  tags: string[];
-  core: boolean;
-}
 
 interface LibraryPageProps {
   uiMode?: import('../../engine/capabilities/DiagnosticMode').UIMode;
@@ -60,21 +40,18 @@ interface EditDraft {
   rating: string;
 }
 
-function makePaperId(): string {
-  try {
-    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-      return `paper-${crypto.randomUUID()}`;
-    }
-  } catch { /* fall through */ }
-  return `paper-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
 /** 原文入口：优先采集时的来源链接，其次 DOI 跳转。 */
 function sourceLinkOf(paper: PaperItem): string | undefined {
   if (paper.pdfUrl) return paper.pdfUrl;
   if (paper.url) return paper.url;
   if (paper.doi) return `https://doi.org/${paper.doi}`;
   return undefined;
+}
+
+/** 标签展示名：内部英文标记（如 scenario-imported）转成用户可读文案。 */
+function displayTag(tag: string, zh: boolean): string {
+  if (tag === 'scenario-imported') return zh ? '场景导入' : 'Scenario imported';
+  return tag;
 }
 
 const STATUS_I18N: Record<ReadStatus, string> = {
@@ -94,19 +71,6 @@ export default function LibraryPage({ uiMode = 'normal', projectId = null }: Lib
   // 导入归属：显式传入的项目优先，其次当前激活项目。
   const targetProjectId = projectId ?? activeProjectId ?? null;
 
-  const [query, setQuery] = useState('');
-  const [useNcpssd, setUseNcpssd] = useState(true);
-  const [useOpenalex, setUseOpenalex] = useState(true);
-  const [coreOnly, setCoreOnly] = useState(true);
-  const [searching, setSearching] = useState(false);
-  const [searchError, setSearchError] = useState('');
-  const [warnings, setWarnings] = useState<string[]>([]);
-  const [results, setResults] = useState<SearchItem[]>([]);
-  const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
-  const [importedIds, setImportedIds] = useState<Set<string>>(new Set());
-  const PAGE_SIZE = 30;
-
   const [filterQuery, setFilterQuery] = useState('');
   const [sortKey, setSortKey] = useState<SortKey>('added');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
@@ -114,7 +78,7 @@ export default function LibraryPage({ uiMode = 'normal', projectId = null }: Lib
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<EditDraft | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
-  const [browseUrl, setBrowseUrl] = useState<string | null>(null);
+  const [sourceNotice, setSourceNotice] = useState('');
   const [methodsOpen, setMethodsOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
   const [watchOpen, setWatchOpen] = useState(false);
@@ -188,76 +152,16 @@ export default function LibraryPage({ uiMode = 'normal', projectId = null }: Lib
   const readingPaper = selectedPaperId ? papers.find((paper) => paper.id === selectedPaperId) ?? null : null;
   const detailPaper = detailId ? papers.find((paper) => paper.id === detailId) ?? null : null;
 
-  const runSearch = useCallback(async (targetPage = 1) => {
-    const metis = window.metis;
-    const term = query.trim();
-    if (!term || searching) return;
-    const sources: SourceId[] = [];
-    if (useNcpssd) sources.push('ncpssd');
-    if (useOpenalex) sources.push('openalex');
-    if (sources.length === 0) {
-      setSearchError(t('library.noSourceSelected'));
+  /** 打开原文：经 window.metis.openExternal 交给系统浏览器；无链接时如实提示。 */
+  const openSource = useCallback((paper: PaperItem) => {
+    const url = sourceLinkOf(paper);
+    if (!url) {
+      setSourceNotice(t('library.noSourceLink'));
       return;
     }
-    if (!metis?.literatureSearch) {
-      setSearchError(t('library.searchUnavailable'));
-      return;
-    }
-    setSearching(true);
-    setSearchError('');
-    setWarnings([]);
-    try {
-      const response = await metis.literatureSearch({ query: term, sources, page: targetPage, pageSize: PAGE_SIZE, coreOnly });
-      if (!response.ok) {
-        setSearchError(t('library.searchFailed'));
-        setResults([]);
-        setTotal(0);
-        return;
-      }
-      setResults((response.results ?? []) as SearchItem[]);
-      setTotal(response.total ?? 0);
-      setWarnings(response.warnings ?? []);
-      setPage(targetPage);
-    } catch {
-      setSearchError(t('library.searchFailed'));
-    } finally {
-      setSearching(false);
-    }
-  }, [query, searching, useNcpssd, useOpenalex, coreOnly, t]);
-
-  const importItem = useCallback(async (item: SearchItem) => {
-    const store = useMetisStore.getState();
-    const saved = await store.addPaper({
-      id: makePaperId(),
-      title: item.title,
-      authors: item.authors,
-      year: item.year,
-      venue: item.venue,
-      abstract: item.abstract,
-      ...(item.doi ? { doi: item.doi } : {}),
-      ...(item.pdfUrl ? { pdfUrl: item.pdfUrl } : {}),
-      ...(item.url ? { url: item.url } : {}),
-      ...(item.citationCount !== undefined ? { citationCount: item.citationCount } : {}),
-      tags: item.tags,
-      notes: '',
-      readStatus: 'unread',
-      rating: 0,
-      referenceIds: [],
-      addedAt: Date.now(),
-      ...(targetProjectId ? { projectId: targetProjectId } : {}),
-    } as never);
-    // 双写项目资料源：让研究对话/自主科研的资料工具能读到这篇文献。
-    if (targetProjectId && saved?.paper?.id) {
-      await window.metis?.linkPaperToProject?.({ paperId: saved.paper.id, projectId: targetProjectId, link: true });
-    }
-    setImportedIds((current) => new Set([...current, item.id]));
-  }, [targetProjectId]);
-
-  /** 在内嵌浏览器浮层中打开原文页（登录/手动下载都在浮层内完成）。 */
-  const openInBrowser = useCallback((url: string | undefined) => {
-    if (!url) return;
-    setBrowseUrl(url);
-  }, []);
+    setSourceNotice('');
+    void window.metis?.openExternal?.(url);
+  }, [t]);
 
   const openDetail = useCallback((paperId: string) => {
     setDetailId(paperId);
@@ -358,126 +262,6 @@ export default function LibraryPage({ uiMode = 'normal', projectId = null }: Lib
 
   return (
     <div className="library-page" data-testid="library-page">
-      <section className="library-search" aria-label={zh ? '文献检索' : 'Literature search'}>
-        <div className="library-search__row">
-          <input
-            className="settings-input library-search__input"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            onKeyDown={(event) => { if (event.key === 'Enter') void runSearch(); }}
-            placeholder={t('library.searchPlaceholder')}
-            aria-label={t('library.searchPlaceholder')}
-            data-testid="library-search-input"
-          />
-          <button
-            type="button"
-            className="btn-primary"
-            onClick={() => void runSearch()}
-            disabled={searching || !query.trim()}
-            data-testid="library-search-submit"
-          >
-            {searching ? t('library.searching') : t('library.searchAction')}
-          </button>
-        </div>
-        <div className="library-search__options">
-          <label className="library-search__check">
-            <input type="checkbox" checked={useNcpssd} onChange={(e) => setUseNcpssd(e.target.checked)} data-testid="library-source-ncpssd" />
-            {t('library.sourceNcpssd')}
-          </label>
-          <label className="library-search__check">
-            <input type="checkbox" checked={useOpenalex} onChange={(e) => setUseOpenalex(e.target.checked)} data-testid="library-source-openalex" />
-            {t('library.sourceOpenalex')}
-          </label>
-          <label className="library-search__check library-search__check--core">
-            <input type="checkbox" checked={coreOnly} onChange={(e) => setCoreOnly(e.target.checked)} data-testid="library-core-only" />
-            {t('library.coreOnly')}
-          </label>
-        </div>
-        <p className="library-search__hint">{t('library.searchHint')}</p>
-
-        {searchError && <div className="library-search__error" role="alert" data-testid="library-search-error">{searchError}</div>}
-        {warnings.length > 0 && (
-          <div className="library-search__warnings" role="status">
-            {t('library.partialFailure')}: {warnings.join('；')}
-          </div>
-        )}
-
-        {results.length > 0 && (
-          <div className="library-results" data-testid="library-results">
-            <div className="library-results__meta">
-              {t('library.resultCount', { count: results.length, total })}
-              <span className="library-results__page">{t('library.pageInfo', { page, pages: Math.max(1, Math.ceil(total / PAGE_SIZE)) })}</span>
-            </div>
-            <ul className="library-results__list">
-              {results.map((item) => (
-                <li key={item.id} className="library-result" data-testid="library-result">
-                  <div className="library-result__main">
-                    <span className="library-result__title">{item.title}</span>
-                    <span className="library-result__meta">
-                      {item.authors.slice(0, 3).join('、')}
-                      {item.year ? ` · ${item.year}` : ''}
-                      {item.venue ? ` · ${item.venue}` : ''}
-                    </span>
-                    <span className="library-result__badges">
-                      <span className={`library-result__source library-result__source--${item.source}`}>
-                        {item.source === 'ncpssd' ? 'NCPSSD' : 'OpenAlex'}
-                      </span>
-                      {item.core && <span className="library-result__core">{t('library.coreBadge')}</span>}
-                      {item.pdfUrl && <span className="library-result__pdf">{t('library.pdfAvailable')}</span>}
-                    </span>
-                    {item.abstract && (
-                      <p className="library-result__abstract" data-testid="library-result-abstract">{item.abstract.slice(0, 200)}{item.abstract.length > 200 ? '…' : ''}</p>
-                    )}
-                  </div>
-                  <div className="library-result__actions">
-                    <button
-                      type="button"
-                      className="btn-secondary btn-sm"
-                      onClick={() => void importItem(item)}
-                      disabled={importedIds.has(item.id)}
-                      data-testid="library-import"
-                    >
-                      {importedIds.has(item.id) ? t('library.imported') : t('library.import')}
-                    </button>
-                    {item.url && (
-                      <button
-                        type="button"
-                        className="btn-secondary btn-sm"
-                        onClick={() => openInBrowser(item.url)}
-                        data-testid="library-open-detail"
-                      >
-                        {t('library.openDetail')}
-                      </button>
-                    )}
-                  </div>
-                </li>
-              ))}
-            </ul>
-            <div className="library-results__pagination" data-testid="library-pagination">
-              <button
-                type="button"
-                className="btn-sm btn-secondary"
-                disabled={searching || page <= 1}
-                onClick={() => void runSearch(page - 1)}
-                data-testid="library-page-prev"
-              >
-                {t('library.prevPage')}
-              </button>
-              <span className="library-results__page-num">{t('library.pageInfo', { page, pages: Math.max(1, Math.ceil(total / PAGE_SIZE)) })}</span>
-              <button
-                type="button"
-                className="btn-sm btn-secondary"
-                disabled={searching || page * PAGE_SIZE >= total}
-                onClick={() => void runSearch(page + 1)}
-                data-testid="library-page-next"
-              >
-                {t('library.nextPage')}
-              </button>
-            </div>
-          </div>
-        )}
-      </section>
-
       <section className="library-mine" aria-label={zh ? '我的文献' : 'My library'}>
         <div className="library-mine__heading">
           <h2 className="library-mine__title">{t('library.mineTitle')}</h2>
@@ -627,6 +411,8 @@ export default function LibraryPage({ uiMode = 'normal', projectId = null }: Lib
               )}
             </div>
 
+            {sourceNotice && <div className="library-mine__notice" role="status" data-testid="library-source-notice">{sourceNotice}</div>}
+
             {detailPaper && (
               <article className="library-detail" data-testid="library-detail">
                 <header className="library-detail__header">
@@ -742,7 +528,7 @@ export default function LibraryPage({ uiMode = 'normal', projectId = null }: Lib
                     {(detailPaper.tags ?? []).filter((tag) => tag !== 'collected').length > 0 && (
                       <div className="library-detail__tags">
                         {(detailPaper.tags ?? []).filter((tag) => tag !== 'collected').map((tag) => (
-                          <span key={tag} className="library-tag">{tag}</span>
+                          <span key={tag} className="library-tag">{displayTag(tag, zh)}</span>
                         ))}
                       </div>
                     )}
@@ -774,9 +560,7 @@ export default function LibraryPage({ uiMode = 'normal', projectId = null }: Lib
                       {detailPaper.pdfCapability && (
                         <button type="button" className="btn-primary btn-sm" onClick={() => setSelectedPaperId(detailPaper.id)} data-testid="library-detail-read">{t('library.actionReadPdf')}</button>
                       )}
-                      {sourceLinkOf(detailPaper) && (
-                        <button type="button" className="btn-secondary btn-sm" onClick={() => openInBrowser(sourceLinkOf(detailPaper)!)} data-testid="library-detail-source">{t('library.actionOpenSource')}</button>
-                      )}
+                      <button type="button" className="btn-secondary btn-sm" onClick={() => openSource(detailPaper)} data-testid="library-detail-source">{t('library.actionOpenSource')}</button>
                       <button
                         type="button"
                         className={`btn-sm ${detailPaper.starred ? 'btn-primary' : 'btn-secondary'}`}
@@ -834,7 +618,7 @@ export default function LibraryPage({ uiMode = 'normal', projectId = null }: Lib
                     {(paper.tags ?? []).filter((tag) => tag !== 'collected').length > 0 && (
                       <div className="library-mine__tags">
                         {(paper.tags ?? []).filter((tag) => tag !== 'collected').slice(0, 6).map((tag) => (
-                          <span key={tag} className="library-tag">{tag}</span>
+                          <span key={tag} className="library-tag">{displayTag(tag, zh)}</span>
                         ))}
                       </div>
                     )}
@@ -844,11 +628,9 @@ export default function LibraryPage({ uiMode = 'normal', projectId = null }: Lib
                           {t('library.actionReadPdf')}
                         </button>
                       )}
-                      {sourceLinkOf(paper) && (
-                        <button type="button" className="btn-sm btn-secondary" onClick={() => openInBrowser(sourceLinkOf(paper)!)} data-testid="library-paper-source">
-                          {t('library.actionOpenSource')}
-                        </button>
-                      )}
+                      <button type="button" className="btn-sm btn-secondary" onClick={() => openSource(paper)} data-testid="library-paper-source">
+                        {t('library.actionOpenSource')}
+                      </button>
                     </div>
                   </li>
                 ))}
@@ -857,10 +639,6 @@ export default function LibraryPage({ uiMode = 'normal', projectId = null }: Lib
           </>
         )}
       </section>
-
-      {browseUrl && (
-        <EmbeddedBrowserOverlay url={browseUrl} onClose={() => setBrowseUrl(null)} projectId={targetProjectId} />
-      )}
 
       {methodsOpen && (
         <MethodsPanel onClose={() => setMethodsOpen(false)} />

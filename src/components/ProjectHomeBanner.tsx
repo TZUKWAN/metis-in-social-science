@@ -150,49 +150,32 @@ export default function ProjectHomeBanner() {
     <div className="project-home" data-testid="project-home">
       <div className="project-home__main">
         {scenarioRun && scenarioProgress ? (
-          <>
-            <div className="project-home__stage project-home__scenario-summary">
-              <span className="project-home__stage-label">{locale === 'zh' ? '场景工作流' : 'Scenario workflow'}</span>
-              <span className="project-home__stage-value" data-testid="project-scenario-name">
-                {scenarioRun.scenarioName || scenarioRun.scenarioId}
-              </span>
-              <span className={`project-home__scenario-status project-home__scenario-status--${scenarioRun.status}`}>
-                {scenarioRunStatusLabel(scenarioRun.status, locale)}
-              </span>
-              <div
-                className="project-home__stage-progress"
-                role="progressbar"
-                aria-label={locale === 'zh' ? '场景工作流进度' : 'Scenario workflow progress'}
-                aria-valuenow={Math.round(scenarioProgress.progress)}
-                aria-valuemin={0}
-                aria-valuemax={100}
-              >
-                <span style={{ width: `${Math.round(scenarioProgress.progress)}%` }} />
-              </div>
-              <span className="project-home__stage-count" data-testid="project-scenario-progress">
-                {locale === 'zh'
-                  ? `${scenarioProgress.completed}/${scenarioProgress.total} 步`
-                  : `${scenarioProgress.completed}/${scenarioProgress.total} steps`}
-              </span>
+          // 刘总 2026-09：顶部只保留进度条一行（场景名/状态/进度/N 步），
+          // 不再展示当前步骤卡片与「最近完成」流水简报。
+          <div className="project-home__stage project-home__scenario-summary">
+            <span className="project-home__stage-label">{locale === 'zh' ? '场景工作流' : 'Scenario workflow'}</span>
+            <span className="project-home__stage-value" data-testid="project-scenario-name">
+              {scenarioRun.scenarioName || scenarioRun.scenarioId}
+            </span>
+            <span className={`project-home__scenario-status project-home__scenario-status--${scenarioRun.status}`}>
+              {scenarioRunStatusLabel(scenarioRun.status, locale)}
+            </span>
+            <div
+              className="project-home__stage-progress"
+              role="progressbar"
+              aria-label={locale === 'zh' ? '场景工作流进度' : 'Scenario workflow progress'}
+              aria-valuenow={Math.round(scenarioProgress.progress)}
+              aria-valuemin={0}
+              aria-valuemax={100}
+            >
+              <span style={{ width: `${Math.round(scenarioProgress.progress)}%` }} />
             </div>
-            <ol className="project-home__scenario-steps" data-testid="project-scenario-steps">
-              {scenarioRun.steps.map((step, index) => {
-                const isCurrent = index === scenarioProgress.currentIndex;
-                return (
-                  <li
-                    key={step.stepId}
-                    className={`project-home__scenario-step project-home__scenario-step--${step.status}${isCurrent ? ' is-current' : ''}`}
-                    aria-current={isCurrent ? 'step' : undefined}
-                    title={`${index + 1}. ${step.name} · ${scenarioStepStatusLabel(step.status, locale)}`}
-                  >
-                    <span className="project-home__scenario-step-number">{index + 1}</span>
-                    <span className="project-home__scenario-step-name">{step.name}</span>
-                    <span className="project-home__scenario-step-status">{scenarioStepStatusLabel(step.status, locale)}</span>
-                  </li>
-                );
-              })}
-            </ol>
-          </>
+            <span className="project-home__stage-count" data-testid="project-scenario-progress">
+              {locale === 'zh'
+                ? `${scenarioProgress.completed}/${scenarioProgress.total} 步`
+                : `${scenarioProgress.completed}/${scenarioProgress.total} steps`}
+            </span>
+          </div>
         ) : (
           <>
             <div className="project-home__stage">
@@ -211,9 +194,6 @@ export default function ProjectHomeBanner() {
               </p>
             )}
           </>
-        )}
-        {brief && brief.projectId === project.id && (
-          <p className="project-home__brief" data-testid="project-home-brief" title={brief.summaryText}>{brief.summaryText}</p>
         )}
       </div>
     </div>

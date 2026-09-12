@@ -33,27 +33,17 @@
   grid-column: 1 / -1;
 }
 
-.settings-image-generation__secret {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(220px, 0.9fr);
-  align-items: end;
-  gap: 12px;
-  margin-top: 14px;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-secondary);
-}
+/* 密钥说明小字：压缩为一行，跟随输入框下方（刘总重排，原大卡片已移除）。 */
+.settings-image-generation__field-hint { display: block; margin-top: 4px; color: var(--text-secondary); font-size: 12px; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.settings-image-generation__secret strong { font-size: 13px; }
-.settings-image-generation__secret p { margin: 4px 0 0; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
-.settings-image-generation__secret .settings-input { margin: 0; }
+/* 保存/重新读取按钮右对齐（刘总重排）。 */
+.settings-image-generation .settings-actions { justify-content: flex-end; }
 .settings-image-generation__notice { margin: 12px 0 0; font-size: 12px; line-height: 1.5; }
 .settings-image-generation__notice--success { color: var(--status-completed); }
 .settings-image-generation__notice--error { color: var(--danger); }
 .settings-image-generation__notice--info { color: var(--text-secondary); }
 
 @media (max-width: 640px) {
-  .settings-image-generation__grid,
-  .settings-image-generation__secret { grid-template-columns: 1fr; }
+  .settings-image-generation__grid { grid-template-columns: 1fr; }
+  .settings-image-generation__field-hint { white-space: normal; }
 }

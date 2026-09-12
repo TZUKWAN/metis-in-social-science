@@ -48,7 +48,8 @@ export const NAVIGATE_EVENT = 'metis:navigate';
 export const LEGACY_PAGE_ALIASES: Readonly<Record<string, NavigationIntent>> = {
   autonomous: { kind: 'standalone', page: 'outcomes' },
   chat: { kind: 'workspace', tab: 'chat' },
-  kanban: { kind: 'workspace', tab: 'kanban' },
+  // 任务看板已退出产品（2026-09 刘总规格）：旧 kanban 深链一律落到聊天页签。
+  kanban: { kind: 'workspace', tab: 'chat' },
   pdf: { kind: 'workspace', tab: 'materials' },
 };
 

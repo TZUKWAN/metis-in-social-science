@@ -264,26 +264,26 @@ describe('Personalization persisted UI-to-runtime happy paths', () => {
     const blueprintToggle = document.querySelector('[data-testid^="blueprint-section-"] .scenario-blueprint__toggle') as HTMLElement;
     fireEvent.click(blueprintToggle);
     const blueprintSectionId = (document.querySelector('[data-testid^="blueprint-section-"]') as HTMLElement).getAttribute('data-testid')!.replace('blueprint-section-', '');
-    fireEvent.change(document.querySelector(`[data-testid="blueprint-purpose-${blueprintSectionId}"]`) as HTMLElement, {
-      target: { value: 'Produce the requested deliverable.' },
-    });
+    // 2026-09 规格：交付物部分只保留 instructions（具体写作要求）一个提示词
+    // 字段；purpose 字段不再暴露给用户（数据字段向后兼容保留）。
     fireEvent.change(document.querySelector(`[data-testid="blueprint-instructions-${blueprintSectionId}"]`) as HTMLElement, {
-      target: { value: 'Organize by research question with evidence-linked sections.' },
+      target: { value: 'Produce the requested deliverable. Organize by research question with evidence-linked sections.' },
     });
-    fireEvent.change(document.querySelector(`[data-testid="blueprint-requirements-${blueprintSectionId}"]`) as HTMLElement, {
-      target: { value: 'Answer the research question' },
-    });
-    fireEvent.change(document.querySelector(`[data-testid="blueprint-length-${blueprintSectionId}"]`) as HTMLElement, {
-      target: { value: '8000 words' },
-    });
+    // 2026-09 规格：requirements/length 字段不再对用户暴露（可选数据字段）。
     fireEvent.change(screen.getByTestId('sw-step-prompt'), {
       target: { value: 'Produce the requested deliverable from the supplied evidence.' },
     });
     fireEvent.change(screen.getByTestId('sw-step-criteria'), {
       target: { value: 'The deliverable is complete and cites its evidence.' },
     });
-    const skillCheckbox = screen.getByRole('checkbox', { name: 'Durable custom skill' }) as HTMLInputElement;
-    fireEvent.click(skillCheckbox);
+    // 2026-09 交互：步骤绑定技能改走「选择内置技能」vault picker（复选框
+    // 已移除）。打开 picker → 点已安装技能条目 → picker 自动关闭并绑定。
+    const stepCard = screen.getAllByTestId('sw-workflow-step')[0]!;
+    fireEvent.click(within(stepCard).getAllByTestId(/^sw-step-vault-skill-/)[0]!);
+    const installedEntry = await screen.findByTestId(`step-vault-installed-${CUSTOM_SKILL_ID}`, {}, { timeout: 5000 }).catch(() => null);
+    if (installedEntry) {
+      fireEvent.click(installedEntry);
+    }
     expect(screen.getAllByTestId('sw-workflow-step').length).toBe(1);
     fireEvent.click(screen.getByTestId('sw-use'));
     const startupBlocker = screen.queryByText(/Not ready to start:/u)?.textContent ?? null;

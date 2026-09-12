@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { FileUp, Trash2 } from 'lucide-react';
+import { FileUp, LayoutGrid, List, Trash2 } from 'lucide-react';
 import './ProjectMaterialsPanel.css';
 
 /**
@@ -35,6 +35,8 @@ export function ProjectMaterialsPanel({ projectId }: { projectId: string | null 
   const [uploadCategory, setUploadCategory] = useState<Category>('references');
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
+  // 列表 / 九宫格卡片两种视图（仅视图状态，不影响数据）。
+  const [view, setView] = useState<'list' | 'grid'>('list');
 
   const refresh = useCallback(async () => {
     const metis = window.metis;
@@ -100,9 +102,13 @@ export function ProjectMaterialsPanel({ projectId }: { projectId: string | null 
   return (
     <section className="project-materials" aria-label="项目参考材料">
       <header className="project-materials__head">
-        <div>
+        <div className="project-materials__intro">
           <h3>项目参考材料</h3>
-          <p>上传你自己的研究资料（访谈记录、问卷数据、分析脚本、参考文献、申报书模板…），场景执行与 AI 对话可作为参考上下文读取。支持 txt / md / csv / json / docx / pdf / pptx / xlsx / py / R / do；SPSS(.sav) / Stata(.dta) / R(.rds) 数据文件原样存档（导出 CSV 后可让 AI 读取内容）。</p>
+          <p>上传你自己的研究资料（访谈记录、问卷数据、分析脚本、参考文献、申报书模板…），场景执行与 AI 对话可作为参考上下文读取。SPSS(.sav) / Stata(.dta) / R(.rds) 数据文件原样存档（导出 CSV 后可让 AI 读取内容）。</p>
+          {/* 支持的格式列表收成一行小字，完整内容见 title 悬浮提示 */}
+          <p className="project-materials__formats" title="txt / md / csv / json / docx / pdf / pptx / xlsx / py / R / do / sav / dta / rds">
+            支持格式：txt / md / csv / json / docx / pdf / pptx / xlsx / py / R / do / sav / dta / rds
+          </p>
         </div>
         <div className="project-materials__upload">
           <select
@@ -128,10 +134,62 @@ export function ProjectMaterialsPanel({ projectId }: { projectId: string | null 
             </button>
           );
         })}
+        <span className="project-materials__view" role="group" aria-label="切换展示方式">
+          <button
+            type="button"
+            className={view === 'list' ? 'active' : ''}
+            onClick={() => setView('list')}
+            aria-label="列表展示"
+            title="列表展示"
+            data-testid="materials-view-list"
+          >
+            <List size={13} />
+          </button>
+          <button
+            type="button"
+            className={view === 'grid' ? 'active' : ''}
+            onClick={() => setView('grid')}
+            aria-label="九宫格卡片展示"
+            title="九宫格卡片展示"
+            data-testid="materials-view-grid"
+          >
+            <LayoutGrid size={13} />
+          </button>
+        </span>
       </div>
 
       {visible.length === 0 ? (
         <p className="project-materials__empty">还没有材料。点击右上角「上传资料」添加你自己的研究文件。</p>
+      ) : view === 'grid' ? (
+        <ul className="project-materials__grid" data-testid="materials-grid">
+          {visible.map((item) => (
+            <li key={item.id} className={item.binaryArchive ? 'binary' : ''}>
+              <span className="project-materials__name" title={item.name}>{item.name}</span>
+              <span className="project-materials__badge">{labelOf(item.category)}</span>
+              <span className="project-materials__meta">
+                {item.binaryArchive ? '数据存档 · 未解析' : `${item.charCount.toLocaleString()} 字`}
+                {' · '}{new Date(item.addedAt).toLocaleDateString('zh-CN')}
+              </span>
+              <span className="project-materials__card-actions">
+                <select
+                  aria-label={`修改 ${item.name} 的分类`}
+                  value={item.category}
+                  onChange={(event) => void changeCategory(item.id, event.target.value as Category)}
+                >
+                  {CATEGORIES.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => void remove(item.id, item.name)}
+                  aria-label={`删除 ${item.name}`}
+                  title="删除该材料"
+                >
+                  <Trash2 size={13} />
+                </button>
+              </span>
+            </li>
+          ))}
+        </ul>
       ) : (
         <ul className="project-materials__list">
           {visible.map((item) => (

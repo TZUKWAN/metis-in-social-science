@@ -2,6 +2,10 @@ import SettingsOfficeProfilesSection from './SettingsOfficeProfilesSection';
 import React from 'react';
 import { RotateCcw, Sparkles } from 'lucide-react';
 import type { ArtifactPromptDefinition } from '../../engine/artifacts/prompts/ArtifactPromptRegistry.js';
+// 本区（含 Office Profiles）的样式定义在 scenarioWorkbench.css 里，但该文件
+// 历史上只被懒加载的 ScenarioWorkbench 引入——直接打开设置页时样式缺失、
+// 整个提示词工程区退化成无样式列表（刘总 2026-09 截图问题）。
+import '../personalization/scenarioWorkbench.css';
 
 /**
  * 成果提示词工程(2026-09-05 刘总要求,任务4)。

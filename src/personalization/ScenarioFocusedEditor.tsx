@@ -6,6 +6,7 @@ import type {
   WorkflowStepBinding,
 } from '../../engine/runtime/PersonalizationRuntimeContract.js';
 import ScenarioDeliverableBlueprint from './ScenarioDeliverableBlueprint.js';
+import StepResourceVaultPicker from './StepResourceVaultPicker';
 
 type AcquireMode = 'search' | 'package' | 'url';
 
@@ -40,6 +41,8 @@ interface Props {
   reorderSteps(sourceId: string, targetId: string): void;
   toggleStepResource(stepId: string, kind: 'skill' | 'mcp', definitionId: string): void;
   acquire(kind: 'skill' | 'mcp', stepId: string, mode: AcquireMode): void;
+  /** 能力库安装完成后刷新定义列表（新安装的技能/MCP 立即可见）。 */
+  onInstalled?(): void;
   /** Locks every draft-affecting control while the caller owns an in-flight mutation. */
   busy: boolean;
 }
@@ -77,9 +80,38 @@ function StepCard({
   const skills = definitions.filter((item) => item.kind === 'skill' && item.enabled);
   const mcps = definitions.filter((item) => item.kind === 'mcp' && item.enabled);
   const children = childSteps(draft.workflow, step.id);
+  const [vaultPicker, setVaultPicker] = React.useState<'skill' | 'mcp' | null>(null);
   const update = (patch: Partial<WorkflowStepBinding>) => mutateDraft((scenario) => {
     scenario.workflow = scenario.workflow.map((candidate) => candidate.id === step.id ? { ...candidate, ...patch } : candidate);
   });
+
+  const renderResourceArea = (kind: 'skill' | 'mcp') => {
+    const pool = kind === 'skill' ? skills : mcps;
+    const boundIds = kind === 'skill' ? step.skillIds : step.mcpIds;
+    return (
+      <div>
+        <strong>{kind === 'skill' ? 'Skill' : 'MCP'}</strong>
+        <span className="scenario-focus-step__resource-actions">
+          {/* 刘总 2026-09：只留两个入口——在线搜索安装、从内置目录选用；
+              未绑定的内容不铺在步骤卡里。 */}
+          <button type="button" className="btn-secondary btn-sm" disabled={busy} onClick={() => acquire(kind, step.id, 'search')} data-testid={`sw-step-search-${kind}-${step.id}`}>{zh ? (kind === 'skill' ? '搜索技能' : '搜索 MCP') : 'Search online'}</button>
+          <button type="button" className="btn-secondary btn-sm" disabled={busy} onClick={() => setVaultPicker(kind)} data-testid={`sw-step-vault-${kind}-${step.id}`}>{zh ? (kind === 'skill' ? '选择内置技能' : '选择内置 MCP') : (kind === 'skill' ? 'Pick built-in skill' : 'Pick built-in MCP')}</button>
+        </span>
+        <div className="scenario-focus-step__resource-list">
+          {boundIds.length > 0 ? (
+            <div className="scenario-focus-step__chips">
+              {boundIds.map((id) => {
+                const item = pool.find((definition) => definition.id === id);
+                return <span key={id} className="scenario-focus-step__chip">{item?.name ?? id}<button type="button" aria-label={zh ? `移除 ${item?.name ?? id}` : `Remove ${item?.name ?? id}`} disabled={busy} onClick={() => toggleStepResource(step.id, kind, id)}>×</button></span>;
+              })}
+            </div>
+          ) : (
+            <small>{zh ? (kind === 'skill' ? '未绑定技能；可从上方搜索或选择内置技能。' : '未绑定 MCP；可从上方搜索或选择内置 MCP。') : 'Nothing bound yet.'}</small>
+          )}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <li className="scenario-focus-step" style={{ '--scenario-step-depth': depth } as React.CSSProperties} data-testid="sw-workflow-step">
@@ -121,32 +153,21 @@ function StepCard({
           />
         </label>
         <section className="scenario-focus-step__resources" aria-label={zh ? '步骤资源' : 'Step resources'}>
-          <div>
-            <strong>Skill</strong>
-            <span className="scenario-focus-step__resource-actions">
-              <button type="button" className="btn-secondary btn-sm" disabled={busy} onClick={() => acquire('skill', step.id, 'package')} data-testid={`sw-step-import-package-${step.id}`}>{zh ? '本地导入' : 'Import local'}</button>
-              <button type="button" className="btn-secondary btn-sm" disabled={busy} onClick={() => acquire('skill', step.id, 'url')} data-testid={`sw-step-url-skill-${step.id}`}>URL</button>
-              <button type="button" className="btn-secondary btn-sm" disabled={busy} onClick={() => acquire('skill', step.id, 'search')} data-testid={`sw-step-search-skill-${step.id}`}>{zh ? '在线搜索' : 'Search online'}</button>
-            </span>
-            <div className="scenario-focus-step__resource-list">
-              {skills.map((skill) => <label key={skill.id}><input type="checkbox" checked={step.skillIds.includes(skill.id)} disabled={busy} onChange={() => toggleStepResource(step.id, 'skill', skill.id)} />{skill.name}</label>)}
-              {skills.length === 0 && <small>{zh ? '暂无已安装 Skill，可从上方导入或搜索。' : 'No installed Skills yet.'}</small>}
-            </div>
-          </div>
-          <div>
-            <strong>MCP</strong>
-            <span className="scenario-focus-step__resource-actions">
-              <button type="button" className="btn-secondary btn-sm" disabled={busy} onClick={() => acquire('mcp', step.id, 'package')} data-testid={`sw-step-import-mcp-${step.id}`}>{zh ? '本地导入' : 'Import local'}</button>
-              <button type="button" className="btn-secondary btn-sm" disabled={busy} onClick={() => acquire('mcp', step.id, 'url')} data-testid={`sw-step-url-mcp-${step.id}`}>URL</button>
-              <button type="button" className="btn-secondary btn-sm" disabled={busy} onClick={() => acquire('mcp', step.id, 'search')} data-testid={`sw-step-search-mcp-${step.id}`}>{zh ? '在线搜索' : 'Search online'}</button>
-            </span>
-            <div className="scenario-focus-step__resource-list">
-              {mcps.map((mcp) => <label key={mcp.id}><input type="checkbox" checked={step.mcpIds.includes(mcp.id)} disabled={busy} onChange={() => toggleStepResource(step.id, 'mcp', mcp.id)} />{mcp.name}</label>)}
-              {mcps.length === 0 && <small>{zh ? '暂无已安装 MCP，可从上方导入或搜索。' : 'No installed MCPs yet.'}</small>}
-            </div>
-          </div>
+          {renderResourceArea('skill')}
+          {renderResourceArea('mcp')}
         </section>
       </article>
+      {vaultPicker && (
+        <StepResourceVaultPicker
+          kind={vaultPicker}
+          installed={(vaultPicker === 'skill' ? skills : mcps).map((definition) => ({ id: definition.id, name: definition.name }))}
+          onPick={(definitionId) => {
+            toggleStepResource(step.id, vaultPicker, definitionId);
+            props.onInstalled?.();
+          }}
+          onClose={() => setVaultPicker(null)}
+        />
+      )}
       {children.length > 0 && <ol className="scenario-focus-step__children">{children.map((child) => <StepCard key={child.id} step={child} depth={depth + 1} props={props} onDragStart={onDragStart} onDrop={onDrop} />)}</ol>}
     </li>
   );
@@ -194,10 +215,9 @@ export default function ScenarioFocusedEditor(props: Props) {
   return (
     <div className="scenario-focus" data-testid="sw-focused-editor">
       <section className="scenario-focus__section" data-testid="sw-page-basics">
-        <header><span>01</span><div><h3>{zh ? '场景基本信息' : 'Scenario basics'}</h3><p>{zh ? '只定义如何称呼和触发这个场景。' : 'Name the scenario and the phrases that should invoke it.'}</p></div></header>
+        <header><span>01</span><div><h3>{zh ? '场景基本信息' : 'Scenario basics'}</h3><p>{zh ? '定义如何称呼这个场景。' : 'Name the scenario.'}</p></div></header>
         <div className="scenario-focus__grid scenario-focus__grid--basic">
           <label><span>{zh ? '场景名称' : 'Scenario name'}</span><input value={draft.name} onChange={(event) => mutateDraft((scenario) => { scenario.name = event.target.value; })} disabled={busy} data-testid="sw-config-name" /></label>
-          <label><span>{zh ? '触发短语（每行一条）' : 'Trigger phrases (one per line)'}</span><textarea rows={3} value={draft.triggerPhrases.join('\n')} onChange={(event) => mutateDraft((scenario) => { scenario.triggerPhrases = lineValues(event.target.value); })} disabled={busy} /></label>
         </div>
       </section>
 
@@ -209,6 +229,18 @@ export default function ScenarioFocusedEditor(props: Props) {
           <label><span>{zh ? '一级章节数量' : 'Top-level chapters'}</span><input type="number" min={0} max={24} value={chapterCount} onChange={(event) => updateChapterCount(event.target.value)} disabled={busy} data-testid="sw-chapter-count" /></label>
           <label><span>{zh ? '语言' : 'Language'}</span><select value={draft.deliverable?.language ?? 'zh'} onChange={(event) => mutateDraft((scenario) => { ensureDeliverable(scenario); scenario.deliverable!.language = event.target.value === 'en' ? 'en' : 'zh'; })} disabled={busy}><option value="zh">{zh ? '中文' : 'Chinese'}</option><option value="en">{zh ? '英文' : 'English'}</option></select></label>
         </div>
+        {/* 刘总 2026-09：一个场景可适配多篇论文——小节标题可选交给 AI
+            按本次实际研究内容自适应，而不是在蓝图里写死。 */}
+        <label className="scenario-focus__adaptive-titles" style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, fontSize: 12, color: 'var(--text-secondary)' }}>
+          <input
+            type="checkbox"
+            checked={draft.deliverable?.adaptiveTitles === true}
+            onChange={(event) => mutateDraft((scenario) => { ensureDeliverable(scenario); scenario.deliverable!.adaptiveTitles = event.target.checked || undefined; })}
+            disabled={busy}
+            data-testid="sw-adaptive-titles"
+          />
+          <span>{zh ? '小节标题由 AI 按实际研究内容自适应（蓝图标题作为默认）' : 'Let AI adapt section titles to the actual research (blueprint titles are defaults)'}</span>
+        </label>
         <label className="scenario-focus__global-instructions">
           <span>{zh ? '总体成文要求（整个成果共同遵守）' : 'Global writing instructions (whole artifact)'}</span>
           <textarea

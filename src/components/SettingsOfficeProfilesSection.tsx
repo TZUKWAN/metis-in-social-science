@@ -1,5 +1,6 @@
 import React from 'react';
 import { Plus, RotateCcw, Trash2 } from 'lucide-react';
+import { OFFICE_CAPABILITY_DEFINITIONS } from '../../engine/artifacts/prompts/OfficeCapabilityRegistry';
 
 /**
  * METIS Office Prompt Profiles(2026-09-05 刘总要求,任务5)。
@@ -16,6 +17,15 @@ const CAPABILITY_LABELS: Record<string, string> = {
   pdf: 'PDF', image: '图片', chart: '图表',
 };
 
+/** slotId → 中文能力名（注册表权威来源；用户不该看到 word.selection.rewrite 这种英文 ID）。 */
+const SLOT_LABELS: Record<string, string> = Object.fromEntries(
+  OFFICE_CAPABILITY_DEFINITIONS.flatMap((cap) => cap.aiActions.map((action) => [action.slotId, action.label])),
+);
+
+function slotLabel(slotId: string): string {
+  return SLOT_LABELS[slotId] ?? slotId;
+}
+
 export default function SettingsOfficeProfilesSection() {
   const [capabilities, setCapabilities] = React.useState<CapabilitySummary[]>([]);
   const [activeKind, setActiveKind] = React.useState<string | null>(null);
@@ -29,6 +39,19 @@ export default function SettingsOfficeProfilesSection() {
 
   const activeProfile = profiles.find((profile) => profile.id === activeProfileId) ?? null;
   React.useEffect(() => { setGlobalDraft(activeProfile?.globalPrompt ?? ''); }, [activeProfile?.id, activeProfile?.globalPrompt]);
+
+  // 编辑栏常驻（刘总 2026-09）：选中 Profile 后自动选中第一个 slot，
+  // 下方编辑器始终展示当前选中 part 的内容，不再点了才在底部弹。
+  React.useEffect(() => {
+    if (!activeProfile) { setDraftSlot(null); return; }
+    const entries = Object.entries(activeProfile.slots);
+    if (entries.length === 0) { setDraftSlot(null); return; }
+    setDraftSlot((current) => {
+      if (current && entries.some(([slotId]) => slotId === current.slotId)) return current;
+      const [slotId, content] = entries[0]!;
+      return { slotId, label: slotLabel(slotId), content };
+    });
+  }, [activeProfile]);
 
   const loadCapabilities = React.useCallback(async () => {
     const rows = await window.metis?.officePromptCapabilities?.();
@@ -123,7 +146,6 @@ export default function SettingsOfficeProfilesSection() {
       const result = await window.metis?.officePromptSetSlot?.({ profileId: activeProfile.id, slotId: draftSlot.slotId, content: draftSlot.content });
       if (result?.ok) {
         setNotice('已保存。该 Profile 下一次执行对应动作时生效。');
-        setDraftSlot(null);
         await loadProfiles(activeProfile.officeKind);
       } else {
         setNotice(`保存失败:${result?.code ?? '未知原因'}`);
@@ -188,11 +210,11 @@ export default function SettingsOfficeProfilesSection() {
                       <button
                         type="button"
                         className={draftSlot?.slotId === slotId ? 'active' : undefined}
-                        onClick={() => setDraftSlot({ slotId, label: slotId, content })}
+                        onClick={() => setDraftSlot({ slotId, label: slotLabel(slotId), content })}
                         data-testid={`office-slot-${slotId}`}
                       >
-                        <strong>{slotId}</strong>
-                        <small>{content ? `${content.slice(0, 60)}…` : '(使用默认)'}</small>
+                        <strong>{slotLabel(slotId)}</strong>
+                        {content ? <i className="settings-office-profiles__custom-dot" title="已自定义" aria-label="已自定义" /> : null}
                       </button>
                     </li>
                   ))}
@@ -200,11 +222,11 @@ export default function SettingsOfficeProfilesSection() {
               )}
               {draftSlot && (
                 <div className="settings-office-profiles__editor" data-testid="office-slot-editor">
-                  <strong>{draftSlot.label}</strong>
+                  <strong>{draftSlot.label}{activeProfile?.slots[draftSlot.slotId] ? '' : '（使用默认）'}</strong>
                   <textarea rows={10} value={draftSlot.content} onChange={(event) => setDraftSlot({ ...draftSlot, content: event.target.value })} />
                   <div className="settings-office-profiles__actions">
                     <button type="button" className="btn-primary btn-sm" disabled={busy} onClick={() => void saveSlot()}>保存到 Profile</button>
-                    <button type="button" className="btn-secondary btn-sm" onClick={() => setDraftSlot(null)}>取消</button>
+                    <button type="button" className="btn-secondary btn-sm" onClick={() => setDraftSlot((current) => (current ? { ...current, content: activeProfile?.slots[current.slotId] ?? '' } : current))}>还原</button>
                   </div>
                 </div>
               )}

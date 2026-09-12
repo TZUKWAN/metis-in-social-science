@@ -143,7 +143,7 @@ describe('ProjectsPage — 科研项目工作台', () => {
     expect(request.value.title).toBe('新科研项目');
   });
 
-  it('switches between chat, task board and outputs modes', async () => {
+  it('exposes only chat and materials modes (task board removed)', async () => {
     setMockMetis({
       researchListProjects: vi.fn().mockResolvedValue({ success: true, items: [] }),
       listGoals: vi.fn().mockResolvedValue({ success: true, goals: [] }),
@@ -155,8 +155,8 @@ describe('ProjectsPage — 科研项目工作台', () => {
 
     expect(screen.getByTestId('projects-chat-content')).toBeTruthy();
 
-    fireEvent.click(screen.getByTestId('projects-mode-kanban'));
-    await waitFor(() => expect(screen.getByTestId('kanban-board')).toBeTruthy());
+    // 任务看板页签已移除（2026-09 刘总规格）。
+    expect(screen.queryByTestId('projects-mode-kanban')).toBeNull();
 
   });
 

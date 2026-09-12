@@ -38,7 +38,6 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
   const setTheme = useMetisStore((s) => s.setTheme);
   const accent = useMetisStore((s) => s.accent);
   const setAccent = useMetisStore((s) => s.setAccent);
-  const diagnosticMode = uiMode === 'diagnostic';
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const [issnNotice, setIssnNotice] = useState('');
@@ -55,6 +54,8 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
     <div className="placeholder-page settings-page" role="region" aria-label={t('settings.pageTitle')}>
       <h2>{t('settings.pageTitle')}</h2>
 
+      {/* Language + Appearance: one row, two compact columns */}
+      <div className="settings-row">
       {/* Language */}
       <div className="settings-group">
         <h3>{t('settings.language')}</h3>
@@ -146,6 +147,7 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
           </label>
         </div>
       </div>
+      </div>
 
       <ProviderProfilesSection />
 
@@ -153,24 +155,6 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
       {/* Outcome image generation (dedicated provider settings + encrypted API key) */}
       <SettingsImageGenerationSection />
         <SettingsOutcomePromptsSection />
-
-      {/* Diagnostic mode toggle */}
-      <div className="settings-group">
-        <h3>{t('settings.advancedTitle')}</h3>
-        <p>{t('settings.advancedDescription')}</p>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
-          <input
-            type="checkbox"
-            checked={diagnosticMode}
-            onChange={(event) => {
-              const enabled = event.target.checked;
-              onUIModeChange(enabled ? 'diagnostic' : 'normal');
-            }}
-            data-testid="diagnostic-mode-toggle"
-          />
-          {t('settings.diagnosticMode')}
-        </label>
-      </div>
 
       {/* Complete project archive (METIS-F10) */}
       <SettingsProjectArchiveSection uiMode={uiMode} />
@@ -203,6 +187,7 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
         open={advancedOpen}
         onClose={() => setAdvancedOpen(false)}
         uiMode={uiMode}
+        onUIModeChange={onUIModeChange}
         issnNotice={issnNotice}
         onIssnImport={() => void handleIssnImport()}
       />

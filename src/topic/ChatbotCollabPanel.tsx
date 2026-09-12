@@ -115,6 +115,9 @@ export default function ChatbotCollabPanel({
       observer.disconnect();
       window.removeEventListener('resize', report);
       window.removeEventListener('metis:restore-embedded-views', restore);
+      // 卸载时必须隐藏原生嵌入视图：否则离开选题页后 Chatbot 仍会盖在
+      // 成果/投稿等页面上（原生 WebContentsView 永远在 DOM 之上）。
+      void window.metis?.collabHide?.();
     };
   }, [activeSite]);
 

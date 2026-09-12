@@ -326,3 +326,8 @@
   cursor: not-allowed;
   opacity: 0.55;
 }
+
+/* 成果分类 CRUD + 拖拽归类（刘总反馈）：分类标题操作钮排布、删除钮危险色、拖拽落点高亮 */
+.outcomes-category-title__actions{display:inline-flex;align-items:center;gap:2px}
+.outcomes-category-title button.outcomes-category-title__delete:hover{color:var(--danger)}
+.outcomes-category.drop-target{background:color-mix(in srgb,var(--accent) 12%,transparent);outline:1px dashed var(--accent);outline-offset:-2px}

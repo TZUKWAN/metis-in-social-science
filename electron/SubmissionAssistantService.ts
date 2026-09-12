@@ -45,6 +45,23 @@ const SUBMISSION_ASSISTANT_TOOLS = [
 const OUTCOME_TEXT_CHARS = 9_000;
 const BROWSER_TEXT_CHARS = 6_000;
 
+/**
+ * 失败原因如实化（2026-09-08 用户反馈「只显示 (error) 无法定位」）：
+ * ChatTurnService 的诊断里已带真实原因（provider 错误体/中断信息），
+ * 这里翻译成用户可执行的中文结论，绝不笼统报错。
+ */
+function describeAdvisorFailure(status: string, detail: string): string {
+  const lower = detail.toLowerCase();
+  if (/api key|unauthorized|authentication|401|403/.test(lower)) {
+    return '模型连接未通过验证（API Key 缺失或已失效），请到「设置 → 模型连接」检查配置';
+  }
+  if (/provider|timeout|timed out|network|fetch|econn|socket|dns/.test(lower)) {
+    return '模型连接失败（网络不可达或服务无响应），请检查网络与「设置 → 模型连接」';
+  }
+  if (status === 'error' && !detail) return '模型未返回有效回答（可能回合数耗尽或回答未通过校验）';
+  return detail ? detail.slice(0, 300) : '未知原因';
+}
+
 function outcomeToText(content: OutcomeDocument): string {
   if (content.type === 'word') {
     return (content.blocks ?? []).map((block: { kind?: string; level?: number; text?: string; rows?: string[][] }) => {
@@ -98,7 +115,7 @@ export class SubmissionAssistantService {
   }) {}
 
   async chat(request: SubmissionAssistantRequest): Promise<SubmissionAssistantResult> {
-    if (!this.options.agentLoop) return { ok: false, answer: '', error: 'AI 服务尚未初始化。' };
+    if (!this.options.agentLoop) return { ok: false, answer: '', error: '模型连接尚未配置。请先在「设置 → 模型连接」完成配置，再使用投稿参谋。' };
     const outcome = this.options.loadOutcome(request.projectId, request.outcomeId);
     if (!outcome) return { ok: false, answer: '', error: '当前成果不存在或不属于所选项目。' };
 
@@ -147,7 +164,10 @@ export class SubmissionAssistantService {
       skillPrompt: systemPrompt({ outcomeSummary, browserContext, intentText, shortlistText }),
     });
     if (response.status !== 'completed' || !response.answer.trim()) {
-      return { ok: false, answer: '', error: `本轮参谋未完成（${response.status}）；浏览器与成果均未被改动，请重试。` };
+      // 如实化：诊断里带真实原因（provider 错误体/回答未通过校验），翻译后上抛，
+      // 不再只显示笼统的 (error)。
+      const detail = response.diagnostics.find((item) => item.message)?.message ?? '';
+      return { ok: false, answer: '', error: `本轮参谋未完成（${response.status}）：${describeAdvisorFailure(response.status, detail)}。浏览器与成果均未被改动，请重试。` };
     }
     return { ok: true, answer: response.answer };
   }

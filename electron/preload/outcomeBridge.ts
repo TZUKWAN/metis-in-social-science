@@ -84,6 +84,11 @@ export const outcomeBridge = {
       ipcRenderer.invoke('outcomes:word:docx:exportMarkdown', request) as Promise<{ ok: boolean; fileName?: string; code?: string; message?: string; warnings?: unknown[] }>,
     // 排版面板「导入 Word 模板」（2026-09-01）：选模板文件→解析排版规则→返回配置与识别清单。
 
+    // Gorden PPT Skill（2026-09-11 刘总要求）：Office PPT 的模板清单与构建。
+    gordenPptListTemplates: async () => ipcRenderer.invoke('gordenPpt:listTemplates') as Promise<{ ok: boolean; code?: string; message?: string; templates?: Array<{ slug: string; name: string; slideCount: number; roles: string[]; previewPath: string | null }>; cloned?: boolean }>,
+    gordenPptBuildFromBrief: async (request: { slug: string; title: string; points: string[]; maxSlides?: number }) => ipcRenderer.invoke('gordenPpt:buildFromBrief', request) as Promise<{ ok: boolean; code?: string; message: string; fileName?: string; document?: unknown; warnings?: string[]; buildLog?: string }>,
+    gordenPptBuild: async (request: { slug: string; selectedSlides: number[]; edits: Array<{ slide: number; slot_id: string; new_text: string }>; outName?: string }) => ipcRenderer.invoke('gordenPpt:build', request) as Promise<{ ok: boolean; code?: string; message: string; fileName?: string; document?: unknown; warnings?: string[]; buildLog?: string }>,
+
     importOutcomePptx: async (raw: unknown) => { const p=OutcomePptxImportRequestSchema.safeParse(raw); if (!p.success) return OutcomePptxImportResultSchema.parse({ ok:false, code:'invalid_request', message:'PPTX 导入请求无效。', warnings:[] }); const result=OutcomePptxImportResultSchema.safeParse(await ipcRenderer.invoke('outcomes:pptx:import',p.data)); return result.success ? result.data : OutcomePptxImportResultSchema.parse({ ok:false, code:'pptx_read_failed', message:'PPTX 导入响应无效。', warnings:[] }); },
 
     commitOutcomePptxImportMedia: async (raw: unknown) => { const p=OutcomePptxImportCommitRequestSchema.safeParse(raw); if (!p.success) return OutcomePptxImportCommitResultSchema.parse({ ok:false, code:'invalid_request', message:'PPTX 导入媒体提交请求无效。' }); const result=OutcomePptxImportCommitResultSchema.safeParse(await ipcRenderer.invoke('outcomes:pptx:import:commitMedia',p.data)); return result.success ? result.data : OutcomePptxImportCommitResultSchema.parse({ ok:false, code:'pptx_media_commit_failed', message:'PPTX 导入媒体提交响应无效。' }); },

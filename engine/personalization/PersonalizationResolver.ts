@@ -162,6 +162,11 @@ function scenarioHarnessPromptContent(scenario: ScenarioDefinition): string {
   const sections: string[] = [];
   if (scenario.scenarioMetis) sections.push(renderScenarioMetisMarkdown(scenario.scenarioMetis));
   if (scenario.deliverable) sections.push(`# Deliverable blueprint\n${canonicalJson(scenario.deliverable)}`);
+  // 刘总 2026-09：adaptiveTitles 开启时，蓝图标题仅作默认——同一场景适配
+  // 不同论文时，小节标题应按本次实际研究内容重命名。
+  if (scenario.deliverable?.adaptiveTitles) {
+    sections.push('# Adaptive section titles\nThe chapter/section titles in the blueprint above are DEFAULTS, not fixed strings. Adapt and rename sub-section titles to fit the actual research content of this run; keep the structure (count, order, and hierarchy) unchanged.');
+  }
   if (scenario.workflowPrompt?.trim()) sections.push(`# Workflow operating rules\n${scenario.workflowPrompt.trim()}`);
   return sections.join('\n\n');
 }

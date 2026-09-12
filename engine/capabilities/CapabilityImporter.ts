@@ -60,6 +60,8 @@ export const CAPABILITY_SOURCES: readonly CapabilitySourceSpec[] = [
   { id: 'alirezarezvani-skills', repo: 'alirezarezvani/claude-skills', name: 'Alireza Rezvani Skills', expansion: 'per_skill', domains: ['深度研究', '三角验证'], researchStages: ['literature', 'analysis'], licenseStatus: 'unverified' },
   { id: 'therealray0x-research', repo: 'TheRealRay0x/claude-research-skill', name: 'Deep Web Research Skill', expansion: 'single', domains: ['深度网络研究'], researchStages: ['literature'], licenseStatus: 'unverified' },
   { id: 'bednarjosef-research', repo: 'bednarjosef/claude-research-skill', name: 'OpenAlex OA Research', expansion: 'single', domains: ['开放获取'], researchStages: ['literature'], licenseStatus: 'unverified' },
+  // ── 2026-09-11 刘总要求：Gorden PPT Skill 收编入能力库（本体已默认内置为对话技能 gorden-ppt-skill）──
+  { id: 'gorden-ppt-skill', repo: 'GordenSun/GordenPPTSkill', name: 'Gorden PPT Skill', expansion: 'single', domains: ['演示文稿', 'PPT 生成'], researchStages: ['writing'], licenseStatus: 'unverified', notes: '21 套中文 PPT 模板 + python-pptx 换字构建管线;模板为第三方设计师非商业授权(仅供个人学习研究);本体已默认内置为对话技能,详见 engine/skills/PptDeckSkill.ts' },
   { id: 'borghei-skills', repo: 'borghei/Claude-Skills', name: 'Borghei Skills', expansion: 'per_skill', domains: ['研究综述', '基金写作'], researchStages: ['writing'], licenseStatus: 'unverified', notes: '挑选研究/基金类子技能' },
   { id: 'ai-analyst-plus', repo: 'ai-analyst-lab/ai-analyst-plus', name: 'AI Analyst Plus', expansion: 'per_skill', domains: ['因果分析', '分析设计'], researchStages: ['analysis'], licenseStatus: 'unverified' },
   { id: 'shichengf-claude-skill', repo: 'shichengf/ClaudeSkill', name: 'Shichengf Academic Skill', expansion: 'per_skill', domains: ['学术写作', '自检'], researchStages: ['writing', 'review'], licenseStatus: 'unverified' },

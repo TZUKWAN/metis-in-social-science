@@ -112,14 +112,28 @@ describe('MarketBrowserPanel', () => {
     Object.defineProperty(window, 'metis', { configurable: true, writable: true, value: undefined });
   });
 
-  it('搜索 GitHub 并渲染结果与匿名限额提示', async () => {
+  it('默认 SkillsMP 源搜索并渲染结果与额度提示（GitHub 搜索入口已移除）', async () => {
     const { default: Panel } = await import('../../src/personalization/MarketBrowserPanel.js');
     render(<Panel kind="skill" zh definitions={[]} onInstalled={vi.fn()} />);
     fireEvent.change(screen.getByTestId('market-search-input-skill'), { target: { value: 'pdf' } });
     fireEvent.click(screen.getByTestId('market-search-run-skill'));
-    await waitFor(() => expect(marketSearch).toHaveBeenCalledWith({ kind: 'skill', query: 'pdf', source: 'github' }));
+    await waitFor(() => expect(marketSearch).toHaveBeenCalledWith({ kind: 'skill', query: 'pdf', source: 'skillsmp' }));
     expect(await screen.findByTestId('market-result-item')).toBeTruthy();
-    expect(screen.getByText(/匿名限额/u)).toBeTruthy();
+    expect(screen.getByText(/额度限制/u)).toBeTruthy();
+  });
+
+  it('SkillHub 源提供网站入口与按网址安装提示，不伪造搜索结果', async () => {
+    const openExternal = vi.fn();
+    Object.assign(window.metis, { openExternal });
+    const { default: Panel } = await import('../../src/personalization/MarketBrowserPanel.js');
+    render(<Panel kind="skill" zh definitions={[]} onInstalled={vi.fn()} />);
+    fireEvent.change(screen.getByTestId('market-source-skill'), { target: { value: 'skillhub' } });
+    expect(await screen.findByTestId('market-skillhub-skill')).toBeTruthy();
+    // 无公开 API：搜索按钮禁用，不发起搜索。
+    expect((screen.getByTestId('market-search-run-skill') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByTestId('market-skillhub-open'));
+    expect(openExternal).toHaveBeenCalledWith('https://www.skillhub.cn/');
+    expect(marketSearch).not.toHaveBeenCalled();
   });
 
   it('技能详情：预览 SKILL.md 并一键安装（skill_url 受控安装器）', async () => {

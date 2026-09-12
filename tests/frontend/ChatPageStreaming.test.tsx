@@ -204,15 +204,12 @@ describe('ChatPage message actions and input toolbar', () => {
     });
   });
 
-  it('keeps the learn-skill action in the input toolbar, not on messages', async () => {
+  it('does not show a learn-skill action (removed per 2026-09 spec)', async () => {
     const { metis } = mockMetis({ generateSkillFromConversation: vi.fn() });
     renderChat();
     await waitFor(() => expect(metis.listPersonalization).toHaveBeenCalled());
 
-    const learnButton = screen.getByTestId('learn-conversation-skill');
-    // It lives next to the composer, not inside a message action row.
-    expect(learnButton.closest('.chat-input-area')).toBeTruthy();
-    expect(learnButton.closest('.message-actions')).toBeNull();
+    expect(screen.queryByTestId('learn-conversation-skill')).toBeNull();
   });
 });
 

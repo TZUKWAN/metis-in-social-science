@@ -304,40 +304,14 @@ function runnableScenario(id: string, name: string): Extract<PersonalizationDefi
 }
 
 describe('PersonalizationCenter', () => {
-  it('does not background-load authoritative project rules while another personalization tab is active', async () => {
+  it('场景中心不再提供 Metis.md 标签页入口（底层项目 Metis.md 功能保留）', async () => {
     researchWorkspaceStore.setState({ activeProjectId: 'project-background' });
     render(<PersonalizationCenter />);
 
     await act(async () => { await Promise.resolve(); });
+    expect(await screen.findByTestId('scenario-workbench')).toBeDefined();
+    expect(screen.queryByRole('button', { name: /^Metis\.md/u })).toBeNull();
     expect(getWorkspaceAgents).not.toHaveBeenCalled();
-
-    fireEvent.click(await screen.findByRole('button', { name: /Metis\.md/ }));
-    await waitFor(() => expect(getWorkspaceAgents).toHaveBeenCalledWith('project-background'));
-  });
-
-  it('retries the same project after a transient rules-load failure when the user reopens the tab', async () => {
-    researchWorkspaceStore.setState({ activeProjectId: 'project-retry' });
-    getWorkspaceAgents
-      .mockRejectedValueOnce(new Error('transient main-process read failure'))
-      .mockResolvedValueOnce({
-        exists: true,
-        content: '# Reauthorized project rule\n',
-        version: 3,
-        contentHash: 'reauthorized-rule-digest',
-        projectId: 'project-retry',
-      });
-    render(<PersonalizationCenter />);
-
-    fireEvent.click(await screen.findByRole('button', { name: /Metis\.md/ }));
-    expect(await screen.findByText('Could not read the current project Metis.md. Your local draft is preserved.')).toBeDefined();
-
-    fireEvent.click(screen.getByRole('button', { name: /Scenarios/ }));
-    expect(screen.queryByTestId('project-metis-rules-textarea')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: /Metis\.md/ }));
-
-    const textarea = screen.getByTestId('project-metis-rules-textarea') as HTMLTextAreaElement;
-    await waitFor(() => expect(textarea.value).toBe('# Reauthorized project rule\n'));
-    expect(getWorkspaceAgents).toHaveBeenCalledTimes(2);
   });
 
   it('starts with an empty user library even when legacy factory definitions are returned', async () => {
@@ -441,33 +415,6 @@ describe('PersonalizationCenter', () => {
     await screen.findByTestId('sw-empty');
     expect(screen.queryByRole('button', { name: 'Create editable copy' })).toBeNull();
     expect(forkPersonalization).not.toHaveBeenCalled();
-  });
-
-  it('saves edits as a new CAS revision', async () => {
-    const source = builtin.find((item) => item.kind === 'rules')!;
-    const custom = {
-      ...structuredClone(source),
-      id: 'user:rules/my-metis',
-      revision: 1,
-      provenance: { ...source.provenance, origin: 'user', parentId: source.id, locallyModified: true },
-    } as PersonalizationDefinition;
-    definitions.push(custom);
-    render(<PersonalizationCenter />);
-    fireEvent.click(await screen.findByRole('button', { name: /Metis\.md/ }));
-    await screen.findAllByText(custom.name);
-    fireEvent.click(document.querySelector(`[data-definition-id="${custom.id}"]`) as HTMLButtonElement);
-    const editor = await screen.findByRole('textbox', { name: 'Metis.md' });
-    // 任务F：不再提供全局/场景层级选择，固定项目级文档。
-    expect(screen.queryByRole('combobox', { name: 'Rule scope' })).toBeNull();
-    fireEvent.change(editor, { target: { value: '# Metis.md\n\nCustom rule' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save new revision' }));
-    // 任务F：保存先弹出副本/覆盖二选一。
-    expect(await screen.findByTestId('rules-save-choice')).toBeDefined();
-    fireEvent.click(screen.getByTestId('rules-save-overwrite'));
-    await waitFor(() => expect(savePersonalization).toHaveBeenCalled());
-    const request = savePersonalization.mock.calls.at(-1)![0] as { expectedRevision: number; definition: PersonalizationDefinition };
-    expect(request.expectedRevision).toBe(1);
-    expect(request.definition.revision).toBe(2);
   });
 
   it('preserves independent drafts across card switches, category switches, and remounts', async () => {
@@ -753,16 +700,10 @@ describe('PersonalizationCenter', () => {
   it('uses natural localized labels for the workbench and editable enum fields', async () => {
     useMetisStore.setState({ locale: 'zh' });
     const scenarioSource = builtin.find((item) => item.kind === 'scenario')!;
-    const rulesSource = builtin.find((item) => item.kind === 'rules')!;
     const skillSource = builtin.find((item) => item.kind === 'skill')!;
     const scenario = editableUserDefinition(scenarioSource, 'user:scenarios/localized-labels', '本地化场景');
-    const rules = {
-      ...editableUserDefinition(rulesSource, 'user:rules/localized-labels', '本地化规则'),
-      scope: 'project',
-      scopeId: 'legacy-project',
-    } as PersonalizationDefinition;
     const skill = editableUserDefinition(skillSource, 'user:skills/localized-labels', '本地化技能');
-    definitions.push(scenario, rules, skill);
+    definitions.push(scenario, skill);
 
     render(<PersonalizationCenter />);
     expect(await screen.findByTestId('scenario-workbench')).toBeDefined();
@@ -778,14 +719,7 @@ describe('PersonalizationCenter', () => {
     expect(screen.queryByRole('combobox', { name: '记忆范围' })).toBeNull();
     expect(screen.queryByTestId('sw-full-access')).toBeNull();
 
-    fireEvent.click(screen.getAllByRole('button', { name: /Metis\.md/u })[0]!);
-    fireEvent.click(document.querySelector(`[data-definition-id="${rules.id}"]`) as HTMLButtonElement);
-    // 任务F：无「规则层级」下拉与旧项目转换说明，直接编辑 Markdown。
-    await screen.findByRole('textbox', { name: 'Metis.md' });
-    expect(screen.queryByRole('combobox', { name: '规则层级' })).toBeNull();
-    expect(screen.queryByText(/返回独立编辑器/u)).toBeNull();
-
-    fireEvent.click(screen.getByRole('button', { name: /技能/u }));
+    fireEvent.click(within(screen.getByRole('navigation', { name: '场景分类' })).getByRole('button', { name: /技能/u }));
     expect(await screen.findByText('技能', { selector: '.personalization-eyebrow' })).toBeDefined();
     fireEvent.click(document.querySelector(`[data-definition-id="${skill.id}"]`) as HTMLButtonElement);
     fireEvent.click((await screen.findAllByRole('button', { name: '添加字段' }))[0]!);
@@ -802,139 +736,6 @@ describe('PersonalizationCenter', () => {
     fireEvent.change(screen.getByRole('combobox', { name: '模式' }), { target: { value: 'mcp_url' } });
     expect(await screen.findByText('粘贴 MCP 清单的 HTTPS 地址，核验通过后才启用。')).toBeDefined();
     expect(screen.getByRole('textbox', { name: 'MCP 清单 HTTPS 地址' })).toBeDefined();
-  });
-
-  it('hosts the main-authoritative project Metis.md editor and reacts to the active project', async () => {
-    render(<PersonalizationCenter />);
-    fireEvent.click(await screen.findByRole('button', { name: /Metis\.md/ }));
-    const textarea = screen.getByRole('textbox', { name: 'Current project Metis.md content' }) as HTMLTextAreaElement;
-    expect(textarea.disabled).toBe(true);
-    expect(getWorkspaceAgents).not.toHaveBeenCalled();
-
-    await act(async () => {
-      researchWorkspaceStore.setState({ activeProjectId: 'project-authoritative' });
-      await Promise.resolve();
-    });
-    await waitFor(() => expect(textarea.value).toBe('# project-authoritative Metis.md\n'));
-    expect(getWorkspaceAgents).toHaveBeenCalledWith('project-authoritative');
-
-    fireEvent.change(textarea, { target: { value: '# Authoritative project rule\n' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save Metis.md' }));
-    await waitFor(() => expect(setWorkspaceAgents).toHaveBeenCalledWith(
-      'project-authoritative',
-      '# Authoritative project rule\n',
-      2,
-    ));
-    expect(screen.queryByRole('option', { name: 'project' })).toBeNull();
-  });
-
-  it('never renders the authoritative project editor beside a global or scenario Metis.md definition form', async () => {
-    const source = builtin.find((item) => item.kind === 'rules')!;
-    const globalRule = {
-      ...editableUserDefinition(source, 'user:rules/global-separation', 'Global separation rule'),
-      scope: 'global',
-      scopeId: null,
-    } as PersonalizationDefinition;
-    definitions.push(globalRule);
-
-    render(<PersonalizationCenter />);
-    fireEvent.click(await screen.findByRole('button', { name: /Metis\.md/u }));
-    expect(screen.getByRole('textbox', { name: 'Current project Metis.md content' })).toBeDefined();
-    expect(screen.queryByRole('region', { name: 'Definition editor' })).toBeNull();
-
-    fireEvent.click((await screen.findByText(globalRule.name)).closest('[data-definition-id]') as HTMLButtonElement);
-    expect(screen.queryByRole('textbox', { name: 'Current project Metis.md content' })).toBeNull();
-    expect(screen.getByRole('region', { name: 'Definition editor' })).toBeDefined();
-    fireEvent.click(screen.getByRole('button', { name: 'Open current project Metis.md' }));
-    expect(screen.getByRole('textbox', { name: 'Current project Metis.md content' })).toBeDefined();
-    expect(screen.queryByRole('region', { name: 'Definition editor' })).toBeNull();
-  });
-
-  it('edits a project-scoped definition directly and keeps its project scope on overwrite', async () => {
-    const source = builtin.find((item) => item.kind === 'rules')!;
-    const legacyProjectRule = {
-      ...structuredClone(source),
-      id: 'user:rules/legacy-project-slot',
-      name: 'Legacy project slot',
-      revision: 1,
-      scope: 'project',
-      scopeId: 'user:projects/project-a',
-      provenance: { ...source.provenance, origin: 'user', parentId: source.id, locallyModified: true },
-    } as PersonalizationDefinition;
-    definitions.push(legacyProjectRule);
-
-    render(<PersonalizationCenter />);
-    fireEvent.click(await screen.findByRole('button', { name: /Metis\.md/ }));
-    fireEvent.click(await screen.findByText('Legacy project slot'));
-    // 任务F：项目级定义可直接编辑，不再被「非权威」提示阻止保存。
-    const editor = await screen.findByRole('textbox', { name: 'Metis.md' });
-    expect(screen.getByRole('button', { name: 'Save new revision' })).toHaveProperty('disabled', false);
-    expect(screen.queryByRole('combobox', { name: 'Rule scope' })).toBeNull();
-    fireEvent.change(editor, { target: { value: '# Updated project rule\n' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save new revision' }));
-    expect(await screen.findByTestId('rules-save-choice')).toBeDefined();
-    fireEvent.click(screen.getByTestId('rules-save-overwrite'));
-    await waitFor(() => {
-      const request = savePersonalization.mock.calls.at(-1)?.[0] as { definition: PersonalizationDefinition };
-      expect(request.definition.kind).toBe('rules');
-      if (request.definition.kind === 'rules') {
-        expect(request.definition.scope).toBe('project');
-        expect(request.definition.scopeId).toBe('user:projects/project-a');
-      }
-    });
-  });
-
-  it('saves an edited Metis.md as a copy: original untouched, copy selected', async () => {
-    const source = builtin.find((item) => item.kind === 'rules')!;
-    const custom = {
-      ...structuredClone(source),
-      id: 'user:rules/copy-source',
-      name: 'Copy source rule',
-      revision: 1,
-      provenance: { ...source.provenance, origin: 'user', parentId: source.id, locallyModified: true },
-    } as PersonalizationDefinition;
-    definitions.push(custom);
-    render(<PersonalizationCenter />);
-    fireEvent.click(await screen.findByRole('button', { name: /Metis\.md/ }));
-    fireEvent.click(await screen.findByText('Copy source rule'));
-    const editor = await screen.findByRole('textbox', { name: 'Metis.md' });
-    fireEvent.change(editor, { target: { value: '# Copied content\n' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save new revision' }));
-    expect(await screen.findByTestId('rules-save-choice')).toBeDefined();
-    fireEvent.click(screen.getByTestId('rules-save-copy'));
-    await waitFor(() => {
-      const request = savePersonalization.mock.calls.at(-1)?.[0] as { definition: PersonalizationDefinition; expectedRevision: number };
-      expect(request.definition.id).not.toBe('user:rules/copy-source');
-      expect(request.definition.revision).toBe(1);
-      expect(request.expectedRevision).toBe(0);
-      expect(request.definition.provenance.parentId).toBe('user:rules/copy-source');
-    });
-    // 副本保存后切换选中到新副本。
-    await waitFor(() => {
-      const request = savePersonalization.mock.calls.at(-1)?.[0] as { definition: PersonalizationDefinition };
-      expect(screen.getByRole('heading', { name: request.definition.name })).toBeDefined();
-    });
-  });
-
-  it('cancelling the Metis.md save choice performs no save', async () => {
-    const source = builtin.find((item) => item.kind === 'rules')!;
-    const custom = {
-      ...structuredClone(source),
-      id: 'user:rules/cancel-choice',
-      name: 'Cancel choice rule',
-      revision: 1,
-      provenance: { ...source.provenance, origin: 'user', parentId: source.id, locallyModified: true },
-    } as PersonalizationDefinition;
-    definitions.push(custom);
-    render(<PersonalizationCenter />);
-    fireEvent.click(await screen.findByRole('button', { name: /Metis\.md/ }));
-    fireEvent.click(await screen.findByText('Cancel choice rule'));
-    await screen.findByRole('textbox', { name: 'Metis.md' });
-    fireEvent.click(screen.getByRole('button', { name: 'Save new revision' }));
-    expect(await screen.findByTestId('rules-save-choice')).toBeDefined();
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(screen.queryByTestId('rules-save-choice')).toBeNull();
-    expect(savePersonalization).not.toHaveBeenCalled();
   });
 
   it('edits a scenario workflow without exposing permission confirmation settings', async () => {
@@ -1128,8 +929,9 @@ describe('PersonalizationCenter', () => {
     expect(screen.getByRole('button', { name: 'Choose skill ZIP package' })).toBeDefined();
 
     fireEvent.click(screen.getByRole('button', { name: /^MCP/u }));
-    expect(screen.getByRole('combobox', { name: 'Mode' })).toHaveProperty('value', 'mcp_requirements');
-    expect(screen.getByRole('textbox', { name: 'Describe what the MCP must do' })).toBeDefined();
+    // 刘总 2026-09：「描述需求由 Metis 构建」移到对话构建弹窗，安装器默认本地包模式。
+    expect(screen.getByRole('combobox', { name: 'Mode' })).toHaveProperty('value', 'mcp_package');
+    expect(screen.getByRole('button', { name: 'Choose local MCP package directory' })).toBeDefined();
     expect(screen.queryByRole('button', { name: 'Choose skill ZIP package' })).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: /Skills/u }));
@@ -1164,7 +966,7 @@ describe('PersonalizationCenter', () => {
     expect(savePersonalization).not.toHaveBeenCalled();
   });
 
-  it('submits an MCP Builder requirement without exposing raw command or environment fields', async () => {
+  it('submits an MCP Builder requirement through the build dialog without exposing raw command or environment fields', async () => {
     applyPersonalizationExtension.mockResolvedValueOnce({
       ok: true,
       definition: { id: 'generated:mcp/my-mcp' },
@@ -1172,13 +974,16 @@ describe('PersonalizationCenter', () => {
     render(<PersonalizationCenter />);
     fireEvent.click(await screen.findByRole('button', { name: /^MCP/u }));
     await waitFor(() => expect(listPersonalizationSecrets).toHaveBeenCalled());
-    fireEvent.change(screen.getByRole('textbox', { name: 'Describe what the MCP must do' }), {
+    // 刘总 2026-09：MCP 构建走对话窗口。
+    fireEvent.click(screen.getByTestId('personalization-mcp-builder-open'));
+    expect(await screen.findByTestId('personalization-mcp-builder')).toBeDefined();
+    fireEvent.change(screen.getByTestId('personalization-mcp-builder-requirement'), {
       target: { value: 'Build a bounded literature metadata lookup tool.' },
     });
     expect(screen.queryByLabelText(/raw command|command arguments|parent environment/iu)).toBeNull();
     expect(screen.queryByRole('textbox', { name: 'Personalization definition ID' })).toBeNull();
     expect(screen.queryByRole('textbox', { name: 'Generated package ID' })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Verify and install' }));
+    fireEvent.click(screen.getByTestId('personalization-mcp-builder-submit'));
     await waitFor(() => expect(applyPersonalizationExtension).toHaveBeenCalledTimes(1));
     expect(applyPersonalizationExtension.mock.calls[0]?.[0]).toMatchObject({
       contractVersion: 1,
@@ -1220,7 +1025,9 @@ describe('PersonalizationCenter', () => {
     render(<PersonalizationCenter />);
     fireEvent.click(await screen.findByRole('button', { name: /^MCP/u }));
     const target = screen.getByRole('combobox', { name: 'Installation target' });
-    expect(target).toHaveProperty('value', generated.id);
+    // 默认本地包模式：generated/url 定义都不是候选目标。
+    expect(target).toHaveProperty('value', '');
+    expect(within(target).queryByRole('option', { name: generated.name })).toBeNull();
     expect(within(target).queryByRole('option', { name: fromUrl.name })).toBeNull();
 
     fireEvent.change(screen.getByRole('combobox', { name: 'Mode' }), { target: { value: 'mcp_url' } });
@@ -1304,6 +1111,77 @@ describe('PersonalizationCenter', () => {
     await waitFor(() => expect(valueInput.value).toBe(''));
     expect(await screen.findByText('Value hidden', { exact: false })).toBeDefined();
     expect(document.body.textContent).not.toContain('write-only-secret');
+  });
+
+  function enabledMcpWithSecret(): Extract<PersonalizationDefinition, { kind: 'mcp' }> {
+    return {
+      ...pendingUrlMcp(),
+      id: 'url:mcp/with-secret',
+      name: 'Secret MCP',
+      enabled: true,
+      tags: ['url', 'probe-verified'],
+      environment: { ZOTERO_API_KEY: { secret: true, value: null } },
+      exposedTools: ['search'],
+    };
+  }
+
+  it('enters per-MCP credentials from the item card and clears the missing marker after save', async () => {
+    definitions.push(enabledMcpWithSecret());
+    listPersonalizationSecrets
+      .mockResolvedValueOnce({
+        ok: true,
+        contractVersion: 1,
+        operationId: '11111111-1111-4111-8111-111111111111',
+        revision: 0,
+        secrets: [],
+      })
+      .mockResolvedValue({
+        ok: true,
+        contractVersion: 1,
+        operationId: '22222222-2222-4222-8222-222222222222',
+        revision: 1,
+        secrets: [{ name: 'ZOTERO_API_KEY', createdAt: 10, updatedAt: 10 }],
+      });
+    render(<PersonalizationCenter />);
+    fireEvent.click(await screen.findByRole('button', { name: /^MCP/u }));
+    await waitFor(() => expect(document.querySelector('[data-definition-id="url:mcp/with-secret"]')).not.toBeNull());
+    const card = (document.querySelector('[data-definition-id="url:mcp/with-secret"]') as HTMLElement).closest('article') as HTMLElement;
+    // 已启用且声明了凭据但凭据库缺失：条目上出现「未配置」标记。
+    const marker = await within(card).findByText(/Credentials missing/u);
+    expect(marker.textContent).toContain('ZOTERO_API_KEY');
+    fireEvent.click(within(card).getByRole('button', { name: 'Credentials' }));
+    await waitFor(() => expect(card.querySelector('.mcp-credential-panel')).not.toBeNull());
+    const panel = card.querySelector('.mcp-credential-panel') as HTMLElement;
+    expect(within(panel).getByText('Not configured')).toBeDefined();
+    const input = panel.querySelector('[data-testid$="-input-ZOTERO_API_KEY"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'per-item-secret' } });
+    fireEvent.click(within(panel).getByRole('button', { name: 'Save encrypted' }));
+    await waitFor(() => expect(setPersonalizationSecret).toHaveBeenCalledTimes(1));
+    expect(setPersonalizationSecret.mock.calls[0]?.[0]).toMatchObject({
+      contractVersion: 1,
+      expectedRevision: 0,
+      name: 'ZOTERO_API_KEY',
+      value: 'per-item-secret',
+    });
+    await within(panel).findByText('Configured');
+    expect(input.value).toBe('');
+    expect(document.body.textContent).not.toContain('per-item-secret');
+    await waitFor(() => expect(within(card).queryByText(/Credentials missing/u)).toBeNull());
+  });
+
+  it('offers a free-form key/value entry for MCPs that declare no credential requirements', async () => {
+    definitions.push(pendingUrlMcp());
+    render(<PersonalizationCenter />);
+    fireEvent.click(await screen.findByRole('button', { name: /^MCP/u }));
+    await waitFor(() => expect(document.querySelector('[data-definition-id="url:mcp/center-activation"]')).not.toBeNull());
+    // 未声明凭据需求的条目没有「未配置」标记。
+    const card = (document.querySelector('[data-definition-id="url:mcp/center-activation"]') as HTMLElement).closest('article') as HTMLElement;
+    expect(within(card).queryByText(/Credentials missing/u)).toBeNull();
+    fireEvent.click(within(card).getByRole('button', { name: 'Credentials' }));
+    await waitFor(() => expect(card.querySelector('.mcp-credential-panel')).not.toBeNull());
+    const panel = card.querySelector('.mcp-credential-panel') as HTMLElement;
+    expect(panel.querySelector('[data-testid$="-free-name"]')).not.toBeNull();
+    expect(panel.querySelector('[data-testid$="-free-value"]')).not.toBeNull();
   });
 
   it('imports and exports a selected dependency graph without credential fields', async () => {
@@ -1408,13 +1286,14 @@ describe('PersonalizationCenter', () => {
     render(<PersonalizationCenter />);
     await selectScenarioInWorkbench('Readable picker scenario');
 
-    // 绑定以步骤内可读名称的勾选项呈现，而不是原始 ID 输入框；智能体勾选池已不存在。
+    // 绑定走「选择内置技能」弹窗的已安装区（点名称即可），而不是原始 ID 输入框；智能体勾选池已不存在。
     expect(screen.queryByRole('textbox', { name: 'Skill IDs' })).toBeNull();
     expect(screen.queryByTestId('sw-cap-agent')).toBeNull();
     fireEvent.click(screen.getByTestId('sw-workflow-add'));
     expect(screen.getAllByTestId('sw-workflow-step').length).toBe(1);
     const step = screen.getAllByTestId('sw-workflow-step')[0]!;
-    fireEvent.click(within(step).getByRole('checkbox', { name: skill.name }));
+    fireEvent.click(within(step).getByRole('button', { name: 'Pick built-in skill' }));
+    fireEvent.click(await screen.findByTestId(`step-vault-installed-${skill.id}`));
 
     fireEvent.click(screen.getByRole('button', { name: 'Save', exact: true }));
     await waitFor(() => expect(savePersonalization).toHaveBeenCalledTimes(1));

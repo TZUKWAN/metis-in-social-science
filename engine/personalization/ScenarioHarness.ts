@@ -246,25 +246,22 @@ function migrateLegacyGlobalInstructions(scenario: ScenarioDefinition): string |
 export type DeliverableRequiredField = 'purpose' | 'instructions' | 'requirements' | 'lengthTarget';
 
 /**
- * 每个 section kind 语义上必须填写的字段。判断依据（任务文档第八节）：
- * chapter/section/abstract 需要 purpose/instructions/requirements/lengthTarget；
- * keywords/grant_column 不强制篇幅；references 允许无篇幅但要有规范；
- * title 不强制写作规范字段。
+ * 每个 section kind 语义上必须填写的字段。
+ * 2026-09 刘总规格：交付物部分只保留「具体写作要求」一个必填提示词字段；
+ * 作用/必须包含/禁止事项/方法/证据等结构化字段不再是必填（数据字段保留
+ * 向后兼容，AI 构建时仍可填充，但不再对用户制造机械必填负担）。
  */
 export function requiredDeliverableFieldsForKind(kind: string): readonly DeliverableRequiredField[] {
   switch (kind) {
     case 'chapter':
     case 'section':
     case 'abstract':
-      return ['purpose', 'instructions', 'requirements', 'lengthTarget'];
     case 'keywords':
     case 'grant_column':
-      return ['purpose', 'instructions', 'requirements'];
     case 'references':
-      return ['instructions', 'requirements'];
     case 'attachment':
     case 'other':
-      return ['purpose', 'instructions'];
+      return ['instructions'];
     case 'title':
     default:
       return [];

@@ -1,5 +1,5 @@
 /**
- * LibraryPage — 文献库样式（检索区 + 我的文献）。
+ * LibraryPage — 文献库样式（我的文献管理；手动检索区已移除，检索由 AI 路径调用）。
  */
 
 .library-page {
@@ -267,6 +267,14 @@
   color: var(--text-muted);
   flex-shrink: 0;
   white-space: nowrap;
+}
+
+/* 「打开原文」无链接等行内提示 */
+.library-mine__notice {
+  font-size: 11.5px;
+  color: var(--accent-warm);
+  margin: -4px 0 8px;
+  flex-shrink: 0;
 }
 
 .library-mine__list {

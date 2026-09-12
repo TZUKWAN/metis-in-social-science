@@ -288,14 +288,14 @@ export default function SettingsImageGenerationSection() {
             {QUALITY_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
           </select>
         </label>
-      </div>
-
-      <div className="settings-image-generation__secret">
-        <div>
-          <strong>图片 API 密钥</strong>
-          <p>{settings?.hasApiKey && vaultHasKey ? '已安全存储。输入新密钥会替换现有密钥；原值不会显示。' : '尚未配置。保存时将写入加密凭据库 OUTCOME_IMAGE_API_KEY，原值不会显示。'}</p>
-        </div>
-        <input className="settings-input" type="password" autoComplete="new-password" value={apiKey} disabled={isBusy || phase === 'unavailable'} data-testid="image-generation-api-key" aria-label="图片 API 密钥" placeholder={settings?.hasApiKey && vaultHasKey ? '输入新密钥以替换' : '输入 API 密钥'} onChange={(event) => setApiKey(event.target.value)} />
+        {/* 刘总要求：密钥降级为普通表单一行，与默认质量并排；说明压缩为一行小字，不再用大卡片。 */}
+        <label className="settings-label">
+          <span>图片 API 密钥</span>
+          <input className="settings-input" type="password" autoComplete="new-password" value={apiKey} disabled={isBusy || phase === 'unavailable'} data-testid="image-generation-api-key" placeholder={settings?.hasApiKey && vaultHasKey ? '输入新密钥以替换' : '输入 API 密钥'} onChange={(event) => setApiKey(event.target.value)} />
+          <small className="settings-image-generation__field-hint">
+            {settings?.hasApiKey && vaultHasKey ? '已安全存储；输入新密钥即替换，原值不会显示。' : '密钥仅写入加密凭据库 OUTCOME_IMAGE_API_KEY，原值不会显示。'}
+          </small>
+        </label>
       </div>
 
       <div className="settings-actions">

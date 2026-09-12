@@ -135,7 +135,7 @@ export class TopicService {
     return resolved;
   }
 
-  createSession(input: { title?: string; initialIntent?: string; sourceProjectId?: string | null; discipline?: string; constraints?: TopicConstraints }): TopicSessionDto {
+  createSession(input: { title?: string; initialIntent?: string; sourceProjectId?: string | null; discipline?: string; constraints?: TopicConstraints; category?: string | null }): TopicSessionDto {
     const now = Date.now();
     const session: TopicSessionDto = {
       id: `topic_${randomUUID().replace(/-/g, '').slice(0, 20)}`,
@@ -147,6 +147,7 @@ export class TopicService {
       status: 'exploring',
       selectedCandidateId: null,
       researchBrief: null,
+      category: input.category?.trim() || null,
       createdAt: now,
       updatedAt: now,
     };
@@ -168,7 +169,7 @@ export class TopicService {
     };
   }
 
-  updateSession(sessionId: string, patch: Partial<Pick<TopicSessionDto, 'title' | 'status' | 'discipline' | 'constraints' | 'selectedCandidateId'>>): TopicSessionDto | null {
+  updateSession(sessionId: string, patch: Partial<Pick<TopicSessionDto, 'title' | 'status' | 'discipline' | 'constraints' | 'selectedCandidateId' | 'category'>>): TopicSessionDto | null {
     return this.repo.updateSession(sessionId, patch);
   }
 

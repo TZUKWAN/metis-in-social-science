@@ -103,43 +103,43 @@ describe('App', () => {
     const nav = screen.getByRole('navigation', { name: 'Metis' });
     const primaryItems = within(nav).getAllByRole('button').filter((button) => button.hasAttribute('data-nav-id'));
 
-    // 协同对话一级工作区已取消（2026-09-05 刘总规格）。
+    // 2026-09 刘总规格：选题 → 场景 → 研究 → 成果 → 投稿，设置殿后。
     expect(primaryItems.map((button) => button.getAttribute('data-nav-id'))).toEqual([
-      'projects',
       'topics',
+      'personalization',
+      'projects',
       'outcomes',
       'submissions',
       'settings',
-      'personalization',
     ]);
     expect(primaryItems.map((button) => button.textContent?.trim())).toEqual([
-      '科研项目',
       '选题',
+      '场景',
+      '研究',
       '成果',
       '投稿',
       '设置',
-      '场景',
     ]);
     expect(primaryItems.map((button) => button.getAttribute('aria-label'))).toEqual([
-      '科研项目',
       '选题',
+      '场景',
+      '研究',
       '成果',
       '投稿',
       '设置',
-      '场景',
     ]);
     // O11: top-bar tooltips now carry a one-line workspace orientation
     // (descriptionKey) instead of repeating the label. aria-label still holds
     // the plain label for accessibility; title holds the description.
     expect(primaryItems.map((button) => button.getAttribute('title'))).toEqual([
-      '科研项目工作台：左侧项目列表，内含聊天、任务看板、资料与研究成果。',
       '从一个研究兴趣出发:真实检索、研究版图、候选论证,确定选题后一路进入场景与项目',
+      '场景中心、个性化偏好与外观定制。',
+      '科研项目工作台：左侧项目列表，内含聊天、任务看板、资料与研究成果。',
       '管理当前项目的论文、PPT、报告与其他正式交付物。',
       '从成果出发完成选刊、投稿、返修到录用的完整投稿生命周期。',
       '配置模型连接、外观、备份与偏好。',
-      '场景中心、个性化偏好与外观定制。',
     ]);
-    expect(primaryItems[0]!.getAttribute('aria-current')).toBe('page');
+    expect(primaryItems[2]!.getAttribute('aria-current')).toBe('page');
     expect(within(nav).queryByText('评估')).toBeNull();
 
     await act(async () => {
@@ -147,12 +147,12 @@ describe('App', () => {
       await Promise.resolve();
     });
     expect(primaryItems.map((button) => button.getAttribute('aria-label'))).toEqual([
-      'Research Projects',
       'Topic Selection',
+      'Scenarios',
+      'Research',
       'Outcomes',
       'Submissions',
       'Settings',
-      'Scenarios',
     ]);
   });
 
@@ -345,7 +345,7 @@ describe('App', () => {
     await waitFor(() => expect(screen.getByText('研究任务已完成')).toBeDefined());
   });
 
-  it('navigates from a chat goal card to the task board and focuses the handed-off card', async () => {
+  it('kanban deep-link lands on the chat workspace (task board removed)', async () => {
     resetStore();
     setMockMetis({
       listGoals: vi.fn().mockResolvedValue({
@@ -359,12 +359,10 @@ describe('App', () => {
 
     window.dispatchEvent(new CustomEvent('metis:open-kanban', { detail: { goalId: 'g1' } }));
 
-    expect(await screen.findByTestId('kanban-board')).toBeTruthy();
-    // The handed-off card is selected (detail dialog open) and scrolled to.
-    await waitFor(() => {
-      expect(screen.getByTestId('kanban-detail')?.getAttribute('aria-label')).toBe('去看板的任务');
-    });
-    expect(window.sessionStorage.getItem('metis-pending-goal-focus')).toBeNull();
+    // 任务看板已退出产品（2026-09 刘总规格）：旧深链落到聊天工作台，
+    // 不再渲染看板，也不报错。
+    await waitFor(() => expect(screen.getByTestId('projects-mode-chat')).toBeTruthy());
+    expect(screen.queryByTestId('kanban-board')).toBeNull();
   });
 
   it('opens the project center from a library paper link (metis:open-project)', async () => {
@@ -470,17 +468,17 @@ describe('App', () => {
     const { container } = render(<App />);
     await screen.findByTestId('chat-page');
 
-    // 协同对话一级工作区已取消：导航只有科研项目；也不再有 collab-page。
+    // 协同对话一级工作区已取消：导航只有研究（科研项目）；也不再有 collab-page。
     expect(screen.queryByRole('button', { name: '协同对话' })).toBeNull();
     expect(screen.queryByTestId('collab-page')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: '科研项目' }));
+    fireEvent.click(screen.getByRole('button', { name: '研究' }));
     await waitFor(() => expect(screen.getByTestId('projects-page')).toBeTruthy());
     expect(container.querySelectorAll('.project-shell')).toHaveLength(0);
 
-    // 科研项目工作台内的模式页签可切换（任务看板）。
-    fireEvent.click(screen.getByTestId('projects-mode-kanban'));
-    await waitFor(() => expect(screen.getByTestId('kanban-board')).toBeTruthy());
-    expect(container.querySelectorAll('.project-shell')).toHaveLength(0);
+    // 任务看板页签已移除（2026-09 刘总规格）；模式页签只剩聊天/资料。
+    expect(screen.queryByTestId('projects-mode-kanban')).toBeNull();
+    fireEvent.click(screen.getByTestId('projects-mode-materials'));
+    await waitFor(() => expect(screen.getByTestId('projects-page')).toBeTruthy());
 
     // 回到聊天模式。
     fireEvent.click(screen.getByTestId('projects-mode-chat'));
@@ -495,17 +493,17 @@ describe('App', () => {
     const input = screen.getByPlaceholderText('提出一个研究问题...') as HTMLTextAreaElement;
     fireEvent.change(input, { target: { value: '跨模式保留的研究草稿' } });
 
-    // 进入科研项目工作台（默认聊天模式）——同一 ChatPage 实例保持挂载。
-    fireEvent.click(screen.getByRole('button', { name: '科研项目' }));
+    // 进入研究（科研项目）工作台（默认聊天模式）——同一 ChatPage 实例保持挂载。
+    fireEvent.click(screen.getByRole('button', { name: '研究' }));
     await waitFor(() => expect(screen.getByTestId('projects-page')).toBeTruthy());
     expect(container.querySelectorAll('.project-shell')).toHaveLength(0);
     expect(
       (screen.getByPlaceholderText('提出一个研究问题...') as HTMLTextAreaElement).value,
     ).toBe('跨模式保留的研究草稿');
 
-    // 切到任务看板再切回聊天，草稿仍在。
-    fireEvent.click(screen.getByTestId('projects-mode-kanban'));
-    await waitFor(() => expect(screen.getByTestId('kanban-board')).toBeTruthy());
+    // 切到资料再切回聊天，草稿仍在。
+    fireEvent.click(screen.getByTestId('projects-mode-materials'));
+    await waitFor(() => expect(screen.getByTestId('projects-page')).toBeTruthy());
     fireEvent.click(screen.getByTestId('projects-mode-chat'));
     await waitFor(() => expect(screen.getByTestId('projects-page')).toBeTruthy());
     expect(
@@ -581,7 +579,8 @@ describe('App', () => {
     // 主页不直接渲染备份区；入口为「高级设置」按钮。
     expect(container.querySelector('[data-testid="export-backup"]')).toBeNull();
     expect(screen.getByTestId('advanced-settings-button')).toBeTruthy();
-    expect(screen.getByTestId('diagnostic-mode-toggle')).toBeTruthy();
+    // 诊断开关已收进高级设置弹窗（刘总 2026-09），主页不再单独占一块。
+    expect(screen.queryByTestId('diagnostic-mode-toggle')).toBeNull();
     await openAdvancedTab('backup');
     expect(container.querySelector('[data-testid="export-backup"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="import-backup"]')).toBeTruthy();
@@ -598,6 +597,8 @@ describe('App', () => {
     localStorage.removeItem('metis-diagnostic-mode');
     const { container } = render(<App initialPage="settings" />);
 
+    // 诊断开关在高级设置弹窗的开发者诊断页签里（刘总 2026-09）。
+    await openAdvancedTab('diagnostics');
     fireEvent.click(screen.getByTestId('diagnostic-mode-toggle'));
 
     await waitFor(() => {
@@ -605,7 +606,6 @@ describe('App', () => {
       expect(localStorage.getItem('metis-diagnostic-mode')).toBe('diagnostic');
     });
     // 技术控制项位于高级设置的开发者诊断页签。
-    await openAdvancedTab('diagnostics');
     expect(screen.getByText('MCP 服务器')).toBeTruthy();
     expect(screen.getByText('人工审批规则')).toBeTruthy();
     expect(container.querySelector('[data-testid="diagnostic-mcp-settings"]')).toBeTruthy();
@@ -625,7 +625,7 @@ describe('App', () => {
     setMockMetis({ getPendingApprovals });
 
     render(<App />);
-    await waitFor(() => expect(screen.getByRole('button', { name: '科研项目' })).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole('button', { name: '研究' })).toBeTruthy());
     expect(screen.queryByRole('button', { name: '审批队列' })).toBeNull();
     expect(screen.queryByText('approval-normal')).toBeNull();
     expect(getPendingApprovals).not.toHaveBeenCalled();

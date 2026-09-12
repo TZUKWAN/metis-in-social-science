@@ -31,11 +31,11 @@ export class TopicRepository {
 
   createSession(session: TopicSessionDto): void {
     this.db.prepare(
-      'INSERT INTO topic_sessions (id, title, initial_intent, source_project_id, discipline, constraints_json, status, selected_candidate_id, research_brief, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO topic_sessions (id, title, initial_intent, source_project_id, discipline, constraints_json, status, selected_candidate_id, research_brief, category, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     ).run(
       session.id, session.title, session.initialIntent, session.sourceProjectId, session.discipline,
       session.constraints ? JSON.stringify(session.constraints) : null, session.status,
-      session.selectedCandidateId, session.researchBrief, session.createdAt, session.updatedAt,
+      session.selectedCandidateId, session.researchBrief, session.category, session.createdAt, session.updatedAt,
     );
   }
 
@@ -55,11 +55,11 @@ export class TopicRepository {
     if (!current) return null;
     const next: TopicSessionDto = { ...current, ...patch, updatedAt: Date.now() };
     this.db.prepare(
-      'UPDATE topic_sessions SET title = ?, initial_intent = ?, source_project_id = ?, discipline = ?, constraints_json = ?, status = ?, selected_candidate_id = ?, research_brief = ?, updated_at = ? WHERE id = ?',
+      'UPDATE topic_sessions SET title = ?, initial_intent = ?, source_project_id = ?, discipline = ?, constraints_json = ?, status = ?, selected_candidate_id = ?, research_brief = ?, category = ?, updated_at = ? WHERE id = ?',
     ).run(
       next.title, next.initialIntent, next.sourceProjectId, next.discipline,
       next.constraints ? JSON.stringify(next.constraints) : null, next.status,
-      next.selectedCandidateId, next.researchBrief, next.updatedAt, id,
+      next.selectedCandidateId, next.researchBrief, next.category, next.updatedAt, id,
     );
     return this.getSession(id);
   }
@@ -82,6 +82,8 @@ export class TopicRepository {
       status: row.status,
       selectedCandidateId: row.selected_candidate_id ?? null,
       researchBrief: row.research_brief ?? null,
+      // 旧库行经迁移 117 补列后为 NULL=未分类;更旧的脏库防御性兜底。
+      category: row.category ?? null,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     });

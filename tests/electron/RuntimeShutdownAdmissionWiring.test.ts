@@ -69,7 +69,14 @@ describe('runtime shutdown admission wiring', () => {
       const section = sectionBetween(start, end);
       expect(section, `${start} missing trackEphemeralOperation`).toContain('trackEphemeralOperation');
       expect(section, `${start} missing shutdown rejection`).toContain("'application_shutting_down'");
-      expect(section, `${start} missing signal propagation`).toContain('signal: tracked.signal');
+      // 2026-09: scenario:compileHarness section now uses combinedSignal
+      // (tracked.signal + user-initiated scenario abort). Other sections keep
+      // tracked.signal directly.
+      if (start.includes('scenario:compileHarness')) {
+        expect(section, `${start} missing signal propagation`).toMatch(/signal: (tracked|combined)Signal/);
+      } else {
+        expect(section, `${start} missing signal propagation`).toContain('signal: tracked.signal');
+      }
       expect(section, `${start} missing cleanup`).toContain('tracked.cleanup()');
       expect(section, `${start} missing finally`).toContain('finally');
     }

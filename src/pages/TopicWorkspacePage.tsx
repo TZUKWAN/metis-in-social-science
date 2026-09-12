@@ -7,13 +7,15 @@ import type { TopicCandidateDto, TopicResearchBrief, TopicSessionDto } from '../
 import { researchWorkspaceStore } from '../research/researchWorkspaceStore.js';
 import { setPendingScenarioHandoff } from '../topic/scenarioHandoff.js';
 import ChatbotCollabPanel from '../topic/ChatbotCollabPanel';
+import ModelThinkingSelector from '../components/ModelThinkingSelector';
 import SplitHandle from '../components/SplitHandle';
 import { buildTopicContextPackage } from '../topic/contextPackage';
 import type { ExternalModelReference } from '../../engine/runtime/ExternalReferenceContract.js';
 
 /**
  * 选题 Topic Workspace(2026-09-04 刘总要求:选题一级功能)。
- * 三栏:左=选题会话;中=AI 研究过程(真实检索/研究版图/结构化选择);右=候选池(可折叠)。
+ * 布局:主区顶部=会话 tab 条(按分类分组,可切换/关闭,「+」新建);中=AI 研究过程
+ * (真实检索/研究版图/结构化选择);右=候选池(可折叠)。
  * 复用 METIS 桌面工作台设计(高信息密度、克制、无卡片墙/评分圆环)。
  */
 
@@ -59,11 +61,54 @@ export default function TopicWorkspacePage() {
   const [messages, setMessages] = React.useState<Array<{ id: string; role: string; content: string }>>([]);
   const [input, setInput] = React.useState('');
   const [streaming, setStreaming] = React.useState(false);
+  // P0d: streaming is per-session. Switching sessions mid-run keeps the
+  // background run going; coming back restores the live view.
+  const [streamingSessionId, setStreamingSessionId] = React.useState<string | null>(null);
   const [streamTail, setStreamTail] = React.useState('');
-  const [notice, setNotice] = React.useState('');
-  const [creating, setCreating] = React.useState(false);
-  const [newIntent, setNewIntent] = React.useState('');
+  // P0a: tool activity rows + P0c: one-line reasoning ticker.
+  const [toolEvents, setToolEvents] = React.useState<Array<{ id: number; tool: string | null; state: 'done' | 'failed' | 'running'; summary?: string | null }>>([]);
+  const [reasoningLine, setReasoningLine] = React.useState('');
   const [rightCollapsed, setRightCollapsed] = React.useState(false);
+  // P1a: 三栏拖动调宽（左会话栏/中间主区/右侧候选栏），宽度持久化到 localStorage。
+  const [leftWidth, setLeftWidth] = React.useState<number>(() => {
+    try { return Number(localStorage.getItem('metis-topic-left-width')) || 236; } catch { return 236; }
+  });
+  const [rightWidth, setRightWidth] = React.useState<number>(() => {
+    try { return Number(localStorage.getItem('metis-topic-right-width')) || 300; } catch { return 300; }
+  });
+  const dragRef = React.useRef<{ side: 'left' | 'right'; startX: number; startW: number } | null>(null);
+  React.useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!dragRef.current) return;
+      const dx = e.clientX - dragRef.current.startX;
+      if (dragRef.current.side === 'left') {
+        const next = Math.max(180, Math.min(420, dragRef.current.startW + dx));
+        setLeftWidth(next);
+        try { localStorage.setItem('metis-topic-left-width', String(next)); } catch { /* */ }
+      } else {
+        const next = Math.max(220, Math.min(480, dragRef.current.startW - dx));
+        setRightWidth(next);
+        try { localStorage.setItem('metis-topic-right-width', String(next)); } catch { /* */ }
+      }
+    };
+    const onUp = () => { dragRef.current = null; document.body.style.cursor = ''; document.body.style.userSelect = ''; };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+  }, []);
+  const startDrag = (side: 'left' | 'right') => (e: React.MouseEvent) => {
+    dragRef.current = { side, startX: e.clientX, startW: side === 'left' ? leftWidth : rightWidth };
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  };
+  const [notice, setNotice] = React.useState('');
+  // 会话管理(2026-09 刘总：左侧列表 + 右键菜单——重命名/移动分类/删除)。
+  const [renamingId, setRenamingId] = React.useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = React.useState('');
+  const [categoryDraft, setCategoryDraft] = React.useState('');
+  const [menuNewCategory, setMenuNewCategory] = React.useState(false);
+  const [sessionMenu, setSessionMenu] = React.useState<{ sessionId: string; x: number; y: number } | null>(null);
+  const composerRef = React.useRef<HTMLTextAreaElement>(null);
   const [activeCandidateId, setActiveCandidateId] = React.useState<string | null>(null);
   const [projectCreating, setProjectCreating] = React.useState(false);
   // Chatbot 协作视图（2026-09-05 刘总规格书）：临时双栏，关闭即退出嵌入。
@@ -107,6 +152,27 @@ export default function TopicWorkspacePage() {
   React.useEffect(() => {
     sessionIdRef.current = activeSessionId;
   }, [activeSessionId]);
+  const loadSessionRef = React.useRef<((id: string) => Promise<void>) | null>(null);
+
+  // 会话切换时收起重命名编辑态,避免串到下一个会话。
+  React.useEffect(() => {
+    setRenamingId(null);
+    setSessionMenu(null);
+  }, [activeSessionId]);
+
+  // tab 条按分类分组:归档(软删除)会话不显示;无分类归入「未分类」组。
+  const visibleSessions = sessions.filter((item) => item.status !== 'archived');
+  const [selectedCategory, setSelectedCategory] = React.useState<string | null>(null);
+  const [newCategoryFilter, setNewCategoryFilter] = React.useState<string | null>(null);
+  const allCategories = [...new Set([
+    ...visibleSessions.map((item) => item.category?.trim() ?? '').filter((name) => name.length > 0),
+    ...(newCategoryFilter ? [newCategoryFilter] : []),
+  ])];
+  const categories = selectedCategory ? allCategories.filter((name) => name === selectedCategory) : allCategories;
+  const sessionGroups: Array<{ name: string | null; items: TopicSessionDto[] }> = [
+    ...categories.map((name) => ({ name, items: visibleSessions.filter((item) => (item.category?.trim() ?? '') === name) })),
+    { name: null, items: visibleSessions.filter((item) => !(item.category?.trim())) },
+  ].filter((group) => group.items.length > 0);
 
   const refreshExternalRefs = React.useCallback(async (scope?: { sessionId?: string | null; projectId?: string | null }) => {
     // 任务2 上下文隔离：只取当前选题会话（+其来源项目）捕获的外部参考。
@@ -162,9 +228,15 @@ export default function TopicWorkspacePage() {
     void refreshExternalRefs();
   }, [refreshExternalRefs, activeSessionId]);
 
+  // P0d: per-session streaming state — 切走后台继续跑，回来恢复实时视图。
+  const backgroundRunsRef = React.useRef<Set<string>>(new Set());
   React.useEffect(() => {
     const unsubscribe = window.metis?.onTopicStreamChunk?.((chunk: TopicStreamChunk) => {
-      if (chunk.sessionId !== sessionIdRef.current) return; // 事件按会话隔离
+      // 事件按会话隔离。当前会话实时显示；非当前会话标记后台运行徽标。
+      if (chunk.sessionId !== sessionIdRef.current) {
+        if (chunk.content) backgroundRunsRef.current.add(chunk.sessionId);
+        return;
+      }
       // P0 2026-09-05：保存完整累积内容交给 StreamingMarkdown 增量渲染
       // （旧版截断 400 字导致用户看不到完整流式回答）。上限仅作内存保护：
       // 超限时尾部截断会触发解析器一代重置，单帧全量解析，可接受。
@@ -173,7 +245,35 @@ export default function TopicWorkspacePage() {
         return next.length > 20_000 ? next.slice(-20_000) : next;
       });
     });
-    return () => unsubscribe?.();
+    const unsubscribeTools = window.metis?.onTopicToolEvent?.((payload) => {
+      if (payload.sessionId !== sessionIdRef.current) return;
+      setToolEvents((current) => [...current.slice(-19), {
+        id: Date.now() + Math.floor(Math.random() * 1000),
+        tool: payload.tool,
+        state: payload.state,
+        summary: payload.summary ?? null,
+      }]);
+    });
+    const unsubscribeReasoning = window.metis?.onTopicReasoningDelta?.((payload) => {
+      if (payload.sessionId !== sessionIdRef.current) return;
+      // P0c: 思考流程一行内刷新（打字机效果由 CSS 过渡承担）。
+      setReasoningLine((prev) => (payload.text.length > 120 ? payload.text.slice(-120) : (prev + payload.text).slice(-160)));
+    });
+    const unsubscribeEnd = window.metis?.onTopicStreamEnd?.((payload) => {
+      backgroundRunsRef.current.delete(payload.sessionId);
+      if (payload.sessionId !== sessionIdRef.current) return;
+      setStreaming(false);
+      setStreamTail('');
+      setToolEvents([]);
+      setReasoningLine('');
+      void loadSessionRef.current?.(payload.sessionId);
+    });
+    return () => {
+      unsubscribe?.();
+      unsubscribeTools?.();
+      unsubscribeReasoning?.();
+      unsubscribeEnd?.();
+    };
   }, []);
 
   const buildPackage = React.useCallback((): string | null => buildTopicContextPackage({
@@ -211,26 +311,38 @@ export default function TopicWorkspacePage() {
     }]);
   }, []);
 
-  const createSession = async () => {
-    const intent = newIntent.trim();
-    if (!intent) return;
-    const result = await window.metis?.topicCreateSession?.({ initialIntent: intent });
-    if (result?.ok && result.session) {
-      const session = result.session as unknown as TopicSessionDto;
-      setCreating(false);
-      setNewIntent('');
-      await refreshSessions();
-      setActiveSessionId(session.id);
-      await loadSession(session.id);
-      // 首条意图自动发起研究(不重复询问用户已给出的信息)。
-      void sendFirstMessage(session.id, intent);
-    } else {
-      setNotice(result?.code === 'persistence_unavailable' ? '持久化暂不可用,无法创建选题会话。' : '创建选题会话失败,请重试。');
+  // 删除(右键菜单/条目 × 共用):二次确认;后端为软删除(归档),列表不再显示。
+  const deleteSessionWithConfirm = async (item: TopicSessionDto) => {
+    if (!window.confirm(`确定删除选题会话「${item.title}」?删除后不再出现在列表中。`)) return;
+    await window.metis?.topicDeleteSession?.(item.id);
+    if (activeSessionId === item.id) {
+      setActiveSessionId(null);
+      setSession(null);
+      setCandidates([]);
+      setMessages([]);
     }
+    await refreshSessions();
+  };
+
+  // 重命名/移动分类：作用于任意会话（右键菜单），不限于当前打开的会话。
+  const submitRename = async (sessionId: string) => {
+    const title = renameDraft.trim();
+    setRenamingId(null);
+    if (!title) return;
+    await window.metis?.topicUpdateSession?.({ sessionId, patch: { title } });
+    await refreshSessions();
+    if (sessionId === activeSessionId) await loadSession(sessionId);
+  };
+
+  const categorizeSession = async (sessionId: string, category: string | null) => {
+    await window.metis?.topicUpdateSession?.({ sessionId, patch: { category } });
+    await refreshSessions();
+    if (sessionId === activeSessionId) await loadSession(sessionId);
   };
 
   const sendFirstMessage = async (id: string, intent: string) => {
     setStreaming(true);
+    setStreamingSessionId(id);
     setStreamTail('');
     try {
       const result = await window.metis?.topicChat?.({ sessionId: id, message: intent });
@@ -249,11 +361,32 @@ export default function TopicWorkspacePage() {
 
   const send = async () => {
     const message = input.trim();
-    if (!message || !activeSessionId || streaming) return;
+    if (!message || streaming) return;
+    // 刘总 2026-09：没有会话时直接输入即创建——文本就是选题意图。
+    if (!activeSessionId) {
+      setInput('');
+      const result = await window.metis?.topicCreateSession?.({ initialIntent: message });
+      if (result?.ok && result.session) {
+        const created = result.session as unknown as TopicSessionDto;
+        // 发出首条消息即自动命名（刘总 2026-09）：标题取意图前 24 字。
+        const autoTitle = message.length > 24 ? `${message.slice(0, 24)}…` : message;
+        void window.metis?.topicUpdateSession?.({ sessionId: created.id, patch: { title: autoTitle } });
+        await refreshSessions();
+        setActiveSessionId(created.id);
+        await loadSession(created.id);
+        void sendFirstMessage(created.id, message);
+      } else {
+        setNotice(result?.code === 'persistence_unavailable' ? '持久化暂不可用,无法创建选题会话。' : '创建选题会话失败,请重试。');
+      }
+      return;
+    }
     setInput('');
     setMessages((current) => [...current, { id: makeId('local'), role: 'user', content: message }]);
     setStreaming(true);
+    setStreamingSessionId(activeSessionId);
     setStreamTail('');
+    setToolEvents([]);
+    setReasoningLine('');
     try {
       const result = await window.metis?.topicChat?.({ sessionId: activeSessionId, message });
       if (result?.ok) {
@@ -347,53 +480,177 @@ export default function TopicWorkspacePage() {
 
   const workspaceNode = (
     <div className={`topic-workspace${chatbotOpen ? ' topic-workspace--collab' : ''}`} data-testid="topic-workspace">
-      <aside className="topic-workspace__sidebar" aria-label="选题会话">
+      {/* 刘总 2026-09：会话记录回左侧竖排列表（按分类分组），不再用顶部 tab。 */}
+      <aside className="topic-workspace__sessionlist" aria-label="选题会话" style={{ width: leftWidth, flex: `0 0 ${leftWidth}px` }}>
         <header>
-          <strong>选题</strong>
-          <span className="topic-workspace__header-actions">
-            <button type="button" className="btn-secondary btn-sm" onClick={() => setCreating((value) => !value)} data-testid="topic-new">
-              <Plus size={13} /> 新选题
-            </button>
-            <button
-              type="button"
-              className="btn-secondary btn-sm"
-              onClick={() => setChatbotOpen(true)}
-              data-testid="topic-open-chatbot"
-              title="打开 Chatbot 协作面板：与其他 AI 并排讨论，内容仅作外部参考（非证据）"
-            >
-              打开 Chatbot
-            </button>
-          </span>
+          <span>选题会话</span>
+          {/* 新选题 = 清空当前会话并聚焦输入框，输入即创建（刘总 2026-09）。 */}
+          <button
+            type="button"
+            className="btn-secondary btn-sm"
+            onClick={() => {
+              setActiveSessionId(null);
+              setSession(null);
+              setCandidates([]);
+              setMessages([]);
+              composerRef.current?.focus();
+            }}
+            data-testid="topic-new"
+          >
+            <Plus size={13} /> 新选题
+          </button>
+          <button
+            type="button"
+            className="btn-secondary btn-sm"
+            data-testid="topic-new-category"
+            title="新建分类，把当前会话归入该分类"
+            onClick={() => {
+              const name = window.prompt('新分类名称：');
+              if (name?.trim() && activeSessionId) {
+                void window.metis?.topicUpdateSession?.({ sessionId: activeSessionId, patch: { category: name.trim() } }).then(() => refreshSessions());
+              } else if (name?.trim()) {
+                setNewCategoryFilter(name.trim());
+              }
+            }}
+          >
+            <Plus size={13} /> 新分类
+          </button>
         </header>
-        {creating && (
-          <div className="topic-workspace__new">
-            <textarea
-              rows={4}
-              value={newIntent}
-              placeholder="例如:我想研究生成式人工智能对知识劳动者的影响,偏劳动社会学,想投 CSSCI,但具体题目还没想好。"
-              onChange={(event) => setNewIntent(event.target.value)}
-              data-testid="topic-new-intent"
-            />
-            <button type="button" className="btn-primary btn-sm" disabled={!newIntent.trim()} onClick={() => void createSession()} data-testid="topic-create-submit">开始选题研究</button>
-          </div>
-        )}
-        <ul className="topic-workspace__sessions">
-          {sessions.map((item) => (
-            <li key={item.id} className={item.id === activeSessionId ? 'active' : undefined}>
-              <button
-                type="button"
-                onClick={() => { setActiveSessionId(item.id); void loadSession(item.id); }}
-                data-testid={`topic-session-${item.id}`}
-              >
-                <strong>{item.title}</strong>
-                <small>{SESSION_STATUS_LABELS[item.status] ?? item.status}</small>
-              </button>
-            </li>
+        <div className="topic-workspace__sessionlist-scroll">
+          {sessionGroups.map((group) => (
+            <div key={group.name ?? 'uncategorized'} className="topic-workspace__sessionlist-group">
+              {group.name && (
+                <span
+                  className={`topic-workspace__sessionlist-group-label${selectedCategory === group.name ? ' selected' : ''}`}
+                  data-testid={`topic-category-${group.name}`}
+                  title="点击选中过滤；右键重命名/删除分类"
+                  onClick={() => setSelectedCategory(selectedCategory === group.name ? null : group.name)}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    const name = group.name;
+                    if (!name) return;
+                    const action = window.prompt(`分类「${name}」操作：输入 R 重命名 / D 删除`, 'R');
+                    if (action?.toUpperCase() === 'R') {
+                      const newName = window.prompt('新分类名：', name);
+                      if (newName?.trim() && newName.trim() !== name) {
+                        void Promise.all(visibleSessions.filter((item) => item.category?.trim() === name).map((item) =>
+                          window.metis?.topicUpdateSession?.({ sessionId: item.id, patch: { category: newName.trim() } }),
+                        )).then(() => { if (selectedCategory === name) setSelectedCategory(newName.trim()); void refreshSessions(); });
+                      }
+                    } else if (action?.toUpperCase() === 'D') {
+                      void Promise.all(visibleSessions.filter((item) => item.category?.trim() === name).map((item) =>
+                        window.metis?.topicUpdateSession?.({ sessionId: item.id, patch: { category: null } }),
+                      )).then(() => { if (selectedCategory === name) setSelectedCategory(null); void refreshSessions(); });
+                    }
+                  }}
+                >
+                  {group.name}
+                </span>
+              )}
+              {group.items.map((item) => (
+                <span key={item.id} className={`topic-workspace__session-item${item.id === activeSessionId ? ' active' : ''}`}>
+                  {renamingId === item.id ? (
+                    <input
+                      value={renameDraft}
+                      autoFocus
+                      onChange={(event) => setRenameDraft(event.target.value)}
+                      onKeyDown={(event) => { if (event.key === 'Enter') void submitRename(item.id); if (event.key === 'Escape') setRenamingId(null); }}
+                      onBlur={() => void submitRename(item.id)}
+                      data-testid="topic-session-rename-input"
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      title={`${item.title} · ${SESSION_STATUS_LABELS[item.status] ?? item.status}`}
+                      data-session-id={item.id}
+                      onClick={() => { setActiveSessionId(item.id); void loadSession(item.id); }}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        setSessionMenu({ sessionId: item.id, x: event.clientX, y: event.clientY });
+                      }}
+                      data-testid={`topic-session-${item.id}`}
+                    >
+                      {item.title}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="topic-workspace__session-close"
+                    aria-label={`删除 ${item.title}`}
+                    onClick={() => void deleteSessionWithConfirm(item)}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
           ))}
-          {sessions.length === 0 && <li className="topic-workspace__empty">还没有选题会话。点击「新选题」描述你的研究兴趣开始。</li>}
-        </ul>
+          {visibleSessions.length === 0 && <p className="topic-workspace__sessionlist-empty">还没有选题会话。</p>}
+        </div>
+        <footer>
+          <button
+            type="button"
+            className="btn-secondary btn-sm"
+            onClick={() => setChatbotOpen(true)}
+            data-testid="topic-open-chatbot"
+            title="打开 Chatbot 协作面板：与其他 AI 并排讨论，内容仅作外部参考（非证据）"
+          >
+            打开 Chatbot
+          </button>
+        </footer>
       </aside>
-
+      {/* 会话右键菜单：重命名 / 移动分类 / 删除（刘总 2026-09）。 */}
+      {sessionMenu && (
+        <div className="topic-session-menu__backdrop" role="presentation" onClick={() => { setSessionMenu(null); setMenuNewCategory(false); }}>
+          <div
+            className="topic-session-menu"
+            role="menu"
+            style={{ left: sessionMenu.x, top: sessionMenu.y }}
+            data-testid="topic-session-menu"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button type="button" role="menuitem" onClick={() => {
+              const target = visibleSessions.find((entry) => entry.id === sessionMenu.sessionId);
+              setRenameDraft(target?.title ?? '');
+              setRenamingId(sessionMenu.sessionId);
+              setSessionMenu(null);
+            }}>重命名</button>
+            <button type="button" role="menuitem" onClick={() => { void categorizeSession(sessionMenu.sessionId, null); setSessionMenu(null); }}>移出分类</button>
+            {categories.map((name) => (
+              <button key={name} type="button" role="menuitem" onClick={() => { void categorizeSession(sessionMenu.sessionId, name); setSessionMenu(null); }}>
+                移到「{name}」
+              </button>
+            ))}
+            {menuNewCategory ? (
+              <input
+                autoFocus
+                value={categoryDraft}
+                placeholder="新分类名"
+                onChange={(event) => setCategoryDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && categoryDraft.trim()) { void categorizeSession(sessionMenu.sessionId, categoryDraft.trim()); setSessionMenu(null); setMenuNewCategory(false); }
+                  if (event.key === 'Escape') { setMenuNewCategory(false); }
+                }}
+                data-testid="topic-session-menu-new-category"
+              />
+            ) : (
+              <button type="button" role="menuitem" onClick={() => { setCategoryDraft(''); setMenuNewCategory(true); }}>＋新建分类…</button>
+            )}
+            <button type="button" role="menuitem" className="topic-session-menu__danger" onClick={() => {
+              const target = visibleSessions.find((entry) => entry.id === sessionMenu.sessionId);
+              setSessionMenu(null);
+              if (target) void deleteSessionWithConfirm(target);
+            }}>删除</button>
+          </div>
+        </div>
+      )}
+      <div
+        className="topic-workspace__col-resize topic-workspace__col-resize--left"
+        onMouseDown={startDrag('left')}
+        data-testid="topic-resize-left"
+        role="separator"
+        aria-orientation="vertical"
+      />
       <section className="topic-workspace__main" aria-label="选题研究过程">
         {session && (session.status === 'selected' || session.status === 'converted') && (
           <div className="topic-workspace__selected-banner" data-testid="topic-selected-banner">
@@ -410,8 +667,8 @@ export default function TopicWorkspacePage() {
           {messages.length === 0 && !session && (
             <div className="topic-workspace__intro">
               <h2>选题</h2>
-              <p>从一个模糊的研究兴趣开始:METIS 会先确认你的目标与条件,然后真实检索中文与英文研究,形成研究版图,与你一起比较、论证并收窄候选,最终确认选题并一路带进场景构建与科研项目。</p>
-              <p className="topic-workspace__intro-note">每个研究判断尽可能附带真实来源;来源不可用会被如实告知,不会冒充"没有相关研究"。</p>
+              <p>从一个模糊的研究兴趣开始，METIS 会真实检索中英文文献，和你一起比较候选、确认选题。</p>
+              <p className="topic-workspace__intro-note">直接在下方输入你的研究兴趣，回车即开始新的选题会话。</p>
             </div>
           )}
           {messages.map((message) => (
@@ -419,6 +676,23 @@ export default function TopicWorkspacePage() {
               ? <UserTurn key={message.id} message={{ id: message.id, role: 'user', createdAt: 0, parts: [{ type: 'text', text: message.content }] }} />
               : <AssistantTurn key={message.id} message={{ id: message.id, role: 'assistant', createdAt: 0, parts: [{ type: 'text', text: message.content }] }} />
           ))}
+          {(streaming || toolEvents.length > 0) && (
+            <div className="topic-tool-strip" data-testid="topic-tool-strip">
+              {toolEvents.map((event) => (
+                <div key={event.id} className={`topic-tool-row topic-tool-row--${event.state}`} data-testid="topic-tool-row">
+                  <span className={`topic-tool-row__dot topic-tool-row__dot--${event.state}`} aria-hidden />
+                  <span className="topic-tool-row__name">{event.tool ?? '工具调用'}</span>
+                  {event.summary && <span className="topic-tool-row__summary">{event.summary}</span>}
+                </div>
+              ))}
+              {streaming && (
+                <div className="topic-reasoning-line" data-testid="topic-reasoning-line" title="思考流程">
+                  <span className="topic-reasoning-line__label">思考中</span>
+                  <span className="topic-reasoning-line__text">{reasoningLine || '分析研究意图……'}</span>
+                </div>
+              )}
+            </div>
+          )}
           {streaming && (
             <div className="conv-assistant" data-status="streaming">
               <div className="conv-assistant__body">
@@ -431,20 +705,49 @@ export default function TopicWorkspacePage() {
           )}
         </div>
         <footer className="topic-workspace__input">
-          <textarea
-            rows={2}
-            value={input}
-            placeholder={session ? '继续讨论:例如「A 和 C 哪个更好?」「我没有企业数据」「就这个。」' : '先在左侧创建选题会话。'}
-            onChange={(event) => setInput(event.target.value)}
-            onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(); } }}
-            disabled={!session || streaming}
-            data-testid="topic-input"
-          />
-          <button type="button" className="btn-primary btn-sm" disabled={!session || streaming || !input.trim()} onClick={() => void send()} data-testid="topic-send">发送</button>
+          {/* 刘总 2026-09：选题对话与研究对话一样支持选择模型与思考强度；
+              无会话时输入直接创建新会话（文本即选题意图）。 */}
+          <div className="topic-workspace__input-tools">
+            <ModelThinkingSelector zh labeled disabled={streaming} />
+          </div>
+          <div className="topic-workspace__input-row">
+            <textarea
+              ref={composerRef}
+              rows={2}
+              value={input}
+              placeholder={session ? '继续讨论:例如「A 和 C 哪个更好?」「我没有企业数据」「就这个。」' : '直接输入你的研究兴趣，回车即开始新的选题会话。'}
+              onChange={(event) => setInput(event.target.value)}
+              onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(); } }}
+              disabled={streaming}
+              data-testid="topic-input"
+            />
+            {streaming ? (
+              <button
+                type="button"
+                className="btn-danger btn-sm"
+                data-testid="topic-interrupt"
+                title="中断当前研究轮（已收到的内容会保留）"
+                onClick={() => { if (streamingSessionId) void window.metis?.topicAbort?.({ sessionId: streamingSessionId }); }}
+              >
+                ■ 中断
+              </button>
+            ) : (
+              <button type="button" className="btn-primary btn-sm" disabled={!input.trim()} onClick={() => void send()} data-testid="topic-send">{session ? '发送' : '开始选题'}</button>
+            )}
+          </div>
         </footer>
       </section>
 
-      <aside className={`topic-workspace__candidates${rightCollapsed ? ' collapsed' : ''}`} aria-label="候选选题池">
+      {!rightCollapsed && (
+        <div
+          className="topic-workspace__col-resize topic-workspace__col-resize--right"
+          onMouseDown={startDrag('right')}
+          data-testid="topic-resize-right"
+          role="separator"
+          aria-orientation="vertical"
+        />
+      )}
+      <aside className={`topic-workspace__candidates${rightCollapsed ? ' collapsed' : ''}`} aria-label="候选选题池" style={rightCollapsed ? undefined : { width: rightWidth, flex: `0 0 ${rightWidth}px` }}>
         <header>
           <strong>候选选题({candidates.length})</strong>
           <button type="button" className="btn-secondary btn-sm" onClick={() => setRightCollapsed((value) => !value)} aria-label={rightCollapsed ? '展开候选池' : '折叠候选池'}>

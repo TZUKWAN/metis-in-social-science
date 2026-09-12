@@ -85,7 +85,7 @@ describe('Personalization visual and accessibility contracts', () => {
     expect(app).toMatch(/<main\s+className=\{?`?main-content/);
     expect(center).not.toMatch(/<main(?:\s|>)/u);
     expect(center).toContain('<section');
-    expect(center).toContain('className="personalization-detail"');
+    expect(center).toContain('className="personalization-detail personalization-detail--library"');
     expect(center).toContain("aria-label={zh ? '场景详情' : 'Scenario details'}");
   });
 

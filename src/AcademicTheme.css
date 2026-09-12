@@ -520,3 +520,8 @@ select:focus-visible,
 input:focus-visible {
   border-color: var(--accent);
 }
+
+/* 经典滚动条的上下箭头按钮在密集工作区里是纯视觉噪声，统一隐藏。 */
+::-webkit-scrollbar-button {
+  display: none;
+}

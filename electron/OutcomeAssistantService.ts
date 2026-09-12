@@ -326,6 +326,17 @@ function answerFromModel(raw: string): { answer: string; edit: OutcomeAssistantE
           const prose = visible.replace(candidates[index]!, ' ').replace(/\s+/gu, ' ').trim();
           return { answer: parsed.data.answer || prose.slice(0, 400), edit: parsed.data.edit };
         }
+        // 近似协议（edit 为空或字段不合 schema）也至少把 answer 摘出来，
+        // 否则候选 JSON 会原样残留在正文里显示为乱码。
+        const loose = candidate as { answer?: unknown };
+        if (typeof loose?.answer === 'string' && loose.answer.trim()) {
+          const prose = visible.replace(candidates[index]!, ' ').replace(/\s+/gu, ' ').trim();
+          return {
+            answer: loose.answer.trim() || prose.slice(0, 400),
+            edit: null,
+            diagnostic: diagnostic('model_response_not_structured', '模型返回了回答，但没有按编辑协议提交修改，成果内容未变。'),
+          };
+        }
       } catch { /* try next candidate */ }
     }
     // 真的没有可应用的编辑：回答截断到弹窗可读长度，避免把整段推理塞进局部编辑弹窗。
@@ -342,6 +353,16 @@ function answerFromModel(raw: string): { answer: string; edit: OutcomeAssistantE
   }
   const parsed = OutcomeAssistantModelResponseSchema.safeParse(value);
   if (!parsed.success) {
+    // 模型回了近似协议的 JSON（例如 replacements 写成数组对）：把 answer
+    // 字段摘出来展示，而不是把整段 JSON 当回答塞进历史。
+    const loose = value as { answer?: unknown };
+    if (loose && typeof loose === 'object' && typeof loose.answer === 'string' && loose.answer.trim()) {
+      return {
+        answer: loose.answer.trim(),
+        edit: null,
+        diagnostic: diagnostic('model_response_contract_error', '模型返回了回答，但修改内容未通过成果协议，成果内容未变。'),
+      };
+    }
     const clipped = raw.length > 600 ? `${raw.slice(0, 600)}…（回答过长已截断；本次没有产生可应用的修改）` : raw;
     return {
       answer: clipped,

@@ -83,10 +83,9 @@ describe('ScenarioPhaseGates', () => {
     const gate = checkPhaseGate('deliverable', base);
     expect(gate.ok).toBe(false);
     expect(gate.issues.some((issue) => issue.includes('globalInstructions'))).toBe(true);
-    expect(gate.issues.some((issue) => issue.includes('purpose'))).toBe(true);
+    // 2026-09 规格：chapter 只保留 instructions（具体写作要求）必填；
+    // purpose/requirements/lengthTarget 降级为可选字段（不再阻断放行）。
     expect(gate.issues.some((issue) => issue.includes('instructions'))).toBe(true);
-    expect(gate.issues.some((issue) => issue.includes('requirements'))).toBe(true);
-    expect(gate.issues.some((issue) => issue.includes('lengthTarget'))).toBe(true);
   });
 
   it('deliverable gate rejects placeholder-only content (TBD/待定/根据实际情况)', () => {
@@ -101,9 +100,8 @@ describe('ScenarioPhaseGates', () => {
     }];
     const gate = checkPhaseGate('deliverable', base);
     expect(gate.ok).toBe(false);
+    // 2026-09 规格：只有「写作要求」（instructions）是必填；占位文本仍会被拦。
     expect(gate.issues.some((issue) => issue.includes('写作要求'))).toBe(true);
-    expect(gate.issues.some((issue) => issue.includes('必须包含'))).toBe(true);
-    expect(gate.issues.some((issue) => issue.includes('目标篇幅'))).toBe(true);
   });
 
   it('deliverable gate does not demand lengthTarget from references kind (kind-aware rules)', () => {

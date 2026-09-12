@@ -58,6 +58,7 @@
 .personalization-card--trashed .personalization-card__select--static { padding: 13px; text-align: left; display: grid; gap: 6px; cursor: default; opacity: .82; }
 .personalization-card--trashed strong { font-size: 13px; }
 .personalization-card__draft { margin-right: auto; color: var(--primary); font-size: 11px; font-weight: 700; }
+.personalization-card__secrets-missing { flex: 1 0 100%; color: var(--danger); font-size: 11px; font-weight: 700; }
 .personalization-card__readiness { flex: 1 0 100%; color: var(--text-muted); font-size: 11px; line-height: 1.45; }
 .personalization-library__status { min-height: 24px; margin-top: 12px; font-size: 12px; color: var(--text-secondary); }
 
@@ -298,3 +299,35 @@
 .vault-detail__close { flex: none; border: 1px solid var(--border-light); border-radius: calc(var(--radius) - 2px); background: var(--bg-input); color: var(--text-primary); padding: 2px 8px; font-size: 11px; cursor: pointer; font-family: inherit; }
 .vault-detail__meta { margin: 6px 0; font-size: 11px; color: var(--text-secondary); }
 .vault-detail__body { max-height: 300px; overflow: auto; margin: 0; padding: 8px; border: 1px solid var(--border-light); border-radius: calc(var(--radius) - 2px); background: var(--bg-input); font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+
+/* 技能/MCP 页四区布局（刘总 2026-09 重构）：单栏分区，取消左侧孤立库栏。 */
+.personalization-layout--single { grid-template-columns: minmax(0, 1fr); }
+.personalization-detail--library { display: grid; gap: 22px; align-content: start; }
+.personalization-installed { display: grid; gap: 4px; }
+.personalization-installed .personalization-cards { grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); }
+/* 刘总 2026-09：能力库条目同样卡片网格化（此前单列整宽铺 200 行）；描述三行截断。 */
+.personalization-installer .personalization-cards { grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); }
+.vault-card .personalization-card__description { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.vault-card__more { margin-top: 10px; }
+/* 技能页常驻对话窗（刘总 2026-09）：右侧停靠，默认展开可收起；统一视图里的目录卡片复用 vault 卡片样式。 */
+.personalization-layout--with-dock { grid-template-columns: minmax(0, 1fr) 340px; }
+.skill-studio-dock { position: sticky; top: 12px; display: flex; flex-direction: column; max-height: calc(100vh - 24px); border: 1px solid var(--border-light); border-radius: var(--radius); background: var(--bg-card); }
+.skill-studio-dock__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border-light); }
+.skill-studio-dock__head h2 { margin: 0; font-size: 14px; }
+.skill-studio-dock__actions { display: flex; gap: 6px; }
+.skill-studio-dock__body { overflow: auto; padding: 10px 12px; }
+.skill-studio-dock--collapsed { position: sticky; top: 12px; max-height: none; }
+.skill-studio-dock__expand { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 100%; padding: 12px 6px; border: 0; background: transparent; color: var(--text-secondary); cursor: pointer; font-size: 12px; writing-mode: vertical-rl; }
+.skill-studio-dock__expand:hover { color: var(--text-primary); }
+.skill-studio__steps { margin: 0; padding-left: 18px; display: grid; gap: 2px; font-size: 12px; color: var(--text-secondary); }
+.skill-unified .personalization-cards { grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); }
+@media (max-width: 1120px) {
+  .personalization-layout--with-dock { grid-template-columns: 1fr; }
+  .skill-studio-dock { position: static; max-height: none; }
+  .skill-studio-dock__expand { writing-mode: horizontal-tb; flex-direction: row; }
+}
+.personalization-category-group { display: grid; gap: 9px; margin-bottom: 6px; }
+.personalization-category-group__title { margin: 6px 0 0; font-size: 13px; font-weight: 700; color: var(--text-secondary); }
+.personalization-card__category { min-width: 90px; max-width: 150px; border: 1px solid var(--border-light); background: var(--bg-input); color: var(--text-primary); border-radius: var(--radius); padding: 3px 7px; font-size: 11px; }
+.market-browser__skillhub { display: grid; gap: 8px; justify-items: start; padding: 12px; border: 1px dashed var(--border-light); border-radius: var(--radius); }
+.market-browser__skillhub p { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.55; }

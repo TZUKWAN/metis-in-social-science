@@ -27,13 +27,13 @@ const STATUS_LABELS_ZH: Record<string, string> = {
 const TOP_KINDS = ['title', 'abstract', 'keywords', 'chapter', 'grant_column', 'attachment', 'references', 'other'] as const;
 const CHILD_KINDS = ['section', 'attachment', 'other'] as const;
 
-const ADD_KINDS: Array<{ kind: string; zh: string; en: string }> = [
-  { kind: 'abstract', zh: '摘要', en: 'Abstract' },
-  { kind: 'keywords', zh: '关键词', en: 'Keywords' },
-  { kind: 'references', zh: '参考文献', en: 'References' },
-  { kind: 'attachment', zh: '附件', en: 'Attachment' },
-  { kind: 'other', zh: '其他部分', en: 'Other part' },
-];
+// 「添加部分」下拉与段落编辑器「类型」下拉共用同一份清单和中文标签
+// （刘总 2026-09：两处类型选择项必须一致，不允许一个少三项）。
+const ADD_KINDS: Array<{ kind: string; zh: string; en: string }> = TOP_KINDS.map((kind) => ({
+  kind,
+  zh: KIND_LABELS_ZH[kind] ?? kind,
+  en: kind,
+}));
 
 const FIELD_LABELS: Record<DeliverableRequiredField | 'optionalContent' | 'forbidden' | 'method' | 'evidence', { zh: string; en: string }> = {
   purpose: { zh: '这一部分的作用', en: 'Purpose' },
@@ -73,10 +73,6 @@ function findSection(sections: readonly DeliverableSection[], id: string): Deliv
   return undefined;
 }
 
-function lineValues(value: string): string[] {
-  return value.split('\n').map((item) => item.trim()).filter(Boolean);
-}
-
 function SectionRow(props: {
   section: DeliverableSection;
   depth: number;
@@ -95,7 +91,6 @@ function SectionRow(props: {
   const isTopLevel = depth === 0;
   const requiredFields = requiredDeliverableFieldsForKind(section.kind);
   const showCondition = section.status === 'conditional';
-  const showMethodEvidence = section.kind === 'chapter' || section.kind === 'section' || section.kind === 'abstract' || section.kind === 'grant_column';
   const kindOptions = isTopLevel ? TOP_KINDS : CHILD_KINDS;
   const childDepthClass = depth > 0 ? ' scenario-blueprint__item--nested' : '';
 
@@ -172,10 +167,8 @@ function SectionRow(props: {
               <textarea rows={2} value={section.condition ?? ''} onChange={(event) => update(section.id, { condition: event.target.value || undefined })} disabled={busy} />
             </label>
           )}
-          <label>
-            <span>{FIELD_LABELS.purpose[zh ? 'zh' : 'en']}{requiredFields.includes('purpose') ? ' *' : ''}</span>
-            <textarea rows={2} value={section.purpose ?? ''} onChange={(event) => update(section.id, { purpose: event.target.value || undefined })} disabled={busy} data-testid={`blueprint-purpose-${section.id}`} />
-          </label>
+          {/* 刘总 2026-09：交付物部分只保留「具体写作要求」一个提示词字段，
+              作用/必须包含/禁止事项/方法/证据字段不再对用户暴露。 */}
           <label>
             <span>{FIELD_LABELS.instructions[zh ? 'zh' : 'en']}{requiredFields.includes('instructions') ? ' *' : ''}</span>
             <textarea
@@ -187,32 +180,6 @@ function SectionRow(props: {
               data-testid={`blueprint-instructions-${section.id}`}
             />
           </label>
-          <label>
-            <span>{FIELD_LABELS.requirements[zh ? 'zh' : 'en']}{requiredFields.includes('requirements') ? ' *' : ''}</span>
-            <textarea rows={3} value={(section.requirements ?? []).join('\n')} onChange={(event) => update(section.id, { requirements: lineValues(event.target.value) })} disabled={busy} data-testid={`blueprint-requirements-${section.id}`} />
-          </label>
-          <label>
-            <span>{FIELD_LABELS.forbidden[zh ? 'zh' : 'en']}</span>
-            <textarea rows={2} value={(section.forbidden ?? []).join('\n')} onChange={(event) => update(section.id, { forbidden: lineValues(event.target.value) })} disabled={busy} />
-          </label>
-          <div className="scenario-blueprint__detail-grid">
-            <label>
-              <span>{FIELD_LABELS.lengthTarget[zh ? 'zh' : 'en']}{requiredFields.includes('lengthTarget') ? ' *' : ''}</span>
-              <input value={section.lengthTarget ?? ''} onChange={(event) => update(section.id, { lengthTarget: event.target.value || undefined })} disabled={busy} data-testid={`blueprint-length-${section.id}`} />
-            </label>
-            {showMethodEvidence && (
-              <label>
-                <span>{FIELD_LABELS.method[zh ? 'zh' : 'en']}</span>
-                <input value={section.method ?? ''} onChange={(event) => update(section.id, { method: event.target.value || undefined })} disabled={busy} />
-              </label>
-            )}
-          </div>
-          {showMethodEvidence && (
-            <label>
-              <span>{FIELD_LABELS.evidence[zh ? 'zh' : 'en']}</span>
-              <input value={section.evidence ?? ''} onChange={(event) => update(section.id, { evidence: event.target.value || undefined })} disabled={busy} />
-            </label>
-          )}
           <div className="scenario-blueprint__detail-actions">
             <button type="button" className="btn-secondary btn-sm" disabled={busy} onClick={() => addChild(section.id)}>
               <Plus size={12} /> {zh ? '添加子部分' : 'Add child'}
