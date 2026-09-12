@@ -235,7 +235,7 @@ export class OutcomeReviewPipelineService {
         REVIEW_MODEL_INSTRUCTION,
       ].join('\n'),
     }];
-    let raw = '';
+    let raw: string;
     try {
       const response = await runEphemeralChatTurn({
         agentLoop: this.deps.agentLoop,

@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/set-state-in-effect -- 本面板的 setState 全部发生在 async IPC 回调与用户事件处理器中，非 effect 同步体内 */
 /**
  * OutcomeWorkbenchPanel — 成果工作台右侧面板（任务书 Phase 13，T13.05–T13.10 的落地）。
  *
@@ -19,9 +20,6 @@ const TAB_LABELS: Record<TabKey, string> = {
 };
 const VERIFICATION_LABELS: Record<string, string> = {
   verified: '已验证', supported: '有支持', unverified: '未验证', rejected: '已否决',
-};
-const ISSUE_STATUS_LABELS: Record<string, string> = {
-  open: '待处理', in_progress: '处理中', resolved: '已解决', ignored: '已忽略', stale: '已过期',
 };
 const REVIEW_MODES: Array<{ key: string; label: string }> = [
   { key: 'full', label: '完整审查' }, { key: 'argument', label: '论证逻辑' },

@@ -14,7 +14,6 @@ import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import {
   OutcomeDocumentSchema,
-  OutcomeIdSchema,
   type OutcomeDocument,
   type OutcomeSummary,
 } from '../engine/runtime/OutcomeRuntimeContract.js';
