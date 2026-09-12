@@ -1320,6 +1320,7 @@ function WordManagedImagePreview({ projectId, outcomeId, blockId, mediaId, media
 function LocalWordAssistantPopover({ projectId, outcomeId, selection, anchor, hasUnsavedChanges, close, onApplied, onConversationChanged, prepareSend, onNotice, onDraftUpdated }: { projectId: string; outcomeId: string; selection: Extract<AssistantSelection, { kind: 'word' }>; anchor: { left: number; top: number; bottom?: number }; hasUnsavedChanges: boolean; close: () => void; onApplied: (value: AssistantApplied | undefined) => Promise<void>; onConversationChanged: () => void; prepareSend?: () => Promise<{ selection: Extract<AssistantSelection, { kind: 'word' }> } | { error: string }>; onNotice?: (notice: string) => void; onDraftUpdated?: (content: unknown) => void }) {
   const [instruction, setInstruction] = useState(''); const [notice, setNotice] = useState(''); const [isSending, setIsSending] = useState(false);
   const [proposedBundle, setProposedBundle] = useState<{ set: { id: string; instruction: string; createdBy: string; status: 'pending' | 'partially_accepted' | 'accepted' | 'rejected' | 'stale' | 'cancelled' }; revisions: never[] } | undefined>(undefined);
+  // T05.05：AI 回答加入成果的插入位置选择。
   const popoverRef = useRef<HTMLElement>(null);
   const [placement, setPlacement] = useState({ left: anchor.left, top: anchor.top });
   useEffect(() => {
@@ -1902,12 +1903,46 @@ function OutcomeAssistant({ projectId, projectName, detail, selection, hasUnsave
     } catch { setNotice('无法载入该会话的记录。'); }
   };
 
+  const [appendTarget, setAppendTarget] = useState<'after_selection' | 'section_end' | 'new_section' | null>(null);
+  void setAppendTarget;
   const loadDraftIntoEditor = async () => {
     if (!projectId || !detail) return;
     try {
       const draft = await window.metis?.outcome2DraftGet?.({ projectId, outcomeId: detail.outcome.id }) as { content?: OutcomeDocument } | null;
       if (draft?.content && onDraftContentUpdated) onDraftContentUpdated(draft.content);
     } catch { /* 读取失败保持当前编辑器内容 */ }
+  };
+
+  // T05.05：把 AI 回答原文作为新段落追加到文末——生成 Revision 提案（不直接写文档）。
+  const appendAnswerAsRevision = async (answer: string, sources: OutcomeSource[]) => {
+    if (!projectId || !detail || !window.metis?.outcome2RevisionCreate) return;
+    const text = answer.trim();
+    if (!text) return;
+    const workbench = undefined; // 提案经 IPC 由主进程 Workbench 处理（Runtime 计算 beforeHash）。
+    void workbench;
+    try {
+      const draft = await window.metis.outcome2DraftGet?.({ projectId, outcomeId: detail.outcome.id }) as { content?: OutcomeDocument } | null;
+      if (!draft?.content || draft.content.type !== 'word') { setNotice('「加入成果」当前仅支持 Word 成果；其他类型未被改动。'); return; }
+      const lastBlockId = draft.content.blocks.at(-1)?.id;
+      if (!lastBlockId) { setNotice('文档为空，无法确定插入位置。'); return; }
+      // 以文末块为锚：after = 文末块文本追加新段内容（服务端 apply 时按块替换）。
+      const lastText = draft.content.blocks.at(-1)!.text ?? '';
+      const proposalText = `${lastText}
+
+${text}`;
+      const created = await window.metis.outcome2RevisionCreate({
+        projectId, outcomeId: detail.outcome.id,
+        instruction: '把 AI 回答加入成果（文末追加）',
+        createdBy: 'conversation',
+        proposals: [{ target: { kind: 'word_block', blockId: lastBlockId }, after: { text: proposalText }, reason: '把本轮 AI 回答追加到文末', sourceRefs: sources }],
+      });
+      if (created?.ok) {
+        setProposedBundle(created.value as typeof proposedBundle);
+        setNotice('已生成「加入成果」修订提案（文末追加）。接受后写入工作草稿，仍需保存版本才会进入版本历史。');
+      } else {
+        setNotice(`加入成果未完成：${created?.code ?? 'unknown'}`);
+      }
+    } catch { setNotice('加入成果未完成，正文未被改动。'); }
   };
 
   const send = async () => {
@@ -1926,7 +1961,7 @@ function OutcomeAssistant({ projectId, projectName, detail, selection, hasUnsave
         if (result.proposed) {
           // Outcomes 2.0（T05.04）：对话回答可直接生成修改建议（Revision Set），不写版本。
           setProposedBundle(result.proposed as { set: { id: string; instruction: string; createdBy: string; status: 'pending' | 'partially_accepted' | 'accepted' | 'rejected' | 'stale' | 'cancelled' }; revisions: never[] });
-          setNotice('已根据本轮回答生成修改建议（未改动正文，未创建版本）。请核对后接受或拒绝。');
+          setNotice('已根据本轮回答生成修改建议（未改动正文，未创建版本）。请核对后接受或拒绝；也可把回答原文加入成果。');
           return;
         }
         if (result.applied) { onApplied(result.applied); setNotice('AI 已将经过校验的修改保存为新版本；你可在版本面板随时回退。'); }
@@ -1968,7 +2003,7 @@ function OutcomeAssistant({ projectId, projectName, detail, selection, hasUnsave
         <p>这里只显示当前状态；每轮实际使用的资料以对应协作记录为准。</p>
       </section>
       <div className="outcome-assistant__messages" aria-live="polite">
-        {messages.length === 0 ? <div className="outcome-assistant__starter"><p>可以直接说：</p><button type="button" onClick={() => setInstruction('检查当前成果的结构、论证和表达问题，并给出可直接应用的修改。')}>检查当前成果</button><button type="button" onClick={() => setInstruction('根据当前项目已有资料，改进当前选中的内容。')}>根据项目资料修改</button></div> : messages.slice(-8).map((message) => <article key={message.id} className={`outcome-assistant__message outcome-assistant__message--${message.role}`} aria-label={`${message.role === 'user' ? '用户' : message.role === 'assistant' ? 'METIS' : '系统'}协作记录`}><span>{message.role === 'user' ? '你' : message.role === 'assistant' ? 'METIS' : '系统'}</span><p>{message.content}</p><OutcomeSourceList sources={message.sources} label="本条实际来源" onOpenOutcomeVersion={onOpenOutcomeVersion} onLocate={onLocate} /></article>)}
+        {messages.length === 0 ? <div className="outcome-assistant__starter"><p>可以直接说：</p><button type="button" onClick={() => setInstruction('检查当前成果的结构、论证和表达问题，并给出可直接应用的修改。')}>检查当前成果</button><button type="button" onClick={() => setInstruction('根据当前项目已有资料，改进当前选中的内容。')}>根据项目资料修改</button></div> : messages.slice(-8).map((message) => <article key={message.id} className={`outcome-assistant__message outcome-assistant__message--${message.role}`} aria-label={`${message.role === 'user' ? '用户' : message.role === 'assistant' ? 'METIS' : '系统'}协作记录`}><span>{message.role === 'user' ? '你' : message.role === 'assistant' ? 'METIS' : '系统'}</span><p>{message.content}</p>{message.role === 'assistant' && detail && !hasUnsavedChanges && <button type="button" className="outcome-assistant__append-btn" data-testid={`append-answer-${message.id}`} title="把这段回答加入成果（生成修订提案，需确认后应用）" onClick={() => { setAppendTarget('section_end'); void appendAnswerAsRevision(message.content, message.sources); }}>加入成果</button>}<OutcomeSourceList sources={message.sources} label="本条实际来源" onOpenOutcomeVersion={onOpenOutcomeVersion} onLocate={onLocate} /></article>)}
       </div>
       {proposedBundle && <RevisionProposalCard projectId={projectId} set={proposedBundle.set} revisions={proposedBundle.revisions} onDraftUpdated={(content) => { if (content && onDraftContentUpdated) onDraftContentUpdated(content as OutcomeDocument); else void loadDraftIntoEditor(); }} onNotice={setNotice} />}
       {notice && <p className="outcome-assistant__notice" role="status">{notice}</p>}
