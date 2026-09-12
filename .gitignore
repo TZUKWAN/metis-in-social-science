@@ -101,3 +101,5 @@ release2/
 scripts/tmp-*.py
 /release4/
 /release5/
+
+/release6/

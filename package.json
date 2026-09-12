@@ -88,7 +88,7 @@
     "afterPack": "scripts/after-pack-genoffice.cjs",
     "icon": "build/icon.png",
     "directories": {
-      "output": "release5"
+      "output": "release6"
     },
     "files": [
       "LICENSE",
