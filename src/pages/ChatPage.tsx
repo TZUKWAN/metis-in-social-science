@@ -3017,7 +3017,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
       // 事——自动降级为正常场景轮，主进程发现内存无 run 且数据库有可恢复
       // 断点时会自动续跑，而不是把用户堵死在死路上。
       if (response.code === 'no_active_run' && options?.fallback) {
-        setMessages((prev) => [
+        setMessages(() => [
           ...(userBubbleVisible ? [] : [{ role: 'user', content, timestamp: now() } as ChatMessage]),
           {
             role: 'system',
@@ -3040,7 +3040,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
     }
     // Success receipt: confirm to the user that the instruction reached the run.
     // 用户气泡只在还没显示时补上（调用点可能已把气泡渲染过，避免重复）。
-    setMessages((prev) => [
+    setMessages(() => [
       ...(userBubbleVisible ? [] : [{ role: 'user', content, timestamp: now() } as ChatMessage]),
       { role: 'system', content: t('chat.steerReceipt'), timestamp: now() },
     ]);

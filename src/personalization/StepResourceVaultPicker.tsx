@@ -35,6 +35,7 @@ export default function StepResourceVaultPicker({ kind, installed, onPick, onClo
 
   React.useEffect(() => {
     let alive = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- kind/keyword 变化时重置列表是状态重置而非派生；setState(true) 同步但语义为加载复位
     setLoading(true);
     const timer = window.setTimeout(() => {
       void window.metis?.capabilityVaultList?.({ kind, keyword: keyword.trim() || undefined, limit: 200 }).then((res) => {

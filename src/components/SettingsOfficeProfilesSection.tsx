@@ -10,7 +10,6 @@ import { OFFICE_CAPABILITY_DEFINITIONS } from '../../engine/artifacts/prompts/Of
 
 interface CapabilitySummary { kind: string; label: string; profileCount: number; defaultProfileId: string | null; aiEnabled: boolean }
 interface Profile { id: string; officeKind: string; name: string; description: string; builtin: boolean; globalPrompt?: string; slots: Record<string, string>; createdAt: number; updatedAt: number }
-interface CapabilityDetail { kind: string; label: string; aiEnabled: boolean; aiNote?: string; aiActions: Array<{ slotId: string; label: string; description: string }> }
 
 const CAPABILITY_LABELS: Record<string, string> = {
   word: 'Word', ppt: 'PPT', markdown: 'Markdown', spreadsheet: 'Spreadsheet',
@@ -29,20 +28,18 @@ function slotLabel(slotId: string): string {
 export default function SettingsOfficeProfilesSection() {
   const [capabilities, setCapabilities] = React.useState<CapabilitySummary[]>([]);
   const [activeKind, setActiveKind] = React.useState<string | null>(null);
-  const [detail, setDetail] = React.useState<CapabilityDetail | null>(null);
   const [profiles, setProfiles] = React.useState<Profile[]>([]);
   const [activeProfileId, setActiveProfileId] = React.useState<string | null>(null);
   const [draftSlot, setDraftSlot] = React.useState<{ slotId: string; label: string; content: string } | null>(null);
   const [notice, setNotice] = React.useState('');
-  const [globalDraft, setGlobalDraft] = React.useState('');
   const [busy, setBusy] = React.useState(false);
 
   const activeProfile = profiles.find((profile) => profile.id === activeProfileId) ?? null;
-  React.useEffect(() => { setGlobalDraft(activeProfile?.globalPrompt ?? ''); }, [activeProfile?.id, activeProfile?.globalPrompt]);
 
   // 编辑栏常驻（刘总 2026-09）：选中 Profile 后自动选中第一个 slot，
   // 下方编辑器始终展示当前选中 part 的内容，不再点了才在底部弹。
   React.useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 选中 Profile 变化时重置 slot 编辑态，属状态复位
     if (!activeProfile) { setDraftSlot(null); return; }
     const entries = Object.entries(activeProfile.slots);
     if (entries.length === 0) { setDraftSlot(null); return; }
@@ -62,6 +59,7 @@ export default function SettingsOfficeProfilesSection() {
   }, []);
 
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- 初始加载异步回调
   React.useEffect(() => { void loadCapabilities(); }, [loadCapabilities]);
 
   React.useEffect(() => {
@@ -125,18 +123,6 @@ export default function SettingsOfficeProfilesSection() {
       await loadCapabilities();
       setNotice(`已设为 ${CAPABILITY_LABELS[profile.officeKind] ?? profile.officeKind} 的默认 Profile。新成果默认使用;已有成果的显式绑定不受影响。`);
     }
-  };
-
-  const saveGlobal = async () => {
-    const metis = window.metis;
-    if (!activeProfile || !metis?.officePromptSetGlobal || busy) return;
-    setBusy(true);
-    try {
-      const saved = await metis.officePromptSetGlobal({ profileId: activeProfile.id, content: globalDraft });
-      setNotice(saved ? '全局风格已保存；后续 AI 动作即时生效。' : '保存未完成。');
-      if (activeKind) await loadProfiles(activeKind);
-    } catch { setNotice('保存请求未完成。'); }
-    finally { setBusy(false); }
   };
 
   const saveSlot = async () => {

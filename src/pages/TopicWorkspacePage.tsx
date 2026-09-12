@@ -96,11 +96,11 @@ export default function TopicWorkspacePage() {
     window.addEventListener('mouseup', onUp);
     return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
   }, []);
-  const startDrag = (side: 'left' | 'right') => (e: React.MouseEvent) => {
+  const startDrag = React.useCallback((side: 'left' | 'right') => (e: React.MouseEvent) => {
     dragRef.current = { side, startX: e.clientX, startW: side === 'left' ? leftWidth : rightWidth };
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
-  };
+  }, [leftWidth, rightWidth]);
   const [notice, setNotice] = React.useState('');
   // 会话管理(2026-09 刘总：左侧列表 + 右键菜单——重命名/移动分类/删除)。
   const [renamingId, setRenamingId] = React.useState<string | null>(null);
@@ -156,6 +156,7 @@ export default function TopicWorkspacePage() {
 
   // 会话切换时收起重命名编辑态,避免串到下一个会话。
   React.useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 与既有会话切换清理同款（收起编辑态/菜单，属于状态重置而非派生数据）
     setRenamingId(null);
     setSessionMenu(null);
   }, [activeSessionId]);

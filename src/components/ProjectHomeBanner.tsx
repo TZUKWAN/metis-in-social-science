@@ -4,10 +4,6 @@ import { useResearchWorkspaceStore } from '../research/researchWorkspaceStore';
 import { RESEARCH_STAGES, DEFAULT_STAGE, stageProgress, type ResearchStageId } from '../../engine/research/ResearchStages';
 import './ProjectHomeBanner.css';
 
-interface BriefView {
-  projectId: string;
-  summaryText: string;
-}
 
 type ScenarioStepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'blocked' | 'skipped';
 
@@ -46,26 +42,6 @@ function scenarioRunStatusLabel(status: ScenarioRunView['status'], locale: strin
   }[status];
 }
 
-function scenarioStepStatusLabel(status: ScenarioStepStatus, locale: string): string {
-  if (locale !== 'zh') {
-    return {
-      pending: 'Pending',
-      running: 'Running',
-      completed: 'Completed',
-      failed: 'Failed',
-      blocked: 'Blocked',
-      skipped: 'Skipped',
-    }[status];
-  }
-  return {
-    pending: '待执行',
-    running: '进行中',
-    completed: '已完成',
-    failed: '失败',
-    blocked: '受阻',
-    skipped: '已跳过',
-  }[status];
-}
 
 export default function ProjectHomeBanner() {
   const { t, locale } = useTranslation();
@@ -74,12 +50,12 @@ export default function ProjectHomeBanner() {
   const project = projects.find((p) => p.id === activeProjectId) ?? null;
   const [stage, setStage] = useState<ResearchStageId>(DEFAULT_STAGE);
   const [rationale, setRationale] = useState<string[]>([]);
-  const [brief, setBrief] = useState<BriefView | null>(null);
   const [scenarioRun, setScenarioRun] = useState<ScenarioRunView | null>(null);
 
   useEffect(() => {
     let alive = true;
     if (!activeProjectId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- 项目切换时清空场景运行视图，属状态复位
       setScenarioRun(null);
       return () => { alive = false; };
     }
@@ -116,11 +92,6 @@ export default function ProjectHomeBanner() {
         if (RESEARCH_STAGES.some((def) => def.id === result.stage)) {
           setStage(result.stage as ResearchStageId);
           setRationale(result.rationale ?? []);
-        }
-      });
-      void window.metis?.getResumeBrief?.(activeProjectId).then((result) => {
-        if (alive && result && result.projectId === activeProjectId) {
-          setBrief({ projectId: result.projectId, summaryText: result.summaryText });
         }
       });
     }
