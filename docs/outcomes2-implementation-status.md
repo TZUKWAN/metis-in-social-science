@@ -79,7 +79,7 @@ Status: DONE
 - T05.01/T05.02/T05.06 — 存量 DONE（scoped conversation 单元本就完整，未建第二套）。
 - T05.03 Conversation Target — BLOCKED（Composer 针对性 chip 未实现）。
 - T05.04 AI Answer → Revision — 部分 BLOCKED（服务端 proposed 通道已通；协作面板「生成修改建议」按钮未挂）。
-- T05.05 加入成果 — BLOCKED。
+- T05.05 加入成果 — DONE（协作面板每条 AI 回答带「加入成果」：原文生成文末追加 Revision 提案（conversation 来源），接受写草稿不写版本）。
 
 ## Phase 6 @Context
 
@@ -212,7 +212,9 @@ Status: DONE
 
 - `npm run typecheck` 四工程 0 错误（多次运行）。
 - `npx vitest run tests/electron/OutcomeWorkbenchService.test.ts` 19/19；`OutcomeReviewPipeline.test.ts` 5/5；`OutcomeAssistantRevisionPath.test.ts` 2/2；`OutcomeAssistantService.test.ts` 15/15（回归）；`tests/frontend/OutcomesPage.test.tsx` 72/72（回归）。
-- 待办：全量 vitest + build:electron 收尾（见最终报告）。
+- 全量回归（分块等价 npx vitest run）：engine+electron 3557 过 / frontend+lib+integration+utils 1294 过，0 失败。
+- lint-gate 90 < baseline 124。
+- build:electron 生产构建成功（release6），Electron 实例启动验证通过。
 
 ## 明确 BLOCKED 汇总（P1/P0 未竟事项）
 
