@@ -231,7 +231,10 @@ function buildCurrentDb(dir: string): string {
 
 // ─── the matrix ──────────────────────────────────────────────
 
+// CI 双核 runner 上重建七套老库 fixture 的迁移可能超过默认 30s；
+// 本矩阵全部为纯本地 SQLite 操作，放宽到 120s 只容忍慢机器，不改变任何断言。
 describe('old database fixture matrix — open → migrate → validate → reopen → validate', () => {
+  const SLOW_MACHINE_TIMEOUT = 120_000;
   it('1. oldest baseline upgrades with every legacy row intact', () => {
     const dir = tempDir();
     try {
@@ -242,7 +245,7 @@ describe('old database fixture matrix — open → migrate → validate → reop
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, SLOW_MACHINE_TIMEOUT);
 
   it('2. memory without project_id gains the column and index; legacy memory stays global', () => {
     const dir = tempDir();
@@ -257,7 +260,7 @@ describe('old database fixture matrix — open → migrate → validate → reop
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, SLOW_MACHINE_TIMEOUT);
 
   it('3. memory has project_id but office profiles lack global_prompt → the fix applies independently', () => {
     const dir = tempDir();
@@ -272,7 +275,7 @@ describe('old database fixture matrix — open → migrate → validate → reop
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, SLOW_MACHINE_TIMEOUT);
 
   it('4. legacy artifacts survive the upgrade and migrate to project ownership on session deletion', async () => {
     const dir = tempDir();
@@ -315,7 +318,7 @@ describe('old database fixture matrix — open → migrate → validate → reop
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, SLOW_MACHINE_TIMEOUT);
 
   it('6. pre-capability-vault database gains capability_vault from the baseline', () => {
     const dir = tempDir();
@@ -328,7 +331,7 @@ describe('old database fixture matrix — open → migrate → validate → reop
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, SLOW_MACHINE_TIMEOUT);
 
   it('7. current-schema database opens with nothing pending and stays healthy', () => {
     const dir = tempDir();
@@ -341,7 +344,7 @@ describe('old database fixture matrix — open → migrate → validate → reop
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, SLOW_MACHINE_TIMEOUT);
 });
 
 describe('schema convergence — every upgraded old database equals a fresh database', () => {
