@@ -42,7 +42,10 @@ import {
   type AutonomousLiveEvent,
 } from '../engine/runtime/AutonomousRuntimeContract.js';
 import {
+  createArtifactChartRegenerateRecovery,
   createArtifactListRecovery,
+  decodeArtifactChartRegenerateRequest,
+  decodeArtifactChartRegenerateResponse,
   decodeArtifactContentRequest,
   decodeArtifactContentResponse,
   decodeArtifactCreateRequest,
@@ -655,6 +658,13 @@ const api = {
     if (!decoded.ok) return decodeArtifactContentResponse(null);
     return decodeArtifactContentResponse(
       await ipcRenderer.invoke('artifact:get-content', decoded.value),
+    );
+  },
+  regenerateArtifactChart: async (rawRequest: unknown) => {
+    const decoded = decodeArtifactChartRegenerateRequest(rawRequest);
+    if (!decoded.ok) return createArtifactChartRegenerateRecovery();
+    return decodeArtifactChartRegenerateResponse(
+      await ipcRenderer.invoke('artifact:regenerate-chart', decoded.value),
     );
   },
   deleteArtifact: async (id: string) => {
@@ -1665,6 +1675,25 @@ const api = {
     ipcRenderer.on('chat:stream-chunk', handler);
     return () => { ipcRenderer.removeListener('chat:stream-chunk', handler); };
   },
+  onChatToolEvent: (callback: (data: { sessionId: string; turnId?: string; tool: string | null; toolCallId?: string | null; state: 'done' | 'failed' | 'running'; summary?: string | null }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: unknown) => {
+      // 轻量契约校验：形状不对的事件直接丢弃，不进渲染状态。
+      if (typeof data !== 'object' || data === null) return;
+      const row = data as { sessionId?: unknown; turnId?: unknown; tool?: unknown; toolCallId?: unknown; state?: unknown; summary?: unknown };
+      if (typeof row.sessionId !== 'string' || row.sessionId.length === 0) return;
+      if (row.state !== 'running' && row.state !== 'done' && row.state !== 'failed') return;
+      callback({
+        sessionId: row.sessionId,
+        ...(typeof row.turnId === 'string' ? { turnId: row.turnId } : {}),
+        tool: typeof row.tool === 'string' ? row.tool : null,
+        ...(typeof row.toolCallId === 'string' ? { toolCallId: row.toolCallId } : {}),
+        state: row.state,
+        summary: typeof row.summary === 'string' ? row.summary : null,
+      });
+    };
+    ipcRenderer.on('chat:tool-event', handler);
+    return () => { ipcRenderer.removeListener('chat:tool-event', handler); };
+  },
   onAgentExecutionEvent: (callback: (payload: import('../engine/runtime/ChatRuntimeContract.js').AgentExecutionEvent) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, raw: unknown) => {
       const decoded = decodeAgentExecutionEvent(raw);
@@ -1922,6 +1951,18 @@ const api = {
       /** 全自动安装（2026-08-23 刘总授权）：本次编译中自动安装的技能/MCP。 */
       installedDefinitions?: Array<{ id: string; name: string; kind: 'skill' | 'mcp'; url: string }>;
     }>
+  ),
+  /** 3.8 发送→中断：按场景 ID 中断在途编译（主进程按 scenario:<id> 寻址）。 */
+  /** 语音输入（刘总 2026-09）：录音字节交给主进程用当前激活模型服务转写。 */
+  transcribeAudio: async (bytes: Uint8Array, mime: string) => (
+    ipcRenderer.invoke('audio:transcribe', { bytes, mime }) as Promise<{ ok: boolean; text?: string; code?: string; message?: string }>
+  ),
+  abortScenarioCompile: async (scenarioId: string) => (
+    ipcRenderer.invoke('scenario:abort', { key: `scenario:${scenarioId}` }) as Promise<{ ok: boolean; aborted?: boolean; code?: string }>
+  ),
+  /** 3.8 当前在途场景编译清单（诊断用）。 */
+  scenarioRunningCompiles: async () => (
+    ipcRenderer.invoke('scenario:running') as Promise<{ count: number; keys: string[] }>
   ),
   onScenarioCompileEvent: (handler: (payload: unknown) => void) => {
     const listener = (_event: unknown, payload: unknown) => handler(payload);

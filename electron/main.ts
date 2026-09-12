@@ -7347,6 +7347,52 @@ function setupIPC(): void {
       const isScenarioWorkflowRun = scenarioCompilation?.useCoordinator === true;
       if (!isScenarioWorkflowRun) {
         runAgentLoop.registerHook('model.stream_chunk', forwardModelStream, { name: 'chat-stream-forward' });
+        // 2026-09 刘总（2.4）：对话流展示 AI 每一步——工具调用逐条转发，
+        // renderer 渲染成 Harness 风格工具行（状态点+工具名+摘要）。
+        // dispatch_started 先发 running 行，用户立刻看到「正在执行哪个工具」，
+        // 而不是等执行结束才冒出结果。
+        const forwardToolStarted = (hookCtx: import('../engine/core/HookBus.js').HookContext): import('../engine/core/HookBus.js').HookContext => {
+          const payload = hookCtx as unknown as { sessionId?: unknown; toolName?: unknown; toolCallId?: unknown };
+          try {
+            if (!event.sender.isDestroyed()) {
+              event.sender.send('chat:tool-event', {
+                sessionId: typeof payload.sessionId === 'string' ? payload.sessionId : sessionId,
+                turnId: requestId,
+                tool: typeof payload.toolName === 'string' ? payload.toolName : null,
+                toolCallId: typeof payload.toolCallId === 'string' ? payload.toolCallId : null,
+                state: 'running',
+                summary: null,
+              });
+            }
+          } catch { /* 工具事件绝不中断对话 */ }
+          return hookCtx;
+        };
+        runAgentLoop.registerHook('tool.dispatch_started', forwardToolStarted, { name: 'chat-tool-start-forward' });
+        const forwardToolEvent = (hookCtx: import('../engine/core/HookBus.js').HookContext): import('../engine/core/HookBus.js').HookContext => {
+          const payload = hookCtx as unknown as { sessionId?: unknown; toolName?: unknown; status?: unknown; toolFeedback?: unknown; toolCallId?: unknown };
+          try {
+            if (!event.sender.isDestroyed()) {
+              // AgentLoop 的真实状态是 'ok' | 'error'；'failed' 只是历史别名。
+              // toolFeedback 是 { content, status } 对象，摘要必须取 content。
+              const feedback = payload.toolFeedback;
+              const feedbackText = typeof feedback === 'string'
+                ? feedback
+                : (feedback && typeof feedback === 'object' && typeof (feedback as { content?: unknown }).content === 'string'
+                  ? (feedback as { content: string }).content
+                  : '');
+              event.sender.send('chat:tool-event', {
+                sessionId: typeof payload.sessionId === 'string' ? payload.sessionId : sessionId,
+                turnId: requestId,
+                tool: typeof payload.toolName === 'string' ? payload.toolName : null,
+                toolCallId: typeof payload.toolCallId === 'string' ? payload.toolCallId : null,
+                state: (payload.status === 'error' || payload.status === 'failed') ? 'failed' : 'done',
+                summary: feedbackText ? feedbackText.slice(0, 200) : null,
+              });
+            }
+          } catch { /* 工具事件绝不中断对话 */ }
+          return hookCtx;
+        };
+        runAgentLoop.registerHook('tool.dispatched', forwardToolEvent, { name: 'chat-tool-forward' });
       }
       console.log('[AgentChat] dispatching scenario workflow runner');
       try {
@@ -7509,6 +7555,8 @@ function setupIPC(): void {
       } finally {
         if (!isScenarioWorkflowRun) {
           runAgentLoop.unregisterHook('model.stream_chunk', 'chat-stream-forward');
+          runAgentLoop.unregisterHook('tool.dispatch_started', 'chat-tool-start-forward');
+          runAgentLoop.unregisterHook('tool.dispatched', 'chat-tool-forward');
         }
         executionEvents.dispose();
         if (activeRun.executionEvents === executionEvents) activeRun.executionEvents = undefined;
@@ -10360,6 +10408,46 @@ function buildFundingTemplateDigest(pkg: { source?: { sourceFormat?: string; pag
       return parsed.success && officePromptProfileService ? officePromptProfileService.setGlobalPrompt(parsed.data.profileId, parsed.data.content) : null;
     } catch { return null; }
   });
+  // ── 语音输入转写（刘总 2026-09）：MediaRecorder 录音 → 当前激活模型
+  // 服务（OpenAI 兼容 /audio/transcriptions）转写。服务不支持时如实报错，
+  // 绝不把失败伪装成空文本。
+  ipcMain.handle('audio:transcribe', async (event, rawRequest: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      if (!isRecord(rawRequest)) return { ok: false, code: 'invalid_request' };
+      const bytes = rawRequest.bytes;
+      const mime = typeof rawRequest.mime === 'string' && rawRequest.mime ? rawRequest.mime : 'audio/webm';
+      if (!(bytes instanceof Uint8Array) || bytes.byteLength === 0) return { ok: false, code: 'invalid_request' };
+      if (!providerProfileStore) return { ok: false, code: 'profiles_unavailable' };
+      const listed = providerProfileStore.list();
+      if (!listed.ok) return { ok: false, code: listed.code };
+      const active = listed.value.profiles.find((profile) => profile.isActive) ?? listed.value.profiles[0];
+      if (!active) return { ok: false, code: 'profile_unavailable' };
+      const config = providerProfileStore.configFor(active.id);
+      if (!config.ok || !config.value.apiKey) return { ok: false, code: 'profile_unavailable' };
+      const base = config.value.baseUrl.replace(/\/$/u, '');
+      const model = 'whisper-1';
+      const form = new FormData();
+      form.append('file', new Blob([bytes as BlobPart], { type: mime }), 'speech.webm');
+      form.append('model', model);
+      const response = await fetch(`${base}/audio/transcriptions`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${config.value.apiKey}` },
+        body: form,
+      });
+      if (!response.ok) {
+        const detail = (await response.text().catch(() => '')).slice(0, 200);
+        return { ok: false, code: 'transcription_failed', message: `HTTP ${response.status} ${detail}` };
+      }
+      const payload = await response.json().catch(() => null) as { text?: unknown } | null;
+      const transcript = typeof payload?.text === 'string' ? payload.text.trim() : '';
+      if (!transcript) return { ok: false, code: 'empty_transcript', message: '服务未返回可用文本' };
+      return { ok: true, text: transcript.slice(0, 8_000) };
+    } catch (error) {
+      return { ok: false, code: 'transcription_failed', message: error instanceof Error ? error.message.slice(0, 200) : undefined };
+    }
+  });
+
   ipcMain.handle('officePrompt:getGlobal', (event, rawRequest: unknown) => {
     try {
       requireRendererMainFrame(event);
@@ -11003,7 +11091,6 @@ ${definition.description}`.toLowerCase();
 
   // 场景构建进行中（供 scenario:abort 中断用）
   const scenarioRunning = new Map<string, { abort: () => void; startedAt: number }>();
-  let scenarioRunningKey: string | null = null;
   ipcMain.handle('scenario:compileHarness', async (event, rawRequest: unknown) => {
     try {
       requireRendererMainFrame(event);
@@ -11063,10 +11150,13 @@ ${effectiveInstruction}`;
       });
       if (!tracked.admitted) return tracked.rejection;
       // 场景构建进行中注册（2026-09-12 刘总要求）：供 scenario:abort 中断。
-      const scenarioAbortKey = `scenario:compileHarness:${requestCounter}`;
+      // key 按场景 ID 寻址——渲染端无需等编译结束拿到临时 key 就能中断；
+      // finally 必须 delete（见下），否则 abort 句柄在轮次结束后泄漏、
+      // scenario:running 永远报告虚假的进行中数量。
+      const scenarioAbortKey = `scenario:${current.data.id}`;
       const scenarioAbortController = new AbortController();
       scenarioRunning.set(scenarioAbortKey, { abort: () => scenarioAbortController.abort(), startedAt: Date.now() });
-      scenarioRunningKey = scenarioAbortKey;
+      const userAborted = () => scenarioAbortController.signal.aborted;
       const combinedSignal = tracked.signal
         ? AbortSignal.any([tracked.signal, scenarioAbortController.signal])
         : scenarioAbortController.signal;
@@ -11692,6 +11782,12 @@ ${effectiveInstruction}`;
           persistAssistantMessage('场景编译未完成：应用正在关闭，编译被中断。可重新发起构建。');
           return { ok: false, code: 'application_shutting_down' };
         }
+        // 用户主动中断（3.8 发送→中断）：必须如实报告为 interrupted，
+        // 并说明已生成内容保留在草稿/检查点中，而不是伪装成 generation_failed。
+        if (userAborted()) {
+          persistAssistantMessage('已按您的请求中断本轮场景构建；已生成内容已保留为草稿，可继续对话修改或直接保存。');
+          return { ok: false, code: 'interrupted', message: '已按您的请求中断本轮场景构建；已生成内容已保留为草稿。' };
+        }
         const errorMessage = String((error as Error).message ?? error).slice(0, 200);
         persistAssistantMessage('场景编译未完成：' + errorMessage);
         return { ok: false, code: 'generation_failed', error: errorMessage };
@@ -11704,6 +11800,7 @@ ${effectiveInstruction}`;
         }
         scenarioInstallRouterSingleton.clearSessionCounter(compileSessionId);
         executionBridge.dispose();
+        scenarioRunning.delete(scenarioAbortKey);
         tracked.cleanup();
       }
     } catch (error) {

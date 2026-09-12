@@ -18,8 +18,10 @@ import {
   consumePendingChatIntent,
   peekPendingChatIntent,
 } from '../lib/chatIntent.js';
-import { PaperclipIcon, BrainIcon, TagIcon, ClockIcon } from '../components/Icons';
-import GoalCardInline, { isInternalExecutionCopy, type GoalCardData } from '../components/GoalCardInline';
+import { PaperclipIcon, TagIcon, ClockIcon } from '../components/Icons';
+import VoiceMicButton from '../components/VoiceMicButton';
+import GoalCardInline, { type GoalCardData } from '../components/GoalCardInline';
+import { isInternalExecutionCopy } from '../presentation/executionCopy';
 import AgentActivityTimeline, {
   type AgentActivityEvent,
   type AgentActivityStatus,
@@ -1187,6 +1189,11 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
     });
   }, []);
   const [input, setInput] = useState('');
+  // 2.5 消息排队（刘总 2026-09）：任务运行中用户仍可继续输入，消息进入
+  // 队列并在输入栏上方以小条展示（立即发送/编辑/删除）。
+  const [queuedMessages, setQueuedMessages] = useState<Array<{ id: number; text: string }>>([]);
+  // 2.4 Harness 式工具行：运行中逐条展示 AI 正在调用/已完成/失败的工具。
+  const [liveToolRows, setLiveToolRows] = useState<Array<{ key: string; tool: string | null; state: 'running' | 'done' | 'failed'; summary: string | null }>>([]);
   // T3 二期：Step 卡 Target Context（提出意见/修改这步）
   const [stepTarget, setStepTarget] = useState<Extract<import('../conversation/types').ConversationTarget, { type: 'scenario_step' }> | null>(null);
   const [stepTargetMode, setStepTargetMode] = useState<'comment' | 'modify'>('comment');
@@ -1200,6 +1207,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
   const [isLoading, setIsLoading] = useState(false);
   // Live control state: 'idle' until the user requests an interrupt, 'interrupting'
   // while the active run is draining, back to 'idle' when the run settles.
+  // METIS-F11：打断请求已受理、等待 run 结算的过渡态（按钮防重复+如实反馈）。
   const [controlState, setControlState] = useState<'idle' | 'interrupting'>('idle');
   const [historyReady, setHistoryReady] = useState(false);
   const [artifacts, setArtifacts] = useState<ArtifactItem[]>([]);
@@ -1295,6 +1303,8 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
   const [showArchived, setShowArchived] = useState(false);
   const [previewContent, setPreviewContent] = useState('');
   const [previewTitle, setPreviewTitle] = useState('');
+  /** Session-owned artifact backing the current preview; required for durable chart revisions. */
+  const [previewArtifact, setPreviewArtifact] = useState<{ sessionId: string; artifactId: string } | null>(null);
   const [artifactError, setArtifactError] = useState('');
   const [activeRightPanelTab, setActiveRightPanelTab] =
     useState<RightPanelTab>('tasks');
@@ -1327,9 +1337,11 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
   const openPreview = useCallback((
     content: string,
     title = locale === 'zh' ? 'AI 生成预览' : 'AI-generated preview',
+    artifact?: { sessionId: string; artifactId: string } | null,
   ) => {
     setPreviewContent(content);
     setPreviewTitle(title);
+    setPreviewArtifact(artifact ?? null);
     setArtifactError('');
     setActiveRightPanelTab('artifacts');
   }, [locale]);
@@ -1435,12 +1447,14 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
     setArtifacts([]);
     setPreviewContent('');
     setPreviewTitle('');
+    setPreviewArtifact(null);
     setArtifactError('');
     setIsLoading(false);
     setActiveGoalId(null);
     activeGoalIdRef.current = null;
     goalEventSequenceRef.current.clear();
     goalCardIndexMapRef.current.clear();
+    setLiveToolRows([]);
   }, []);
 
   const isCurrentSessionGeneration = useCallback((
@@ -2032,6 +2046,30 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
     });
     return () => { unsub(); };
   }, [refreshArtifactsForSession]);
+
+  // 2.4 工具行：running 行按 toolCallId 去重，完成/失败事件原位更新；
+  // 回合结算后由 isLoading effect 统一收起（时间线已在消息气泡内留档）。
+  useEffect(() => {
+    const subscribe = window.metis?.onChatToolEvent;
+    if (!subscribe) return;
+    return subscribe((row) => {
+      if (row.sessionId !== activeSessionIdRef.current) return;
+      setLiveToolRows((current) => {
+        const key = row.toolCallId || `tool-${current.length}-${row.tool ?? ''}`;
+        if (row.state === 'running') {
+          if (current.some((item) => item.key === key)) return current;
+          return [...current.slice(-11), { key, tool: row.tool, state: row.state, summary: row.summary ?? null }];
+        }
+        return current.map((item) => (item.key === key
+          ? { ...item, state: row.state, summary: row.summary ?? item.summary }
+          : item));
+      });
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!isLoading) setLiveToolRows([]);
+  }, [isLoading]);
 
   // Load messages and artifacts when session changes
   useEffect(() => {
@@ -2721,8 +2759,26 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
         setControlState('idle');
         // UX-CHAT-004: 主进程已在回合内持久化消息，刷新权威会话摘要。
         refreshSessionSummaries();
+        // 2.5: run 结束后自动发送队列中的下一条（保持时序）。
+        flushNextQueuedMessage();
       }
     }
+  }
+
+  /**
+   * 2.5 统一队列收口：任何一个 run（聊天/Goal 执行/Goal 恢复/取消）结算后
+   * 都从这里补发下一条排队消息。放在函数声明层，所有结算路径都能调用；
+   * 若补发时又有 run 在跑，handleSend 会把它放回队首而不是变成引导。
+   */
+  function flushNextQueuedMessage() {
+    window.setTimeout(() => {
+      setQueuedMessages((current) => {
+        if (current.length === 0) return current;
+        const next = current[0]!;
+        window.setTimeout(() => { void handleSend(next.text, undefined, { fromQueue: true }); }, 50);
+        return current.slice(1);
+      });
+    }, 100);
   }
 
   // ─── Goal flow ─────────────────────────────────────────────
@@ -2818,6 +2874,8 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
       setIsLoading(false);
       // UX-CHAT-004: 用户消息与 Goal 卡均已持久化，刷新会话摘要。
       refreshSessionSummaries();
+      // 2.5: Goal 轮结算同样要消费排队消息，否则运行期间的用户输入永久滞留。
+      flushNextQueuedMessage();
     }
   }
 
@@ -2866,6 +2924,9 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
         ...card,
         error: locale === 'zh' ? '取消服务暂时不可用，请稍后重试。' : 'The cancel service is temporarily unavailable. Try again later.',
       }));
+    } finally {
+      // 2.5: 取消也是一种结算——排队消息照常补发。
+      flushNextQueuedMessage();
     }
   }
 
@@ -2922,6 +2983,51 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
       goalEventSequenceRef.current.clear();
       setIsLoading(false);
       refreshSessionSummaries();
+      // 2.5: 恢复轮结算同样消费排队消息。
+      flushNextQueuedMessage();
+    }
+  }
+
+  /**
+   * 2.7 启动一个已生成计划但尚未执行的任务。executeGoal（全新 run）与
+   * resumeGoal（要求已存在 paused run）是不同引擎路径：对 plan_ready 调
+   * resume 会被引擎以 no run 拒绝，这里必须按阶段分流。
+   */
+  async function handleStartPlannedGoal(goalId: string) {
+    const metis = window.metis;
+    const index = findGoalCardIndex(goalId);
+    if (!metis?.executeGoal || index === undefined) return;
+    setIsLoading(true);
+    setActiveGoalId(goalId);
+    activeGoalIdRef.current = goalId;
+    goalEventSequenceRef.current.delete(goalId);
+    updateGoalCard(index, (card) => ({ ...card, phase: 'executing', pauseRequested: false, error: undefined }));
+    try {
+      const execution = await metis.executeGoal(goalId);
+      if (execution.success) {
+        updateGoalCard(index, (card) => ({ ...card, phase: 'completed', pauseRequested: false }));
+      } else if (execution.code === 'paused') {
+        updateGoalCard(index, (card) => ({ ...card, phase: 'paused', pauseRequested: false }));
+      } else if (execution.code === 'cancelled') {
+        updateGoalCard(index, (card) => ({ ...card, phase: 'cancelled', pauseRequested: false }));
+      } else {
+        const codeText = String(execution.code ?? 'goal_execution_failed');
+        updateGoalCard(index, (card) => ({
+          ...card,
+          phase: 'failed',
+          error: locale === 'zh' ? `启动未执行（${codeText}）。` : `Start did not run (${codeText}).`,
+        }));
+      }
+      await syncGoalCardWorkflow(goalId, index);
+    } catch {
+      updateGoalCard(index, (card) => ({ ...card, phase: 'failed', error: 'goal_execution_failed' }));
+    } finally {
+      setActiveGoalId(null);
+      activeGoalIdRef.current = null;
+      goalEventSequenceRef.current.clear();
+      setIsLoading(false);
+      refreshSessionSummaries();
+      flushNextQueuedMessage();
     }
   }
 
@@ -3265,9 +3371,21 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
     } catch { return null; }
   }
 
-  async function handleSend(overrideContent?: string, scenarioOverride?: string) {
+  async function handleSend(overrideContent?: string, scenarioOverride?: string, options?: { fromQueue?: boolean; immediate?: boolean }) {
     let raw = stripEmoji((overrideContent || input).trim());
     if (!raw) return;
+    // 2.5 运行中入队：AI 工作时用户发送的消息自动排队（不打断当前 run）。
+    if (isLoading && !options?.fromQueue && !options?.immediate && !overrideContent) {
+      setQueuedMessages((current) => [...current, { id: Date.now() + Math.floor(Math.random() * 1000), text: raw }]);
+      setInput('');
+      return;
+    }
+    // 队列自动补发撞上新一轮 run：放回队首而不是变成实时引导——排队语义
+    // 必须保持 FIFO。小条上的「立即发送」（immediate）是显式插队，仍走引导。
+    if (isLoading && options?.fromQueue && !options?.immediate) {
+      setQueuedMessages((current) => [{ id: Date.now() + Math.floor(Math.random() * 1000), text: raw }, ...current]);
+      return;
+    }
     // T3 二期：Step Target Context——结构化上下文随消息进 Runtime（禁裸「针对步骤6」）。
     if (stepTarget) {
       const contextLines = [
@@ -3696,41 +3814,6 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
     }
   }
 
-  // Edit a user message and resend
-  /** Learn messages 0..endIndex as a reusable skill, then install it immediately. */
-  async function handleLearnConversationSkill(endIndex: number, userIntent?: string): Promise<void> {
-    const skillNotice = (content: string) => ({ role: 'system' as const, content, timestamp: now() });
-    const selected = messages
-      .slice(0, endIndex + 1)
-      .filter((m) => (m.role === 'user' || m.role === 'assistant') && m.content?.trim())
-      .map((m) => ({ role: m.role, content: m.content }));
-    if (selected.length < 2) {
-      setMessages((prev) => [...prev, skillNotice('对话太短，至少需要一轮问答才能学习为技能。')]);
-      return;
-    }
-    setMessages((prev) => [...prev, skillNotice(`正在从选中的 ${selected.length} 条对话中提取技能…`)]);
-    try {
-      const result = await window.metis?.generateSkillFromConversation?.({ messages: selected, userIntent });
-      if (result?.ok && result.skill) {
-        const s = result.skill;
-        setMessages((prev) => [...prev, skillNotice([
-          `技能「${s.name}」已生成并安装！`,
-          `用途：${s.description}`,
-          `工具：${s.allowedTools.length > 0 ? s.allowedTools.join(', ') : '（无）'}`,
-          `回合预算：${s.maxTurns}`,
-          `提取依据：${s.rationale}`,
-        ].join('\n'))]);
-        // Refresh the in-memory dropdown so the skill is selectable immediately.
-        const updatedSkills = await window.metis?.listSkills?.();
-        if (Array.isArray(updatedSkills)) setSkills(updatedSkills);
-      } else {
-        setMessages((prev) => [...prev, skillNotice(`技能生成失败：${result?.error ?? '未知错误'}`)]);
-      }
-    } catch (err) {
-      setMessages((prev) => [...prev, skillNotice(`技能生成异常：${err instanceof Error ? err.message : String(err)}`)]);
-    }
-  }
-
   function handleEditMessage(index: number, newContent: string) {
     // Truncate messages after the edited one, then send the new content
     const truncated = messages.slice(0, index);
@@ -4043,7 +4126,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
         setArtifactError(locale === 'zh' ? '无法打开这个生成物，请重新选择或稍后重试。' : 'This artifact could not be opened. Please try again.');
         return;
       }
-      openPreview(response.content, item.name);
+      openPreview(response.content, item.name, { sessionId, artifactId: item.id });
     } catch {
       if (!isCurrentSessionGeneration(sessionId, generation)) return;
       setPreviewContent('');
@@ -4247,6 +4330,113 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
                   if (!goalId) return;
                   window.dispatchEvent(new CustomEvent('metis:open-kanban', { detail: { goalId } }));
                 }}
+                onStepAdjust={(_stepId, stepName, summary) => {
+                  // 2.6 调整：创建并激活一个正式会话，标题直接反映来源任务。
+                  // 输入框只预填上下文，用户写下具体调整要求后再发送，避免把
+                  // “我会告诉你”这种占位句误当成真实任务提交给模型。
+                  const goalCard = msg.goalCard!;
+                  const adjustText = locale === 'zh'
+                    ? `【任务调整】针对任务「${goalCard.description}」的步骤「${stepName}」：
+已完成的工作摘要：${summary.slice(0, 400) || '（无输出记录）'}
+请说明你希望如何调整。`
+                    : `[Task adjustment] Step "${stepName}" of "${goalCard.description}":
+Completed-work summary: ${summary.slice(0, 400) || '(no recorded output)'}
+Describe the change you would like to make.`;
+                  void (async () => {
+                    const newSessionId = await createNewSession();
+                    if (!newSessionId) {
+                      showToast({ kind: 'error', text: locale === 'zh' ? '无法创建调整对话，请稍后重试。' : 'Could not create the adjustment conversation. Please try again.' });
+                      return;
+                    }
+                    const title = locale === 'zh'
+                      ? `调整 · ${stepName || goalCard.description}`
+                      : `Adjust · ${stepName || goalCard.description}`;
+                    await handleRenameSession(newSessionId, title.slice(0, 120));
+                    setInput(adjustText);
+                    inputRef.current?.focus();
+                  })();
+                }}
+                onDeleteTask={() => {
+                  // 2.6/2.7 删除任务（GoalCardInline 已二次确认）。
+                  const goalId = msg.goalCard!.goalId;
+                  if (!goalId) return;
+                  void window.metis?.deleteGoal?.(goalId);
+                }}
+                onStepEditTask={(instruction) => {
+                  // 2.7 编辑任务：refinePlan 才会让模型按自然语言重规划；
+                  // updatePlan 只接受已结构化的 WorkflowDefinition，不能伪装成
+                  // “自动调整”。成功后同步权威工作流和当前卡片。
+                  const goalId = msg.goalCard!.goalId;
+                  if (!goalId) return;
+                  const cardIndex = findGoalCardIndex(goalId);
+                  if (cardIndex === undefined) return;
+                  void (async () => {
+                    const metis = window.metis;
+                    if (!metis?.refinePlan) return;
+                    const result = await metis.refinePlan(goalId, instruction);
+                    if (!result.success) {
+                      updateGoalCard(cardIndex, (card) => ({
+                        ...card,
+                        error: locale === 'zh' ? '任务调整未完成，原计划保持不变。' : 'Task adjustment did not complete; the original plan is unchanged.',
+                      }));
+                      return;
+                    }
+                    await syncGoalCardWorkflow(goalId, cardIndex);
+                  })();
+                }}
+                onStepStart={() => {
+                  // 2.7 启动：plan_ready 走 executeGoal（全新 run），
+                  // paused 走 resumeGoal（引擎要求已存在暂停 run）。
+                  const goalId = msg.goalCard!.goalId;
+                  if (!goalId) return;
+                  if (msg.goalCard!.phase === 'plan_ready') void handleStartPlannedGoal(goalId);
+                  else void handleResumeGoal(goalId);
+                }}
+                onStepsReorder={(orderedIds) => {
+                  // 2.8 拖动排序：以权威 WorkflowDefinition 为基准重排后整体提交
+                  // updatePlan。卡片上只有 id/name/description 摘要，直接拼凑的
+                  // 残缺定义会被 GoalPlanner 校验拒绝（缺 dependencies 等字段）。
+                  const goalId = msg.goalCard!.goalId;
+                  if (!goalId) return;
+                  const cardIndex = findGoalCardIndex(goalId);
+                  if (cardIndex === undefined) return;
+                  void (async () => {
+                    const metis = window.metis;
+                    if (!metis?.getGoalWorkflow || !metis.updatePlan) return;
+                    const view = await metis.getGoalWorkflow(goalId);
+                    const workflow = (view as { workflow?: Record<string, unknown> } | undefined)?.workflow;
+                    if (!workflow) {
+                      updateGoalCard(cardIndex, (card) => ({
+                        ...card,
+                        error: locale === 'zh' ? '暂时无法读取任务计划，排序未生效。' : 'Could not read the plan; reordering was not applied.',
+                      }));
+                      return;
+                    }
+                    const steps = Array.isArray(workflow.steps)
+                      ? (workflow.steps as Array<Record<string, unknown>>)
+                      : [];
+                    const position = new Map(orderedIds.map((id, order) => [id, order]));
+                    const orderedSteps = [...steps].sort((left, right) => (
+                      (position.get(String(left.id)) ?? Number.MAX_SAFE_INTEGER)
+                      - (position.get(String(right.id)) ?? Number.MAX_SAFE_INTEGER)
+                    ));
+                    const result = await metis.updatePlan(goalId, {
+                      ...workflow,
+                      steps: orderedSteps,
+                    } as unknown as Record<string, unknown>);
+                    if (!result || (result as { valid?: boolean }).valid !== true) {
+                      const errors = (result as { errors?: string[] } | null | undefined)?.errors ?? [];
+                      updateGoalCard(cardIndex, (card) => ({
+                        ...card,
+                        error: locale === 'zh'
+                          ? `排序未保存（${errors[0] ?? 'plan_update_rejected'}）；原顺序保持不变。`
+                          : `Reorder was not saved (${errors[0] ?? 'plan_update_rejected'}); the original order is kept.`,
+                      }));
+                      return;
+                    }
+                    await syncGoalCardWorkflow(goalId, cardIndex);
+                  })();
+                }}
               />
             );
             const renderItem = (msg: ChatMessage, index: number) => (
@@ -4449,6 +4639,41 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
                 </button>
                 <ModelThinkingSelector zh={locale === 'zh'} labeled disabled={isLoading} />
               </div>
+          {isLoading && liveToolRows.length > 0 && (
+            <div className="chat-tool-strip" data-testid="chat-tool-strip" aria-live="polite">
+              {liveToolRows.slice(-4).map((row) => (
+                <div key={row.key} className={`chat-tool-row chat-tool-row--${row.state}`} data-testid="chat-tool-row">
+                  <span className="chat-tool-row__dot" aria-hidden />
+                  <span className="chat-tool-row__name">{row.tool ?? (locale === 'zh' ? '工具调用' : 'tool')}</span>
+                  {row.summary && <span className="chat-tool-row__summary" title={row.summary}>{row.summary}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+          {queuedMessages.length > 0 && (
+            <div className="chat-queue-strip" data-testid="chat-queue-strip" role="list" aria-label={locale === 'zh' ? '排队消息' : 'Queued messages'}>
+              <span className="chat-queue-strip__label">{locale === 'zh' ? `排队中 (${queuedMessages.length})` : `Queued (${queuedMessages.length})`}</span>
+              {queuedMessages.map((queued) => (
+                <div key={queued.id} className="chat-queue-item" role="listitem" data-testid="chat-queue-item">
+                  <span className="chat-queue-item__text" title={queued.text}>{queued.text.slice(0, 80)}{queued.text.length > 80 ? '…' : ''}</span>
+                  <span className="chat-queue-item__actions">
+                    <button type="button" className="chat-queue-item__btn" data-testid="chat-queue-send" title={locale === 'zh' ? '立即插队发送（作为实时引导下发给当前 run）' : 'Send now'} onClick={() => {
+                      setQueuedMessages((current) => current.filter((item) => item.id !== queued.id));
+                      void handleSend(queued.text, undefined, { fromQueue: true, immediate: true });
+                    }}>{locale === 'zh' ? '立即发送' : 'Send now'}</button>
+                    <button type="button" className="chat-queue-item__btn" data-testid="chat-queue-edit" title={locale === 'zh' ? '放回输入框编辑' : 'Edit in composer'} onClick={() => {
+                      setQueuedMessages((current) => current.filter((item) => item.id !== queued.id));
+                      setInput(queued.text);
+                      inputRef.current?.focus();
+                    }}>{locale === 'zh' ? '编辑' : 'Edit'}</button>
+                    <button type="button" className="chat-queue-item__btn chat-queue-item__btn--danger" data-testid="chat-queue-delete" title={locale === 'zh' ? '删除' : 'Delete'} onClick={() => {
+                      setQueuedMessages((current) => current.filter((item) => item.id !== queued.id));
+                    }}>×</button>
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
               <div className="chat-input-row">
                 <button
                   className="chat-tool-icon chat-side-upload"
@@ -4459,6 +4684,10 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
                 >
                   <PaperclipIcon size={16} />
                 </button>
+                <VoiceMicButton disabled={isLoading} onTranscript={(voiceText) => {
+                  setInput((current) => (current ? `${current} ${voiceText}` : voiceText));
+                  inputRef.current?.focus();
+                }} />
                 <textarea
                   ref={inputRef}
                   value={input}
@@ -4475,9 +4704,9 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
                   aria-controls={slashMenuOpen ? 'slash-command-listbox' : undefined}
                   aria-activedescendant={slashMenuOpen ? `slash-command-option-${activeSlashIndex}` : undefined}
                   placeholder={isLoading
-                    ? (activeScenarioId
-                      ? (locale === 'zh' ? '场景执行中 · 直接输入将实时引导当前步骤…' : 'Scenario running · type to steer the current step…')
-                      : (locale === 'zh' ? '输入新指令，实时引导当前任务…' : 'Send a new instruction to steer the active run…'))
+                    ? (locale === 'zh'
+                      ? '任务运行中 · 发送的消息将自动排队，当前轮结束后依序执行'
+                      : 'A run is active · messages are queued and sent in order when it settles')
                     : t('chat.placeholder')}
                   className="chat-textarea"
                   rows={1}
@@ -4486,14 +4715,15 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
                   type="button"
                   onClick={() => void handleInterrupt()}
                   className="chat-interrupt"
+                  disabled={controlState === 'interrupting'}
                   aria-label={locale === 'zh' ? '打断当前任务' : 'Interrupt active run'}
-                >{locale === 'zh' ? '打断' : 'Stop'}</button>}
+                >{controlState === 'interrupting' ? (locale === 'zh' ? '打断中…' : 'Stopping…') : (locale === 'zh' ? '打断' : 'Stop')}</button>}
                 <button
                   onClick={() => handleSend()}
                   className="chat-send"
                   disabled={!input.trim()}
                 >
-                  {isLoading ? (locale === 'zh' ? '引导' : 'Steer') : t('common.send')}
+                  {isLoading ? (locale === 'zh' ? '排队' : 'Queue') : t('common.send')}
                 </button>
               </div>
             </div>
@@ -4555,7 +4785,32 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
       content={previewContent}
       uiMode={resolvedUIMode}
       locale={locale}
-      onClose={() => setPreviewContent('')}
+      onClose={() => { setPreviewContent(''); setPreviewArtifact(null); }}
+      onChartAdjust={previewArtifact ? async (chartSource, chartLanguage, instruction, sourceData) => {
+        const result = await window.metis?.regenerateArtifactChart?.({
+          sessionId: previewArtifact.sessionId,
+          artifactId: previewArtifact.artifactId,
+          chartSource,
+          chartLanguage,
+          instruction,
+          sourceData,
+        });
+        if (!result?.success) {
+          return {
+            ok: false,
+            message: result?.code === 'source_data_required'
+              ? (locale === 'zh' ? '缺少原始数据，未执行图表重做。' : 'Source data is required; the chart was not regenerated.')
+              : (result?.message || (locale === 'zh' ? '图表重做未完成，原生成物未改动。' : 'Chart regeneration did not complete; the original artifact is unchanged.')),
+          };
+        }
+        // Backend stores a new session artifact + its dedicated source-data artifact
+        // before returning. Only now switch the preview to the durable revision.
+        setPreviewContent(result.content);
+        setPreviewTitle(result.name);
+        setPreviewArtifact({ sessionId: previewArtifact.sessionId, artifactId: result.artifactId });
+        await refreshArtifactsForSession(previewArtifact.sessionId, sessionGenerationRef.current);
+        return { ok: true, content: result.content };
+      } : undefined}
       onExportDocx={async () => {
         const result = await window.metis?.exportMarkdownAsDocx?.({
           title: previewTitle || (locale === 'zh' ? '生成物' : 'Artifact'),

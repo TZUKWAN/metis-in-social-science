@@ -2410,7 +2410,7 @@ describe('ChatPage', () => {
     }
   });
 
-  it('allows live instructions and interruption while an agent run is active', async () => {
+  it('queues mid-run messages, sends them now on demand, and supports interruption while an agent run is active', async () => {
     resetStore();
     const originalMetis = window.metis;
     const pending = deferred<unknown>();
@@ -2446,10 +2446,15 @@ describe('ChatPage', () => {
       fireEvent.click(screen.getByText('发送'));
       await waitFor(() => expect(agentChat).toHaveBeenCalledTimes(1));
 
-      const steeringInput = await screen.findByPlaceholderText('输入新指令，实时引导当前任务…');
-      expect((steeringInput as HTMLTextAreaElement).disabled).toBe(false);
-      fireEvent.change(steeringInput, { target: { value: '改为比较案例研究' } });
-      fireEvent.click(screen.getByText('引导'));
+      // 2.5（刘总 2026-09）：运行中发送的消息默认进入排队小条，不打断当前 run；
+      // 「立即发送」按钮负责把该消息立刻作为实时引导下发给当前 run。
+      const queueingInput = await screen.findByPlaceholderText('任务运行中 · 发送的消息将自动排队，当前轮结束后依序执行');
+      expect((queueingInput as HTMLTextAreaElement).disabled).toBe(false);
+      fireEvent.change(queueingInput, { target: { value: '改为比较案例研究' } });
+      fireEvent.click(screen.getByText('排队'));
+      await waitFor(() => expect(screen.getByTestId('chat-queue-strip')).toBeDefined());
+
+      fireEvent.click(screen.getByTestId('chat-queue-send'));
       await waitFor(() => expect(agentControl).toHaveBeenCalledWith(expect.objectContaining({
         contractVersion: 1,
         sessionId: 'session-live',

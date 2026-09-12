@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "counts": {
-    "invoke": 497,
-    "rendererInvoke": 487,
+    "invoke": 499,
+    "rendererInvoke": 491,
     "send": 13
   },
   "invoke": [
@@ -28,8 +28,10 @@
     "artifact:list",
     "artifact:listByProject",
     "artifact:listVersions",
+    "artifact:regenerate-chart",
     "artifact:restoreVersion",
     "artifact:updateReviewStatus",
+    "audio:transcribe",
     "autonomous:createProjectFor",
     "autonomous:generateBatch",
     "autonomousProfile:get",
@@ -527,8 +529,10 @@
     "artifact:list",
     "artifact:listByProject",
     "artifact:listVersions",
+    "artifact:regenerate-chart",
     "artifact:restoreVersion",
     "artifact:updateReviewStatus",
+    "audio:transcribe",
     "autonomous:createProjectFor",
     "autonomous:generateBatch",
     "autonomousProfile:get",
@@ -841,6 +845,7 @@
     "research:snapshot",
     "research:version",
     "runtime:identity",
+    "scenario:abort",
     "scenario:aiRefine",
     "scenario:analyzeMaterials",
     "scenario:approval:respond",
@@ -858,6 +863,7 @@
     "scenario:material:list",
     "scenario:material:setCategory",
     "scenario:runStateForProject",
+    "scenario:running",
     "scenario:stepControl",
     "session:create",
     "session:delete",

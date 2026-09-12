@@ -212,6 +212,76 @@ export const ArtifactContentResponseSchema = z.discriminatedUnion('success', [
 
 export type ArtifactContentResponse = z.infer<typeof ArtifactContentResponseSchema>;
 
+// ─── Chart regeneration (durable session artifact revision) ──────────────
+
+export const ArtifactChartLanguageSchema = z.enum([
+  'mermaid',
+  'chart',
+  'vega',
+  'vega-lite',
+  'echarts',
+]);
+export type ArtifactChartLanguage = z.infer<typeof ArtifactChartLanguageSchema>;
+
+const ChartAdjustmentInstructionSchema = boundedControlFreeText(8_000).min(2);
+
+/**
+ * The raw data is deliberately supplied separately from the chart program.
+ * Main persists it as a dedicated companion artifact before publishing the
+ * regenerated chart, so a later revision never has to infer data from pixels.
+ */
+export const ArtifactChartRegenerateRequestSchema = z.strictObject({
+  sessionId: RuntimeIdSchema,
+  artifactId: RuntimeIdSchema,
+  chartSource: ArtifactContentSchema.min(1),
+  chartLanguage: ArtifactChartLanguageSchema,
+  instruction: ChartAdjustmentInstructionSchema,
+  sourceData: ArtifactContentSchema.min(1),
+});
+export type ArtifactChartRegenerateRequest = z.infer<typeof ArtifactChartRegenerateRequestSchema>;
+
+export const ArtifactChartRegenerateResponseSchema = z.discriminatedUnion('success', [
+  z.strictObject({
+    success: z.literal(true),
+    artifactId: RuntimeIdSchema,
+    name: ArtifactDisplayNameSchema,
+    content: ArtifactContentSchema,
+    sourceDataArtifactId: RuntimeIdSchema,
+  }),
+  z.strictObject({
+    success: z.literal(false),
+    code: z.enum([
+      'not_found',
+      'source_data_required',
+      'provider_unavailable',
+      'generation_failed',
+      'invalid_chart_output',
+      'artifact_chart_regeneration_unavailable',
+    ]),
+    message: boundedControlFreeText(CHAT_RUNTIME_LIMITS.diagnosticMessageChars).optional(),
+  }),
+]);
+export type ArtifactChartRegenerateResponse = z.infer<typeof ArtifactChartRegenerateResponseSchema>;
+
+export function createArtifactChartRegenerateRecovery(): ArtifactChartRegenerateResponse {
+  return { success: false, code: 'artifact_chart_regeneration_unavailable' };
+}
+
+export function decodeArtifactChartRegenerateRequest(
+  input: unknown,
+): ArtifactDecodeResult<ArtifactChartRegenerateRequest> {
+  return decodeWithRecovery(
+    ArtifactChartRegenerateRequestSchema,
+    input,
+    'artifact_content_request_unavailable',
+  );
+}
+
+export function decodeArtifactChartRegenerateResponse(input: unknown): ArtifactChartRegenerateResponse {
+  return parseWithoutThrow(ArtifactChartRegenerateResponseSchema, input)
+    ?? createArtifactChartRegenerateRecovery();
+}
+
 export function createArtifactContentRecovery(): ArtifactContentResponse {
   return { success: false, code: 'artifact_content_unavailable' };
 }

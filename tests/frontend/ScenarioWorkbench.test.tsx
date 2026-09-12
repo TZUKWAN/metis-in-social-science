@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { resetScenarioWorkbenchDraftStoreForTests } from '../../src/personalization/scenarioWorkbenchDraftStore.js';
 import type { ArchivedPersonalizationDefinition, PersonalizationDefinition, ScenarioDefinition } from '../../engine/runtime/PersonalizationRuntimeContract.js';
 
 function scenario(overrides: Partial<ScenarioDefinition> = {}): ScenarioDefinition {
@@ -83,8 +84,8 @@ async function renderWorkbench(props: ReturnType<typeof harness>['props']) {
 describe('ScenarioWorkbench focused authoring', () => {
   beforeEach(async () => {
     window.metis = undefined;
-    const mod = await import('../../src/personalization/ScenarioWorkbench.js');
-    mod.resetScenarioWorkbenchDraftStoreForTests();
+    await import('../../src/personalization/ScenarioWorkbench.js');
+    resetScenarioWorkbenchDraftStoreForTests();
   });
 
   it('renders exactly the four requested authoring sections and no advanced runtime controls', async () => {
@@ -120,18 +121,49 @@ describe('ScenarioWorkbench focused authoring', () => {
     expect(saved.output.plan?.primaryDeliverable).toBe('实证论文');
   });
 
-  it('keeps list, category management, definition, and assistant on one page and persists the selected scene category', async () => {
-    const { props, save } = harness();
+  it('keeps list, definition, and assistant on one page and persists a category via the scenario context menu', async () => {
+    const { props, save, current } = harness();
     await renderWorkbench(props);
     expect(screen.getByTestId('sw-scenario-library')).toBeTruthy();
     expect(screen.getByTestId('sw-focused-editor')).toBeTruthy();
     expect(screen.getByTestId('sw-configuration-assistant')).toBeTruthy();
-    fireEvent.change(screen.getByLabelText('当前场景分类'), { target: { value: '论文写作' } });
-    fireEvent.click(screen.getByText('保存'));
+    // 3.7（刘总 2026-09）：独立「当前场景分类」输入框已删除；归类改走右键菜单，
+    // 且必须真实落盘——revision 受控递增，否则仓储会拒绝这次写入。
+    const originalPrompt = window.prompt;
+    window.prompt = (() => '论文写作') as typeof window.prompt;
+    try {
+      fireEvent.contextMenu(screen.getByRole('button', { name: current.name }).closest('article')!);
+      fireEvent.click(screen.getByText('移动到其他分类'));
 
-    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
-    const saved = save.mock.calls[0]![0] as ScenarioDefinition;
-    expect(saved.tags).toContain('category:论文写作');
+      await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+      const saved = save.mock.calls[0]![0] as ScenarioDefinition;
+      expect(saved.tags).toContain('category:论文写作');
+      expect(saved.revision).toBe(current.revision + 1);
+    } finally {
+      window.prompt = originalPrompt;
+    }
+  });
+
+  it('renames a category from the group-header context menu and persists every member scenario', async () => {
+    const first = { ...scenario(), id: 'scenario-a', tags: ['category:旧分类'] };
+    const second = { ...scenario(), id: 'scenario-b', tags: ['category:旧分类'] };
+    const { props, save } = harness({ definitions: [first, second] as PersonalizationDefinition[], selectedId: null });
+    const reload = props.reload;
+    await renderWorkbench(props);
+    const originalPrompt = window.prompt;
+    window.prompt = (() => '新分类') as typeof window.prompt;
+    try {
+      // 分类组头右键 → 重命名 → 两个成员场景各提交一次 revision 受控保存。
+      fireEvent.contextMenu(screen.getByRole('button', { name: /旧分类/ }));
+      fireEvent.click(screen.getByTestId('scenario-category-rename'));
+
+      await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
+      const savedTags = save.mock.calls.map((call) => ((call[0] as ScenarioDefinition).tags));
+      for (const tags of savedTags) expect(tags).toContain('category:新分类');
+      await waitFor(() => expect(reload).toHaveBeenCalled());
+    } finally {
+      window.prompt = originalPrompt;
+    }
   });
 
   it('deletes a scenario directly from the left scene list', async () => {

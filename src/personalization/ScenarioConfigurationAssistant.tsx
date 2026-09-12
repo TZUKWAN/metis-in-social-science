@@ -125,6 +125,8 @@ export default function ScenarioConfigurationAssistant({
   const [fundingTemplateSummary, setFundingTemplateSummary] = useState<string | null>(null);
   const [fundingBusy, setFundingBusy] = useState(false);
   const [sending, setSending] = useState(false);
+  // 3.8 发送→中断：用户点了停止后、编译 promise 尚未结算的过渡状态。
+  const [interruptRequested, setInterruptRequested] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const sequence = useRef(1);
   // 会话历史（仅当项目+场景标识齐备且桥接存在时可用）。
@@ -333,6 +335,22 @@ export default function ScenarioConfigurationAssistant({
     if (!loaded) setConversationId(null);
   };
 
+  /** 3.8 中断在途编译：主进程 AbortController 生效后本轮以 interrupted 结算，
+   *  已生成内容保留为草稿；用户随后可直接继续对话（继续）。 */
+  const requestInterrupt = useCallback(async () => {
+    if (!scenarioId || !sending || interruptRequested) return;
+    const metis = typeof window !== 'undefined' ? window.metis : undefined;
+    if (!metis?.abortScenarioCompile) return;
+    setInterruptRequested(true);
+    try {
+      await metis.abortScenarioCompile(scenarioId);
+    } catch {
+      // 中断请求失败保持发送态；结果消息仍由编译结算路径如实呈现。
+    } finally {
+      setInterruptRequested(false);
+    }
+  }, [scenarioId, sending, interruptRequested]);
+
   const submit = async () => {
     const instruction = draft.trim();
     if (!instruction || sending || busy) return;
@@ -503,6 +521,14 @@ ${zh ? '现在直接输入你的要求（例如：帮我生成这份申报书的
           )}
           <small>{zh ? '已用时 ' + elapsedSeconds + ' 秒' : elapsedSeconds + 's elapsed'}</small>
         </div>
+        <button
+          type="button"
+          className="scenario-assistant__interrupt"
+          onClick={() => void requestInterrupt()}
+          disabled={!scenarioId || interruptRequested}
+          aria-label={zh ? '中断本轮场景构建' : 'Interrupt this build'}
+          data-testid="sw-assistant-interrupt"
+        >{interruptRequested ? (zh ? '正在中断…' : 'Interrupting…') : (zh ? '中断' : 'Stop')}</button>
       </article>}
     </div>
 

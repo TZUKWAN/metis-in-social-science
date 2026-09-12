@@ -1001,7 +1001,8 @@ function SubmissionPackageSection({ projectId, caseItem, onRefresh }: {
   caseItem: SubmissionCase;
   onRefresh: () => Promise<void> | void;
 }) {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
+  const zh = locale === 'zh';
   const api = journalApi();
   const [busy, setBusy] = useState<'' | 'preflight' | 'assemble' | 'export' | 'freeze' | 'validate' | 'letter'>('');
   const [message, setMessage] = useState('');
@@ -1117,6 +1118,44 @@ function SubmissionPackageSection({ projectId, caseItem, onRefresh }: {
     setBusy('');
   }
 
+  /**
+   * 邮箱一键投稿（刘总 2026-09）：用本机邮件客户端打开预填的投稿邮件
+   * （收件人=期刊投稿邮箱，主题=论文标题，正文=投稿信/案例信息）。
+   * mailto 无法携带附件，附件需在邮件客户端手动添加——界面上如实说明。
+   */
+  function openMailSubmission(): void {
+    const journalName = caseItem.targetJournalName || 'Target Journal';
+    const remembered = (() => {
+      try { return window.localStorage.getItem(`metis:sub-email:${journalName}`) ?? ''; } catch { return ''; }
+    })();
+    const raw = window.prompt(locale === 'zh' ? `${journalName} 的投稿邮箱：` : `Submission email for ${journalName}:`, remembered);
+    if (raw === null) return;
+    const email = raw.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(email)) {
+      setMessage(locale === 'zh' ? '邮箱格式不正确，未打开邮件客户端。' : 'That email address is not valid; the mail client was not opened.');
+      return;
+    }
+    try { window.localStorage.setItem(`metis:sub-email:${journalName}`, email); } catch { /* best-effort */ }
+    const NL = String.fromCharCode(10);
+    const subject = `${locale === 'zh' ? '投稿' : 'Submission'}: ${caseItem.title || (locale === 'zh' ? '未命名稿件' : 'Untitled manuscript')}`.trim();
+    const bodyLines = [
+      `${locale === 'zh' ? '尊敬的编辑部' : 'Dear Editors'},`,
+      '',
+      zh
+        ? `您好！现投稿论文《${caseItem.title || ''}》，拟投贵刊 ${journalName}。投稿材料（正文与附件）见本邮件附件。`
+        : `Please find our manuscript "${caseItem.title || ''}" submitted for consideration at ${journalName}. The manuscript and supplementary files are attached.`,
+      '',
+      `${locale === 'zh' ? '稿件类型' : 'Article type'}: ${caseItem.articleType ?? (locale === 'zh' ? '未指定' : 'unspecified')}`,
+      '',
+      letter?.extraction ? String(letter.extraction).slice(0, 2_000) : '',
+      '',
+      locale === 'zh' ? '（此邮件由 METIS 投稿工作台预填生成。）' : '(Prefilled by the METIS submission workbench.)',
+    ];
+    const mailto = `mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(bodyLines.filter((line) => line !== '').join(NL.repeat(2)))}`;
+    window.location.href = mailto;
+    setMessage(locale === 'zh' ? '已打开邮件客户端；请在发送前手动添加正文与附件文件。' : 'The mail client is open; attach the manuscript and files before sending.');
+  }
+
   const frozen = pkg?.package.status === 'frozen';
   const preflightGroups: Array<{ key: 'manuscript' | 'blind' | 'statement' | 'files' | 'other'; items: SubmissionPreflightCheck[] }> = [];
   if (preflight) {
@@ -1160,6 +1199,8 @@ function SubmissionPackageSection({ projectId, caseItem, onRefresh }: {
           ))}
           <button type="button" className="submissions-primary" disabled={blockedCount > 0 || busy !== ''}
             onClick={() => void advanceToReady()}>{t('submissionHub.readyToSubmit')}</button>
+          <button type="button" className="submissions-secondary" disabled={busy !== ''} data-testid="submission-mailto"
+            onClick={openMailSubmission}>{zh ? '邮箱一键投稿' : 'Submit via email'}</button>
         </div>
       )}
 

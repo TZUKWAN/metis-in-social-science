@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef, Suspense, lazy } from 'react'
-import { LayoutGrid, Settings, Search, Command, HelpCircle, Monitor, Moon, Sun } from 'lucide-react'
+import { useState, useEffect, useRef, useCallback, Suspense, lazy } from 'react'
+import { LayoutGrid, Settings, Search, Command, HelpCircle, Monitor, Moon, Sun, Zap } from 'lucide-react'
 import './App.css'
 import ChatPage from './pages/ChatPage'
 import { useTranslation } from './i18n'
@@ -403,6 +403,18 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
     resolveStandalonePage(initialPage, getDiagnosticMode() === 'diagnostic'))
   const [projectLeftCollapsed, setProjectLeftCollapsed] = useState(false)
   const [projectRightCollapsed, setProjectRightCollapsed] = useState(false)
+  // AIO 模式（刘总 2026-09）：禅意极简——隐藏主导航，保留单一对话入口与
+  // 成果/投稿快捷坞；自动路由由 ChatPage 内建（任务式输入→研究任务流）。
+  const [aioMode, setAioMode] = useState<boolean>(() => {
+    try { return window.localStorage.getItem('metis:aio-mode') === '1'; } catch { return false; }
+  })
+  const toggleAioMode = useCallback(() => {
+    setAioMode((current) => {
+      const next = !current;
+      try { window.localStorage.setItem('metis:aio-mode', next ? '1' : '0'); } catch { /* best-effort */ }
+      return next;
+    });
+  }, [])
   const [searchOpen, setSearchOpen] = useState(false)
   const [commandBarOpen, setCommandBarOpen] = useState(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
@@ -1009,7 +1021,7 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
   ];
 
   return (
-    <div className="app-layout" data-ui-mode={uiMode}>
+    <div className={`app-layout ${aioMode ? 'app-layout--aio' : ''}`} data-ui-mode={uiMode}>
       <ApprovalToastGate />
       <header className="topbar">
         <div className="topbar-brand" aria-label={t('app.title')}>
@@ -1103,6 +1115,16 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
           </div>
         </nav>
         <div className="topbar-actions">
+          <button
+            className={`topbar-icon-button ${aioMode ? 'aio-active' : ''}`}
+            onClick={toggleAioMode}
+            aria-pressed={aioMode}
+            aria-label={locale === 'zh' ? 'AIO 极简模式' : 'AIO focus mode'}
+            title={locale === 'zh' ? 'AIO 极简模式：隐藏导航，专注对话' : 'AIO focus mode'}
+            data-testid="aio-toggle"
+          >
+            <Zap size={16} aria-hidden="true" />
+          </button>
           <JobsIndicator />
           <ToastHost />
           <button
@@ -1144,6 +1166,13 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
           </Suspense>
         </ErrorBoundary>
       </main>
+      {aioMode && (
+        <div className="aio-dock" data-testid="aio-dock" aria-label={locale === 'zh' ? '快捷入口' : 'Quick access'}>
+          <button type="button" onClick={() => navigateLegacy('outcomes')}>{locale === 'zh' ? '成果' : 'Outcomes'}</button>
+          <button type="button" onClick={() => navigateLegacy('submissions')}>{locale === 'zh' ? '投稿' : 'Submit'}</button>
+          <button type="button" onClick={() => leavePersonalizationGuard(() => { setPersonalizationOpen(false); setStandalonePage(null); setCurrentEntry('settings'); })}>{locale === 'zh' ? '设置' : 'Settings'}</button>
+        </div>
+      )}
       {searchOpen && (
         <GlobalSearch
           onNavigate={navigateLegacy}

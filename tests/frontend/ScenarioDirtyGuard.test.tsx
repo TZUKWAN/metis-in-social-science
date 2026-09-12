@@ -11,7 +11,7 @@ import { render, cleanup, fireEvent, waitFor, screen, within } from '@testing-li
 import App from '../../src/App';
 import { useMetisStore } from '../../src/store';
 import { researchWorkspaceStore } from '../../src/research/researchWorkspaceStore';
-import { resetScenarioWorkbenchDraftStoreForTests } from '../../src/personalization/ScenarioWorkbench';
+import { resetScenarioWorkbenchDraftStoreForTests } from '../../src/personalization/scenarioWorkbenchDraftStore';
 import type { PersonalizationDefinition } from '../../engine/runtime/PersonalizationRuntimeContract';
 import { buildBuiltinPersonalizationDefinitions } from '../fixtures/personalization/legacyBuiltinDefinitions';
 

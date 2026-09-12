@@ -8,10 +8,12 @@
  * and the new .goal-card-inline* classes from App.css.
  */
 
+import { useState } from 'react';
 import { useTranslation } from '../i18n';
 import type { UIMode } from '../../engine/capabilities/DiagnosticMode';
 import { presentExecutionError } from '../presentation/executionPresentation';
 import { presentSafeMarkdownText } from '../presentation/SafeMarkdown';
+import { isInternalExecutionCopy } from '../presentation/executionCopy';
 
 // ─── Types (mirrors ChatPage GoalCardData) ────────────────────
 
@@ -47,6 +49,16 @@ interface GoalCardInlineProps {
   onResume?: () => void;
   onRetry?: () => void;
   onOpenBoard?: () => void;
+  /** 2.6 已完成任务「调整」：以该步骤为上下文新开对话（会话标签名=任务名）。 */
+  onStepAdjust?: (stepId: string, stepName: string, summary: string) => void;
+  /** 2.6/2.7 删除该任务及其产物（调用方负责二次确认）。 */
+  onDeleteTask?: () => void;
+  /** 2.7 未完成任务「编辑任务」：用户自然语言输入，调用方交给引擎自动调整计划。 */
+  onStepEditTask?: (instruction: string) => void;
+  /** 2.7 未完成任务「启动」。 */
+  onStepStart?: () => void;
+  /** 2.8 拖动排序：提交新的步骤顺序。 */
+  onStepsReorder?: (orderedIds: string[]) => void;
 }
 
 // ─── Status color map ────────────────────────────────────────
@@ -89,17 +101,7 @@ const STATUS_CLASSES: Record<GoalStepStatus['status'], string> = {
   unknown: 'pending',
 };
 
-/**
- * Production cards still show the real Workflow names supplied by the
- * engine.  Only labels that plainly expose runtime implementation terms are
- * replaced with their user-facing plan/step fallback; diagnostic mode keeps
- * the original text for troubleshooting.
- */
-const INTERNAL_EXECUTION_COPY = /\b(?:agentloop|provider|mcp|runtime)\b/i;
 
-export function isInternalExecutionCopy(value: string | undefined): boolean {
-  return Boolean(value && INTERNAL_EXECUTION_COPY.test(value));
-}
 
 // ─── Component ────────────────────────────────────────────────
 
@@ -112,9 +114,19 @@ export default function GoalCardInline({
   onResume,
   onRetry,
   onOpenBoard,
+  onStepAdjust,
+  onDeleteTask,
+  onStepEditTask,
+  onStepStart,
+  onStepsReorder,
 }: GoalCardInlineProps) {
   const { t, locale } = useTranslation();
   const diagnosticMode = uiMode === 'diagnostic';
+  // 2.6/2.7: 步骤点击展开面板；2.8: 拖动排序状态。
+  const [expandedStepId, setExpandedStepId] = useState<string | null>(null);
+  const [editInstruction, setEditInstruction] = useState('');
+  const [dragStepId, setDragStepId] = useState<string | null>(null);
+  const [dragOverStepId, setDragOverStepId] = useState<string | null>(null);
 
   const phaseLabel: Record<string, string> = {
     creating: t('chat.goalCreating'),
@@ -177,8 +189,10 @@ export default function GoalCardInline({
       )}
 
       {/* This is a real Workflow timeline. Steps come from Goal/Workflow IPC and
-          receive their status only through the goal live event stream. */}
-      {(data.phase === 'executing' || data.phase === 'paused' || data.phase === 'completed' || data.phase === 'failed' || data.phase === 'cancelled') && data.steps.length > 0 && (
+          receive their status only through the goal live event stream.
+          plan_ready is included so a generated-but-not-started plan is visible
+          and can be reordered / started (2.7/2.8). */}
+      {(data.phase === 'plan_ready' || data.phase === 'executing' || data.phase === 'paused' || data.phase === 'completed' || data.phase === 'failed' || data.phase === 'cancelled') && data.steps.length > 0 && (
         <div className="goal-card-plan">
           <div className="goal-card-plan-name">
             {displayPlanName}
@@ -206,7 +220,7 @@ export default function GoalCardInline({
             </>
           )}
 
-          {/* Step list */}
+          {/* Step list - 2.6/2.7/2.8: click to expand detail panel; drag to reorder (pending tasks). */}
           <ol className="goal-card-steps" data-testid="goal-execution-timeline" aria-label={t('chat.researchPlan')}>
             {data.steps.map((step, index) => {
               const status = data.stepStatuses[step.id]?.status ?? 'pending';
@@ -217,13 +231,37 @@ export default function GoalCardInline({
                 && (diagnosticMode || !isInternalExecutionCopy(step.description))
                 ? safeText(step.description)
                 : '';
+              const stepOutput = data.stepStatuses[step.id]?.output ?? '';
+              const expanded = expandedStepId === step.id;
+              const isDone = status === 'completed';
+              const isDraggable = Boolean(onStepsReorder) && data.phase === 'plan_ready';
               return (
                 <li
                   key={step.id}
                   ref={(element) => registerStepElement?.(step.id, element)}
-                  className={`exec-step ${status === 'running' ? 'running' : ''}`}
+                  className={`exec-step ${status === 'running' ? 'running' : ''}${expanded ? ' expanded' : ''}${dragOverStepId === step.id ? ' drag-over' : ''}`}
                   aria-current={status === 'running' ? 'step' : undefined}
+                  data-testid={`goal-step-${step.id}`}
+                  onClick={() => setExpandedStepId(expanded ? null : step.id)}
+                  draggable={isDraggable}
+                  onDragStart={isDraggable ? () => setDragStepId(step.id) : undefined}
+                  onDragOver={isDraggable && dragStepId && dragStepId !== step.id ? (event) => { event.preventDefault(); setDragOverStepId(step.id); } : undefined}
+                  onDrop={isDraggable && dragStepId ? (event) => {
+                    event.preventDefault();
+                    const from = data.steps.findIndex((item) => item.id === dragStepId);
+                    const to = data.steps.findIndex((item) => item.id === step.id);
+                    if (from >= 0 && to >= 0 && from !== to && onStepsReorder) {
+                      const ordered = data.steps.map((item) => item.id);
+                      ordered.splice(to, 0, ...ordered.splice(from, 1));
+                      onStepsReorder(ordered);
+                    }
+                    setDragStepId(null);
+                    setDragOverStepId(null);
+                  } : undefined}
+                  onDragEnd={() => { setDragStepId(null); setDragOverStepId(null); }}
+                  style={{ cursor: isDraggable ? 'grab' : 'pointer' }}
                 >
+                  {isDraggable && <span className="goal-step-drag" aria-hidden draggable={false}>⋮⋮</span>}
                   <span className={`status-dot ${STATUS_CLASSES[status]}`} />
                   <span className="goal-card-step-copy">
                     <span className="exec-step-name">
@@ -237,6 +275,67 @@ export default function GoalCardInline({
                   >
                     {t(`goal.${STATUS_LABEL_KEYS[status] ?? 'paused'}`)}
                   </span>
+                  {expanded && (
+                    <div className="goal-step-panel" data-testid={`goal-step-panel-${step.id}`} onClick={(event) => event.stopPropagation()}>
+                      {isDone ? (
+                        <>
+                          <div className="goal-step-panel__summary" data-testid="goal-step-summary">
+                            <strong>{locale === 'zh' ? '已完成：' : 'Completed: '}</strong>
+                            {stepOutput
+                              ? safeText(stepOutput.length > 400 ? `${stepOutput.slice(0, 400)}…` : stepOutput)
+                              : (displayStepDescription || (locale === 'zh' ? '本步骤已完成。' : 'This step finished.'))}
+                          </div>
+                          <div className="goal-step-panel__actions">
+                            {onStepAdjust && (
+                              <button type="button" className="btn-sm btn-secondary" data-testid="goal-step-adjust" onClick={() => onStepAdjust(step.id, step.name, stepOutput)}>
+                                {locale === 'zh' ? '调整' : 'Adjust'}
+                              </button>
+                            )}
+                            {onDeleteTask && (
+                              <button type="button" className="btn-sm btn-secondary goal-step-panel__danger" data-testid="goal-step-delete-task" onClick={() => {
+                                if (window.confirm(locale === 'zh' ? `确定删除任务「${data.description}」的研究记录（计划与执行历史）？已生成的成果文件会保留。` : `Delete the research record of task "${data.description}" (plan and run history)? Generated outcome files are kept.`)) {
+                                  onDeleteTask();
+                                }
+                              }}>{locale === 'zh' ? '删除任务' : 'Delete task'}</button>
+                            )}
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="goal-step-panel__summary" data-testid="goal-step-plan">
+                            <strong>{locale === 'zh' ? '准备做：' : 'Planned: '}</strong>
+                            {displayStepDescription || safeText(step.description) || (locale === 'zh' ? '等待执行。' : 'Waiting to run.')}
+                          </div>
+                          <div className="goal-step-panel__actions">
+                            {onDeleteTask && (
+                              <button type="button" className="btn-sm btn-secondary goal-step-panel__danger" data-testid="goal-step-delete-task" onClick={() => {
+                                if (window.confirm(locale === 'zh' ? `确定删除任务「${data.description}」的研究记录（计划与执行历史）？已生成的成果文件会保留。` : `Delete the research record of task "${data.description}" (plan and run history)? Generated outcome files are kept.`)) {
+                                  onDeleteTask();
+                                }
+                              }}>{locale === 'zh' ? '删除任务' : 'Delete task'}</button>
+                            )}
+                            {onStepEditTask && (
+                              <span className="goal-step-panel__edit">
+                                <input
+                                  value={editInstruction}
+                                  placeholder={locale === 'zh' ? '用自然语言描述要怎么调整这一步…' : 'Describe the adjustment in plain language…'}
+                                  onChange={(event) => setEditInstruction(event.target.value)}
+                                  data-testid="goal-step-edit-input"
+                                />
+                                <button type="button" className="btn-sm btn-secondary" disabled={!editInstruction.trim()} data-testid="goal-step-edit-apply" onClick={() => {
+                                  onStepEditTask(editInstruction.trim());
+                                  setEditInstruction('');
+                                }}>{locale === 'zh' ? '让 METIS 调整' : 'Let METIS adjust'}</button>
+                              </span>
+                            )}
+                            {onStepStart && (data.phase === 'plan_ready' || data.phase === 'paused') && (
+                              <button type="button" className="btn-sm btn-primary" data-testid="goal-step-start" onClick={onStepStart}>{locale === 'zh' ? '启动' : 'Start'}</button>
+                            )}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
                 </li>
               );
             })}

@@ -17,6 +17,7 @@ import SettingsWeChatBotSection from './SettingsWeChatBotSection';
 import SettingsImageGenerationSection from './SettingsImageGenerationSection';
 import SettingsOutcomePromptsSection from './SettingsOutcomePromptsSection';
 import ProviderProfilesSection from './ProviderProfilesSection';
+import SettingsGlobalMetisSection from './SettingsGlobalMetisSection';
 import SettingsAdvancedDialog from './SettingsAdvancedDialog';
 
 export interface SettingsPanelProps {
@@ -151,6 +152,8 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
 
       <ProviderProfilesSection />
 
+      {/* 全局 METIS.md（刘总 2026-09：规则在设置中可见可改） */}
+      <SettingsGlobalMetisSection />
 
       {/* Outcome image generation (dedicated provider settings + encrypted API key) */}
       <SettingsImageGenerationSection />
