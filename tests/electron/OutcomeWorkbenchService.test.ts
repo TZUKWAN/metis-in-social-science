@@ -383,3 +383,39 @@ describe('H. Research Graph（T01.09/T09.02-T09.06）', () => {
     expect(graph.listNodes('proj-1')).toHaveLength(1);
   });
 });
+
+describe('Graph Projection（Phase 10/11/12）', () => {
+  it('claim-evidence projection reads canonical tables without copying; knowledge graph exposes unverified hidden connections', () => {
+    const { db, graph } = setup();
+    const now = Date.now();
+    db.prepare("INSERT INTO projects (id,title,original_intent,lifecycle,created_at,updated_at,source) VALUES ('proj-9','P9','','active',1,1,'test')").run();
+    db.prepare("INSERT INTO sources (id, project_id, title, authors, year, kind, created_at, updated_at) VALUES ('src-1','proj-9','制度研究','[]',2024,'paper',?,?)").run(now, now);
+    db.prepare("INSERT INTO claims (id,project_id,statement,claim_type,confidence,status,metadata,created_at,updated_at) VALUES ('clm-p9','proj-9','制度影响能力形成','finding',0.5,'supported','{}',?,?)").run(now, now);
+    db.prepare("INSERT INTO evidence (id,project_id,source_id,anchor_type,anchor_start,anchor_end,page_number,snippet,snippet_hash,confidence,metadata,created_at,updated_at) VALUES ('ev-1','proj-9','src-1','page',NULL,NULL,3,'制度确实塑造了技能形成路径。','h0',0.9,'{}',?,?)").run(now, now);
+    db.prepare("INSERT INTO claim_evidence_links (id,claim_id,evidence_id,relation,weight,note,created_at) VALUES ('link-1','clm-p9','ev-1','supports',1.0,'',?)").run(now);
+    const projection = graph.projectClaimEvidenceGraph('proj-9');
+    expect(projection.ok).toBe(true);
+    if (!projection.ok) return;
+    expect(projection.claims).toHaveLength(1);
+    expect(projection.claims[0]!.supports).toBe(1);
+    expect(projection.evidences[0]!.sourceTitle).toBe('制度研究');
+    expect(projection.links[0]!.relation).toBe('supports');
+
+    // knowledge graph：AI 推断未验证边进 hiddenConnections（必须带确认流程的语义）。
+    graph.upsertNode({ id: 'kn-1', projectId: 'proj-9', kind: 'concept', label: '制度理论', canonicalEntityType: null, canonicalEntityId: null, provenance: 'ai_extracted', verificationStatus: 'unverified', confidence: 0.3, description: '' });
+    graph.upsertNode({ id: 'kn-2', projectId: 'proj-9', kind: 'claim', label: '制度影响能力形成', canonicalEntityType: 'claim', canonicalEntityId: 'clm-p9', provenance: 'canonical', verificationStatus: 'supported', confidence: null, description: '' });
+    graph.upsertEdge({ id: '', projectId: 'proj-9', sourceNodeId: 'kn-1', targetNodeId: 'kn-2', relation: 'explains', provenance: 'ai_extracted', evidenceIds: [], sourceIds: [], verificationStatus: 'unverified', confidence: 0.3, createdAt: now, updatedAt: now });
+    const knowledge = graph.projectKnowledgeGraph('proj-9');
+    expect(knowledge.nodes.length).toBeGreaterThanOrEqual(2);
+    expect(knowledge.hiddenConnections).toHaveLength(1);
+    expect(knowledge.hiddenConnections[0]!.sourceLabel).toBe('制度理论');
+    // argument graph：claim 层 + 概念层分层。
+    const argument = graph.projectArgumentGraph('proj-9');
+    expect(argument.ok).toBe(true);
+    if (argument.ok) {
+      expect(argument.layers.length).toBeGreaterThanOrEqual(2);
+      expect(argument.unverifiedCount).toBeGreaterThanOrEqual(1);
+    }
+  });
+});
+

@@ -375,6 +375,97 @@ export class ResearchGraphService {
     return this.upsertEdge({ ...edge, verificationStatus: 'rejected' });
   }
 
+  // ── Projection（Phase 10/11/12）：权威数据 → 确定性投影 DTO，UI 只读。──
+
+  /**
+   * Claim–Evidence Graph（T11.02/T11.03）：claims/claim_evidence_links/evidence/sources
+   * 权威数据直接投影，绝不复制存储。布局 DTO：claim 左 / evidence 中 / source 右。
+   */
+  projectClaimEvidenceGraph(projectId: string): {
+    ok: true;
+    claims: Array<{ id: string; statement: string; claimType: string; status: string;
+      supports: number; contradicts: number; qualifies: number }>;
+    evidences: Array<{ id: string; snippet: string; sourceId: string; sourceTitle: string | null;
+      anchorType: string; pageNumber: number | null; confidence: number }>;
+    links: Array<{ id: string; claimId: string; evidenceId: string; relation: string; weight: number }>;
+  } | { ok: false; code: GraphErrorCode } {
+    try {
+      const claims = (this.db.prepare('SELECT id, statement, claim_type, status FROM claims WHERE project_id=? AND deleted_at IS NULL ORDER BY updated_at DESC').all(projectId) as Array<{ id: string; statement: string; claim_type: string; status: string }>)
+        .map((claim) => ({ id: claim.id, statement: claim.statement, claimType: claim.claim_type, status: claim.status, supports: 0, contradicts: 0, qualifies: 0 }));
+      const claimIndex = new Map(claims.map((claim) => [claim.id, claim]));
+      const links = (this.db.prepare(`SELECT l.id, l.claim_id AS claimId, l.evidence_id AS evidenceId, l.relation, l.weight
+        FROM claim_evidence_links l JOIN claims c ON c.id = l.claim_id
+        WHERE c.project_id = ? AND c.deleted_at IS NULL`).all(projectId) as Array<{ id: string; claimId: string; evidenceId: string; relation: string; weight: number }>);
+      for (const link of links) {
+        const claim = claimIndex.get(link.claimId);
+        if (claim && link.relation in claim) (claim as unknown as Record<string, number>)[link.relation] += 1;
+      }
+      const evidences = (this.db.prepare(`SELECT e.id, e.snippet, e.source_id, e.anchor_type, e.page_number, e.confidence, s.title AS source_title
+        FROM evidence e LEFT JOIN sources s ON s.id = e.source_id
+        WHERE e.project_id = ? AND e.deleted_at IS NULL`).all(projectId) as Array<{ id: string; snippet: string; source_id: string; anchor_type: string; page_number: number | null; confidence: number; source_title: string | null }>)
+        .map((evidence) => ({
+          id: evidence.id, snippet: evidence.snippet.slice(0, 300), sourceId: evidence.source_id,
+          sourceTitle: evidence.source_title, anchorType: evidence.anchor_type,
+          pageNumber: evidence.page_number, confidence: evidence.confidence,
+        }));
+      return { ok: true, claims, evidences, links };
+    } catch {
+      return { ok: false, code: 'invalid_request' };
+    }
+  }
+
+  /**
+   * Argument Graph（T10.01/T10.02）：从 research graph 中的 claim/section/concept 节点
+   * 与结构关系投影 top-down 分层 DAG（研究问题/论断/支持/结论层），不含伪精确分数。
+   */
+  projectArgumentGraph(projectId: string): {
+    ok: true;
+    layers: Array<{ layer: number; kind: string; nodes: ResearchGraphNode[] }>;
+    edges: ResearchGraphEdge[];
+    unverifiedCount: number;
+  } | { ok: false; code: GraphErrorCode } {
+    const nodes = this.listNodes(projectId);
+    if (nodes.length === 0) return { ok: true, layers: [], edges: [], unverifiedCount: 0 };
+    const edges = this.listEdges(projectId);
+    const layerOf = (kind: string): number => ({ concept: 0, theory: 0, claim: 1, method: 1, section: 1, outcome: 2, source: 1, evidence: 1, document: 0, person: 0, institution: 0, event: 0, place: 0, variable: 1 }[kind] ?? 1);
+    const layers = new Map<number, ResearchGraphNode[]>();
+    for (const node of nodes) {
+      const layer = layerOf(node.kind);
+      const bucket = layers.get(layer) ?? [];
+      bucket.push(node);
+      layers.set(layer, bucket);
+    }
+    return {
+      ok: true,
+      layers: [...layers.entries()].sort(([a], [b]) => a - b).map(([layer, bucket]) => ({ layer, kind: bucket[0]?.kind ?? 'claim', nodes: bucket })),
+      edges,
+      unverifiedCount: nodes.filter((node) => node.verificationStatus === 'unverified').length,
+    };
+  }
+
+  /**
+   * Project Knowledge Graph（T12.06/T12.07）：全量节点/边 + 过滤参数；
+   * hiddenConnection 列出 AI 推断且未验证的关系（必须带依据并经确认流程）。
+   */
+  projectKnowledgeGraph(projectId: string, filter?: {
+    kinds?: string[]; relations?: string[]; verification?: string[]; limit?: number;
+  }): { nodes: ResearchGraphNode[]; edges: ResearchGraphEdge[]; hiddenConnections: Array<{ edge: ResearchGraphEdge; sourceLabel: string; targetLabel: string }> } {
+    const nodes = this.listNodes(projectId, { kinds: filter?.kinds, verification: filter?.verification }).slice(0, filter?.limit ?? 500);
+    const nodeIds = new Set(nodes.map((node) => node.id));
+    const edges = this.listEdges(projectId, { relations: filter?.relations, verification: filter?.verification })
+      .filter((edge) => nodeIds.has(edge.sourceNodeId) && nodeIds.has(edge.targetNodeId));
+    const labels = new Map(nodes.map((node) => [node.id, node.label]));
+    const hiddenConnections = edges
+      .filter((edge) => edge.provenance === 'ai_extracted' && edge.verificationStatus === 'unverified')
+      .slice(0, 20)
+      .map((edge) => ({
+        edge,
+        sourceLabel: labels.get(edge.sourceNodeId) ?? edge.sourceNodeId,
+        targetLabel: labels.get(edge.targetNodeId) ?? edge.targetNodeId,
+      }));
+    return { nodes, edges, hiddenConnections };
+  }
+
   /** T09.06 去重第 1/2 层：canonical 完全相同 → 同一节点；label 规范化相同 → 候选复用。 */
   findDeduplicationCandidate(projectId: string, input: { canonicalEntityType: string | null; canonicalEntityId: string | null; label: string }): ResearchGraphNode | undefined {
     if (input.canonicalEntityType && input.canonicalEntityId) {

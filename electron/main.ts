@@ -4893,6 +4893,7 @@ function setupIPC(): void {
               memory: new OutcomeMemoryService(store.raw),
               review: new OutcomeReviewService(store.raw),
               graph: new ResearchGraphService(store.raw),
+              workbenchDb: store.raw,
             })
           : undefined))?.workbench,
       }).chat(parsed.data);
@@ -6386,7 +6387,7 @@ function setupIPC(): void {
   ipcDomainDisposers.push(registerProjectIpc(domainIpcContext));
   // ── Outcomes 2.0（draft/snapshot/revision/memory/review/graph）────────
   // 任务书 §25：新 IPC 走 Domain Registrar；共享 store.raw 与 OutcomeRepository。
-  let outcomes2Services: { workbench: OutcomeWorkbenchService; memory: OutcomeMemoryService; review: OutcomeReviewService; graph: ResearchGraphService } | null = null;
+  let outcomes2Services: { workbench: OutcomeWorkbenchService; memory: OutcomeMemoryService; review: OutcomeReviewService; graph: ResearchGraphService; workbenchDb: import('better-sqlite3').Database } | null = null;
   ipcDomainDisposers.push(registerOutcomes2Ipc(domainIpcContext, {
     ensureServices: () => {
       if (outcomes2Services) return outcomes2Services;
@@ -6396,6 +6397,7 @@ function setupIPC(): void {
         memory: new OutcomeMemoryService(store.raw),
         review: new OutcomeReviewService(store.raw),
         graph: new ResearchGraphService(store.raw),
+        workbenchDb: store.raw,
       };
       return outcomes2Services;
     },

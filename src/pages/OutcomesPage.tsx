@@ -15,6 +15,7 @@ import {
 } from '../../engine/runtime/OutcomeRuntimeContract';
 import './OutcomesPage.css';
 import { RevisionProposalCard } from '../outcomes/RevisionProposalCard';
+import { OutcomeWorkbenchPanel } from '../outcomes/OutcomeWorkbenchPanel';
 import { autoResizeTextarea } from '../lib/textareaAutosize.js';
 import ModelThinkingSelector from '../components/ModelThinkingSelector';
 import { OutcomeWordFormattingPanel } from '../components/OutcomeWordFormattingPanel';
@@ -863,6 +864,7 @@ export default function OutcomesPage({ onNavigateToSubmissions }: { onNavigateTo
            {editorDocument.type === 'word' && <OutcomeWordFormattingPanel document={editorDocument} openRequest={formattingOpenRequest} hideTrigger onApply={(next, note) => { setEditorDocument(next); setOperationNotice(note); }} />}
           {!nativeEmbeddedActive && editorDocument.type === 'ppt' && <PptStudioEditor key={`${selectedForProject.outcome.id}-ppt-${selectedForProject.version.version}`} projectId={projectId} outcomeId={selectedForProject.outcome.id} baseVersion={selectedForProject.version.version} hasUnsavedChanges={hasUnsavedChanges} document={editorDocument} initialPageId={assistantSelection?.kind === 'ppt' ? assistantSelection.pageId : undefined} initialSelectedElementId={assistantSelection?.kind === 'ppt' ? assistantSelection.elementId : undefined} onChange={handleEditorChange} onSave={(next) => void save(next, '保存 PPT Grid 布局')} onNotice={setOperationNotice} onGenerationApplied={async (applied) => { await applyAssistantVersion(applied as unknown as AssistantApplied); setOperationNotice('PPT Generation Skill 已生成并保存为新版本；可在版本面板查看或恢复。'); }} onGenerationConflict={async () => { await open(selectedForProject.outcome.id); setOperationNotice('PPT 生成因版本已更新而未提交；已刷新到当前版本。'); }} onSelectionChange={updateAssistantSelection} />}
          {(!nativeEmbeddedActive) && (editorDocument.type === 'other' || editorDocument.type === 'spreadsheet' || editorDocument.type === 'pdf') && <MediaEditor projectId={projectId} outcomeId={selectedForProject.outcome.id} kind={selectedForProject.outcome.kind} hasUnsavedChanges={hasUnsavedChanges} document={editorDocument} onChange={handleEditorChange} onSave={(next, note, actor = 'human') => void save(next, note, actor)} />}
+        <OutcomeWorkbenchPanel projectId={projectId} outcomeId={selectedForProject.outcome.id} onNotice={setOperationNotice} onDraftUpdated={() => { const draft = window.metis?.outcome2DraftGet?.({ projectId, outcomeId: selectedForProject.outcome.id }) as Promise<{ content?: OutcomeDocument } | null> | undefined; void draft?.then((value) => { if (value?.content) setEditorDocument(value.content); }); }} />
         <VersionPanel versions={versions} activeVersion={selectedForProject.version.version} onOpen={(version) => void open(selectedForProject.outcome.id, version.version)} onRestore={(version) => void restoreVersion(version)} />
       </>}
     </main>

@@ -68,7 +68,7 @@ describe('collectStartupHealth', () => {
       expect(byId.db_integrity?.detail).toContain('quick_check ok');
       expect(byId.schema_versions?.status).toBe('ok');
       expect(byId.schema_versions?.detail).toMatch(/schema_version: 18/);
-      expect(byId.schema_versions?.detail).toMatch(/migrations applied to: 117/);
+      expect(byId.schema_versions?.detail).toMatch(/migrations applied to: 118/);
       expect(byId.data_dir_writable?.status).toBe('ok');
       expect(byId.provider?.status).toBe('ok');
       expect(report.issues).toEqual([]);

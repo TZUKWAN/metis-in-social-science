@@ -21,6 +21,8 @@ export interface Outcomes2Services {
   memory: OutcomeMemoryService;
   review: OutcomeReviewService;
   graph: ResearchGraphService;
+  /** 共享运行库连接（review pipeline 的确定性证据查询用）。 */
+  workbenchDb: import('better-sqlite3').Database;
 }
 
 export interface Outcomes2IpcDependencies {
@@ -458,6 +460,49 @@ export function registerOutcomes2Ipc(ctx: DomainIpcContext, deps: Outcomes2IpcDe
         label: parsed.data.label,
       }) ?? null;
     } catch { return null; }
+  });
+
+  domain.handle('outcomes2:review:run', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.strictObject({ projectId: idSchema, outcomeId: idSchema, mode: z.enum(['full', 'argument', 'evidence', 'theory', 'method', 'structure', 'language', 'submission_check']) }).safeParse(raw);
+      if (!parsed.success) return { ok: false, code: 'invalid_request' };
+      const current = services();
+      const agentLoopInstance = ctx.agentLoop();
+      if (!current || !agentLoopInstance) return { ok: false, code: 'review_unavailable' };
+      const { OutcomeReviewPipelineService } = await import('../OutcomeReviewPipelineService.js');
+      const pipeline = new OutcomeReviewPipelineService({
+        workbench: current.workbench, review: current.review, db: current.workbenchDb, agentLoop: agentLoopInstance, modelName: 'assistant',
+      });
+      return await pipeline.startReview(parsed.data.projectId, parsed.data.outcomeId, parsed.data.mode);
+    } catch { return { ok: false, code: 'review_unavailable' }; }
+  });
+
+  domain.handle('outcomes2:graph:projectClaimEvidence', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.strictObject({ projectId: idSchema }).safeParse(raw);
+      if (!parsed.success) return { ok: false, code: 'invalid_request' };
+      return services()?.graph.projectClaimEvidenceGraph(parsed.data.projectId) ?? { ok: false, code: 'invalid_request' };
+    } catch { return { ok: false, code: 'invalid_request' }; }
+  });
+
+  domain.handle('outcomes2:graph:projectArgument', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.strictObject({ projectId: idSchema }).safeParse(raw);
+      if (!parsed.success) return { ok: false, code: 'invalid_request' };
+      return services()?.graph.projectArgumentGraph(parsed.data.projectId) ?? { ok: false, code: 'invalid_request' };
+    } catch { return { ok: false, code: 'invalid_request' }; }
+  });
+
+  domain.handle('outcomes2:graph:projectKnowledge', (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.strictObject({ projectId: idSchema }).safeParse(raw);
+      if (!parsed.success) return { nodes: [], edges: [], hiddenConnections: [] };
+      return services()?.graph.projectKnowledgeGraph(parsed.data.projectId) ?? { nodes: [], edges: [], hiddenConnections: [] };
+    } catch { return { nodes: [], edges: [], hiddenConnections: [] }; }
   });
 
   return () => domain.dispose();

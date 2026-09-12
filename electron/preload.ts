@@ -1491,6 +1491,14 @@ const api = {
     ipcRenderer.invoke('outcomes2:graph:rejectEdge', request) as Promise<{ ok: boolean; code?: string; value?: unknown }>,
   outcome2GraphDedupCandidate: async (request: { projectId: string; label: string; canonicalEntityType?: string | null; canonicalEntityId?: string | null }) =>
     ipcRenderer.invoke('outcomes2:graph:dedupCandidate', request) as Promise<unknown>,
+  outcome2ReviewRun: async (request: { projectId: string; outcomeId: string; mode: 'full' | 'argument' | 'evidence' | 'theory' | 'method' | 'structure' | 'language' | 'submission_check' }) =>
+    ipcRenderer.invoke('outcomes2:review:run', request) as Promise<{ ok: boolean; code?: string; runId?: string; segments?: number; issues?: number }>,
+  outcome2GraphProjectClaimEvidence: async (request: { projectId: string }) =>
+    ipcRenderer.invoke('outcomes2:graph:projectClaimEvidence', request) as Promise<unknown>,
+  outcome2GraphProjectArgument: async (request: { projectId: string }) =>
+    ipcRenderer.invoke('outcomes2:graph:projectArgument', request) as Promise<unknown>,
+  outcome2GraphProjectKnowledge: async (request: { projectId: string }) =>
+    ipcRenderer.invoke('outcomes2:graph:projectKnowledge', request) as Promise<unknown>,
 
   analyzeFundingTemplateForAssistant: async (projectId: string) =>
     ipcRenderer.invoke('fundingTemplate:analyzeForAssistant', { projectId }) as Promise<{
