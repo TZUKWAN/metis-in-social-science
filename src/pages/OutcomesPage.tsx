@@ -664,6 +664,24 @@ export default function OutcomesPage({ onNavigateToSubmissions }: { onNavigateTo
   const openInGenoffice = useCallback(async (options?: { embedded?: boolean }) => {
     const embedded = options?.embedded === true;
     if (!projectId || !selectedForProject || !window.metis?.openOutcomeInGenoffice) return;
+    // Outcomes 2.0（T14.02）：打开 Office 前必须先处理工作草稿，不静默丢弃。
+    const workbenchDraft = draftInfo
+      ? await window.metis.outcome2DraftGet?.({ projectId, outcomeId: selectedForProject.outcome.id }) as { baseVersion?: number; content?: OutcomeDocument } | null
+      : null;
+    if (workbenchDraft?.content) {
+      const choice = window.confirm(
+        `当前成果有未保存的工作草稿（基于 v${workbenchDraft.baseVersion ?? selectedForProject.version.version}）。
+
+` +
+        '确定=保存草稿为新版本并打开 Office
+取消=留在 METIS（草稿保留）
+' +
+        '（如需以当前正式版本打开并保留草稿，请先在历史中处理草稿）',
+      );
+      if (!choice) { setOperationNotice('已取消打开 Metis Office；工作草稿原样保留。'); return; }
+      const saved = await save(workbenchDraft.content, '打开 Metis Office 前保存工作草稿', 'human');
+      if (!saved) { setOperationNotice('草稿保存为新版本未完成，Office 未打开。'); return; }
+    }
     if (hasUnsavedChanges) { setOperationNotice('当前成果有未保存的编辑。请先保存版本，再交给 Metis Office 编辑，避免覆盖本地草稿。'); return; }
     setExternalEditorBusy(true);
     try {
