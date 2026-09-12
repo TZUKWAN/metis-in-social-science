@@ -84,7 +84,7 @@ export function OutcomeWorkbenchPanel({ projectId, outcomeId, onNotice, onDraftU
         ))}
       </nav>
       {tab === 'collaboration' && <MemoryPanel projectId={projectId} outcomeId={outcomeId} onNotice={onNotice} />}
-      {tab === 'argument' && <ArgumentGraphView projectId={projectId} />}
+      {tab === 'argument' && <ArgumentGraphView projectId={projectId} outcomeId={outcomeId} />}
       {tab === 'review' && <ReviewPanel projectId={projectId} outcomeId={outcomeId} onNotice={onNotice} />}
       {tab === 'evidence' && <ClaimEvidenceView projectId={projectId} />}
       {tab === 'history' && <HistoryPanel projectId={projectId} outcomeId={outcomeId} onNotice={onNotice} onDraftUpdated={onDraftUpdated} />}
@@ -183,9 +183,10 @@ function MemoryPanel({ projectId, outcomeId, onNotice }: { projectId: string; ou
 }
 
 // ── 论证：分层结构视图（T10.02/T10.03） ────────────────────────────────
-function ArgumentGraphView({ projectId }: { projectId: string }) {
+function ArgumentGraphView({ projectId, outcomeId }: { projectId: string; outcomeId?: string }) {
   const [projection, setProjection] = useState<ArgumentProjection | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
+  const [extracting, setExtracting] = useState(false);
   useEffect(() => {
     let alive = true;
     void window.metis?.outcome2GraphProjectArgument?.({ projectId }).then((value) => {
@@ -193,13 +194,39 @@ function ArgumentGraphView({ projectId }: { projectId: string }) {
     }).catch(() => { if (alive) setProjection(null); });
     return () => { alive = false; };
   }, [projectId]);
-  if (!projection) return <p className="workbench-panel__empty">论证图谱尚未生成。可在正文中把关键判断标记为论断，或在对话中让 AI 提取论证结构。</p>;
+  const extract = async () => {
+    if (!outcomeId || extracting) return;
+    setExtracting(true);
+    try {
+      const result = await window.metis?.outcome2GraphExtractFromOutcome?.({ projectId, outcomeId });
+      if (result?.ok) {
+        const refreshed = await window.metis?.outcome2GraphProjectArgument?.({ projectId });
+        if (refreshed) setProjection(refreshed as ArgumentProjection);
+      }
+    } finally { setExtracting(false); }
+  };
+  if (!projection) {
+    return (
+      <div className="workbench-argument" data-testid="argument-graph">
+        <header className="workbench-panel__section-head">
+          <button type="button" className="workbench-panel__btn workbench-panel__btn--primary" data-testid="argument-extract" disabled={extracting || !outcomeId} onClick={() => void extract()}>
+            {extracting ? <LoaderCircle size={13} className="spin" /> : null} 更新论证图谱
+          </button>
+          <span className="workbench-panel__meta">AI 抽取的概念与关系均为「未验证」，需要你确认</span>
+        </header>
+        <p className="workbench-panel__empty">论证图谱尚未生成。点击「更新论证图谱」，AI 会从成果正文抽取概念、理论与论断关系（全部标记为未验证，由你逐条确认）。</p>
+      </div>
+    );
+  }
   const nodeById = new Map(projection.layers.flatMap((layer) => layer.nodes).map((node) => [node.id, node]));
   return (
     <div className="workbench-argument" data-testid="argument-graph">
-      {projection.unverifiedCount > 0 && (
-        <p className="workbench-panel__meta">其中 {projection.unverifiedCount} 个节点为 AI 提取 · 未验证（确认后会标记为「有支持」）。</p>
-      )}
+      <header className="workbench-panel__section-head">
+        <button type="button" className="workbench-panel__btn workbench-panel__btn--primary" data-testid="argument-extract" disabled={extracting || !outcomeId} onClick={() => void extract()}>
+          {extracting ? <LoaderCircle size={13} className="spin" /> : null} 更新论证图谱
+        </button>
+        {projection.unverifiedCount > 0 && <span className="workbench-panel__meta">{projection.unverifiedCount} 个节点为 AI 提取 · 未验证（确认后会标记为「有支持」）。</span>}
+      </header>
       {projection.layers.map((layer) => (
         <section key={layer.layer} className="workbench-argument__layer">
           <header>{layer.layer === 0 ? '概念与理论' : layer.layer === 1 ? '论断与方法' : '结论层'}</header>

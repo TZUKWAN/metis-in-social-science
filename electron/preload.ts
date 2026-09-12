@@ -1493,6 +1493,8 @@ const api = {
     ipcRenderer.invoke('outcomes2:graph:dedupCandidate', request) as Promise<unknown>,
   outcome2ReviewRun: async (request: { projectId: string; outcomeId: string; mode: 'full' | 'argument' | 'evidence' | 'theory' | 'method' | 'structure' | 'language' | 'submission_check' }) =>
     ipcRenderer.invoke('outcomes2:review:run', request) as Promise<{ ok: boolean; code?: string; runId?: string; segments?: number; issues?: number }>,
+  outcome2GraphExtractFromOutcome: async (request: { projectId: string; outcomeId: string }) =>
+    ipcRenderer.invoke('outcomes2:graph:extractFromOutcome', request) as Promise<{ ok: boolean; code?: string; segments?: number; nodes?: number; edges?: number }>,
   outcome2GraphProjectClaimEvidence: async (request: { projectId: string }) =>
     ipcRenderer.invoke('outcomes2:graph:projectClaimEvidence', request) as Promise<unknown>,
   outcome2GraphProjectArgument: async (request: { projectId: string }) =>

@@ -478,6 +478,23 @@ export function registerOutcomes2Ipc(ctx: DomainIpcContext, deps: Outcomes2IpcDe
     } catch { return { ok: false, code: 'review_unavailable' }; }
   });
 
+  domain.handle('outcomes2:graph:extractFromOutcome', async (event, raw: unknown) => {
+    try {
+      requireRendererMainFrame(event);
+      const parsed = z.strictObject({ projectId: idSchema, outcomeId: idSchema }).safeParse(raw);
+      if (!parsed.success) return { ok: false, code: 'extraction_unavailable' };
+      const current = services();
+      const agentLoopInstance = ctx.agentLoop();
+      if (!current || !agentLoopInstance) return { ok: false, code: 'extraction_unavailable' };
+      const { OutcomeGraphExtractionService } = await import('../OutcomeGraphExtractionService.js');
+      const extractor = new OutcomeGraphExtractionService({
+        db: current.workbenchDb, workbench: current.workbench, graph: current.graph,
+        agentLoop: agentLoopInstance, modelName: 'assistant',
+      });
+      return await extractor.extractFromOutcome(parsed.data.projectId, parsed.data.outcomeId);
+    } catch { return { ok: false, code: 'extraction_unavailable' }; }
+  });
+
   domain.handle('outcomes2:graph:projectClaimEvidence', (event, raw: unknown) => {
     try {
       requireRendererMainFrame(event);
