@@ -5,9 +5,9 @@
  * 无 workbench 的自动化管线（SubmissionOptimization）保持旧直改路径（既有测试覆盖）。
  */
 import Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { AgentLoop } from '../../engine/core/AgentLoop.js';
-import type { ChatMessage, NormalizedResponse, ProviderCapabilities, StreamChunk, ToolSpec } from '../../engine/core/types.js';
+import type { ChatMessage, NormalizedResponse, ProviderCapabilities, StreamChunk } from '../../engine/core/types.js';
 import { ToolDispatcher } from '../../engine/tools/ToolDispatcher.js';
 import { ToolRegistry } from '../../engine/tools/ToolRegistry.js';
 import { BaseProvider } from '../../engine/providers/BaseProvider.js';
@@ -25,7 +25,7 @@ class ControlledProvider extends BaseProvider {
       maxOutputTokens: 4_096, retryableStatusCodes: [],
     };
   }
-  async complete(messages: ChatMessage[]): Promise<NormalizedResponse> {
+  async complete(_messages: ChatMessage[]): Promise<NormalizedResponse> {
     return { content: this.response, toolCalls: [], finishReason: 'stop', usage: { promptTokens: 1, completionTokens: 2, totalTokens: 3 } };
   }
   async *completeStream(): AsyncGenerator<StreamChunk, void, unknown> { /* not used */ }

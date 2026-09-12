@@ -3,9 +3,9 @@
  * 分段→结构化 issue→anchor 校验→去重→持久化→run 状态；取消；确定性证据覆盖。
  */
 import Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { AgentLoop } from '../../engine/core/AgentLoop.js';
-import type { ChatMessage, NormalizedResponse, ProviderCapabilities, StreamChunk, ToolSpec } from '../../engine/core/types.js';
+import type { ChatMessage, NormalizedResponse, ProviderCapabilities, StreamChunk } from '../../engine/core/types.js';
 import { ToolDispatcher } from '../../engine/tools/ToolDispatcher.js';
 import { ToolRegistry } from '../../engine/tools/ToolRegistry.js';
 import { BaseProvider } from '../../engine/providers/BaseProvider.js';
