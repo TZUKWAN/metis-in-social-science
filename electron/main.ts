@@ -218,6 +218,9 @@ import { registerTopicIpc } from './ipc/registerTopicIpc.js';
 import type { DomainIpcContext } from './ipc/DomainIpcContext.js';
 import { registerSystemIpc } from './ipc/registerSystemIpc.js';
 import { registerProjectIpc } from './ipc/registerProjectIpc.js';
+import { registerOutcomes2Ipc } from './ipc/registerOutcomes2Ipc.js';
+import { OutcomeWorkbenchService } from './OutcomeWorkbenchService.js';
+import { OutcomeMemoryService, OutcomeReviewService, ResearchGraphService } from './OutcomeMemoryReviewGraphService.js';
 import { registerArtifactIpc } from './ipc/registerArtifactIpc.js';
 import { registerExperimentIpc } from './ipc/registerExperimentIpc.js';
 import { registerWeChatIpc } from './ipc/registerWeChatIpc.js';
@@ -6372,6 +6375,22 @@ function setupIPC(): void {
   // ── Complete project archive (METIS-F10) ───────────────────
   // 任务3：域 registrar 迁移——channel/contract/恢复形状不变，注册走 IpcRegistry。
   ipcDomainDisposers.push(registerProjectIpc(domainIpcContext));
+  // ── Outcomes 2.0（draft/snapshot/revision/memory/review/graph）────────
+  // 任务书 §25：新 IPC 走 Domain Registrar；共享 store.raw 与 OutcomeRepository。
+  let outcomes2Services: { workbench: OutcomeWorkbenchService; memory: OutcomeMemoryService; review: OutcomeReviewService; graph: ResearchGraphService } | null = null;
+  ipcDomainDisposers.push(registerOutcomes2Ipc(domainIpcContext, {
+    ensureServices: () => {
+      if (outcomes2Services) return outcomes2Services;
+      if (!store || !outcomeRepository) return null;
+      outcomes2Services = {
+        workbench: new OutcomeWorkbenchService(store.raw, outcomeRepository),
+        memory: new OutcomeMemoryService(store.raw),
+        review: new OutcomeReviewService(store.raw),
+        graph: new ResearchGraphService(store.raw),
+      };
+      return outcomes2Services;
+    },
+  }));
 
 
   // ── Research browser (embedded WebContentsView) ──────────────

@@ -19,8 +19,8 @@ export function serializeOutcomeTemplateDefinition(definition: Record<string, un
 const unsafeControls = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u;
 const text = (max: number) => z.string().max(max).refine((value) => !unsafeControls.test(value));
 export const OutcomeIdSchema = z.string().min(1).max(OUTCOME_LIMITS.idChars).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u);
-const timestamp = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
-const version = z.number().int().min(1).max(1_000_000_000);
+export const timestamp = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
+export const version = z.number().int().min(1).max(1_000_000_000);
 
 export const OutcomeKindSchema = z.enum(['word', 'ppt', 'spreadsheet', 'pdf', 'image', 'chart', 'other']);
 export type OutcomeKind = z.infer<typeof OutcomeKindSchema>;

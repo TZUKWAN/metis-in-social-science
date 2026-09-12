@@ -301,6 +301,183 @@ export const UNIFIED_MIGRATIONS: Migration[] = [
       addColumnIfMissing(db, 'topic_sessions', 'category', 'category TEXT');
     },
   },
+
+  {
+    // Outcomes 2.0（任务书 Phase 1）。全部为全新表：老库在此补建（与 baseline 中
+    // 同一份 DDL 的 IF NOT EXISTS 完全一致），fresh 库由 baseline 直接带全列，
+    // 两条路径收敛到相同 schema（由 fresh-vs-upgraded drift 测试保证）。
+    version: 118,
+    description: 'outcomes2: working drafts / snapshots / revision sets+revisions / memory / review runs+issues / research graph nodes+edges',
+    precondition: requireTables('outcomes', 'projects'),
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS outcome_working_drafts (
+          outcome_id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL,
+          base_version INTEGER NOT NULL,
+          content TEXT NOT NULL,
+          content_hash TEXT NOT NULL,
+          updated_by TEXT NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY (outcome_id) REFERENCES outcomes(id) ON DELETE CASCADE,
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_outcome_working_drafts_project ON outcome_working_drafts(project_id, updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS outcome_snapshots (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL,
+          outcome_id TEXT NOT NULL,
+          base_version INTEGER NOT NULL,
+          content TEXT NOT NULL,
+          content_hash TEXT NOT NULL,
+          reason TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          FOREIGN KEY (outcome_id) REFERENCES outcomes(id) ON DELETE CASCADE,
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_outcome_snapshots_outcome ON outcome_snapshots(outcome_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_outcome_snapshots_project ON outcome_snapshots(project_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS outcome_revision_sets (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL,
+          outcome_id TEXT NOT NULL,
+          base_version INTEGER NOT NULL,
+          base_draft_hash TEXT NOT NULL,
+          conversation_id TEXT,
+          review_issue_id TEXT,
+          instruction TEXT NOT NULL DEFAULT '',
+          created_by TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending',
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY (outcome_id) REFERENCES outcomes(id) ON DELETE CASCADE,
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_outcome_revision_sets_outcome ON outcome_revision_sets(outcome_id, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_outcome_revision_sets_project ON outcome_revision_sets(project_id, updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS outcome_revisions (
+          id TEXT PRIMARY KEY,
+          revision_set_id TEXT NOT NULL,
+          sort_order INTEGER NOT NULL,
+          target_json TEXT NOT NULL,
+          before_json TEXT,
+          after_json TEXT,
+          reason TEXT NOT NULL DEFAULT '',
+          source_refs_json TEXT NOT NULL DEFAULT '[]',
+          evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+          status TEXT NOT NULL DEFAULT 'pending',
+          created_at INTEGER NOT NULL,
+          resolved_at INTEGER,
+          FOREIGN KEY (revision_set_id) REFERENCES outcome_revision_sets(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_outcome_revisions_set ON outcome_revisions(revision_set_id, sort_order);
+
+        CREATE TABLE IF NOT EXISTS outcome_memory (
+          outcome_id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL,
+          memory_json TEXT NOT NULL,
+          revision INTEGER NOT NULL DEFAULT 1,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY (outcome_id) REFERENCES outcomes(id) ON DELETE CASCADE,
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+
+
+        CREATE TABLE IF NOT EXISTS outcome_review_runs (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL,
+          outcome_id TEXT NOT NULL,
+          mode TEXT NOT NULL,
+          base_version INTEGER NOT NULL,
+          base_draft_hash TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'running',
+          progress_json TEXT NOT NULL DEFAULT '{}',
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY (outcome_id) REFERENCES outcomes(id) ON DELETE CASCADE,
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_outcome_review_runs_outcome ON outcome_review_runs(outcome_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS outcome_review_issues (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL,
+          outcome_id TEXT NOT NULL,
+          review_run_id TEXT,
+          base_version INTEGER NOT NULL,
+          base_draft_hash TEXT NOT NULL,
+          category TEXT NOT NULL,
+          severity TEXT NOT NULL,
+          title TEXT NOT NULL,
+          explanation TEXT NOT NULL DEFAULT '',
+          anchor_json TEXT,
+          source_refs_json TEXT NOT NULL DEFAULT '[]',
+          evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+          status TEXT NOT NULL DEFAULT 'open',
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY (outcome_id) REFERENCES outcomes(id) ON DELETE CASCADE,
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_outcome_review_issues_outcome ON outcome_review_issues(outcome_id, status, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_outcome_review_issues_project ON outcome_review_issues(project_id, updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS research_graph_nodes (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          label TEXT NOT NULL,
+          description TEXT NOT NULL DEFAULT '',
+          canonical_entity_type TEXT,
+          canonical_entity_id TEXT,
+          provenance TEXT NOT NULL DEFAULT 'ai_extracted',
+          verification_status TEXT NOT NULL DEFAULT 'unverified',
+          confidence REAL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_research_graph_nodes_project ON research_graph_nodes(project_id, kind);
+        CREATE INDEX IF NOT EXISTS idx_research_graph_nodes_canonical ON research_graph_nodes(project_id, canonical_entity_type, canonical_entity_id);
+
+        CREATE TABLE IF NOT EXISTS research_graph_edges (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL,
+          source_node_id TEXT NOT NULL,
+          target_node_id TEXT NOT NULL,
+          relation TEXT NOT NULL,
+          provenance TEXT NOT NULL DEFAULT 'ai_extracted',
+          evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+          source_ids_json TEXT NOT NULL DEFAULT '[]',
+          verification_status TEXT NOT NULL DEFAULT 'unverified',
+          confidence REAL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_research_graph_edges_project ON research_graph_edges(project_id, relation);
+        CREATE INDEX IF NOT EXISTS idx_research_graph_edges_source ON research_graph_edges(source_node_id);
+        CREATE INDEX IF NOT EXISTS idx_research_graph_edges_target ON research_graph_edges(target_node_id);
+        CREATE TABLE IF NOT EXISTS outcome_memory_proposals (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL,
+          outcome_id TEXT NOT NULL,
+          field TEXT NOT NULL,
+          value_json TEXT NOT NULL,
+          reason TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'pending',
+          created_at INTEGER NOT NULL,
+          resolved_at INTEGER,
+          FOREIGN KEY (outcome_id) REFERENCES outcomes(id) ON DELETE CASCADE,
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_outcome_memory_proposals_outcome ON outcome_memory_proposals(outcome_id, status, created_at DESC);
+      `);
+    },
+  },
 ];
 
 /**
