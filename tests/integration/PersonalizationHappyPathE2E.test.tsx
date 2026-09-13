@@ -170,6 +170,9 @@ function definitionCard(id: string): HTMLElement {
 }
 
 beforeEach(() => {
+  // T09.03 响应式契约默认按宽视口渲染完整三栏（jsdom 默认 1024px 会触发
+  // 窄视口折叠，掩盖本 E2E 覆盖的完整布局交互）。
+  window.innerWidth = 1440;
   useMetisStore.setState({
     papers: [],
     paperFilter: { query: '' },

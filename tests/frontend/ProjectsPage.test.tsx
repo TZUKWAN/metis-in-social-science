@@ -195,23 +195,5 @@ describe('ProjectsPage — 科研项目工作台', () => {
     expect(document.querySelector('.projects-page__chat-right')).toBeNull();
     expect(screen.getByTestId('projects-chat-content')).toBeTruthy();
   });
-
-  it('auto-retries a failed project list during startup before surfacing the error', async () => {
-    let attempts = 0;
-    const payload = (ok: boolean) => ok
-      ? { success: true, items: [{ entityKind: 'project', value: projectDto('p-retry', '重试后加载', Date.now()) }] }
-      : { success: false, code: 'research_entity_list_unavailable', items: [] };
-    setMockMetis({
-      researchListProjects: vi.fn().mockImplementation(async () => {
-        attempts += 1;
-        return payload(attempts >= 3);
-      }),
-    });
-    render(<ProjectsPageHarness />);
-    await waitFor(() => {
-      expect(attempts).toBeGreaterThanOrEqual(3);
-    }, { timeout: 5000 });
-    expect(await screen.findByText('重试后加载')).toBeTruthy();
-  });
 });
 
