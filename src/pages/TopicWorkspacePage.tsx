@@ -668,9 +668,42 @@ export default function TopicWorkspacePage() {
         {notice && <div className="topic-workspace__notice" role="status">{notice}</div>}
         <div className="topic-workspace__messages">
           {messages.length === 0 && !session && (
-            <div className="topic-workspace__intro">
+            <div className="topic-workspace__intro" data-testid="topic-intro">
               <h2>选题</h2>
               <p>从一个模糊的研究兴趣开始，METIS 会真实检索中英文文献，和你一起比较候选、确认选题。</p>
+              {/* T05.01：空状态提供真实研究兴趣示例与研究偏好快捷选择，
+                  点击即填入下方输入框并聚焦，不引入额外持久化状态。 */}
+              <div className="topic-workspace__intro-examples" role="list" aria-label="研究兴趣示例">
+                {['平台劳动与算法管理', '县域劳动力迁移与家庭策略', '零工劳动者的社会保障'].map((example) => (
+                  <button
+                    key={example}
+                    type="button"
+                    role="listitem"
+                    className="topic-workspace__chip"
+                    data-testid="topic-example-chip"
+                    onClick={() => { setInput(example); composerRef.current?.focus(); }}
+                  >
+                    {example}
+                  </button>
+                ))}
+              </div>
+              <div className="topic-workspace__intro-prefs" aria-label="研究偏好快捷选择">
+                <span className="topic-workspace__intro-prefs-label">偏好</span>
+                {['质性研究', '定量研究', '混合方法', '理论综述'].map((pref) => (
+                  <button
+                    key={pref}
+                    type="button"
+                    className="topic-workspace__chip topic-workspace__chip--pref"
+                    data-testid="topic-pref-chip"
+                    onClick={() => {
+                      setInput((current) => (current.trim() ? `${current.trim()}（倾向：${pref}）` : `我的研究兴趣（倾向：${pref}）：`));
+                      composerRef.current?.focus();
+                    }}
+                  >
+                    {pref}
+                  </button>
+                ))}
+              </div>
               <p className="topic-workspace__intro-note">直接在下方输入你的研究兴趣，回车即开始新的选题会话。</p>
             </div>
           )}

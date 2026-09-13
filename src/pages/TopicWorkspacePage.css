@@ -21,6 +21,13 @@
 .topic-workspace__intro h2 { font-size: 18px; margin: 0 0 8px; }
 .topic-workspace__intro p { font-size: 13px; line-height: 1.7; color: var(--text-primary); }
 .topic-workspace__intro-note { color: var(--text-secondary) !important; font-size: 12px !important; }
+/* T05.01：空状态示例与偏好快捷选择（可点击 chip，玻璃克制样式）。 */
+.topic-workspace__intro-examples { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 10px; }
+.topic-workspace__intro-prefs { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
+.topic-workspace__intro-prefs-label { font-size: 12px; color: var(--text-secondary); }
+.topic-workspace__chip { padding: 5px 12px; border: 1px solid var(--border); border-radius: var(--radius-pill, 999px); background: var(--bg-hover, transparent); color: var(--text-primary); font-size: 12.5px; cursor: pointer; transition: border-color var(--transition-fast, 140ms ease), background var(--transition-fast, 140ms ease), color var(--transition-fast, 140ms ease); }
+.topic-workspace__chip:hover { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); color: var(--text-heading); background: var(--bg-active, transparent); }
+.topic-workspace__chip--pref { color: var(--text-secondary); }
 .topic-message { max-width: 760px; font-size: 13.5px; line-height: 1.7; }
 .topic-message--user { align-self: flex-end; background: var(--bg-active, rgba(0,0,0,.06)); padding: 8px 12px; border-radius: 10px; }
 .topic-message--user p { margin: 0; }
