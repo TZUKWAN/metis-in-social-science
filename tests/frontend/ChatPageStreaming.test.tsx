@@ -105,7 +105,8 @@ describe('ChatPage streaming output', () => {
     // First delta creates the in-flight assistant message with reasoning.
     handlers.stream?.({ sessionId: 'session-a', content: '第一段', reasoning: '先分析', isFinished: false });
     expect(await screen.findByText('第一段')).toBeDefined();
-    expect(screen.getByText('先分析')).toBeDefined();
+    expect(screen.getByText('正在分析问题并整理回答')).toBeDefined();
+    expect(screen.queryByText('先分析')).toBeNull();
     // The thinking block is open while streaming.
     const details = screen.getByText('思考中…').closest('details');
     expect(details?.open).toBe(true);
@@ -115,7 +116,8 @@ describe('ChatPage streaming output', () => {
     // Later deltas append to the same message.
     handlers.stream?.({ sessionId: 'session-a', content: '第二段', reasoning: '再分析', isFinished: false });
     expect(await screen.findByText('第一段第二段')).toBeDefined();
-    expect(screen.getByText('先分析再分析')).toBeDefined();
+    expect(screen.getByText('正在分析问题并整理回答')).toBeDefined();
+    expect(screen.queryByText('先分析再分析')).toBeNull();
 
     // Finish settles the timer.
     handlers.stream?.({ sessionId: 'session-a', content: '', isFinished: true });

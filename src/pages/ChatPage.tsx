@@ -21,6 +21,7 @@ import {
 import { PaperclipIcon, TagIcon, ClockIcon } from '../components/Icons';
 import VoiceMicButton from '../components/VoiceMicButton';
 import GoalCardInline, { type GoalCardData } from '../components/GoalCardInline';
+import ToolExecutionCard from '../components/ToolExecutionCard';
 import { isInternalExecutionCopy } from '../presentation/executionCopy';
 import AgentActivityTimeline, {
   type AgentActivityEvent,
@@ -41,7 +42,6 @@ import ArtifactPreviewPane from '../components/ArtifactPreviewPane';
 import { getDiagnosticMode, type UIMode } from '../../engine/capabilities/DiagnosticMode';
 import {
   presentDiagnosticText,
-  presentExecutionAction,
   presentExecutionError,
 } from '../presentation/executionPresentation';
 import {
@@ -50,6 +50,8 @@ import {
   type SafeMarkdownMode,
 } from '../presentation/SafeMarkdown';
 import { StreamingMarkdown } from '../presentation/StreamingMarkdown';
+import { scrubPresentationProtocol } from '../presentation/presentationProtocolScrubber';
+import { presentReasoningDiagnostic, presentReasoningSummary } from '../presentation/reasoningPresentation';
 import { useFollowScroll } from '../hooks/useFollowScroll';
 import { extractCitations, extractDoiCitations } from '../../engine/core/Citation.js';
 import { toggleForkActive, loadForkMap, saveForkMap, type ForkRecord } from '../../engine/core/MessageFork.js';
@@ -426,25 +428,6 @@ function isLikelyGoalFeedback(content: string): boolean {
 
 // ─── Inline SVG Icons ─────────────────────────────────────────
 
-const toolIcon = (
-  <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" fill="none" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.3-3.3a1 1 0 0 0 0-1.4l-1.6-1.6a1 1 0 0 0-1.4 0z" />
-    <path d="m3 21 7.6-7.6" />
-    <path d="m11.6 11.6 2.1-2.1" />
-  </svg>
-);
-
-const chevronUpIcon = (
-  <svg viewBox="0 0 24 24" width="10" height="10" stroke="currentColor" fill="none" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-    <path d="m18 15-6-6-6 6" />
-  </svg>
-);
-
-const chevronDownIcon = (
-  <svg viewBox="0 0 24 24" width="10" height="10" stroke="currentColor" fill="none" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-    <path d="m6 9 6 6 6-6" />
-  </svg>
-);
 
 const editIcon = (
   <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" fill="none" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -566,98 +549,11 @@ export function ToolCallCard({
   tool?: AssistantToolPart;
   diagnosticMode: boolean;
 }) {
-  const [expanded, setExpanded] = useState(false);
-  const { t, locale } = useTranslation();
+  const { locale } = useTranslation();
   const canonicalTool = tool ?? (toolCall ? assistantToolPartFromLegacy(toolCall) : undefined);
-  if (!canonicalTool) return null;
-
-  const statusColor = {
-    running: 'var(--status-running)',
-    completed: 'var(--status-completed)',
-    error: 'var(--status-failed)',
-  }[canonicalTool.status];
-
-  const statusLabel: Record<string, string> = {
-    running: t('chat.statusRunning'),
-    completed: t('chat.statusCompleted'),
-    error: t('chat.statusError'),
-  };
-
-  const headerContent = (
-    <>
-      <span className="tool-call-icon">{toolIcon}</span>
-      <span className="tool-call-name">
-        {presentExecutionAction(canonicalTool.name, locale)}
-      </span>
-      <span className="tool-call-status" style={{ color: statusColor }}>
-        {statusLabel[canonicalTool.status] ?? canonicalTool.status}
-      </span>
-      <span className="tool-call-toggle" aria-hidden="true">{expanded ? chevronUpIcon : chevronDownIcon}</span>
-    </>
-  );
-
-  const resultPreview = canonicalTool.result
-    ? presentSafeMarkdownText(canonicalTool.result, diagnosticMode ? 'diagnostic' : 'normal', locale)
-    : '';
-  const errorPreview = canonicalTool.error
-    ? presentSafeMarkdownText(canonicalTool.error, diagnosticMode ? 'diagnostic' : 'normal', locale)
-    : '';
-
-  return (
-    <div className="tool-call-card">
-      <button
-        type="button"
-        className="tool-call-header"
-        onClick={() => setExpanded((value) => !value)}
-        aria-expanded={expanded}
-        aria-label={`${presentExecutionAction(canonicalTool.name, locale)} — ${statusLabel[canonicalTool.status] ?? canonicalTool.status}`}
-      >
-        {headerContent}
-      </button>
-      {expanded && (
-        <div className="tool-call-body">
-          {resultPreview && (
-            <div className="tool-call-section">
-              <h4>{t('chat.result')}</h4>
-              <div className="tool-call-result-preview">{resultPreview}</div>
-            </div>
-          )}
-          {errorPreview && (
-            <div className="tool-call-section tool-call-section--error">
-              <h4>{t('chat.statusError')}</h4>
-              <div className="tool-call-result-preview">{errorPreview}</div>
-            </div>
-          )}
-          {canonicalTool.sources.length > 0 && (
-            <div className="tool-call-section">
-              <h4>{locale === 'zh' ? '来源' : 'Sources'}</h4>
-              <ul className="tool-call-sources">
-                {canonicalTool.sources.map((source, sourceIndex) => (
-                  <li key={`${source.label}-${source.url ?? sourceIndex}`}>
-                    {source.url
-                      ? <a href={source.url} target="_blank" rel="noreferrer">{source.label}</a>
-                      : source.label}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        {diagnosticMode && (
-            <>
-              <div className="tool-call-section">
-                <h4>{t('chat.technicalAction')}</h4>
-                <pre className="tool-call-code">{presentDiagnosticText(canonicalTool.name)}</pre>
-              </div>
-              <div className="tool-call-section">
-                <h4>{t('chat.arguments')}</h4>
-                <pre className="tool-call-code">{presentDiagnosticText(canonicalTool.arguments)}</pre>
-              </div>
-            </>
-          )}
-        </div>
-      )}
-    </div>
-  );
+  return canonicalTool
+    ? <ToolExecutionCard tool={canonicalTool} diagnosticMode={diagnosticMode} locale={locale} className="tool-call-card" />
+    : null;
 }
 
 // ─── Message Component ────────────────────────────────────────
@@ -774,11 +670,12 @@ const ChatMessageItem = memo(function ChatMessageItem({
   // dsh-style live reasoning summary: while streaming a multi-line reasoning
   // trace, the latest line surfaces next to the label. Single-line traces
   // skip it so the summary never duplicates the body verbatim.
-  const streamingReasoningLine = (() => {
-    if (!msg.streaming || !msg.reasoning || !msg.reasoning.includes('\n')) return '';
-    const lines = msg.reasoning.split('\n').filter((line) => line.trim());
-    return lines.length > 1 ? lines[lines.length - 1]! : '';
-  })();
+  const reasoningSummary = msg.reasoning
+    ? presentReasoningSummary(msg.reasoning, locale)
+    : '';
+  const diagnosticReasoning = diagnosticMode && msg.reasoning
+    ? presentReasoningDiagnostic(msg.reasoning, locale)
+    : '';
 
   return (
     <div className={`chat-message ${msg.role}`}>
@@ -830,15 +727,13 @@ const ChatMessageItem = memo(function ChatMessageItem({
           </div>
         ) : (
           <div className="message-content">
-            {msg.role === 'assistant' && msg.reasoning && (
+            {msg.role === 'assistant' && reasoningSummary && (
               <details className="chat-reasoning" open={Boolean(msg.streaming)}>
                 <summary>
                   {msg.streaming ? t('chat.reasoningThinking') : t('chat.reasoningLabel')}
-                  {streamingReasoningLine && (
-                    <span className="chat-reasoning__latest">{streamingReasoningLine}</span>
-                  )}
+                  <span className="chat-reasoning__latest">{reasoningSummary}</span>
                 </summary>
-                <div className="chat-reasoning__body">{msg.reasoning}</div>
+                {diagnosticReasoning && <div className="chat-reasoning__body">{diagnosticReasoning}</div>}
               </details>
             )}
             {msg.role === 'assistant' && parseStepCardPrefix(msg.content) ? (() => {
@@ -2112,7 +2007,9 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
             // 与历史围栏消息同一渲染出口，但不再生成 Markdown 围栏协议。
             const content = stepCard && typeof stepCard === 'object'
               ? `__STEP_CARD__${JSON.stringify(stepCard)}`
-              : item.content;
+              : item.role === 'assistant'
+                ? scrubPresentationProtocol(item.content)
+                : item.content;
             return {
               role: item.role,
               content,
@@ -2665,7 +2562,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
             : 'failed';
         // 空 answer（如 unverified/error）沿用流式累积内容作为终态呈现。
         const accumulated = v2Controller.nodeSource(request.turnId).get();
-        v2Controller.settleTurn(request.turnId, response.answer || accumulated?.content || '', '', v2Status);
+        v2Controller.settleTurn(request.turnId, scrubPresentationProtocol(response.answer || accumulated?.content || ''), '', v2Status);
       }
 
       if (response.status !== 'completed') {
@@ -2699,6 +2596,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
           setMessages((prev) => [...prev, errorMsg]);
         }
       } else if (response.answer) {
+        const safeAnswer = scrubPresentationProtocol(response.answer);
         const streamedIndex = streamingIndexRef.current;
         const durationMs = Date.now() - request.startedAt;
         if (streamedIndex >= 0) {
@@ -2708,12 +2606,12 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
           // the accumulated stream, keep the content field untouched so the
           // bubble does not re-parse the full document a second time.
           setMessages((prev) => prev.map((m, i) => i === streamedIndex
-            ? { ...m, ...(m.content === response.answer ? {} : { content: response.answer }), streaming: false, durationMs, run: runActivity(response, response.turnId === request.turnId ? partsForAgentTurn(request.turnId) : createAssistantMessageParts()), ...(response.citations?.length ? { citations: response.citations } : {}) }
+            ? { ...m, ...(m.content === safeAnswer ? {} : { content: safeAnswer }), streaming: false, durationMs, run: runActivity(response, response.turnId === request.turnId ? partsForAgentTurn(request.turnId) : createAssistantMessageParts()), ...(response.citations?.length ? { citations: response.citations } : {}) }
             : m));
         } else {
           const assistantMsg: ChatMessage = {
             role: 'assistant',
-            content: response.answer,
+            content: safeAnswer,
             timestamp: now(),
             startedAt: request.startedAt,
             durationMs,
@@ -2721,8 +2619,8 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
             ...(response.citations?.length ? { citations: response.citations } : {}),
           };
           setMessages((prev) => [...prev, assistantMsg]);
-          if (response.answer.length > 200 || /^#|^\*|\|.*\||```/.test(response.answer)) {
-            openPreview(response.answer);
+          if (safeAnswer.length > 200 || /^#|^\*|\|.*\||```/.test(safeAnswer)) {
+            openPreview(safeAnswer);
           }
         }
       }
@@ -3750,18 +3648,19 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
           ...(retainedStreamDraft ? {} : { run: terminalRun }),
         }]);
       } else if (response.answer) {
+        const safeAnswer = scrubPresentationProtocol(response.answer);
         const streamedIndex = streamingIndexRef.current;
         const durationMs = Date.now() - request.startedAt;
         if (streamedIndex >= 0) {
           // Settle dedupe identical to handleChatFlow: skip the content
           // replacement when the authoritative answer matches the stream.
           setMessages((prev) => prev.map((m, i) => i === streamedIndex
-            ? { ...m, ...(m.content === response.answer ? {} : { content: response.answer }), streaming: false, durationMs, run: runActivity(response, response.turnId === request.turnId ? partsForAgentTurn(request.turnId) : createAssistantMessageParts()), ...(response.citations?.length ? { citations: response.citations } : {}) }
+            ? { ...m, ...(m.content === safeAnswer ? {} : { content: safeAnswer }), streaming: false, durationMs, run: runActivity(response, response.turnId === request.turnId ? partsForAgentTurn(request.turnId) : createAssistantMessageParts()), ...(response.citations?.length ? { citations: response.citations } : {}) }
             : m));
         } else {
           const assistantMsg: ChatMessage = {
             role: 'assistant',
-            content: response.answer,
+            content: safeAnswer,
             timestamp: now(),
             startedAt: request.startedAt,
             durationMs,
@@ -3777,8 +3676,8 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
         }
         // Live preview: if the response is substantial (artifact-length), render it in the
         // right panel's preview area (Claude-Artifacts-style split view).
-        if (response.answer.length > 200 || /^#|^\*|\|.*\||```/.test(response.answer)) {
-          openPreview(response.answer);
+        if (safeAnswer.length > 200 || /^#|^\*|\|.*\||```/.test(safeAnswer)) {
+          openPreview(safeAnswer);
         }
       }
       if (response.status === 'completed') {

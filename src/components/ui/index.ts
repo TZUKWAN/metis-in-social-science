@@ -15,3 +15,7 @@ export { Switch, type SwitchProps } from './Switch';
 export { Radio, type RadioProps } from './Radio';
 export { Command, type CommandProps, type CommandItem } from './Command';
 export { ScrollArea, type ScrollAreaProps } from './ScrollArea';
+export { GlassSurface, type GlassSurfaceProps } from './GlassSurface';
+export { PageHeader, type PageHeaderProps } from './PageHeader';
+export { StatusChip, type StatusChipProps, type StatusChipTone } from './StatusChip';
+export { CollapsiblePanel, type CollapsiblePanelProps } from './CollapsiblePanel';

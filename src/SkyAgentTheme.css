@@ -1,0 +1,495 @@
+/* METIS SkyAgent visual contract.
+ * This file is intentionally loaded after legacy page styles. It is the final
+ * visual layer: business markup and interaction semantics stay unchanged, but
+ * surfaces, hierarchy, controls, states, and responsive behavior are owned by
+ * this contract rather than the former academic-light skin.
+ */
+
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-main: #0d0f12;
+  --bg-body: #0d0f12;
+  --bg-card: #15181d;
+  --bg-secondary: #111419;
+  --bg-sidebar: #0f1115;
+  --bg-inspector: #111419;
+  --bg-hover: rgba(255, 255, 255, 0.055);
+  --bg-active: rgba(255, 255, 255, 0.085);
+  --bg-input: #101318;
+  --bg-input-disabled: #0d0f12;
+  --bg-code-header: #1a1e25;
+  --bg-modal-overlay: rgba(0, 0, 0, 0.72);
+  --bg-modal: #171a20;
+  --border: rgba(255, 255, 255, 0.105);
+  --border-light: rgba(255, 255, 255, 0.065);
+  --border-danger: rgba(248, 113, 113, 0.72);
+  --text-heading: #f2f4f7;
+  --text-primary: #e4e8ee;
+  --text-body: #d4d9e1;
+  --text-secondary: #9aa3b2;
+  --text-muted: #687384;
+  --text-on-primary: #07100b;
+  --text-on-accent: #07100b;
+  --accent: #6ee7a0;
+  --accent-hover: #8af0b3;
+  --accent-soft: rgba(110, 231, 160, 0.13);
+  --primary: var(--accent);
+  --primary-hover: var(--accent-hover);
+  --primary-soft: var(--accent-soft);
+  --accent-warm: #e6bd72;
+  --accent-warm-soft: rgba(230, 189, 114, 0.14);
+  --status-running: #8ac8ff;
+  --status-running-bg: rgba(138, 200, 255, 0.13);
+  --status-completed: #6ee7a0;
+  --status-completed-bg: rgba(110, 231, 160, 0.13);
+  --status-failed: #f08a8a;
+  --status-failed-bg: rgba(240, 138, 138, 0.13);
+  --status-danger: #f08a8a;
+  --glass-top: rgba(24, 28, 35, 0.88);
+  --glass-bottom: rgba(16, 19, 24, 0.88);
+  --glass-inset: inset 0 1px 0 rgba(255, 255, 255, 0.065), inset 0 -1px 0 rgba(0, 0, 0, 0.26);
+  --glass-shadow: 0 18px 42px rgba(0, 0, 0, 0.24);
+  --glass-sheen: linear-gradient(115deg, rgba(255, 255, 255, 0.035), transparent 28%, transparent 74%, rgba(255, 255, 255, 0.018));
+  --shadow-raised: 0 12px 30px rgba(0, 0, 0, 0.18);
+  --shadow-modal: 0 28px 72px rgba(0, 0, 0, 0.48);
+  --shadow-dropdown: 0 18px 48px rgba(0, 0, 0, 0.42);
+  --focus-ring-color: rgba(110, 231, 160, 0.9);
+  --focus-ring-shadow: 0 0 0 2px rgba(110, 231, 160, 0.24);
+  --focus-ring: 0 0 0 2px rgba(110, 231, 160, 0.4);
+  --radius: 10px;
+  --radius-sm: 7px;
+  --radius-md: 11px;
+  --radius-lg: 14px;
+  --radius-card: 10px;
+  --radius-pill: 999px;
+  --control-height: 34px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 28px;
+  --transition-fast: 140ms cubic-bezier(0.16, 1, 0.3, 1);
+  --transition-standard: 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Explicit light mode remains available, but follows the same restrained
+ * surface grammar instead of reverting to the former bright white-card skin. */
+[data-theme="light"] {
+  color-scheme: light;
+  --bg-main: #edf0f3;
+  --bg-body: #edf0f3;
+  --bg-card: #f7f8fa;
+  --bg-secondary: #e8ecf0;
+  --bg-sidebar: #e5e9ed;
+  --bg-inspector: #e8ecf0;
+  --bg-hover: rgba(15, 23, 42, 0.055);
+  --bg-active: rgba(15, 23, 42, 0.085);
+  --bg-input: #f8fafb;
+  --bg-input-disabled: #e8ecf0;
+  --bg-modal: #f7f8fa;
+  --border: rgba(15, 23, 42, 0.14);
+  --border-light: rgba(15, 23, 42, 0.085);
+  --text-heading: #17202b;
+  --text-primary: #24303d;
+  --text-body: #334155;
+  --text-secondary: #5e6b79;
+  --text-muted: #8793a0;
+  --text-on-primary: #ffffff;
+  --text-on-accent: #ffffff;
+  --accent: #168552;
+  --accent-hover: #0f7044;
+  --accent-soft: rgba(22, 133, 82, 0.12);
+  --primary: var(--accent);
+  --primary-hover: var(--accent-hover);
+  --primary-soft: var(--accent-soft);
+  --accent-warm: #a87522;
+  --accent-warm-soft: rgba(168, 117, 34, 0.12);
+  --status-running: #2878b7;
+  --status-running-bg: rgba(40, 120, 183, 0.12);
+  --status-completed: #168552;
+  --status-completed-bg: rgba(22, 133, 82, 0.12);
+  --status-failed: #c44f58;
+  --status-failed-bg: rgba(196, 79, 88, 0.12);
+  --status-danger: #c44f58;
+  --glass-top: rgba(250, 251, 252, 0.9);
+  --glass-bottom: rgba(235, 239, 243, 0.86);
+  --glass-inset: inset 0 1px 0 rgba(255, 255, 255, 0.88), inset 0 -1px 0 rgba(15, 23, 42, 0.06);
+  --glass-shadow: 0 18px 42px rgba(30, 41, 59, 0.13);
+  --glass-sheen: linear-gradient(115deg, rgba(255, 255, 255, 0.45), transparent 28%, transparent 74%, rgba(255, 255, 255, 0.12));
+  --shadow-raised: 0 12px 30px rgba(30, 41, 59, 0.1);
+  --shadow-modal: 0 28px 72px rgba(30, 41, 59, 0.2);
+  --shadow-dropdown: 0 18px 48px rgba(30, 41, 59, 0.18);
+  --focus-ring-color: rgba(22, 133, 82, 0.82);
+  --focus-ring-shadow: 0 0 0 2px rgba(22, 133, 82, 0.2);
+  --focus-ring: 0 0 0 2px rgba(22, 133, 82, 0.32);
+}
+
+html,
+body,
+#root {
+  background: var(--bg-body) !important;
+  color: var(--text-primary) !important;
+}
+
+body,
+button,
+input,
+select,
+textarea {
+  font-family: var(--font-sans) !important;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+.placeholder-page h2,
+.exp-header h2,
+.kanban-header h2,
+.goal-main > h2,
+.dash-page-header h2 {
+  font-family: var(--font-sans) !important;
+  color: var(--text-heading) !important;
+  letter-spacing: -0.02em !important;
+}
+
+/* The workbench is a dark, layered cockpit—not a white document canvas. */
+.app-layout,
+.main-content,
+.main-content--workspace,
+.workspace-shell,
+.project-shell,
+.page-container,
+.placeholder-page,
+.notes-page,
+.experiments-page,
+.dash-page,
+.kanban-page {
+  background: var(--bg-body) !important;
+  color: var(--text-primary) !important;
+}
+
+.topbar,
+.workspace-shell__left,
+.workspace-shell__right,
+.projects-page__header,
+.project-workspace-sidebar,
+.research-inspector,
+.notes-sidebar,
+.notes-editor,
+.papers-sidebar,
+.papers-detail,
+.outcomes-page,
+.submission-workspace,
+.scenario-workbench,
+.settings-page {
+  background: linear-gradient(180deg, var(--glass-top), var(--glass-bottom)) !important;
+  border-color: var(--border) !important;
+  box-shadow: var(--glass-inset) !important;
+  backdrop-filter: blur(18px) saturate(120%);
+}
+
+.topbar {
+  border-bottom: 1px solid var(--border) !important;
+}
+
+button,
+.btn-primary,
+.btn-secondary,
+.btn-sm,
+.btn-toggle,
+.chat-send,
+.theme-toggle,
+.search-input,
+.settings-input,
+.notes-tag-filter,
+.detail-select,
+.timeline-filter-search,
+select,
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+textarea {
+  min-height: var(--control-height);
+  border-radius: var(--radius-sm) !important;
+  border: 1px solid var(--border) !important;
+  background: var(--bg-input) !important;
+  color: var(--text-primary) !important;
+  box-shadow: none !important;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast) !important;
+}
+
+button:hover:not(:disabled),
+.btn-secondary:hover:not(:disabled),
+.btn-sm:hover:not(:disabled),
+.btn-toggle:hover:not(:disabled) {
+  background: var(--bg-hover) !important;
+  border-color: color-mix(in srgb, var(--accent) 46%, var(--border)) !important;
+  color: var(--text-heading) !important;
+}
+
+button:active:not(:disabled),
+.btn-primary:active:not(:disabled),
+.chat-send:active:not(:disabled) {
+  transform: translateY(1px) scale(0.985);
+}
+
+.btn-primary,
+.chat-send,
+.btn-toggle.active,
+.theme-toggle.active {
+  background: var(--accent) !important;
+  border-color: var(--accent) !important;
+  color: var(--text-on-accent) !important;
+}
+
+.btn-danger,
+.status-failed,
+.kanban-error {
+  color: var(--status-danger) !important;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus-ring-color) !important;
+  outline-offset: 2px !important;
+  box-shadow: var(--focus-ring-shadow) !important;
+}
+
+/* Cards are quiet glass surfaces, not bright document tiles. */
+.workflow-card,
+.dash-metric,
+.dash-stat,
+.dash-section,
+.dash-chart,
+.exp-card,
+.kanban-column,
+.kanban-card,
+.kanban-detail,
+.chart-card,
+.stat-card,
+.note-links,
+.paper-link-item,
+.outcome-card,
+.outcome-assistant__context,
+.outcome-assistant__message,
+.submission-card,
+.project-card,
+.artifact-card,
+.modal,
+.outcomes-modal,
+.dialog,
+[role="dialog"] {
+  background: linear-gradient(155deg, var(--glass-top), var(--glass-bottom)) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-card) !important;
+  box-shadow: var(--glass-inset), var(--shadow-raised) !important;
+}
+
+.exp-card,
+.kanban-card,
+.dash-metric,
+.stat-card {
+  border-left-width: 1px !important;
+}
+
+.exp-card.status-running,
+.kanban-card.status-running,
+.agent-activity-timeline__event--running {
+  border-left: 2px solid var(--status-running) !important;
+}
+
+.exp-card.status-completed,
+.kanban-card.status-completed,
+.agent-activity-timeline__event--completed {
+  border-left: 2px solid var(--status-completed) !important;
+}
+
+.exp-card.status-failed,
+.kanban-card.status-failed,
+.agent-activity-timeline__event--failed {
+  border-left: 2px solid var(--status-failed) !important;
+}
+
+.badge,
+.tag,
+.exp-status-badge,
+.status-chip,
+.status-mini,
+.topbar-nav__badge {
+  border-radius: var(--radius-pill) !important;
+  background: var(--bg-hover) !important;
+  border: 1px solid var(--border-light) !important;
+  color: var(--text-secondary) !important;
+  padding: 3px 8px !important;
+}
+
+.exp-status-badge {
+  background: var(--accent-soft) !important;
+  color: var(--accent) !important;
+}
+
+/* Notes, experiments, timeline, and kanban share the same compact cockpit rhythm. */
+.notes-page,
+.experiments-page,
+.kanban-page,
+.page-container,
+.dash-page,
+.settings-page {
+  padding: 18px 20px !important;
+  gap: 12px;
+}
+
+.notes-sidebar,
+.papers-sidebar {
+  width: 276px !important;
+}
+
+.notes-toolbar,
+.exp-header,
+.kanban-header,
+.page-header,
+.dash-page-header {
+  padding: 0 0 12px !important;
+  margin-bottom: 12px !important;
+  border-bottom: 1px solid var(--border-light) !important;
+}
+
+.notes-list,
+.papers-list,
+.project-list,
+.sidebar-list {
+  background: transparent !important;
+}
+
+.note-item,
+.paper-item,
+.project-item,
+.sidebar-item {
+  border-radius: var(--radius-sm) !important;
+  color: var(--text-secondary) !important;
+}
+
+.note-item:hover,
+.note-item.active,
+.paper-item:hover,
+.paper-item.active,
+.project-item:hover,
+.project-item.active,
+.sidebar-item:hover,
+.sidebar-item.active {
+  background: var(--bg-hover) !important;
+  color: var(--text-heading) !important;
+}
+
+.note-title-input,
+.note-content-input,
+.chat-textarea {
+  background: var(--bg-input) !important;
+  border-color: var(--border) !important;
+  color: var(--text-primary) !important;
+}
+
+.note-title-input {
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-sm) !important;
+  padding: 8px 10px !important;
+  margin-bottom: 12px !important;
+}
+
+.kanban-board,
+.exp-grid,
+.stat-grid,
+.dash-metrics-primary,
+.dash-metrics-secondary,
+.dash-charts-row {
+  gap: 12px !important;
+}
+
+.kanban-column {
+  background: rgba(17, 20, 25, 0.76) !important;
+}
+
+.kanban-column__header,
+.kanban-detail__header,
+.dash-section__header {
+  border-color: var(--border-light) !important;
+  background: rgba(255, 255, 255, 0.018) !important;
+}
+
+/* Disable the former decorative academic gradients and oversized visual noise. */
+[style*="gradient"],
+.title-gradient,
+.aurora,
+.aurora-background {
+  background-image: none !important;
+}
+
+/* Keep real document/editing canvases readable; only the surrounding shell is
+ * normalized to the cockpit language. */
+.office-editor,
+.docx-editor,
+.pdf-page,
+.pdf-reader__page,
+.ppt-slide-canvas,
+.spreadsheet-canvas {
+  background: initial !important;
+  color: initial !important;
+}
+
+@media (max-width: 900px) {
+  .notes-sidebar,
+  .papers-sidebar {
+    width: 232px !important;
+  }
+
+  .provider-profiles__layout {
+    grid-template-columns: 1fr !important;
+  }
+
+  .kanban-board {
+    grid-template-columns: repeat(2, minmax(220px, 1fr)) !important;
+  }
+}
+
+@media (max-width: 640px) {
+  .notes-page,
+  .experiments-page,
+  .kanban-page,
+  .page-container,
+  .dash-page,
+  .settings-page {
+    padding: 12px !important;
+  }
+
+  .notes-sidebar,
+  .papers-sidebar {
+    width: 100% !important;
+    max-height: 38vh;
+    border-right: 0 !important;
+    border-bottom: 1px solid var(--border) !important;
+  }
+
+  .notes-page,
+  .papers-page {
+    flex-direction: column !important;
+  }
+
+  .kanban-board {
+    grid-template-columns: 1fr !important;
+  }
+
+  .topbar-nav {
+    display: none !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

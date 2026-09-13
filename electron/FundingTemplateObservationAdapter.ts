@@ -746,6 +746,7 @@ function inspectDocx(documentXml: string, stylesXml: string | null): DocxInspect
   };
 }
 
+/* eslint-disable @typescript-eslint/no-unused-vars -- retained as a private archive-inspection contract for the next observation path. */
 function inspectDocxArchive(bytes: Buffer): FundingDocxStructureSummary {
   if (bytes.length < 4 || bytes.readUInt32LE(0) !== LOCAL_SIGNATURE) {
     throw new AdapterFailure('invalid_docx', 'DOCX ZIP signature is invalid');

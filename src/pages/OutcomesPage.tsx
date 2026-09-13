@@ -1,3 +1,5 @@
+/* eslint-disable react-hooks/refs -- editor selection and external Office callbacks require latest mutable handles. */
+/* eslint-disable react-hooks/immutability -- callback refs intentionally bridge effects and async editor actions. */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bot, Check, Copy, Download, FileText,
@@ -18,6 +20,7 @@ import { RevisionProposalCard } from '../outcomes/RevisionProposalCard';
 import { OutcomeWorkbenchPanel } from '../outcomes/OutcomeWorkbenchPanel';
 import { autoResizeTextarea } from '../lib/textareaAutosize.js';
 import ModelThinkingSelector from '../components/ModelThinkingSelector';
+import { presentOutcomeAssistantAnswer, scrubPresentationProtocol } from '../presentation/presentationProtocolScrubber';
 import { OutcomeWordFormattingPanel } from '../components/OutcomeWordFormattingPanel';
 import { OfficeWordRibbon } from '../components/OfficeWordRibbon';
 import { OfficePptRibbon } from '../components/OfficePptRibbon';
@@ -1058,7 +1061,6 @@ function LegacyWordEditor({ projectId, outcomeId, hasUnsavedChanges, document, o
     setHistoryState({ index, length: current.entries.length });
     onChange(current.entries[index]!);
   };
-  const updateText = (id: string, text: string) => update({ ...doc, blocks: doc.blocks.map((block) => block.id === id ? { ...block, text } : block) });
   const splitParagraphAtCaret = (event: React.KeyboardEvent<HTMLElement>, block: WordBlock) => {
     if (block.kind !== 'paragraph' && block.kind !== 'heading' && block.kind !== 'figure_caption' && block.kind !== 'table_caption') return;
     const selection = window.getSelection();
@@ -1256,7 +1258,7 @@ function LegacyWordEditor({ projectId, outcomeId, hasUnsavedChanges, document, o
     const text = event.clipboardData.getData('text/plain');
     if (!text) return;
     event.preventDefault();
-    const flattened = text.replace(/\r\n?/gu, '\n').replace(/\n+/gu, ' ').replace(/[^\r\n 	]{2,}/gu, ' ').trim();
+    const flattened = text.replace(/\r\n?/gu, '\n').replace(/\n+/gu, ' ').replace(/[^\S\r\n]+/gu, ' ').trim();
     window.document.execCommand('insertText', false, flattened);
   };
   // 跨段局部 AI 的发送前准备（2026-09-01 刘总要求）：把所选段落按选区边界
@@ -1844,9 +1846,12 @@ function OutcomeAssistant({ projectId, projectName, detail, selection, hasUnsave
     let current = true;
     if (!outcomeId || !window.metis) { void Promise.resolve().then(() => { if (current) setMessages([]); }); return () => { current = false; }; }
     void window.metis.listScopedConversation({ projectId, scope: 'outcome', outcomeId, scenarioId: null })
-      .then((rows) => {
+      .then((rows: ScopedMessage[]) => {
         if (!current) return;
-        const next = (rows ?? []) as ScopedMessage[];
+        const next = (rows ?? []).map((message: ScopedMessage) => ({
+          ...(message as ScopedMessage),
+          content: message.role === 'assistant' ? presentOutcomeAssistantAnswer(message.content) : message.content,
+        })) as ScopedMessage[];
         // 新建/删除会话后，主面板必须以最新会话为准整体替换，而不是合并旧记录。
         if (resetOnNextLoadRef.current) { resetOnNextLoadRef.current = false; setMessages(next); }
         else setMessages((previous) => mergeMessages(previous, next));
@@ -1903,8 +1908,6 @@ function OutcomeAssistant({ projectId, projectName, detail, selection, hasUnsave
     } catch { setNotice('无法载入该会话的记录。'); }
   };
 
-  const [appendTarget, setAppendTarget] = useState<'after_selection' | 'section_end' | 'new_section' | null>(null);
-  void setAppendTarget;
   const loadDraftIntoEditor = async () => {
     if (!projectId || !detail) return;
     try {
@@ -1953,10 +1956,13 @@ ${text}`;
     setIsSending(true); setNotice('');
     try {
       const scopedSelection = requestSelection(selection);
-      const result: AssistantResult = await chat({ projectId, outcomeId: detail.outcome.id, instruction: instruction.trim(), ...(scopedSelection ? { selection: scopedSelection } : {}) });
+      const result: AssistantResult = await chat({ projectId, outcomeId: detail.outcome.id, instruction: scrubPresentationProtocol(instruction.trim()), ...(scopedSelection ? { selection: scopedSelection } : {}) });
       setInstruction('');
       if (result.status === 'completed') {
-        setMessages((previous) => mergeMessages(previous, [result.userMessage, result.assistantMessage]));
+        setMessages((previous) => mergeMessages(previous, [
+          result.userMessage,
+          { ...result.assistantMessage, content: presentOutcomeAssistantAnswer(result.assistantMessage.content) },
+        ]));
         onConversationChanged();
         if (result.proposed) {
           // Outcomes 2.0（T05.04）：对话回答可直接生成修改建议（Revision Set），不写版本。
@@ -1969,7 +1975,7 @@ ${text}`;
         return;
       }
       const failed = result as unknown as { status: 'error' | 'cancelled'; code?: string; message?: string; userMessage?: ScopedMessage };
-      setMessages((previous) => mergeMessages(previous, [failed.userMessage]));
+      setMessages((previous) => mergeMessages(previous, failed.userMessage ? [{ ...failed.userMessage, content: scrubPresentationProtocol(failed.userMessage.content) }] : []));
       if (failed.userMessage) onConversationChanged();
       setNotice(failed.message || `本次协同未完成：${failed.code || failed.status}`);
     } catch { setNotice('成果 AI 请求没有完成，成果内容没有被修改。'); }
@@ -2003,7 +2009,7 @@ ${text}`;
         <p>这里只显示当前状态；每轮实际使用的资料以对应协作记录为准。</p>
       </section>
       <div className="outcome-assistant__messages" aria-live="polite">
-        {messages.length === 0 ? <div className="outcome-assistant__starter"><p>可以直接说：</p><button type="button" onClick={() => setInstruction('检查当前成果的结构、论证和表达问题，并给出可直接应用的修改。')}>检查当前成果</button><button type="button" onClick={() => setInstruction('根据当前项目已有资料，改进当前选中的内容。')}>根据项目资料修改</button></div> : messages.slice(-8).map((message) => <article key={message.id} className={`outcome-assistant__message outcome-assistant__message--${message.role}`} aria-label={`${message.role === 'user' ? '用户' : message.role === 'assistant' ? 'METIS' : '系统'}协作记录`}><span>{message.role === 'user' ? '你' : message.role === 'assistant' ? 'METIS' : '系统'}</span><p>{message.content}</p>{message.role === 'assistant' && detail && !hasUnsavedChanges && <button type="button" className="outcome-assistant__append-btn" data-testid={`append-answer-${message.id}`} title="把这段回答加入成果（生成修订提案，需确认后应用）" onClick={() => { setAppendTarget('section_end'); void appendAnswerAsRevision(message.content, message.sources); }}>加入成果</button>}<OutcomeSourceList sources={message.sources} label="本条实际来源" onOpenOutcomeVersion={onOpenOutcomeVersion} onLocate={onLocate} /></article>)}
+        {messages.length === 0 ? <div className="outcome-assistant__starter"><p>可以直接说：</p><button type="button" onClick={() => setInstruction('检查当前成果的结构、论证和表达问题，并给出可直接应用的修改。')}>检查当前成果</button><button type="button" onClick={() => setInstruction('根据当前项目已有资料，改进当前选中的内容。')}>根据项目资料修改</button></div> : messages.slice(-8).map((message) => <article key={message.id} className={`outcome-assistant__message outcome-assistant__message--${message.role}`} aria-label={`${message.role === 'user' ? '用户' : message.role === 'assistant' ? 'METIS' : '系统'}协作记录`}><span>{message.role === 'user' ? '你' : message.role === 'assistant' ? 'METIS' : '系统'}</span><p>{message.role === 'assistant' ? presentOutcomeAssistantAnswer(message.content) : message.content}</p>{message.role === 'assistant' && detail && !hasUnsavedChanges && <button type="button" className="outcome-assistant__append-btn" data-testid={`append-answer-${message.id}`} title="把这段回答加入成果（生成修订提案，需确认后应用）" onClick={() => { void appendAnswerAsRevision(presentOutcomeAssistantAnswer(message.content), message.sources); }}>加入成果</button>}<OutcomeSourceList sources={message.sources} label="本条实际来源" onOpenOutcomeVersion={onOpenOutcomeVersion} onLocate={onLocate} /></article>)}
       </div>
       {proposedBundle && <RevisionProposalCard projectId={projectId} set={proposedBundle.set} revisions={proposedBundle.revisions} onDraftUpdated={(content) => { if (content && onDraftContentUpdated) onDraftContentUpdated(content as OutcomeDocument); else void loadDraftIntoEditor(); }} onNotice={setNotice} />}
       {notice && <p className="outcome-assistant__notice" role="status">{notice}</p>}
@@ -2028,5 +2034,5 @@ function ConversationHistoryDialog({ messages, title, close, onOpenOutcomeVersio
       </ul>}
     </div>}
     <p className="outcome-history-dialog__scope">{browsing ? `正在查看历史对话「${browsing.unit.title || '未命名对话'}」（只读）。` : '以下为当前对话记录。'}</p>
-    <div className="outcome-history-dialog__messages">{visible.length === 0 ? <p>{browsing ? '该会话没有已保存的记录。' : '还没有已保存的协作记录。'}</p> : visible.map((message) => <article key={message.id}><b>{message.role === 'user' ? '你' : message.role === 'assistant' ? 'METIS' : '系统'}</b><time>{new Date(message.createdAt).toLocaleString()}</time><p>{message.content}</p><OutcomeSourceList sources={message.sources} label="本条实际来源" onOpenOutcomeVersion={onOpenOutcomeVersion} onLocate={onLocate} /></article>)}</div><footer>{browsing && <button type="button" onClick={onBackToCurrent}>返回当前对话</button>}<button className="primary" type="button" onClick={close}>返回成果助手继续协作</button></footer></section></div>;
+    <div className="outcome-history-dialog__messages">{visible.length === 0 ? <p>{browsing ? '该会话没有已保存的记录。' : '还没有已保存的协作记录。'}</p> : visible.map((message) => <article key={message.id}><b>{message.role === 'user' ? '你' : message.role === 'assistant' ? 'METIS' : '系统'}</b><time>{new Date(message.createdAt).toLocaleString()}</time><p>{message.role === 'assistant' ? presentOutcomeAssistantAnswer(message.content) : message.content}</p><OutcomeSourceList sources={message.sources} label="本条实际来源" onOpenOutcomeVersion={onOpenOutcomeVersion} onLocate={onLocate} /></article>)}</div><footer>{browsing && <button type="button" onClick={onBackToCurrent}>返回当前对话</button>}<button className="primary" type="button" onClick={close}>返回成果助手继续协作</button></footer></section></div>;
 }

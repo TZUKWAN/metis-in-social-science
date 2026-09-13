@@ -162,7 +162,8 @@ describe('ChatPage scroll-follow and stream batching', () => {
     await act(async () => { raf.flushOne(); });
     await act(async () => { raf.flushAll(); });
     expect(await screen.findByText('第一段第二段')).toBeDefined();
-    expect(screen.getByText('先后')).toBeDefined();
+    expect(screen.getByText('正在分析问题并整理回答')).toBeDefined();
+    expect(screen.queryByText('先后')).toBeNull();
     // Streaming follow-scroll is an instant ledger-recorded pin, not a
     // per-frame smooth scrollIntoView (which restarted its animation every
     // frame and janked).

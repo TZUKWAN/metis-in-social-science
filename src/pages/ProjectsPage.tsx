@@ -8,12 +8,14 @@
  * 聊天内容由 App 层常驻的 ChatPage 提供（renderLayout 注入），
  * 因此切换模式或导航不会丢失对话草稿。
  */
+/* eslint-disable react-hooks/set-state-in-effect -- project/session IPC state is synchronized after scope changes. */
+/* eslint-disable react-hooks/refs -- sidebar collapse callback needs the latest state across async preview actions. */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from '../i18n';
 import { FolderPlus } from 'lucide-react';
 import { researchWorkspaceStore, useResearchWorkspaceStore } from '../research/researchWorkspaceStore';
 
-import { Button, Input, Select } from '../components/ui';
+import { Button, Input, Select, PageHeader, StatusChip } from '../components/ui';
 import ConfirmDialog from '../components/ConfirmDialog';
 import { EmptyState, InlineError, OperationNotice, QuietLoading, RowActionsMenu, StaleDataNotice, type OperationNoticeState } from '../components/async/AsyncFeedback';
 import { usePendingAction } from '../components/async/asyncViewState';
@@ -708,6 +710,13 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
       )}
 
       <div className="projects-page__main">
+        <PageHeader
+          className="projects-page__header"
+          eyebrow={locale === 'zh' ? '研究工作台' : 'Research workspace'}
+          title={t('projects.pageTitle')}
+          description={activeProjectId ? (locale === 'zh' ? '围绕当前项目组织聊天、资料与成果。' : 'Organize chat, materials, and outputs around the active project.') : undefined}
+          actions={activeProjectId ? <StatusChip tone="success">{locale === 'zh' ? '项目已连接' : 'Project connected'}</StatusChip> : undefined}
+        />
         {activeProjectId ? <ProjectHomeBanner /> : (
           !loadingProjects && projects.length > 0 ? (
             <div className="projects-page__hint" data-testid="projects-select-hint">{t('projects.selectHint')}</div>

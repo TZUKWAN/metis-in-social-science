@@ -202,6 +202,7 @@ import { parseGenofficeReadyLine } from './genofficeStandaloneProtocol.js';
 import { createBlankPdfBytes, createBlankSpreadsheetBytes } from './OutcomeBlankDocumentFactory.js';
 import { buildGenofficeEnvironment, resolveGenofficeRoot } from './genofficeRuntimePaths.js';
 import { AgentExecutionEventBridge } from './AgentExecutionEventBridge.js';
+import { UnifiedStreamProtocolGate } from '../engine/runtime/UnifiedStreamProtocolGate.js';
 import { FreeModelService } from './FreeModelService.js';
 import { OutcomeMediaSvgExportResultSchema } from '../engine/runtime/OutcomeRuntimeContract.js';
 import { exportStandaloneSvg, roundTripStandaloneSvg } from './OutcomeSvgSecurity.js';
@@ -3133,7 +3134,7 @@ function loadPersistedSettings(): PersistedSettings {
     if (fs.existsSync(SETTINGS_PATH)) {
       const raw = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf-8'));
       return {
-        theme: raw.theme || 'light',
+        theme: raw.theme || 'dark',
         accent: normalizeAccent(raw.accent),
         providerVision: raw.providerVision === true,
         providerMaxContextTokens: Number(raw.providerMaxContextTokens) > 0 ? Number(raw.providerMaxContextTokens) : 0,
@@ -3144,10 +3145,10 @@ function loadPersistedSettings(): PersistedSettings {
   // Backward compat: read old theme.txt
   try {
     if (fs.existsSync(THEME_PATH)) {
-      return { theme: fs.readFileSync(THEME_PATH, 'utf-8').trim() || 'light', accent: 'blue', providerVision: false, providerMaxContextTokens: 0, setupSkipped: false };
+      return { theme: fs.readFileSync(THEME_PATH, 'utf-8').trim() || 'dark', accent: 'blue', providerVision: false, providerMaxContextTokens: 0, setupSkipped: false };
     }
   } catch { /* ignore */ }
-  return { theme: 'light', accent: 'blue', providerVision: false, providerMaxContextTokens: 0, setupSkipped: false };
+  return { theme: 'dark', accent: 'blue', providerVision: false, providerMaxContextTokens: 0, setupSkipped: false };
 }
 
 function loadTheme(): string { return loadPersistedSettings().theme; }
@@ -7360,6 +7361,7 @@ function setupIPC(): void {
       // Stream the model's tokens (and reasoning, when the model emits it) to
       // the requesting renderer. Registered on the loop that actually runs so
       // MCP-expanded loops stream too; unregistered when the turn settles.
+      const modelStreamGate = new UnifiedStreamProtocolGate();
       const forwardModelStream = (
         ctx: import('../engine/core/HookBus.js').HookContext,
       ): import('../engine/core/HookBus.js').HookContext => {
@@ -7368,12 +7370,15 @@ function setupIPC(): void {
         };
         try {
           if (event.sender.isDestroyed()) return ctx;
+          const finished = payload.isFinished === true;
+          const rawContent = typeof payload.content === 'string' ? payload.content : '';
+          const content = modelStreamGate.push(rawContent) + (finished ? modelStreamGate.flush() : '');
           event.sender.send('chat:stream-chunk', {
             turnId: requestId,
             sessionId: typeof payload.sessionId === 'string' ? payload.sessionId : sessionId,
-            content: typeof payload.content === 'string' ? payload.content : '',
+            content,
             reasoning: typeof payload.reasoning === 'string' ? payload.reasoning : undefined,
-            isFinished: payload.isFinished === true,
+            isFinished: finished,
           });
         } catch { /* stream forwarding must never break the turn */ }
         return ctx;
@@ -7592,6 +7597,9 @@ function setupIPC(): void {
         return response;
       } finally {
         if (!isScenarioWorkflowRun) {
+          // Flush a truncated protocol tail so it is emitted as a diagnostic
+          // event rather than retained across turns; no raw bytes reach UI.
+          modelStreamGate.flush();
           runAgentLoop.unregisterHook('model.stream_chunk', 'chat-stream-forward');
           runAgentLoop.unregisterHook('tool.dispatch_started', 'chat-tool-start-forward');
           runAgentLoop.unregisterHook('tool.dispatched', 'chat-tool-forward');
@@ -7740,6 +7748,7 @@ function setupIPC(): void {
       ).agentLoop;
       // 流式转发：与正常回合同一个通道，但额外带 profileId 供渲染端按模型
       // 分气泡；转发失败绝不能打断回合。
+      const compareStreamGate = new UnifiedStreamProtocolGate();
       const forwardCompareStream = (
         ctx: import('../engine/core/HookBus.js').HookContext,
       ): import('../engine/core/HookBus.js').HookContext => {
@@ -7748,12 +7757,15 @@ function setupIPC(): void {
         };
         try {
           if (event.sender.isDestroyed()) return ctx;
+          const finished = payload.isFinished === true;
+          const rawContent = typeof payload.content === 'string' ? payload.content : '';
+          const content = compareStreamGate.push(rawContent) + (finished ? compareStreamGate.flush() : '');
           event.sender.send('chat:stream-chunk', {
             turnId: requestId,
             sessionId: typeof payload.sessionId === 'string' ? payload.sessionId : sessionId,
-            content: typeof payload.content === 'string' ? payload.content : '',
+            content,
             reasoning: typeof payload.reasoning === 'string' ? payload.reasoning : undefined,
-            isFinished: payload.isFinished === true,
+            isFinished: finished,
             profileId,
           });
         } catch { /* stream forwarding must never break the turn */ }
@@ -7771,6 +7783,7 @@ function setupIPC(): void {
           projectId,
         });
       } finally {
+        compareStreamGate.flush();
         compareLoop.unregisterHook('model.stream_chunk', 'chat-compare-stream-forward');
       }
     } catch {
@@ -11276,17 +11289,21 @@ ${effectiveInstruction}`;
       });
       executionBridge.attach(agentLoop);
       // token 级流式：把模型的增量输出/推理实时转发到渲染端。
+      const scenarioStreamGate = new UnifiedStreamProtocolGate();
       const scenarioStreamHookName = `scenario-stream-forward:${compileSessionId}`;
       const forwardScenarioStream = (ctx: import('../engine/core/HookBus.js').HookContext): import('../engine/core/HookBus.js').HookContext => {
         const payload = ctx as unknown as { sessionId?: unknown; content?: unknown; reasoning?: unknown; isFinished?: unknown };
         if (payload.sessionId !== compileSessionId) return ctx;
         try {
           if (!event.sender.isDestroyed()) {
+            const finished = payload.isFinished === true;
+            const rawContent = typeof payload.content === 'string' ? payload.content : '';
+            const content = scenarioStreamGate.push(rawContent) + (finished ? scenarioStreamGate.flush() : '');
             event.sender.send('scenario:stream-chunk', {
               sessionId: compileSessionId,
-              content: typeof payload.content === 'string' ? payload.content : '',
+              content,
               reasoning: typeof payload.reasoning === 'string' ? payload.reasoning : undefined,
-              isFinished: payload.isFinished === true,
+              isFinished: finished,
             });
           }
         } catch { /* 流转发绝不中断编译 */ }
@@ -11830,6 +11847,7 @@ ${effectiveInstruction}`;
         persistAssistantMessage('场景编译未完成：' + errorMessage);
         return { ok: false, code: 'generation_failed', error: errorMessage };
       } finally {
+        scenarioStreamGate.flush();
         agentLoop.unregisterHook('model.stream_chunk', scenarioStreamHookName);
         scenarioPatchRouterSingleton.removeDraftUpdatedListener(compileSessionId, draftUpdatedListener);
         scenarioPatchRouterSingleton.close(compileSessionId);

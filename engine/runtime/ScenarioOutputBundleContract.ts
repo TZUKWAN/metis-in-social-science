@@ -403,7 +403,7 @@ function normalizePlanLabel(value: string): string {
   return value
     .replace(/[Ａ-Ｚａ-ｚ０-９]/gu, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0))
     .toLowerCase()
-    .replace(/[\p{P}\p{S}\s　]+/gu, '');
+    .replace(/[\p{P}\p{S}\s]+/gu, '');
 }
 
 /** Resolves a model-written label to exactly one canonical plan entry. */

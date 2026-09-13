@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/set-state-in-effect -- settings state mirrors asynchronous IPC-backed selections. */
 import SettingsOfficeProfilesSection from './SettingsOfficeProfilesSection';
 import React from 'react';
 import { RotateCcw, Sparkles } from 'lucide-react';

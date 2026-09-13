@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components -- the hook and shell are an inseparable layout API. */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import './WorkspaceShell.css';
 
@@ -116,15 +117,23 @@ export interface WorkspaceShellProps {
 
 /** 三栏 Shell 组件：中央 flex:1/min-width:0 永不挤坏；左右可折叠。 */
 export function WorkspaceShell({ left, primary, right, shell, labels }: WorkspaceShellProps) {
-  const { narrow, veryNarrow, leftWidth, rightWidth, leftCollapsed, rightCollapsed } = shell;
+  const {
+    containerRef,
+    narrow,
+    veryNarrow,
+    leftWidth,
+    rightWidth,
+    leftCollapsed,
+    rightCollapsed,
+  } = shell;
   const [leftDrawerOpen, setLeftDrawerOpen] = useState(false);
   const [rightDrawerOpen, setRightDrawerOpen] = useState(false);
 
   return (
-    <div ref={shell.containerRef} className="workspace-shell" data-narrow={narrow || undefined} data-very-narrow={veryNarrow || undefined}>
+    <div ref={containerRef} className="workspace-shell" data-narrow={narrow || undefined} data-very-narrow={veryNarrow || undefined}>
       {/* Left：正常栏 或 抽屉触发 */}
       {!veryNarrow && !leftCollapsed && (
-        <aside className="workspace-shell__left" style={{ width: leftWidth, flex: `0 0 ${leftWidth}px` }} aria-label={labels?.left ?? 'Navigation'}>
+        <aside className="workspace-shell__left mui-glass" style={{ width: leftWidth, flex: `0 0 ${leftWidth}px` }} aria-label={labels?.left ?? 'Navigation'}>
           {left}
         </aside>
       )}
@@ -140,7 +149,7 @@ export function WorkspaceShell({ left, primary, right, shell, labels }: Workspac
 
       {/* Right */}
       {right !== undefined && !veryNarrow && !rightCollapsed && (
-        <aside className="workspace-shell__right" style={{ width: rightWidth, flex: `0 0 ${rightWidth}px` }} aria-label={labels?.right ?? 'Inspector'}>
+        <aside className="workspace-shell__right mui-glass" style={{ width: rightWidth, flex: `0 0 ${rightWidth}px` }} aria-label={labels?.right ?? 'Inspector'}>
           {right}
         </aside>
       )}
@@ -154,14 +163,14 @@ export function WorkspaceShell({ left, primary, right, shell, labels }: Workspac
       {/* Narrow drawers */}
       {veryNarrow && leftDrawerOpen && (
         <div className="workspace-shell__drawer-mask" onClick={() => setLeftDrawerOpen(false)} role="presentation">
-          <aside className="workspace-shell__drawer workspace-shell__drawer--left" onClick={(event) => event.stopPropagation()} aria-label={labels?.left ?? 'Navigation'}>
+          <aside className="workspace-shell__drawer workspace-shell__drawer--left mui-glass" onClick={(event) => event.stopPropagation()} aria-label={labels?.left ?? 'Navigation'}>
             {left}
           </aside>
         </div>
       )}
       {veryNarrow && rightDrawerOpen && (
         <div className="workspace-shell__drawer-mask" onClick={() => setRightDrawerOpen(false)} role="presentation">
-          <aside className="workspace-shell__drawer workspace-shell__drawer--right" onClick={(event) => event.stopPropagation()} aria-label={labels?.right ?? 'Inspector'}>
+          <aside className="workspace-shell__drawer workspace-shell__drawer--right mui-glass" onClick={(event) => event.stopPropagation()} aria-label={labels?.right ?? 'Inspector'}>
             {right}
           </aside>
         </div>

@@ -1,3 +1,5 @@
+/* eslint-disable react-refresh/only-export-components -- parser split helper is intentionally exported with the renderer. */
+/* eslint-disable react-hooks/refs -- parser/cache state is append-only render state, isolated per mounted stream. */
 /**
  * StreamingMarkdown — incremental markdown rendering for live-streamed
  * assistant output, adapted from deepseek-harness's IncrementalMarkdownParser

@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components -- composer hook and shell share the same public conversation API. */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDown, ArrowUp, Paperclip, Square } from 'lucide-react';
 import { AssistantTurn, UserTurn } from './ConversationTurns';

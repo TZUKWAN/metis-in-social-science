@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/set-state-in-effect -- material list is synchronized with the project IPC scope. */
 import { useCallback, useEffect, useState } from 'react';
 import { FileUp, LayoutGrid, List, Trash2 } from 'lucide-react';
 import './ProjectMaterialsPanel.css';

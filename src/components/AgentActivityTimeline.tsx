@@ -16,6 +16,7 @@ import {
   type AssistantToolPart,
 } from '../lib/assistantMessagePartsReducer';
 import { presentExecutionAction } from '../presentation/executionPresentation';
+import ToolExecutionCard from './ToolExecutionCard';
 
 export type AgentActivityStatus = AgentResponse['status'] | 'running';
 export type AgentActivityEvent = AgentResponse['events'][number] & { replayed?: boolean };
@@ -210,35 +211,17 @@ export default function AgentActivityTimeline({
               const hasToolDetail = Boolean(
                 tool.arguments.trim() || tool.result?.trim() || tool.error?.trim() || tool.sources.length > 0,
               );
-              const rowClass = 'agent-activity-timeline__event agent-activity-timeline__event--tool_result';
+              const rowClass = `agent-activity-timeline__event agent-activity-timeline__event--tool_result agent-activity-timeline__event--${tool.status === 'error' ? 'failed' : tool.status}`;
               if (hasToolDetail) {
                 return (
                   <li className={rowClass} key={`tool-${tool.toolCallId}`}>
-                    <details className="agent-tool-result" data-testid="agent-tool-result">
-                      <summary className="agent-tool-result__summary">
-                        <span className="agent-activity-timeline__event-marker" aria-hidden="true" />
-                        <span className="agent-activity-timeline__event-label">{toolLabel(tool, locale)}</span>
-                        <span className="agent-activity-timeline__event-meta">{toolMeta(tool, locale)}</span>
-                      </summary>
-                      <div className="agent-tool-result__body">
-                        {diagnosticMode && tool.arguments.trim() && (
-                          <pre className="agent-tool-result__arguments">{tool.arguments.trim()}</pre>
-                        )}
-                        {tool.result?.trim() && <p className="agent-tool-result__detail">{tool.result.trim()}</p>}
-                        {tool.error?.trim() && <p className="agent-tool-result__error">{tool.error.trim()}</p>}
-                        {tool.sources.length > 0 && (
-                          <ul className="agent-tool-result__sources" aria-label={locale === 'zh' ? '工具返回的来源' : 'Tool-returned sources'}>
-                            {tool.sources.map((source, sourceIndex) => (
-                              <li key={`${source.label}-${source.url ?? sourceIndex}`}>
-                                {source.url
-                                  ? <a href={source.url} target="_blank" rel="noreferrer">{source.label}</a>
-                                  : <span>{source.label}</span>}
-                              </li>
-                            ))}
-                          </ul>
-                        )}
-                      </div>
-                    </details>
+                    <ToolExecutionCard
+                      tool={tool}
+                      diagnosticMode={diagnosticMode}
+                      locale={locale}
+                      mode="disclosure"
+                      testId="agent-tool-result"
+                    />
                   </li>
                 );
               }

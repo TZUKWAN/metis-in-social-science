@@ -3,6 +3,9 @@ import { createPortal } from 'react-dom';
 import ModelThinkingSelector from '../components/ModelThinkingSelector';
 import { AssistantTurn, UserTurn } from '../conversation/ConversationTurns';
 import { StreamingMarkdown } from '../presentation/StreamingMarkdown';
+import { scrubPresentationProtocol } from '../presentation/presentationProtocolScrubber';
+import { presentExecutionAction } from '../presentation/executionPresentation';
+import { presentReasoningSummary } from '../presentation/reasoningPresentation';
 import '../conversation/conversation.css';
 import { autoResizeTextarea } from '../lib/textareaAutosize.js';
 import { isScenarioCompileActive, onScenarioCompileUpdate } from '../lib/scenarioCompileCoordinator.js';
@@ -96,9 +99,10 @@ function compileEventSummary(payload: unknown, zh: boolean): string | null {
   if (event.type === 'tool_result') {
     const toolName = text(event.toolName);
     if (!toolName) return null;
+    const publicToolName = presentExecutionAction(toolName, zh ? 'zh' : 'en');
     return event.status === 'failed'
-      ? (zh ? `工具 ${toolName} 执行失败` : `Tool ${toolName} failed`)
-      : (zh ? `工具 ${toolName} 已返回结果` : `Tool ${toolName} returned`);
+      ? (zh ? `${publicToolName}失败` : `${publicToolName} failed`)
+      : (zh ? `${publicToolName}已返回结果` : `${publicToolName} returned`);
   }
   return null;
 }
@@ -274,7 +278,7 @@ export default function ScenarioConfigurationAssistant({
       const rows = await bridge.messages({ projectId: bridge.projectId, conversationId: targetId });
       const visible = (rows ?? [])
         .filter((row): row is typeof row & { role: 'user' | 'assistant' } => row.role === 'user' || row.role === 'assistant')
-        .map((row) => ({ id: row.id, role: row.role, content: row.content }));
+        .map((row) => ({ id: row.id, role: row.role, content: row.role === 'assistant' ? scrubPresentationProtocol(row.content) : row.content }));
       setMessages((current) => [current[0] ?? initialMessage(zh, scenarioName), ...visible]);
       return true;
     } catch {
@@ -501,7 +505,7 @@ ${zh ? '现在直接输入你的要求（例如：帮我生成这份申报书的
       {messages.map((message) => (
         message.role === 'user'
           ? <UserTurn key={message.id} message={{ id: String(message.id), role: 'user', createdAt: 0, parts: [{ type: 'text', text: message.content }] }} />
-          : <AssistantTurn key={message.id} message={{ id: String(message.id), role: 'assistant', createdAt: 0, parts: [{ type: 'text', text: message.content }] }} />
+          : <AssistantTurn key={message.id} message={{ id: String(message.id), role: 'assistant', createdAt: 0, parts: [{ type: 'text', text: scrubPresentationProtocol(message.content) }] }} />
       ))}
       {isBusy && <article className="scenario-assistant__message scenario-assistant__message--assistant scenario-assistant__message--pending">
         <span>METIS</span>
@@ -509,9 +513,11 @@ ${zh ? '现在直接输入你的要求（例如：帮我生成这份申报书的
         <div className="scenario-assistant__stages" data-testid="sw-assistant-stages" aria-live="polite">
           {stages.slice(-4).map((stage, index) => <small key={index + '-' + stage}>{stage}</small>)}
           {streamTail.reasoning && (
-            <details className="scenario-assistant__stream-tail" title={zh ? '模型推理流' : 'Model reasoning stream'}>
-              <summary><small>{zh ? '思考中…' : 'Reasoning…'}</small></summary>
-              <small>{streamTail.reasoning}</small>
+            <details className="scenario-assistant__stream-tail" title={zh ? '公开思考阶段' : 'Public reasoning phase'}>
+              <summary>
+                <small>{zh ? '思考中…' : 'Reasoning…'}</small>
+                <small className="scenario-assistant__reasoning-summary">{presentReasoningSummary(streamTail.reasoning, zh ? 'zh' : 'en')}</small>
+              </summary>
             </details>
           )}
           {streamTail.content && (

@@ -220,7 +220,7 @@ export const AssistantTurn = memo(function AssistantTurn({
   );
 });
 
-export const UserTurn = memo(function UserTurn({ message, locale = 'zh' }: { message: ConversationMessage; locale?: 'zh' | 'en' }) {
+export const UserTurn = memo(function UserTurn({ message }: { message: ConversationMessage; locale?: 'zh' | 'en' }) {
   const text = message.parts
     .filter((part): part is Extract<ConversationPart, { type: 'text' }> => part.type === 'text')
     .map((part) => part.text)

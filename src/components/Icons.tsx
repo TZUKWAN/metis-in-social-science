@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components -- icon factory exports stable view helpers alongside components. */
 // Shared icons — prefer Lucide, fall back to custom SVG only where no equivalent exists.
 
 import type { ComponentType, CSSProperties } from 'react';

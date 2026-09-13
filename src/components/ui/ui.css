@@ -5,6 +5,78 @@
  * Do not hardcode colors, spacing, or radii here.
  */
 
+/* ─── SkyAgent-aligned surfaces and status primitives ── */
+.mui-glass {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: linear-gradient(150deg, var(--glass-top), var(--glass-bottom));
+  box-shadow: var(--glass-inset), var(--glass-shadow);
+  backdrop-filter: blur(24px) saturate(120%);
+}
+.mui-glass::before {
+  position: absolute;
+  inset: 0;
+  content: '';
+  pointer-events: none;
+  background: var(--glass-sheen);
+}
+.mui-glass--raised { box-shadow: var(--glass-inset), 0 12px 28px rgba(0, 0, 0, 0.14); }
+.mui-glass--floating { box-shadow: var(--glass-inset), 0 20px 46px rgba(0, 0, 0, 0.22); }
+
+.mui-page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.mui-page-header__copy { min-width: 0; }
+.mui-page-header__eyebrow {
+  display: block;
+  margin-bottom: var(--space-1);
+  color: var(--text-faint);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.mui-page-header__title-row { display: flex; align-items: center; gap: var(--space-2); }
+.mui-page-header h1 { margin: 0; font-size: 20px; line-height: 1.25; color: var(--text-main); }
+.mui-page-header p { margin-top: var(--space-1); color: var(--text-subtle); font-size: var(--font-size-sm); }
+.mui-page-header__icon { display: inline-flex; color: var(--accent-bright); }
+.mui-page-header__actions { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+
+.mui-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 22px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  font-size: var(--font-size-xs);
+  line-height: 1;
+  white-space: nowrap;
+}
+.mui-status-chip__dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.mui-status-chip--running { color: var(--status-running); background: var(--status-running-bg); border-color: color-mix(in srgb, var(--status-running) 30%, transparent); }
+.mui-status-chip--success { color: var(--status-success); background: var(--status-success-soft); border-color: color-mix(in srgb, var(--status-success) 30%, transparent); }
+.mui-status-chip--warning { color: var(--status-warning); background: var(--status-warning-soft); border-color: color-mix(in srgb, var(--status-warning) 30%, transparent); }
+.mui-status-chip--danger { color: var(--status-danger); background: var(--status-danger-soft); border-color: color-mix(in srgb, var(--status-danger) 30%, transparent); }
+.mui-status-chip--neutral { color: var(--text-subtle); background: var(--bg-hover); border-color: var(--border-subtle); }
+
+.mui-collapsible { border: 1px solid var(--border-subtle); border-radius: var(--radius-m); background: var(--surface-raised); }
+.mui-collapsible > summary { display: flex; align-items: center; gap: var(--space-2); min-height: 32px; padding: 0 var(--space-3); cursor: pointer; list-style: none; color: var(--text-main); font-size: var(--font-size-sm); }
+.mui-collapsible > summary::-webkit-details-marker { display: none; }
+.mui-collapsible > summary:hover { background: var(--bg-hover); }
+.mui-collapsible__chevron { color: var(--text-faint); transition: transform var(--motion-standard); }
+.mui-collapsible[open] .mui-collapsible__chevron { transform: rotate(90deg); }
+.mui-collapsible__summary { margin-left: auto; color: var(--text-faint); font-size: var(--font-size-xs); }
+.mui-collapsible__body { padding: var(--space-3); border-top: 1px solid var(--border-subtle); }
+
 /* ─── Button ───────────────────────────────────────── */
 
 .mui-button {

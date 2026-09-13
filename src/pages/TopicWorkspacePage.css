@@ -1,5 +1,5 @@
 /* Topic Workspace 样式（自 scenarioWorkbench.css 抽出，2026-09-08 解耦直接入口加载） */
-.topic-workspace { display: flex; height: 100%; min-height: 0; background: var(--bg-primary); color: var(--text-primary); }
+.topic-workspace { display: flex; height: 100%; min-height: 0; background: var(--surface-base, var(--bg-primary)); color: var(--text-main, var(--text-primary)); }
 .topic-workspace__candidates > header { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--border); }
 .topic-workspace__candidates > header strong { font-size: 13px; }
 .topic-workspace__new { display: flex; flex-direction: column; gap: 6px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
@@ -70,7 +70,7 @@
 }
 
 /* ── 会话左侧列表（刘总 2026-09：对话记录回左侧，替代顶部 tab 条）── */
-.topic-workspace__sessionlist { width: 236px; flex: 0 0 auto; border-right: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; background: var(--bg-secondary, transparent); }
+.topic-workspace__sessionlist { width: 236px; flex: 0 0 auto; border-right: 1px solid var(--border-subtle, var(--border)); display: flex; flex-direction: column; min-height: 0; background: linear-gradient(180deg, var(--glass-top), var(--glass-bottom)); box-shadow: var(--glass-inset); }
 .topic-workspace__sessionlist > header { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
 .topic-workspace__sessionlist > header > span { font-size: 12.5px; font-weight: 600; color: var(--text-primary); }
 .topic-workspace__sessionlist > footer { padding: 8px 12px; border-top: 1px solid var(--border); }

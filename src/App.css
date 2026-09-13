@@ -44,7 +44,8 @@ body {
   flex-direction: column;
   height: 100vh;
   overflow: hidden;
-  background: var(--bg-main);
+  background: var(--surface-base, var(--bg-main));
+  color: var(--text-main, var(--text-primary));
 }
 
 .app-layout.chat-fullscreen .main-content,
@@ -58,11 +59,13 @@ body {
   align-items: center;
   gap: var(--space-3);
   padding: 0 var(--space-4);
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-sidebar);
+  border-bottom: 1px solid var(--border-subtle, var(--border));
+  background: linear-gradient(180deg, var(--glass-top), var(--glass-bottom));
+  box-shadow: var(--glass-inset);
   flex-shrink: 0;
   position: relative;
   z-index: var(--z-sidebar);
+  backdrop-filter: blur(18px) saturate(118%);
 }
 
 .topbar-brand {
@@ -119,7 +122,7 @@ body {
 }
 .topbar-nav__item { padding: 7px 9px; white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; position: relative; }
 .topbar-nav__item:hover,
-.topbar-icon-button:hover { color: var(--text-primary); background: var(--bg-hover); }
+.topbar-icon-button:hover { color: var(--text-primary); background: color-mix(in srgb, var(--accent) 8%, transparent); border-color: var(--border-subtle); }
 .topbar-nav__item.active,
 .topbar-icon-button.active { color: var(--accent); background: transparent; }
 .topbar-nav__item.active::after,
@@ -2965,6 +2968,7 @@ button.tool-call-header { cursor: pointer; }
   display: flex;
   height: 100%;
   min-height: 0;
+  background: var(--surface-base, var(--bg-main));
 }
 
 .projects-page__sidebar {
@@ -2973,8 +2977,9 @@ button.tool-call-header { cursor: pointer; }
   display: flex;
   flex-direction: column;
   min-height: 0;
-  background: var(--bg-sidebar);
-  border-right: 1px solid var(--border);
+  background: linear-gradient(180deg, var(--glass-top), var(--glass-bottom));
+  box-shadow: var(--glass-inset);
+  border-right: 1px solid var(--border-subtle, var(--border));
 }
 
 .projects-page__sidebar-header {
@@ -2983,7 +2988,7 @@ button.tool-call-header { cursor: pointer; }
   justify-content: space-between;
   gap: var(--space-2);
   padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-subtle, var(--border));
 }
 
 .projects-page__sidebar-header h2 {

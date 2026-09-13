@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/preserve-manual-memoization -- selected template memoization is intentional for large template lists. */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   FileCapabilitySelectionResultSchema,

@@ -290,12 +290,7 @@ export class OutcomeExternalEditorService {
     }
     if (await this.pidAlive(session)) return;
     this.stopMonitor(token);
-    let changed = false;
-    try {
-      changed = (await this.state(token)).changed;
-    } catch {
-      changed = false;
-    }
+    const changed = await this.state(token).then((value) => value.changed).catch(() => false);
     await this.onEditorClosed?.(session, changed);
   }
 

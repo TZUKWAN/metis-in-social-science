@@ -27,9 +27,14 @@ class ControlledProvider extends BaseProvider {
     };
   }
   async complete(_messages: ChatMessage[]): Promise<NormalizedResponse> {
+    void _messages;
     return { content: this.response, toolCalls: [], finishReason: 'stop', usage: { promptTokens: 1, completionTokens: 2, totalTokens: 3 } };
   }
-  async *completeStream(): AsyncGenerator<StreamChunk, void, unknown> { /* not used */ }
+  async *completeStream(_messages?: ChatMessage[], _tools?: ToolSpec[]): AsyncGenerator<StreamChunk, void, unknown> {
+    void _messages;
+    void _tools;
+    yield* [] as StreamChunk[];
+  }
 }
 
 describe('OutcomeAssistant 默认 Revision 路径（T03.01）', () => {
@@ -147,7 +152,11 @@ describe('T07.04 成果记忆注入 Assistant prompt', () => {
         seen.push(messages.map((message) => message.content).join('\n'));
         return { content: JSON.stringify({ answer: '好的。', edit: null }), toolCalls: [], finishReason: 'stop', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
       }
-      async *completeStream(): AsyncGenerator<StreamChunk, void, unknown> { /* not used */ }
+      async *completeStream(_messages?: ChatMessage[], _tools?: ToolSpec[]): AsyncGenerator<StreamChunk, void, unknown> {
+    void _messages;
+    void _tools;
+    yield* [] as StreamChunk[];
+  }
     })();
     const assistant = new OutcomeAssistantService({
       repository,

@@ -21,8 +21,6 @@ const LATIN_STOPWORDS = new Set([
   'journal', 'science', 'sciences', 'international', 'chinese', 'china', 'proceedings',
 ]);
 
-/** 高频虚词/格式词：分词时视作分隔符，不作为主题词。 */
-const CJK_STOPCHARS = new Set('的了与及和或在为对从被把是将更要就也都还又再才只等之其此通过基于对于关于我们你们它们它是有着给让向往自从以已曾经正在将会可以能够应当应该需要同时另外此外因此所以然而但是尽管虽然不仅并且而且或者例如比如即譬如首先其次最后其中目前当前近年来指出认为提出介绍探讨分析研究论文综述文献工作流写作系统管理使用方法结果讨论结论摘要关键词参考文献出版发表期刊杂志大学学报出版社一些一种一方面另一方面某种某些不同进行发展影响存在形成提供实现');
 
 const META_TITLE_NOISE = /(交付物|最终成果|定稿|终稿|初稿|草稿|工作流|写作|生成物)/gu;
 
@@ -38,11 +36,6 @@ export interface VenueMatchPaper {
 export interface VenueMatchKeywords {
   query: string;
   keywords: string[];
-}
-
-function isCjk(char: string): boolean {
-  const code = char.codePointAt(0) ?? 0;
-  return code >= 0x4e00 && code <= 0x9fff;
 }
 
 function isLatinWord(text: string): boolean {
@@ -87,7 +80,7 @@ export function extractVenueMatchKeywords(contentText: string, title = '', limit
     flush();
   }
   const ranked = [...frequencies.entries()]
-    .filter(([term, count]) => count >= 2)
+    .filter(([, count]) => count >= 2)
     .sort((a, b) => b[1] - a[1] || b[0].length - a[0].length)
     .map(([term]) => term);
   const picked: string[] = [];

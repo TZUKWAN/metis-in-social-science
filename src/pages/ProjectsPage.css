@@ -1,4 +1,8 @@
 
+/* SkyAgent-aligned project workspace header and surface. */
+.projects-page__main { background: var(--surface-base, var(--bg-main)); }
+.projects-page__header { margin: 0 0 var(--space-2); padding: var(--space-3) var(--space-4); border: 1px solid var(--border-subtle, var(--border)); border-radius: var(--radius-md); background: linear-gradient(150deg, var(--glass-top), var(--glass-bottom)); box-shadow: var(--glass-inset); }
+
 /* 项目参考材料库（2026-09-01）：资料页签顶部面板 + 文献库纵向排布 */
 .projects-page__materials {
   display: flex;

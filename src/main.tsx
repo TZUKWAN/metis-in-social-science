@@ -4,6 +4,7 @@ import './index.css'
 import './AcademicTheme.css'
 import App from './App.tsx'
 import OnboardingOverlay from './components/OnboardingOverlay.tsx'
+import './SkyAgentTheme.css'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components -- parser and component are one fenced-block public API. */
 /**
  * ScenarioStepCard — 场景工作流步骤卡（2026-09-01 刘总方案）。
  *

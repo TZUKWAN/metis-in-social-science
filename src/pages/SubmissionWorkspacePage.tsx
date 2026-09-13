@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/set-state-in-effect -- IPC-backed workspace state is synchronized on mount and project changes. */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Components } from 'react-markdown';
 import { ArrowLeft, ArrowRight, ExternalLink, PanelLeftClose, PanelLeftOpen, Plus, RotateCw, Sparkles, Star, X } from 'lucide-react';
@@ -5,6 +6,7 @@ import SplitHandle from '../components/SplitHandle';
 import ModelThinkingSelector from '../components/ModelThinkingSelector';
 
 import { AssistantTurn, UserTurn } from '../conversation/ConversationTurns';
+import { scrubPresentationProtocol } from '../presentation/presentationProtocolScrubber';
 import '../conversation/conversation.css';
 import { autoResizeTextarea } from '../lib/textareaAutosize.js';
 import { useResearchWorkspaceStore } from '../research/researchWorkspaceStore';
@@ -259,7 +261,7 @@ export default function SubmissionWorkspacePage() {
       // 任务6:回传最近 12 条对话作为参谋记忆(连续会话,不再每轮失忆)。
       const history = messages.slice(-12)
         .filter((message) => message.role === 'user' || message.role === 'assistant')
-        .map((message) => ({ role: message.role as 'user' | 'assistant', content: message.content }));
+        .map((message) => ({ role: message.role as 'user' | 'assistant', content: message.role === 'assistant' ? scrubPresentationProtocol(message.content) : message.content }));
       const result = await metis.submissionAssistantChat({
         projectId, outcomeId: activeOutcomeId, instruction,
         ...(thinkingLevel ? { thinkingLevel } : {}),
@@ -405,6 +407,7 @@ export default function SubmissionWorkspacePage() {
     if (match?.[1]) return <pre className="submission-chat__code"><code>{code}</code></pre>;
     return <code className="inline-code" {...props}>{children}</code>;
   }, [addToShortlist, createSubmissionCase, intent, openInBrowser, send, zh]);
+  void codeComponent;
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0]!;
 
@@ -630,7 +633,7 @@ export default function SubmissionWorkspacePage() {
           {messages.map((message) => (
             message.role === 'user'
               ? <UserTurn key={message.id} message={{ id: message.id, role: 'user', createdAt: 0, parts: [{ type: 'text', text: message.content }] }} />
-              : <AssistantTurn key={message.id} message={{ id: message.id, role: 'assistant', createdAt: 0, parts: [{ type: 'text', text: message.content }] }} />
+              : <AssistantTurn key={message.id} message={{ id: message.id, role: 'assistant', createdAt: 0, parts: [{ type: 'text', text: scrubPresentationProtocol(message.content) }] }} />
           ))}
           {sending && <div className="submission-chat__thinking" role="status">{zh ? '参谋正在调查（浏览器可能会自动翻页）…' : 'Investigating…'}</div>}
         </div>

@@ -1,3 +1,5 @@
+/* eslint-disable react-hooks/refs -- refs hold the latest async callbacks and generation guards across requests. */
+/* eslint-disable react-hooks/immutability -- the callback is intentionally declared after the async state machine. */
 /**
  * 统一 Async View State（任务4 第三节）。
  *

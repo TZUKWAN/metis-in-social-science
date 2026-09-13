@@ -11,6 +11,8 @@ import ModelThinkingSelector from '../components/ModelThinkingSelector';
 import SplitHandle from '../components/SplitHandle';
 import { buildTopicContextPackage } from '../topic/contextPackage';
 import type { ExternalModelReference } from '../../engine/runtime/ExternalReferenceContract.js';
+import { presentExecutionAction } from '../presentation/executionPresentation';
+import { presentReasoningSummary } from '../presentation/reasoningPresentation';
 
 /**
  * 选题 Topic Workspace(2026-09-04 刘总要求:选题一级功能)。
@@ -250,7 +252,7 @@ export default function TopicWorkspacePage() {
       if (payload.sessionId !== sessionIdRef.current) return;
       setToolEvents((current) => [...current.slice(-19), {
         id: Date.now() + Math.floor(Math.random() * 1000),
-        tool: payload.tool,
+        tool: payload.tool ? presentExecutionAction(payload.tool, 'zh') : null,
         state: payload.state,
         summary: payload.summary ?? null,
       }]);
@@ -258,7 +260,7 @@ export default function TopicWorkspacePage() {
     const unsubscribeReasoning = window.metis?.onTopicReasoningDelta?.((payload) => {
       if (payload.sessionId !== sessionIdRef.current) return;
       // P0c: 思考流程一行内刷新（打字机效果由 CSS 过渡承担）。
-      setReasoningLine((prev) => (payload.text.length > 120 ? payload.text.slice(-120) : (prev + payload.text).slice(-160)));
+      setReasoningLine((prev) => presentReasoningSummary(prev + payload.text, 'zh'));
     });
     const unsubscribeEnd = window.metis?.onTopicStreamEnd?.((payload) => {
       backgroundRunsRef.current.delete(payload.sessionId);
@@ -689,7 +691,7 @@ export default function TopicWorkspacePage() {
               {streaming && (
                 <div className="topic-reasoning-line" data-testid="topic-reasoning-line" title="思考流程">
                   <span className="topic-reasoning-line__label">思考中</span>
-                  <span className="topic-reasoning-line__text">{reasoningLine || '分析研究意图……'}</span>
+                  <span className="topic-reasoning-line__text">{reasoningLine || '正在分析问题并整理回答'}</span>
                 </div>
               )}
             </div>

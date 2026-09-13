@@ -59,6 +59,7 @@ abstract class TestProvider extends BaseProvider {
   async *completeStream(_messages?: ChatMessage[], _tools?: ToolSpec[]): AsyncGenerator<StreamChunk, void, unknown> {
     void _messages;
     void _tools;
+    yield* [] as StreamChunk[];
   }
 }
 

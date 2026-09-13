@@ -29,7 +29,7 @@ describe('IncrementalMarkdownParser', () => {
     expect(tailKeysBefore).toHaveLength(2);
 
     // 两帧后：Third 从 tail 跨入 frozen —— key 必须原样保留；Fifth 拿到新 key。
-    const second = parser.update(`${base}\n\nFourth.`);
+    parser.update(`${base}\n\nFourth.`);
     const third = parser.update(`${base}\n\nFourth.\n\nFifth.`);
 
     const thirdKeyInFrozen = third.frozen.find((block) => block.key === tailKeysBefore[1]);

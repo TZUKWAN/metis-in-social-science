@@ -68,13 +68,12 @@ describe('Backup → mutate → restore → restart → verify (system acceptanc
     const dir = tempDir('metis-backup-acceptance-');
     const dbPath = path.join(dir, 'metis.db');
     const backupsDir = path.join(dir, 'backups');
-    let service: BackupService | null = null;
     try {
       // ── 1. Build a fully populated database ────────────────────────────
       const store = new PersistenceStore(dbPath);
       const repo = new ResearchRepository(store.raw);
       const outcomes = new OutcomeRepository(store.raw);
-      service = new BackupService(store, backupsDir, dbPath);
+      const service = new BackupService(store, backupsDir, dbPath);
 
       repo.createProject(makeProject('proj-ba', '备份验收项目'));
       store.createSession('sess-ba', { topic: 'acceptance' }, 'proj-ba');
@@ -162,7 +161,6 @@ describe('Backup → mutate → restore → restart → verify (system acceptanc
         reopened.close();
       }
     } finally {
-      try { service?.listBackups(); } catch { /* service store already closed by restoreFrom */ }
       rmTemp(dir);
     }
   }, 30_000);
@@ -171,14 +169,13 @@ describe('Backup → mutate → restore → restart → verify (system acceptanc
     const dir = tempDir('metis-backup-corrupt-');
     const dbPath = path.join(dir, 'metis.db');
     const backupsDir = path.join(dir, 'backups');
-    let service: BackupService | null = null;
     try {
       const store = new PersistenceStore(dbPath);
       store.savePaper({
         id: 'paper-c1', title: 'Before', authors: [], year: 2026, venue: '', abstract: '', tags: [],
         notes: '', readStatus: 'unread', rating: 0, addedAt: 1,
       });
-      service = new BackupService(store, backupsDir, dbPath);
+      const service = new BackupService(store, backupsDir, dbPath);
       const backup = await service.runBackup();
       expect(backup.ok).toBe(true);
 

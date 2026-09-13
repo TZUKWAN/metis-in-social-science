@@ -50,6 +50,7 @@ function createMemoryRepo(): TopicRepository {
   return repo as unknown as TopicRepository;
 }
 
+/* eslint-disable @typescript-eslint/no-unused-vars -- fixture helper documents the canonical candidate shape for later cases. */
 function baseCandidate(title: string, sessionId: string): TopicCandidateDto {
   const checked = TopicCandidateDtoSchema.safeParse({
     id: `cand_${title}`, sessionId, title,

@@ -409,8 +409,8 @@ describe('useMetisStore — Experiments', () => {
 describe('useMetisStore — Theme', () => {
   beforeEach(resetStore);
 
-  it('should default to light theme', () => {
-    expect(useMetisStore.getState().theme).toBe('light');
+  it('should default to dark theme', () => {
+    expect(useMetisStore.getState().theme).toBe('dark');
   });
 
   it('should set theme to dark', () => {

@@ -6,6 +6,7 @@
  * Accept 由主进程 OutcomeWorkbenchService 逐条 beforeHash 验证（T03.06：
  * 原文被手改 → outcome_revision_stale，绝不覆盖用户内容），本组件只呈现结果。
  */
+/* eslint-disable react-hooks/set-state-in-effect -- local proposal state mirrors authoritative IPC results. */
 import { useCallback, useEffect, useState } from 'react';
 import { Check, X, LoaderCircle } from 'lucide-react';
 

@@ -128,16 +128,14 @@ describe('ScenarioConfigurationAssistant unified streaming (P0 Phase 7)', () => 
     const reasoning = `${'推理过程完整可回看。'.repeat(20)}【推理结束标记】`;
     act(() => stream.pushChunk({ reasoning, content: '' }));
 
-    const details = await screen.findByTitle('模型推理流');
+    const details = await screen.findByTitle('公开思考阶段');
     expect(details).toBeTruthy();
-    // 轻量形态：默认收起（summary 行），展开后可见完整推理文本（不再 slice(-220)）。
+    // 普通用户只看到有界的公开阶段摘要，模型原始推理永不进入 DOM。
     expect((details as HTMLDetailsElement).open).toBe(false);
     fireEvent.click(details.querySelector('summary')!);
     expect((details as HTMLDetailsElement).open).toBe(true);
-    expect(details.textContent).toContain('【推理结束标记】');
+    expect(details.textContent).toContain('正在分析问题并整理回答');
+    expect(details.textContent).not.toContain('【推理结束标记】');
   });
 });
 
-function actLike(fn: () => void): void {
-  act(fn);
-}

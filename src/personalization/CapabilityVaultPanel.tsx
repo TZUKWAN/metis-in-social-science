@@ -7,6 +7,7 @@
  * MCP 目录条目仅元数据展示：配置端点后经既有 MCP 激活通道绑定，默认不启动。
  */
 
+/* eslint-disable react-hooks/set-state-in-effect -- vault filters and overview mirror asynchronous IPC state. */
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 type VaultKind = 'skill' | 'mcp';

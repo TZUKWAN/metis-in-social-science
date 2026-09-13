@@ -134,23 +134,17 @@ export class OfficePromptProfileService {
     const capability = getOfficeCapability(input.officeKind);
     if (!capability) return { ok: false, code: 'unknown_office_kind' };
     const name = input.name.trim() || '未命名 Profile';
-    let slots: Record<string, string> = {};
-    if (input.fromProfileId) {
-      const source = this.getProfile(input.fromProfileId);
-      if (!source || source.officeKind !== input.officeKind) return { ok: false, code: 'source_profile_not_found' };
-      slots = { ...source.slots };
-    } else {
-      const builtin = this.listProfiles(input.officeKind).find((profile) => profile.builtin);
-      slots = builtin ? { ...builtin.slots } : {};
+    const source = input.fromProfileId ? this.getProfile(input.fromProfileId) : null;
+    if (input.fromProfileId && (!source || source.officeKind !== input.officeKind)) {
+      return { ok: false, code: 'source_profile_not_found' };
     }
-    let globalPrompt = '';
-    if (input.fromProfileId) {
-      const source = this.getProfile(input.fromProfileId);
-      globalPrompt = source?.globalPrompt ?? '';
-    } else {
-      const builtin = this.listProfiles(input.officeKind).find((profile) => profile.builtin);
-      globalPrompt = builtin?.globalPrompt ?? OFFICE_BUILTIN_GLOBAL_PROMPTS[input.officeKind] ?? '';
-    }
+    const builtin = input.fromProfileId ? null : this.listProfiles(input.officeKind).find((profile) => profile.builtin);
+    const slots = input.fromProfileId
+      ? { ...(source?.slots ?? {}) }
+      : (builtin ? { ...builtin.slots } : {});
+    const globalPrompt = input.fromProfileId
+      ? (source?.globalPrompt ?? '')
+      : (builtin?.globalPrompt ?? OFFICE_BUILTIN_GLOBAL_PROMPTS[input.officeKind] ?? '');
     const now = Date.now();
     const profile: OfficePromptProfile = {
       id: `office_profile_${randomUUID().replace(/-/g, '').slice(0, 16)}`,

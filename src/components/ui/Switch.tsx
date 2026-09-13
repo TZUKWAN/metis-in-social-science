@@ -1,7 +1,7 @@
 import { forwardRef, type InputHTMLAttributes } from 'react';
 import './ui.css';
 
-export interface SwitchProps extends InputHTMLAttributes<HTMLInputElement> {}
+export type SwitchProps = InputHTMLAttributes<HTMLInputElement>;
 
 export const Switch = forwardRef<HTMLInputElement, SwitchProps>(
   ({ className = '', ...props }, ref) => (

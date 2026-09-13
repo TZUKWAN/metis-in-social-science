@@ -111,7 +111,8 @@ export class ConversationController {
   }
 
   /** 当前流式快照（供非 React 消费方或迁移期桥接读取）。 */
-  snapshot(attemptId: string): AssistantStreamSnapshot | null {
+  snapshot(_attemptId: string): AssistantStreamSnapshot | null {
+    void _attemptId;
     return this.accumulator.snapshot();
   }
 

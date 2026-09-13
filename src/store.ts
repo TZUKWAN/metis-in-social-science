@@ -402,7 +402,9 @@ export const useMetisStore = create<MetisState>((set, get) => ({
   locale: 'zh',
   setLocale: (locale) => set({ locale }),
 
-  theme: 'light',
+  // SkyAgent-aligned default: dark is the workbench baseline; explicit persisted
+  // preferences are still restored during hydration below.
+  theme: 'dark',
   setTheme: (theme) => {
     const prevTheme = get().theme;
     // Monotonic operation generation: each call gets a unique id.

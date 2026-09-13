@@ -88,7 +88,6 @@ export class OutcomeGraphExtractionService {
 
     let nodeCount = 0;
     let edgeCount = 0;
-    let processed = 0;
     for (const segment of segments) {
       if (this.deps.signal?.aborted) return { ok: false, code: 'extraction_cancelled', segments: segments.length, nodes: nodeCount, edges: edgeCount };
       const blockList = segment.blocks.map((block) => `- [${block.id}] ${block.text.slice(0, 400)}`).join('\n');
@@ -113,7 +112,7 @@ export class OutcomeGraphExtractionService {
         if (response.status === 'completed') raw = response.answer;
       } catch { /* 单段失败跳过，不中断整体 */ }
       const parsed = extractGraphJson(raw);
-      if (!parsed) { processed += 1; continue; }
+      if (!parsed) continue;
       // 节点先建（canonical claim 优先映射）。
       for (const candidate of parsed.nodes.slice(0, 20)) {
         if (candidate.claimStatement) {
@@ -141,7 +140,6 @@ export class OutcomeGraphExtractionService {
         });
         if (upserted.ok) edgeCount += 1;
       }
-      processed += 1;
     }
     return { ok: true, segments: segments.length, nodes: nodeCount, edges: edgeCount };
   }

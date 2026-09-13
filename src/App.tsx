@@ -1158,7 +1158,7 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
       </header>
       <main className={`main-content ${currentEntry === 'projects' && standalonePage === null ? 'main-content--workspace' : ''}`}>
         <ErrorBoundary
-          showDetails={uiMode === 'diagnostic'}
+          showDetails={uiMode === 'diagnostic' || import.meta.env.DEV}
           onReset={() => leavePersonalizationGuard(() => { setPersonalizationOpen(false); setCurrentEntry('projects'); setWorkspaceMode('projects'); setStandalonePage(null); })}
         >
           <Suspense fallback={<div className="hydration-loading"><div className="hydration-spinner" /><p>{t('common.loading')}</p></div>}>

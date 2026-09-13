@@ -65,7 +65,7 @@ export function createSettingsViewRecovery(): SettingsView {
     configured: false,
     hasApiKey: false,
     needsReauth: false,
-    theme: 'light',
+    theme: 'dark',
     accent: 'blue',
     providerVision: false,
     providerMaxContextTokens: 0,

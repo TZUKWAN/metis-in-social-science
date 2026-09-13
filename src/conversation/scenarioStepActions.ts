@@ -27,7 +27,8 @@ export function stepTargetFromCard(card: ScenarioStepCardData): ConversationTarg
 }
 
 /** Step 卡升级：三操作（提出意见/修改这步/重做）+ 既有跳过入口收进 ···。 */
-export function useScenarioStepActions(onNotice?: (text: string) => void) {
+export function useScenarioStepActions(_onNotice?: (text: string) => void) {
+  void _onNotice;
   const [target, setTarget] = useState<ConversationTarget | null>(null);
   const [targetMode, setTargetMode] = useState<StepTargetMode>('comment');
 

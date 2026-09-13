@@ -15,6 +15,31 @@
 :root {
   color-scheme: light;
 
+  /* SkyAgent-aligned semantic tokens (METIS-owned) */
+  --surface-base: var(--bg-main);
+  --surface-panel: var(--bg-card);
+  --surface-raised: var(--bg-secondary);
+  --surface-input: var(--bg-input);
+  --surface-overlay: var(--bg-modal);
+  --border-subtle: var(--border-light);
+  --border-strong: var(--border);
+  --text-main: var(--text-primary);
+  --text-subtle: var(--text-secondary);
+  --text-faint: var(--text-muted);
+  --accent-bright: var(--accent-hover);
+  --status-success: var(--status-completed);
+  --status-success-soft: var(--status-completed-bg);
+  --status-warning: var(--accent-warm);
+  --status-warning-soft: var(--accent-warm-soft);
+  --status-danger: var(--status-failed);
+  --status-danger-soft: var(--status-failed-bg);
+  --control-height: 32px;
+  --space-0: 0px;
+  --space-8: 32px;
+  --space-9: 48px;
+  --shadow-glass: var(--shadow-raised);
+  --motion-standard: var(--transition-standard);
+
   /* Layout */
   --sidebar-width: 220px;
   --chat-sidebar-width: 240px;
@@ -185,6 +210,13 @@
   --glow-accent: none;
   --glow-accent-soft: none;
   --title-gradient: none;
+
+  /* SkyAgent-compatible glass values for the light theme. */
+  --glass-top: rgba(255, 255, 255, 0.78);
+  --glass-bottom: rgba(244, 247, 251, 0.62);
+  --glass-inset: inset 0 1px 0 rgba(255, 255, 255, 0.86), inset 0 -1px 0 rgba(15, 23, 42, 0.05);
+  --glass-shadow: 0 16px 38px rgba(30, 41, 59, 0.12);
+  --glass-sheen: linear-gradient(115deg, rgba(255, 255, 255, 0.5), transparent 28%, transparent 74%, rgba(255, 255, 255, 0.14));
 }
 
 /* ─── Dark Theme ────────────────────────────────────── */

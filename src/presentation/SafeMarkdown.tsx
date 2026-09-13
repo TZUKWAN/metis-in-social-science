@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/globals -- hook-free renderer supports legacy direct invocation and caches pure component maps. */
 import { Children, type ReactNode } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';

@@ -14,34 +14,15 @@
 
 import { jsonrepair } from 'jsonrepair';
 import type { ToolCall } from '../core/types.js';
+import { sanitizeUnifiedProtocolText } from '../runtime/UnifiedStreamProtocolGate.js';
 
 /**
- * Strip raw tool-call markup that leaks into user-visible text when a model
- * (or its gateway) emits XML-ish function-call blocks the runtime does not
- * execute — e.g. DeepSeek/Qwen emitting literal `<tool_calls>…</tool_calls>`
- * or `<tool_call>…</tool_call>` (paired or truncated/unclosed at the end).
- * The runtime only acts on native tool_calls or the {"tool":…} JSON protocol;
- * anything else must never be shown to users as raw markup.
+ * Strip raw tool-call markup from any user-visible complete answer. The
+ * incremental counterpart runs at the per-turn IPC boundary; this function is
+ * retained for authoritative responses and persisted/display projections.
  */
 export function stripTextToolMarkup(text: string): string {
-  if (!text) return text;
-  let stripped = text;
-  // DeepSeek DSML text-protocol leaks (2026-08-24): <｜｜DSML｜｜invoke …> blocks.
-  if (stripped.includes('DSML')) {
-    stripped = stripped
-      .replace(/<\s*\/?\s*[｜|]*\s*DSML\s*[｜|]*\s*tool_calls\s*>\s*/giu, '')
-      .replace(/<\s*[｜|]+\s*DSML\s*[｜|]+\s*invoke[\s\S]*?<\s*\/\s*[｜|]*\s*DSML\s*[｜|]*\s*invoke\s*>/giu, '')
-      .replace(/<\s*[｜|]+\s*DSML\s*[｜|]+\s*invoke[\s\S]*$/giu, '');
-  }
-  if (stripped.indexOf('<tool_call') === -1) return stripped.trim();
-  return stripped
-    // paired blocks
-    .replace(/<tool_calls?>[\s\S]*?<\/\s*tool_calls?>/giu, '')
-    // unclosed/truncated block running to end of output
-    .replace(/<tool_calls?>[\s\S]*$/giu, '')
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+  return text ? sanitizeUnifiedProtocolText(text) : text;
 }
 
 /**

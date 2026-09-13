@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components -- subscription hook and node components form one public API. */
 /**
  * Conversation Node 渲染层（2026-09-05 Conversation Streaming P0，Phase 3）。
  *
@@ -13,9 +14,10 @@ import { memo, useSyncExternalStore, type ReactNode } from 'react';
 import type {
   ConversationNodeSource,
 } from '../store/conversationNodeStore.js';
-import type { AssistantNodeState, ConversationController } from '../runtime/ConversationController.js';
+import type { ConversationController } from '../runtime/ConversationController.js';
 import { StreamingMarkdown } from '../../presentation/StreamingMarkdown';
 import type { PresentationLocale } from '../../presentation/executionPresentation';
+import { presentReasoningDiagnostic, presentReasoningSummary } from '../../presentation/reasoningPresentation';
 
 export function useConversationNode<T>(source: ConversationNodeSource<T>): T | undefined {
   return useSyncExternalStore(source.subscribe, source.get, source.get);
@@ -59,8 +61,13 @@ export const AssistantNodeView = memo(function AssistantNodeView({
     <div className="conversation-assistant-node" data-status={status}>
       {reasoning ? (
         <details className="chat-reasoning" open={streaming}>
-          <summary>{streaming ? '正在思考…' : '已思考'}</summary>
-          <div className="chat-reasoning-body">{reasoning}</div>
+          <summary>
+            {streaming ? '正在思考…' : '已思考'}
+            <span className="chat-reasoning__latest">{presentReasoningSummary(reasoning, locale)}</span>
+          </summary>
+          {uiMode === 'diagnostic' && (
+            <div className="chat-reasoning__body">{presentReasoningDiagnostic(reasoning, locale)}</div>
+          )}
         </details>
       ) : null}
       <StreamingMarkdown text={content} streaming={streaming} locale={locale} uiMode={uiMode} onOpenPaper={onOpenPaper} />
