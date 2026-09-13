@@ -893,24 +893,6 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
         intentRevision={chatIntentRevision}
         previewMode={workspaceMode === 'projects' ? 'pane' : 'inline'}
         renderLayout={({ leftPanel, workspace, rightPanel, previewPanel }) => {
-          // AIO 禅模式（T07，本轮 P0）：presentation branch。同一 ChatPage
-          // 运行时继续持有会话/流式状态，这里只换布局——屏幕上只剩
-          // Conversation + Composer，无 topbar、无 dock、无侧栏。
-          if (aioMode) {
-            void leftPanel;
-            void rightPanel;
-            void previewPanel;
-            return (
-              <AioZenView
-                workspace={workspace}
-                onExit={toggleAioMode}
-                labels={{
-                  exit: locale === 'zh' ? '退出专注' : 'Exit focus',
-                  hint: /Mac|iPod|iPhone|iPad/.test(navigator.platform) ? '⌘⇧A 退出专注' : 'Ctrl+Shift+A 退出专注',
-                }}
-              />
-            );
-          }
           // 科研项目工作台：左侧项目列表 + 聊天/任务看板/研究成果三模式。
           // ChatPage 保持常驻挂载，因此切换模式或导航不会丢失对话草稿。
           if (workspaceMode === 'projects') {
@@ -1193,7 +1175,26 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
           onReset={() => leavePersonalizationGuard(() => { setPersonalizationOpen(false); setCurrentEntry('projects'); setWorkspaceMode('projects'); setStandalonePage(null); })}
         >
           <Suspense fallback={<div className="hydration-loading"><div className="hydration-spinner" /><p>{t('common.loading')}</p></div>}>
-            {renderPage()}
+            {aioMode ? (
+              // AIO 禅模式（T07，本轮 P0）：presentation branch 直接挂载
+              // ChatPage（无论此前停留在哪个页面/工作区），屏幕上只剩
+              // Conversation + Composer，无 topbar、无 dock、无侧栏。
+              <ChatPage
+                uiMode={uiMode}
+                intentRevision={chatIntentRevision}
+                previewMode="pane"
+                renderLayout={({ workspace }) => (
+                  <AioZenView
+                    workspace={workspace}
+                    onExit={toggleAioMode}
+                    labels={{
+                      exit: locale === 'zh' ? '退出专注' : 'Exit focus',
+                      hint: /Mac|iPod|iPhone|iPad/.test(navigator.platform) ? '⌘⇧A 退出专注' : 'Ctrl+Shift+A 退出专注',
+                    }}
+                  />
+                )}
+              />
+            ) : renderPage()}
           </Suspense>
         </ErrorBoundary>
       </main>
