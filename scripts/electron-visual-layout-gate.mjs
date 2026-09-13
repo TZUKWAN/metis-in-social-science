@@ -106,7 +106,8 @@ class Cdp {
 async function main() {
   await mkdir(OUT, { recursive: true });
   const list = await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json();
-  const page = list.find((t) => t.type === 'page' && /localhost:5173/.test(t.url)) ?? list.find((t) => t.type === 'page');
+  const page = list.find((t) => t.type === 'page' && /localhost:5173|metis-app|file:/.test(t.url))
+    ?? list.find((t) => t.type === 'page' && !/devtools/.test(t.url));
   if (!page) throw new Error('No METIS renderer target found on CDP');
   const client = await Cdp.connect(page.webSocketDebuggerUrl);
 
