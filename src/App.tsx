@@ -22,6 +22,7 @@ import {
 } from './research/researchWorkspaceStore'
 import { setPendingChatIntent } from './lib/chatIntent'
 import { confirmLeaveScenario } from './lib/scenarioDirtyGuard'
+import AioZenView from './ui/zen/AioZenView'
 import type { ProjectViewMode } from './pages/ProjectsPage'
 
 // ─── Lazyloaded pages to reduce initial bundle size ───
@@ -536,8 +537,18 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
   }, [hydrateFromPersistence])
 
   // Global search keyboard shortcut (Cmd/Ctrl+K) and slash-command bus.
+  const aioModeRef = useRef(aioMode);
+  useEffect(() => { aioModeRef.current = aioMode; });
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
+      // AIO 禅模式（T07.11/T07.12）：Ctrl/Cmd+Shift+A 是唯一的全局进出
+      // 快捷键；AIO 中禁用全局导航快捷键（搜索/命令面板），退出后恢复。
+      if (e.key.toLowerCase() === 'a' && e.shiftKey && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        toggleAioMode();
+        return;
+      }
+      if (aioModeRef.current) return;
       if (e.key === 'k' && (e.metaKey || e.ctrlKey)) {
         // O1: Ctrl/Cmd+Shift+P opens the command palette; plain Ctrl/Cmd+K stays as search.
         if (e.shiftKey) {
@@ -565,7 +576,7 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
       window.removeEventListener('keydown', handleKeyDown)
       window.removeEventListener('metis:open-search', handleOpenSearch)
     }
-  }, [])
+  }, [toggleAioMode])
 
   // Board ↔ chat goal handoff. The navigation functions are recreated every
   // render, so latest versions are tracked through refs updated in an effect;
@@ -882,6 +893,24 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
         intentRevision={chatIntentRevision}
         previewMode={workspaceMode === 'projects' ? 'pane' : 'inline'}
         renderLayout={({ leftPanel, workspace, rightPanel, previewPanel }) => {
+          // AIO 禅模式（T07，本轮 P0）：presentation branch。同一 ChatPage
+          // 运行时继续持有会话/流式状态，这里只换布局——屏幕上只剩
+          // Conversation + Composer，无 topbar、无 dock、无侧栏。
+          if (aioMode) {
+            void leftPanel;
+            void rightPanel;
+            void previewPanel;
+            return (
+              <AioZenView
+                workspace={workspace}
+                onExit={toggleAioMode}
+                labels={{
+                  exit: locale === 'zh' ? '退出专注' : 'Exit focus',
+                  hint: /Mac|iPod|iPhone|iPad/.test(navigator.platform) ? '⌘⇧A 退出专注' : 'Ctrl+Shift+A 退出专注',
+                }}
+              />
+            );
+          }
           // 科研项目工作台：左侧项目列表 + 聊天/任务看板/研究成果三模式。
           // ChatPage 保持常驻挂载，因此切换模式或导航不会丢失对话草稿。
           if (workspaceMode === 'projects') {
@@ -1023,6 +1052,7 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
   return (
     <div className={`app-layout ${aioMode ? 'app-layout--aio' : ''}`} data-ui-mode={uiMode}>
       <ApprovalToastGate />
+      {!aioMode && (
       <header className="topbar">
         <div className="topbar-brand" aria-label={t('app.title')}>
           <span className="topbar-brand__name">{t('app.title')}</span>
@@ -1119,8 +1149,8 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
             className={`topbar-icon-button ${aioMode ? 'aio-active' : ''}`}
             onClick={toggleAioMode}
             aria-pressed={aioMode}
-            aria-label={locale === 'zh' ? 'AIO 极简模式' : 'AIO focus mode'}
-            title={locale === 'zh' ? 'AIO 极简模式：隐藏导航，专注对话' : 'AIO focus mode'}
+            aria-label={locale === 'zh' ? '专注模式' : 'Focus mode'}
+            title={locale === 'zh' ? '专注模式：只保留对话' : 'Focus mode'}
             data-testid="aio-toggle"
           >
             <Zap size={16} aria-hidden="true" />
@@ -1156,7 +1186,8 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
           </button>
         </div>
       </header>
-      <main className={`main-content ${currentEntry === 'projects' && standalonePage === null ? 'main-content--workspace' : ''}`}>
+      )}
+      <main className={`main-content ${currentEntry === 'projects' && standalonePage === null ? 'main-content--workspace' : ''} ${aioMode ? 'main-content--aio' : ''}`}>
         <ErrorBoundary
           showDetails={uiMode === 'diagnostic' || import.meta.env.DEV}
           onReset={() => leavePersonalizationGuard(() => { setPersonalizationOpen(false); setCurrentEntry('projects'); setWorkspaceMode('projects'); setStandalonePage(null); })}
@@ -1166,13 +1197,6 @@ function App({ initialPage = 'projects' as Page }: { initialPage?: Page } = {}) 
           </Suspense>
         </ErrorBoundary>
       </main>
-      {aioMode && (
-        <div className="aio-dock" data-testid="aio-dock" aria-label={locale === 'zh' ? '快捷入口' : 'Quick access'}>
-          <button type="button" onClick={() => navigateLegacy('outcomes')}>{locale === 'zh' ? '成果' : 'Outcomes'}</button>
-          <button type="button" onClick={() => navigateLegacy('submissions')}>{locale === 'zh' ? '投稿' : 'Submit'}</button>
-          <button type="button" onClick={() => leavePersonalizationGuard(() => { setPersonalizationOpen(false); setStandalonePage(null); setCurrentEntry('settings'); })}>{locale === 'zh' ? '设置' : 'Settings'}</button>
-        </div>
-      )}
       {searchOpen && (
         <GlobalSearch
           onNavigate={navigateLegacy}

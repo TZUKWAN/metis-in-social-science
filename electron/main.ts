@@ -1054,6 +1054,12 @@ setBrowserControlBridge({
 // 任务3：数据目录日志归档由 MainProcessLogger 承担（DATA_DIR 解析后 rebind，
 // 解析前的行留在 logger 内存 backlog，随首次 flush 一并落盘）。
 
+// Acceptance/dev isolation (T00.03): METIS_USER_DATA_DIR boots the app against
+// a userData clone so UI acceptance never touches the real profile. Unset in
+// production — the default path resolution below is unchanged.
+if (process.env.METIS_USER_DATA_DIR) {
+  app.setPath('userData', process.env.METIS_USER_DATA_DIR);
+}
 const USER_DATA_DIR = app.getPath('userData');
 const DEFAULT_DATA_DIR = path.join(USER_DATA_DIR, 'metis-data');
 const resolvedLocation = resolveDataDir(USER_DATA_DIR, (message) => console.log(`[Main] ${message}`));

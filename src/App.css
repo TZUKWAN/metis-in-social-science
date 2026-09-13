@@ -3725,15 +3725,152 @@ button.tool-call-header { cursor: pointer; }
 .onboarding-form .is-err, .onboarding-card .is-err { color: var(--status-failed, #b3403a); font-size: 12px; }
 .onboarding-textarea { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-primary); color: var(--text-primary); font-size: 13px; line-height: 1.65; resize: vertical; }
 
-/* ── AIO 极简模式（刘总 2026-09）────────────────────────────────── */
-.app-layout--aio .topbar-nav { display: none; }
-.app-layout--aio .topbar { background: transparent; border-bottom-color: transparent; box-shadow: none; }
-.app-layout--aio .topbar-brand__name { opacity: .55; }
-.app-layout--aio .main-content { background: var(--bg-main); }
-.topbar-icon-button.aio-active { color: var(--primary, var(--accent)); background: color-mix(in srgb, var(--primary, var(--accent)) 12%, transparent); }
-.aio-dock { position: fixed; right: 18px; bottom: 18px; z-index: 900; display: flex; gap: 6px; padding: 6px; border: 1px solid var(--border); border-radius: 16px; background: color-mix(in srgb, var(--bg-card) 88%, transparent); box-shadow: 0 10px 30px rgba(8, 14, 26, .18); backdrop-filter: blur(8px); }
-.aio-dock button { padding: 5px 13px; border: 0; border-radius: 16px; background: transparent; color: var(--text-secondary); font: inherit; font-size: 12px; cursor: pointer; }
-.aio-dock button:hover { background: color-mix(in srgb, var(--primary, var(--accent)) 10%, transparent); color: var(--primary, var(--accent)); }
+/* ─── AIO Zen mode (T07) ───────────────────────────────
+ * AIO is a presentation branch: the topbar is not rendered at all and the
+ * screen holds only the conversation viewport + composer. Exit affordances:
+ * Ctrl/Cmd+Shift+A and the temporary top hot-zone pill. */
+
+.main-content--aio {
+  background: var(--fx-bg-0, var(--bg-main));
+  overflow: hidden;
+}
+
+.aio-root {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background: var(--fx-bg-0, var(--bg-main));
+}
+
+.aio-ambient {
+  z-index: 0;
+}
+
+.aio-conversation {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  min-height: 0;
+  width: min(880px, calc(100vw - 48px));
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  padding-top: 40px;
+}
+
+/* The ChatPage workspace keeps its runtime DOM; zen only re-presents it. */
+.aio-conversation .chat-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  background: transparent;
+  border: 0;
+}
+
+/* Persistent chrome is forbidden in AIO: session/scenario/model toolbars. */
+.aio-conversation .chat-session-bar,
+.aio-conversation .chat-input-topbar {
+  display: none !important;
+}
+
+.aio-conversation .chat-messages {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Zen empty state: a quiet prompt instead of a dashboard. */
+.aio-conversation .chat-empty__examples {
+  display: none;
+}
+
+.aio-conversation .chat-empty {
+  background: transparent;
+  border: 0;
+}
+
+/* Zen composer: floating glass, centered, capped width (T07.07). */
+.aio-conversation .chat-input-area {
+  width: 100%;
+  margin-bottom: 20px;
+  border: 1px solid var(--fx-border, var(--border));
+  border-radius: var(--fx-radius-3, 14px);
+  background: var(--fx-glass-float, rgba(20, 27, 38, 0.78));
+  backdrop-filter: var(--fx-blur-float, blur(24px) saturate(128%));
+  box-shadow: var(--fx-highlight, inset 0 1px rgba(255, 255, 255, 0.055)), var(--fx-shadow-float, 0 12px 40px rgba(0, 0, 0, 0.24));
+}
+
+/* Top hot zone + temporary exit pill (T07.11): no persistent exit control. */
+.aio-hotzone {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 22px;
+  z-index: var(--fx-z-floating, 60);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+.aio-exit-pill {
+  margin-top: 6px;
+  min-height: 28px;
+  padding: 4px 14px;
+  border: 1px solid var(--fx-border-strong, var(--border));
+  border-radius: var(--fx-radius-pill, 999px);
+  background: var(--fx-glass-float, rgba(20, 27, 38, 0.78));
+  backdrop-filter: var(--fx-blur-float, blur(24px) saturate(128%));
+  color: var(--fx-text-2, var(--text-secondary));
+  font-size: var(--fx-size-secondary, 12.5px);
+  cursor: pointer;
+  transition: color var(--fx-dur-1, 130ms) var(--fx-ease, ease), border-color var(--fx-dur-1, 130ms) var(--fx-ease, ease);
+}
+
+.aio-exit-pill:hover {
+  color: var(--fx-text-1, var(--text-primary));
+  border-color: var(--fx-accent, var(--accent));
+}
+
+/* First-entry hint, shown once for 2s, then never persistent (T07.11). */
+.aio-hint {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: var(--fx-z-floating, 60);
+  padding: 6px 14px;
+  border: 1px solid var(--fx-border, var(--border));
+  border-radius: var(--fx-radius-pill, 999px);
+  background: var(--fx-glass-float, rgba(20, 27, 38, 0.78));
+  color: var(--fx-text-3, var(--text-muted));
+  font-size: var(--fx-size-micro, 11.5px);
+  pointer-events: none;
+  animation: aio-hint-fade 2s var(--fx-ease, ease) forwards;
+}
+
+@keyframes aio-hint-fade {
+  0% { opacity: 0; }
+  12% { opacity: 1; }
+  80% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aio-hint {
+    animation: none;
+    opacity: 1;
+  }
+}
+
+@media (max-width: 640px) {
+  .aio-conversation {
+    width: calc(100vw - 24px);
+    padding-top: 28px;
+  }
+}
 
 /* ── 语音输入（刘总 2026-09）：波形 + 时长 + 诚实错误 ───────────── */
 .voice-mic { display: inline-flex; align-items: center; gap: 8px; }

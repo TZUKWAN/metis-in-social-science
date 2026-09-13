@@ -8,7 +8,9 @@ if (typeof electronPath !== 'string' || electronPath.length === 0) {
   throw new Error('The local Electron executable could not be resolved. Run npm install first.');
 }
 
-const child = spawn(electronPath, ['.'], {
+// Extra CLI args (e.g. --user-data-dir=<clone>) are forwarded so acceptance
+// runs can boot against an isolated userData clone instead of the real one.
+const child = spawn(electronPath, ['.', ...process.argv.slice(2)], {
   cwd: process.cwd(),
   env: {
     ...process.env,

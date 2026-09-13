@@ -4,6 +4,7 @@ import './index.css'
 import './AcademicTheme.css'
 import App from './App.tsx'
 import OnboardingOverlay from './components/OnboardingOverlay.tsx'
+import './theme/MetisGlassTokens.css'
 import './SkyAgentTheme.css'
 
 createRoot(document.getElementById('root')!).render(

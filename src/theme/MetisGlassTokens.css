@@ -1,0 +1,140 @@
+/* METIS Future Glass — canonical design tokens (T01).
+ *
+ * This file is the leading token layer for all NEW UI. Legacy page CSS keeps
+ * working through the migration layer (SkyAgentTheme.css) until Phase 17
+ * retires it; new components must consume --fx-* tokens directly instead of
+ * inventing page-local values.
+ *
+ * Layer contract (T01.02):
+ *   L0 ambient canvas        — app background, subtle environmental light
+ *   L1 shell glass           — topbar, primary side panels
+ *   L2 workspace surface     — primary content; usually NO extra glass
+ *   L3 floating glass        — composer, popover, floating toolbar
+ *   L4 modal / critical      — modal overlays
+ * Never stack L1 glass inside L1 glass inside L1 glass.
+ */
+
+:root {
+  /* ── Canvas ──────────────────────────────────────── */
+  --fx-bg-0: #07090d;
+  --fx-bg-1: #0a0d12;
+  --fx-bg-2: #0d1219;
+
+  /* ── Glass surfaces (real transparency) ──────────── */
+  --fx-glass-shell: rgba(15, 20, 28, 0.62);
+  --fx-glass-panel: rgba(18, 24, 33, 0.68);
+  --fx-glass-float: rgba(20, 27, 38, 0.78);
+  --fx-glass-modal: rgba(22, 29, 40, 0.92);
+  --fx-blur-shell: blur(20px) saturate(125%);
+  --fx-blur-panel: blur(20px) saturate(122%);
+  --fx-blur-float: blur(24px) saturate(128%);
+
+  /* ── Lines & light ───────────────────────────────── */
+  --fx-border: rgba(255, 255, 255, 0.09);
+  --fx-border-strong: rgba(255, 255, 255, 0.14);
+  --fx-highlight: inset 0 1px rgba(255, 255, 255, 0.055);
+  --fx-shadow-float: 0 12px 40px rgba(0, 0, 0, 0.24);
+  --fx-shadow-modal: 0 28px 72px rgba(0, 0, 0, 0.46);
+
+  /* ── Text ────────────────────────────────────────── */
+  --fx-text-1: #edf2f7;
+  --fx-text-2: #bac4d1;
+  --fx-text-3: #7d8998;
+
+  /* ── Accents (restrained; accent ≠ everything) ───── */
+  --fx-accent: #72e6aa;
+  --fx-accent-cyan: #6ec8f3;
+  --fx-danger: #ef8585;
+  --fx-warning: #e5bf74;
+  --fx-accent-ink: #07130c;
+
+  /* ── Radius scale (T01.06) ───────────────────────── */
+  --fx-radius-1: 8px;   /* small control */
+  --fx-radius-2: 12px;  /* panel / user bubble */
+  --fx-radius-3: 14px;  /* floating */
+  --fx-radius-4: 16px;  /* modal */
+
+  /* ── Spacing grid (T01.07) ───────────────────────── */
+  --fx-space-1: 4px;
+  --fx-space-2: 8px;
+  --fx-space-3: 12px;
+  --fx-space-4: 16px;
+  --fx-space-5: 20px;
+  --fx-space-6: 24px;
+  --fx-space-7: 32px;
+  --fx-space-8: 40px;
+
+  /* ── Typography (T01.08) ─────────────────────────── */
+  --fx-font-ui: var(--font-sans, system-ui, sans-serif);
+  --fx-size-body: 14px;
+  --fx-size-conversation: 15.5px;
+  --fx-size-secondary: 12.5px;
+  --fx-size-micro: 11.5px;
+  --fx-size-title: 19px;
+  --fx-lh-ui: 1.45;
+  --fx-lh-conversation: 1.7;
+
+  /* ── Motion (T01.09): opacity/transform/borders only ── */
+  --fx-dur-1: 130ms;
+  --fx-dur-2: 170ms;
+  --fx-ease: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* ── Z contract (T08.01) ─────────────────────────── */
+  --fx-z-shell: 30;
+  --fx-z-floating: 60;
+  --fx-z-popover: 80;
+  --fx-z-modal: 100;
+  --fx-z-modal-top: 1000;
+  --fx-z-toast: 1500;
+}
+
+/* L0 ambient canvas — extremely restrained environmental light.
+ * Allowed: deep graphite base + faint emerald (bottom-left) + faint cyan
+ * (top-right) at 3–9%. Forbidden: neon blobs, animated彩虹, particles. */
+.fx-ambient {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(52% 44% at 8% 96%, rgba(114, 230, 170, 0.07), transparent 68%),
+    radial-gradient(46% 40% at 94% 4%, rgba(110, 200, 243, 0.06), transparent 70%),
+    var(--fx-bg-0);
+}
+
+.fx-ambient--app {
+  position: fixed;
+  z-index: 0;
+}
+
+/* Glass surface recipes (T01.05). Shell is more transparent than float;
+ * modal is the most solid. Document canvases must NOT use these. */
+.fx-glass-shell {
+  background: var(--fx-glass-shell);
+  backdrop-filter: var(--fx-blur-shell);
+  border: 1px solid var(--fx-border);
+  box-shadow: var(--fx-highlight);
+}
+
+.fx-glass-panel {
+  background: var(--fx-glass-panel);
+  backdrop-filter: var(--fx-blur-panel);
+  border: 1px solid var(--fx-border);
+  box-shadow: var(--fx-highlight);
+}
+
+.fx-glass-float {
+  background: var(--fx-glass-float);
+  backdrop-filter: var(--fx-blur-float);
+  border: 1px solid var(--fx-border);
+  border-radius: var(--fx-radius-3);
+  box-shadow: var(--fx-highlight), var(--fx-shadow-float);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fx-ambient,
+  .fx-glass-shell,
+  .fx-glass-panel,
+  .fx-glass-float {
+    transition: none !important;
+  }
+}
