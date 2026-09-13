@@ -86,21 +86,32 @@ const PROBE = `(() => {
 })()`;
 
 class Cdp {
-  constructor(ws) { this.ws = ws; this.id = 0; this.pending = new Map(); }
+  constructor(ws) { this.ws = ws; this.id = 0; this.pending = new Map(); this.handler = null; }
   static async connect(url) {
     const ws = new WebSocket(url);
     await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = () => reject(new Error('CDP websocket failed')); });
-    return new Cdp(ws);
+    const cdp = new Cdp(ws);
+    ws.onmessage = (event) => {
+      const message = JSON.parse(event.data);
+      if (message.id && cdp.pending.has(message.id)) {
+        const { resolve, reject } = cdp.pending.get(message.id);
+        cdp.pending.delete(message.id);
+        message.error ? reject(new Error(message.error.message)) : resolve(message.result);
+      } else if (cdp.handler) {
+        cdp.handler(message);
+      }
+    };
+    return cdp;
   }
-  send(method, params = {}, sessionId) {
+  send(method, params = {}) {
     const id = ++this.id;
-    this.ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    this.ws.send(JSON.stringify({ id, method, params }));
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
       setTimeout(() => { if (this.pending.has(id)) { this.pending.delete(id); reject(new Error(`CDP timeout: ${method}`)); } }, 20000);
     });
   }
-  listen(handler) { this.ws.onmessage = (event) => handler(JSON.parse(event.data)); }
+  listen(handler) { this.handler = handler; }
 }
 
 async function main() {
@@ -195,7 +206,8 @@ async function main() {
   results.push({ surface: 'aio-zen', ...aio });
 
   if (!aio.aio) issues.push({ id: 'aio-not-active', severity: 'P0', problem: `AIO root not present after Ctrl+Shift+A (active page: ${aio.surfaceHint}, layout: ${aio.topbar ? 'topbar' : 'no-topbar'})` });
-  else {    if (aio.topbar) issues.push({ id: 'aio-topbar-visible', severity: 'P0', problem: `topbar rect occupied in AIO: ${JSON.stringify(aio.topbar)}` });
+  else {
+    if (aio.topbar) issues.push({ id: 'aio-topbar-visible', severity: 'P0', problem: `topbar rect occupied in AIO: ${JSON.stringify(aio.topbar)}` });
     if (!aio.composer) issues.push({ id: 'aio-composer-missing', severity: 'P0', problem: 'composer not visible in AIO' });
     if (aio.conversation && aio.conversation.w > 920) issues.push({ id: 'aio-conversation-too-wide', severity: 'P1', problem: `conversation width ${aio.conversation.w}px > 900` });
     if (aio.chatSidebar) issues.push({ id: 'aio-sidebar-visible', severity: 'P0', problem: 'chat sidebar rendered in AIO' });
@@ -203,6 +215,25 @@ async function main() {
   // restore normal mode
   await evalJs(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', shiftKey: true, ctrlKey: true, bubbles: true }))`);
   await new Promise((r) => setTimeout(r, 800));
+
+  // ── Multi-resolution matrix (T09/Phase 16): viewport emulation matrix.
+  // Electron 41 removed Browser.getWindowForTarget, so native window bounds
+  // are not scripted here; native resize was validated by real window
+  // interaction and remains a manual item for the native-view matrix.
+  const sizes = (opt('sizes', '1280x800,1440x900,1920x1080')
+    .split(',').map((s) => s.split('x').map(Number)));
+  for (const [w, h] of sizes) {
+    await client.send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 0, mobile: false });
+    await new Promise((r) => setTimeout(r, 700));
+    await navigateSurface({ kind: 'workspace', tab: 'chat' });
+    const geo = await evalJs(PROBE);
+    await shot(`matrix-${w}x${h}-chat.png`);
+    results.push({ surface: `matrix-${w}x${h}`, ...geo });
+    if (geo.docScrollW > geo.viewport.w + 1) issues.push({ id: `mx${w}-overflow-x`, severity: 'P1', problem: `horizontal overflow at ${w}x${h}` });
+    if (geo.centerWidth !== null && geo.centerWidth < 600 && geo.viewport.w >= 760) issues.push({ id: `mx${w}-center-squeezed`, severity: 'P1', problem: `chat center ${geo.centerWidth}px < 600px at ${w}x${h}` });
+    if (geo.clippedCount > 0) issues.push({ id: `mx${w}-clipped`, severity: 'P2', problem: `${geo.clippedCount} clipped at ${w}x${h}`, samples: geo.clipped.slice(0, 3) });
+  }
+  await client.send('Emulation.clearDeviceMetricsOverride');
 
   await writeFile(path.join(OUT, 'geometry.json'), JSON.stringify(results, null, 2));
   const p0 = issues.filter((i) => i.severity === 'P0').length;
