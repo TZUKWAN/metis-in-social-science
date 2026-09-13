@@ -79,10 +79,13 @@ function resetWorkspace() {
 describe('ProjectsPage — 科研项目工作台', () => {
   beforeEach(() => {
     resetWorkspace();
+    // 响应式契约（T09.03）：默认按宽视口渲染完整侧栏；窄视口用例单独覆盖。
+    window.innerWidth = 1440;
   });
 
   afterEach(() => {
     cleanup();
+    window.innerWidth = 1024;
     (window as Window).metis = undefined;
   });
 
@@ -179,6 +182,36 @@ describe('ProjectsPage — 科研项目工作台', () => {
     // jsdom 无布局宽度，clientX 直接成为宽度（夹取到 180–420）。
     expect(sidebar.style.width).toBe('420px');
     expect(window.localStorage.getItem('metis-projects-sidebar-width')).toBe('420');
+  });
+
+  it('collapses the project sidebar and chat-right panel on narrow viewports (T09.03)', async () => {
+    window.innerWidth = 900;
+    render(<ProjectsPageHarness />);
+    // 左侧项目栏折叠为 rail。
+    expect(await screen.findByTestId('projects-sidebar-rail')).toBeTruthy();
+    expect(document.querySelector('.projects-page__sidebar')).toBeNull();
+    // 右侧研究侧栏与分隔条收起，中心工作区不再被挤压。
+    expect(screen.queryByTestId('projects-split-chat-right')).toBeNull();
+    expect(document.querySelector('.projects-page__chat-right')).toBeNull();
+    expect(screen.getByTestId('projects-chat-content')).toBeTruthy();
+  });
+
+  it('auto-retries a failed project list during startup before surfacing the error', async () => {
+    let attempts = 0;
+    const payload = (ok: boolean) => ok
+      ? { success: true, items: [{ entityKind: 'project', value: projectDto('p-retry', '重试后加载', Date.now()) }] }
+      : { success: false, code: 'research_entity_list_unavailable', items: [] };
+    setMockMetis({
+      researchListProjects: vi.fn().mockImplementation(async () => {
+        attempts += 1;
+        return payload(attempts >= 3);
+      }),
+    });
+    render(<ProjectsPageHarness />);
+    await waitFor(() => {
+      expect(attempts).toBeGreaterThanOrEqual(3);
+    }, { timeout: 5000 });
+    expect(await screen.findByText('重试后加载')).toBeTruthy();
   });
 });
 

@@ -74,6 +74,8 @@ const PROBE = `(() => {
     chatSidebar: (el => el ? round(el.getBoundingClientRect()) : null)(q('.chat-sidebar')),
     candidatesPanel: (el => el ? round(el.getBoundingClientRect()) : null)(q('.topic-workspace__candidates')),
     rightPanel: (el => el ? round(el.getBoundingClientRect()) : null)(q('.research-shell-inspector, .workspace-shell__right, .outcome-assistant')),
+    centerWidth: (el => el ? Math.round(el.getBoundingClientRect().width) : null)(q('.chat-main')),
+    projectSidebar: (el => el ? round(el.getBoundingClientRect()) : null)(q('.projects-sidebar, [class*="projects-page__sidebar"]')),
     clipped: clipped.slice(0, 12),
     clippedCount: clipped.length,
     aio: Boolean(q('.aio-root')),
@@ -159,6 +161,11 @@ async function main() {
     if (geo.main && (geo.main.x < -1 || geo.main.y < -1 || geo.main.x + geo.main.w > geo.viewport.w + 1 || geo.main.y + geo.main.h > geo.viewport.h + 1)) {
       issues.push({ id: `${surface.id}-root-bounds`, severity: 'P1', problem: `main root escapes viewport: ${JSON.stringify(geo.main)}` });
     }
+    // T09.03 center minimum: chat center must keep >= 600px; below that the
+    // shell must collapse side panels instead of squeezing the workspace.
+    if (surface.id === 'research-chat' && geo.centerWidth !== null && geo.centerWidth < 600 && geo.viewport.w >= 760) {
+      issues.push({ id: `${surface.id}-center-squeezed`, severity: 'P1', problem: `chat center ${geo.centerWidth}px < 600px minimum at viewport ${geo.viewport.w} (side panels must collapse)` });
+    }
     // T09.04 text clipping
     if (geo.clippedCount > 0) {
       issues.push({ id: `${surface.id}-clipped-text`, severity: 'P2', problem: `${geo.clippedCount} clipped element(s)`, samples: geo.clipped.slice(0, 4) });
@@ -167,15 +174,22 @@ async function main() {
 
   // T09.08 AIO geometry — normalize to normal mode first (AIO persists across
   // launches via metis:aio-mode), then toggle in via the app's global shortcut.
-  const toggleAio = async () => {
+  // Wait polls instead of fixed sleeps: the first zen commit can take seconds
+  // on a cold renderer with a 1000-message session.
+  const probeNow = () => evalJs(PROBE);
+  const toggleAio = async (expectActive) => {
     await evalJs(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', shiftKey: true, ctrlKey: true, bubbles: true, cancelable: true }))`);
-    await new Promise((r) => setTimeout(r, 1000));
+    for (let waited = 0; waited <= 8000; waited += 300) {
+      const state = await probeNow();
+      if (state.aio === expectActive) return state;
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    return probeNow();
   };
-  let pre = await evalJs(PROBE);
-  if (pre.aio) await toggleAio(); // exit leftover AIO from a previous session
+  let pre = await probeNow();
+  if (pre.aio) pre = await toggleAio(false); // exit leftover AIO from a previous session
   await navigateSurface({ kind: 'workspace', tab: 'chat' });
-  await toggleAio();
-  const aio = await evalJs(PROBE);
+  const aio = await toggleAio(true);
   await shot('aio-zen.png');
   results.push({ surface: 'aio-zen', ...aio });
 

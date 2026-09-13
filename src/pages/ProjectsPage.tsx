@@ -125,6 +125,14 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
   // 收缩，给预览留足空间；手动拖拽调宽全部保留。
   const [previewWidth, setPreviewWidth] = useState(() => loadWidth(PREVIEW_KEY, 520, 360, 800));
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => loadBool(SIDEBAR_COLLAPSED_KEY, false));
+  // T09.03 响应式契约：窄视口下自动折叠左侧项目栏并收起右侧研究侧栏，
+  // 保证中间工作区 ≥600px；恢复宽视口时回到用户持久化的折叠偏好。
+  const [narrowViewport, setNarrowViewport] = useState(() => (typeof window === 'undefined' ? false : window.innerWidth < 1180));
+  useEffect(() => {
+    const onResize = () => setNarrowViewport(window.innerWidth < 1180);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
   const [showArchived, setShowArchived] = useState(false);
   // ── 行内操作（任务4 第五/六节）：归档/恢复/删除收进 ···，防双击 + 失败可见 ──
   const rowAction = usePendingAction();
@@ -420,7 +428,7 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
 
   return (
     <div className="projects-page" data-testid="projects-page" ref={pageRef}>
-      {sidebarCollapsed ? (
+      {(sidebarCollapsed || narrowViewport) ? (
         <div className="projects-page__sidebar-rail" data-testid="projects-sidebar-rail">
           <button
             type="button"
@@ -744,6 +752,8 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
                 className="projects-page__chat-workspace"
                 style={previewOpen ? { minWidth: 360 } : undefined}
               >{chatContent}</div>
+              {!narrowViewport && (
+              <>
               <SplitHandle
                 label={locale === 'zh' ? '拖动调整右侧面板宽度' : 'Drag to resize the side panel'}
                 testId="projects-split-chat-right"
@@ -753,6 +763,8 @@ export default function ProjectsPage({ mode, onModeChange, chatContent, chatRigh
                 }}
               />
               <div className={`projects-page__chat-right${chatRightWidth >= 280 ? ' projects-page__chat-right--pinned' : ''}`} style={{ width: chatRightWidth }}>{chatRightPanel}</div>
+              </>
+              )}
               {previewOpen && (
                 <>
                   <SplitHandle

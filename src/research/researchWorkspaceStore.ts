@@ -614,6 +614,22 @@ export function createResearchWorkspaceStore(
         } catch {
           result = { success: false, code: 'research_project_list_unavailable' };
         }
+        // 启动竞态自愈（UI 验收实测发现）：首装/重启早期 research bridge 尚未
+        // 就绪时首次加载会失败；此前需要用户手点「重试」。这里在不持有 loading
+        // 状态的前提下做有界退避重试（最多 3 次，间隔 600ms），保持失败可见性
+        // 语义不变——重试全部失败仍进入 error+retry 分支。
+        if (!result.success && generation === projectGeneration) {
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            await new Promise((resolve) => setTimeout(resolve, 600));
+            if (generation !== projectGeneration) return;
+            try {
+              result = await client.listProjects();
+            } catch {
+              result = { success: false, code: 'research_project_list_unavailable' };
+            }
+            if (result.success) break;
+          }
+        }
         if (generation !== projectGeneration) return;
         if (!result.success) {
           // 任务4 stale 语义：已有列表时刷新失败保留旧数据（stale notice 由
