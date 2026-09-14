@@ -1,3 +1,4 @@
+@import './design/designTokens.css';
 html {
   background: var(--bg-main);
 }

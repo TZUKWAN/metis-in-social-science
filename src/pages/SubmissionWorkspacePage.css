@@ -112,7 +112,7 @@
   gap: 2px;
   padding: 4px 8px 0;
   border-bottom: 1px solid var(--border-light, #e3e8ee);
-  background: var(--bg-subtle, #f8fafb);
+  background: var(--ds-bg2);
 }
 
 .submission-workspace__tabs button[role='tab'] {
@@ -243,7 +243,7 @@
   max-width: 100%;
   padding: 8px 10px;
   border-radius: 8px;
-  background: var(--bg-subtle, #f8fafb);
+  background: var(--ds-bg2);
   font-size: 12px;
   line-height: 1.55;
   color: var(--text-primary);
@@ -423,7 +423,7 @@
   margin: 4px 0;
   padding: 8px;
   border-radius: 6px;
-  background: var(--bg-subtle, #f8fafb);
+  background: var(--ds-bg2);
   font-size: 11px;
   overflow-x: auto;
 }

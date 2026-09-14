@@ -122,7 +122,7 @@
   color: var(--text-primary, #17243a);
 }
 
-.project-materials__list li:nth-child(odd) { background: var(--bg-subtle, #f8fafb); }
+.project-materials__list li:nth-child(odd) { background: var(--ds-bg2); }
 .project-materials__list li.binary { opacity: 0.75; }
 
 .project-materials__name {
@@ -191,7 +191,7 @@
   padding: 10px 12px;
   border: 1px solid var(--border-light, #e3e8ee);
   border-radius: var(--radius-sm, 5px);
-  background: var(--bg-subtle, #f8fafb);
+  background: var(--ds-bg2);
   font-size: 12px;
   color: var(--text-primary, #17243a);
   min-width: 0;

@@ -1,0 +1,168 @@
+/**
+ * METIS Design System tokens — Future Academic Research Workstation
+ * （UI 统一重构阶段二，2026-09-15；规格见任务文档第五节）。
+ *
+ * 五层 Glass 层级：L0 Ambient Canvas / L1 Shell Glass / L2 Workspace /
+ * L3 Floating Surface / L4 Modal。Glass 只用于 shell/floating/modal，
+ * 内容行（列表行/消息/卡片/表格）一律用实色面板。
+ * Accent 只用于 active/focus/primary/success，不做满屏铺色。
+ */
+
+:root {
+  /* ── 色彩 · Dark（默认）────────────────────────────── */
+  --ds-bg0: #07090d;
+  --ds-bg1: #0a0d12;
+  --ds-bg2: #0d1219;
+
+  --ds-text-primary: #edf2f7;
+  --ds-text-secondary: #b5c0cd;
+  --ds-text-muted: #7a8696;
+
+  --ds-accent: #72e6aa;
+  --ds-accent-dim: rgba(114, 230, 170, 0.14);
+  --ds-cyan: #6bc7ef;
+  --ds-danger: #ef8585;
+  --ds-warning: #e5bd73;
+
+  --ds-border: rgba(255, 255, 255, 0.08);
+  --ds-border-strong: rgba(255, 255, 255, 0.11);
+
+  /* ── 间距（4 基准网格）────────────────────────────── */
+  --ds-space-1: 4px;
+  --ds-space-2: 8px;
+  --ds-space-3: 12px;
+  --ds-space-4: 16px;
+  --ds-space-5: 20px;
+  --ds-space-6: 24px;
+  --ds-space-8: 32px;
+  --ds-space-10: 40px;
+
+  /* ── 圆角 ─────────────────────────────────────────── */
+  --ds-radius-control: 8px;
+  --ds-radius-panel: 12px;
+  --ds-radius-floating: 14px;
+  --ds-radius-modal: 16px;
+
+  /* ── 字阶 ─────────────────────────────────────────── */
+  --ds-font-body: 14px;
+  --ds-font-conversation: 15px;
+  --ds-font-meta: 12px;
+  --ds-font-section: 14px;
+  --ds-font-page-title: 20px;
+  --ds-lh-conversation: 1.7;
+
+  /* ── 动效 ─────────────────────────────────────────── */
+  --ds-motion-fast: 120ms;
+  --ds-motion-base: 150ms;
+  --ds-motion-slow: 180ms;
+
+  /* ── L1 Shell Glass（Topbar/主侧栏/Inspector shell/Composer）*/
+  --ds-glass-shell-bg: rgba(15, 20, 28, 0.66);
+  --ds-glass-shell-blur: blur(20px) saturate(120%);
+  --ds-glass-shell-border: rgba(255, 255, 255, 0.09);
+  --ds-glass-shell-shadow:
+    inset 0 1px rgba(255, 255, 255, 0.04),
+    0 14px 38px rgba(0, 0, 0, 0.2);
+
+  /* ── L3 Floating Surface（Popover/Dropdown/Floating toolbar）*/
+  --ds-glass-floating-bg: rgba(15, 20, 28, 0.78);
+  --ds-glass-floating-shadow:
+    inset 0 1px rgba(255, 255, 255, 0.05),
+    0 18px 44px rgba(0, 0, 0, 0.28);
+
+  /* ── L4 Modal ─────────────────────────────────────── */
+  --ds-glass-modal-bg: rgba(13, 18, 25, 0.92);
+  --ds-glass-modal-shadow: 0 28px 70px rgba(0, 0, 0, 0.45);
+
+  /* ── L2 Workspace 实色面板（内容区，不用 glass）────── */
+  --ds-panel-bg: var(--ds-bg1);
+  --ds-panel-bg-alt: var(--ds-bg2);
+
+  /* ── 旧变量桥接（legacy CSS 仍引用的变量名，统一接到 DS 值）────── */
+  --bg-subtle: var(--ds-bg2);
+  --bg-hover: rgba(255, 255, 255, 0.05);
+}
+
+/* Light 主题覆盖：保持同一 tokens 契约，亮度反转 */
+:root[data-theme='light'],
+:root.theme-light {
+  --ds-bg0: #f4f6f8;
+  --ds-bg1: #ffffff;
+  --ds-bg2: #f0f3f6;
+
+  --ds-text-primary: #16202b;
+  --ds-text-secondary: #44525f;
+  --ds-text-muted: #71808e;
+
+  --ds-accent: #0e8f5b;
+  --ds-accent-dim: rgba(14, 143, 91, 0.12);
+  --ds-cyan: #0f7fb8;
+  --ds-danger: #c23f3f;
+  --ds-warning: #a2761f;
+
+  --ds-border: rgba(16, 24, 32, 0.1);
+  --ds-border-strong: rgba(16, 24, 32, 0.16);
+
+  --ds-glass-shell-bg: rgba(255, 255, 255, 0.78);
+  --ds-glass-shell-border: rgba(16, 24, 32, 0.1);
+  --ds-glass-shell-shadow:
+    inset 0 1px rgba(255, 255, 255, 0.6),
+    0 10px 30px rgba(16, 24, 32, 0.08);
+
+  --ds-glass-floating-bg: rgba(255, 255, 255, 0.9);
+  --ds-glass-floating-shadow: 0 14px 36px rgba(16, 24, 32, 0.14);
+
+  --ds-glass-modal-bg: rgba(255, 255, 255, 0.96);
+  --ds-glass-modal-shadow: 0 24px 60px rgba(16, 24, 32, 0.22);
+
+  --ds-panel-bg: var(--ds-bg1);
+  --ds-panel-bg-alt: var(--ds-bg2);
+  --bg-subtle: #eef1f4;
+  --bg-hover: rgba(16, 24, 32, 0.05);
+}
+
+/* ── Glass 工具类（只允许 shell/floating/modal 使用）──────── */
+
+.ds-glass-shell {
+  background: var(--ds-glass-shell-bg);
+  -webkit-backdrop-filter: var(--ds-glass-shell-blur);
+  backdrop-filter: var(--ds-glass-shell-blur);
+  border: 1px solid var(--ds-glass-shell-border);
+  box-shadow: var(--ds-glass-shell-shadow);
+}
+
+.ds-glass-floating {
+  background: var(--ds-glass-floating-bg);
+  -webkit-backdrop-filter: var(--ds-glass-shell-blur);
+  backdrop-filter: var(--ds-glass-shell-blur);
+  border: 1px solid var(--ds-border-strong);
+  box-shadow: var(--ds-glass-floating-shadow);
+}
+
+.ds-glass-modal {
+  background: var(--ds-glass-modal-bg);
+  border: 1px solid var(--ds-border-strong);
+  box-shadow: var(--ds-glass-modal-shadow);
+}
+
+/* ── 动效基类 ─────────────────────────────────────────── */
+
+.ds-motion {
+  transition:
+    opacity var(--ds-motion-base) ease,
+    transform var(--ds-motion-base) ease,
+    background var(--ds-motion-fast) ease,
+    border-color var(--ds-motion-fast) ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --ds-motion-fast: 0ms;
+    --ds-motion-base: 0ms;
+    --ds-motion-slow: 0ms;
+  }
+  .ds-motion {
+    transition: none !important;
+    animation: none !important;
+  }
+}
