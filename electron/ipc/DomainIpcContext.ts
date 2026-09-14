@@ -96,6 +96,13 @@ export interface DomainIpcContext {
   submissionPreflightService(): import('../SubmissionPreflightService.js').SubmissionPreflightService | null;
   submissionPackageService(): import('../SubmissionPackageService.js').SubmissionPackageService | null;
   submissionPackageRepository(): import('../SubmissionPackageRepository.js').SubmissionPackageRepository | null;
+  submissionReviewService(): import('../SubmissionReviewService.js').SubmissionReviewService | null;
+  submissionReviewRepository(): import('../SubmissionReviewRepository.js').SubmissionReviewRepository | null;
+  mailSendService(): import('../MailSendService.js').MailSendService | null;
+  submissionMailService(): import('../SubmissionMailService.js').SubmissionMailService | null;
+  submissionMailboxStore(): import('../ModelDiscoveryStore.js').MailboxPoolStore | null;
+  submissionCorrespondenceRepository(): import('../SubmissionCorrespondenceRepository.js').SubmissionCorrespondenceRepository | null;
+  submissionDeadlineSync(): import('../SubmissionDeadlineSync.js').SubmissionDeadlineSync | null;
   submissionOwnedPackage(projectId: string, packageId: string): Record<string, unknown> | null;
   journalProfileRepository(): import('../JournalProfileRepository.js').JournalProfileRepository | null;
   literatureSearchService(): import('../LiteratureSearchService.js').LiteratureSearchService | null;

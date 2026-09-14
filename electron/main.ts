@@ -124,7 +124,7 @@ import { SubmissionGapService } from './SubmissionGapService.js';
 import { SubmissionOptimizationService } from './SubmissionOptimizationService.js';
 
 import { PortalFieldActionSchema } from '../engine/submission/SubmissionPortalContract.js';
-import { ReviewCommentPatchSchema } from '../engine/submission/SubmissionReviewContract.js';
+
 import { SubmissionPackageRepository } from './SubmissionPackageRepository.js';
 import { SubmissionReviewRepository } from './SubmissionReviewRepository.js';
 import { SubmissionReviewService } from './SubmissionReviewService.js';
@@ -219,6 +219,7 @@ import { registerOutcomeDataIpc } from './ipc/registerOutcomeDataIpc.js';
 import { registerSubmissionCaseIpc } from './ipc/registerSubmissionCaseIpc.js';
 import { registerSubmissionJournalIpc } from './ipc/registerSubmissionJournalIpc.js';
 import { registerSubmissionPackageIpc } from './ipc/registerSubmissionPackageIpc.js';
+import { registerSubmissionCommsIpc } from './ipc/registerSubmissionCommsIpc.js';
 import { RemoteDevBridge, isRemoteBridgeSender, remoteBroadcast } from './RemoteBridge/remoteDevBridge.js';
 import { registerExperimentIpc } from './ipc/registerExperimentIpc.js';
 import { registerWeChatIpc } from './ipc/registerWeChatIpc.js';
@@ -885,6 +886,13 @@ const domainIpcContext: DomainIpcContext = {
   submissionPreflightService: () => submissionPreflightService,
   submissionPackageService: () => submissionPackageService,
   submissionPackageRepository: () => submissionPackageRepository,
+  submissionReviewService: () => submissionReviewService,
+  submissionReviewRepository: () => submissionReviewRepository,
+  mailSendService: () => mailSendService,
+  submissionMailService: () => submissionMailService,
+  submissionMailboxStore: () => submissionMailboxStore,
+  submissionCorrespondenceRepository: () => submissionCorrespondenceRepository,
+  submissionDeadlineSync: () => submissionDeadlineSync,
   submissionOwnedPackage,
   journalProfileRepository: () => journalProfileRepository,
   literatureSearchService: () => literatureSearchService,
@@ -3758,55 +3766,10 @@ function setupIPC(): void {
   });
 
   // ── Submission P4: Decision Letter 拆解 / 返修工作台 / Response Letter ──
-  ipcMain.handle('submission:review:createRound', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.object({
-        projectId: z.string().min(1), caseId: z.string().min(1),
-        decisionLetterText: z.string().min(1).max(200_000),
-        deadline: z.number().int().nonnegative().nullable().optional(),
-      }).safeParse(raw);
-      if (!p.success || !submissionReviewService) return null;
-      return submissionReviewService.createRoundFromLetter(p.data);
-    } catch { return null; }
-  });
 
-  ipcMain.handle('submission:review:list', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw);
-      if (!p.success || !submissionReviewService || !submissionRepository) return [];
-      if (!submissionRepository.getCase(p.data.projectId, p.data.caseId)) return [];
-      return submissionReviewService.listRounds(p.data.projectId, p.data.caseId);
-    } catch { return []; }
-  });
 
-  ipcMain.handle('submission:review:updateComment', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.object({ projectId: z.string().min(1), commentId: z.string().min(1), patch: ReviewCommentPatchSchema }).safeParse(raw);
-      if (!p.success || !submissionReviewRepository) return null;
-      return submissionReviewRepository.updateComment(p.data.projectId, p.data.commentId, p.data.patch) ?? null;
-    } catch { return null; }
-  });
 
-  ipcMain.handle('submission:review:beginRevision', async (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw);
-      if (!p.success || !submissionReviewService) return { ok: false as const, code: 'unavailable' };
-      return await submissionReviewService.beginRevision(p.data);
-    } catch { return null; }
-  });
 
-  ipcMain.handle('submission:review:generateResponse', async (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw);
-      if (!p.success || !submissionReviewService) return null;
-      return await submissionReviewService.generateResponseLetter(p.data);
-    } catch { return null; }
-  });
 
   // ── Submission P3: 最终提交（强制 Human Approval 门控 + 回执）──
   // 直接经 submission:changeStatus 推到 SUBMITTED / RESUBMITTED 一律拒绝，
@@ -3814,119 +3777,9 @@ function setupIPC(): void {
 
   // ── Submission P3/P4: 投稿通信（邮件外发/监听）与投稿门户操作 ──
   // 邮箱账户安全投影：绝不向渲染端暴露 encryptedSecret。
-  ipcMain.handle('submission:mail:accounts', (event) => {
-    try {
-      requireRendererMainFrame(event);
-      return (submissionMailboxStore?.list() ?? []).map((account) => ({
-        id: account.id, label: account.label, user: account.user, host: account.host,
-        createdAt: account.createdAt, lastCheckedAt: account.lastCheckedAt, lastOkAt: account.lastOkAt,
-      }));
-    } catch { return []; }
-  });
-  ipcMain.handle('submission:mail:preview', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.strictObject({
-        accountId: z.string().min(1),
-        to: z.string().max(4000), cc: z.string().max(4000).optional(), bcc: z.string().max(4000).optional(),
-        subject: z.string().max(4000), bodyText: z.string().max(200_000),
-        attachments: z.array(z.strictObject({ filename: z.string().min(1).max(500), path: z.string().max(4000).optional(), contentBase64: z.string().max(40_000_000).optional() })).max(20).optional(),
-      }).safeParse(raw);
-      if (!p.success || !mailSendService) return null;
-      return mailSendService.previewSend({
-        accountId: p.data.accountId, to: p.data.to, cc: p.data.cc, bcc: p.data.bcc,
-        subject: p.data.subject, bodyText: p.data.bodyText,
-        attachments: (p.data.attachments ?? []).map((a) => ({
-          filename: a.filename,
-          ...(a.path ? { path: a.path } : {}),
-          ...(a.contentBase64 ? { content: Buffer.from(a.contentBase64, 'base64') } : {}),
-        })),
-      });
-    } catch { return null; }
-  });
   // 外发必须带 confirmed:true（人类确认）+ operationId（幂等键，重试不重发）。
-  ipcMain.handle('submission:mail:send', async (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.strictObject({
-        projectId: z.string().min(1), caseId: z.string().min(1).optional(),
-        accountId: z.string().min(1), operationId: z.string().min(1).max(200),
-        to: z.string().max(4000), cc: z.string().max(4000).optional(), bcc: z.string().max(4000).optional(),
-        subject: z.string().max(4000), bodyText: z.string().max(200_000),
-        attachments: z.array(z.strictObject({ filename: z.string().min(1).max(500), path: z.string().max(4000).optional(), contentBase64: z.string().max(40_000_000).optional() })).max(20).optional(),
-        confirmed: z.literal(true),
-      }).safeParse(raw);
-      if (!p.success || !mailSendService) return null;
-      return await mailSendService.sendMail({
-        projectId: p.data.projectId, caseId: p.data.caseId, accountId: p.data.accountId,
-        operationId: p.data.operationId, to: p.data.to, cc: p.data.cc, bcc: p.data.bcc,
-        subject: p.data.subject, bodyText: p.data.bodyText,
-        attachments: (p.data.attachments ?? []).map((a) => ({
-          filename: a.filename,
-          ...(a.path ? { path: a.path } : {}),
-          ...(a.contentBase64 ? { content: Buffer.from(a.contentBase64, 'base64') } : {}),
-        })),
-      });
-    } catch { return null; }
-  });
-  ipcMain.handle('submission:mail:sync', async (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.strictObject({ projectId: z.string().min(1), accountId: z.string().min(1), limit: z.number().int().min(1).max(50).optional() }).safeParse(raw);
-      if (!p.success || !submissionMailService) return null;
-      return await submissionMailService.syncAccount(p.data);
-    } catch { return null; }
-  });
-  ipcMain.handle('submission:correspondence:listByCase', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw);
-      if (!p.success || !submissionCorrespondenceRepository) return [];
-      return submissionCorrespondenceRepository.listByCase(p.data.projectId, p.data.caseId);
-    } catch { return []; }
-  });
-  ipcMain.handle('submission:correspondence:listPending', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.object({ projectId: z.string().min(1) }).safeParse(raw);
-      if (!p.success || !submissionCorrespondenceRepository) return [];
-      return submissionCorrespondenceRepository.listPending(p.data.projectId);
-    } catch { return []; }
-  });
-  ipcMain.handle('submission:correspondence:confirmMatch', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.strictObject({ projectId: z.string().min(1), id: z.string().min(1), caseId: z.string().min(1).optional() }).safeParse(raw);
-      if (!p.success || !submissionMailService) return null;
-      return submissionMailService.confirmMatch(p.data);
-    } catch { return null; }
-  });
-  ipcMain.handle('submission:correspondence:rejectMatch', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.strictObject({ projectId: z.string().min(1), id: z.string().min(1) }).safeParse(raw);
-      if (!p.success || !submissionMailService) return null;
-      return submissionMailService.rejectMatch(p.data);
-    } catch { return null; }
-  });
   // 从已确认关联的 Decision/Revision 邮件一键建审稿轮次（服务内部再校验分类与确认状态）。
-  ipcMain.handle('submission:correspondence:createRound', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.strictObject({ projectId: z.string().min(1), id: z.string().min(1) }).safeParse(raw);
-      if (!p.success || !submissionMailService) return null;
-      return submissionMailService.createRoundFromCorrespondence(p.data);
-    } catch { return null; }
-  });
   // 返修截止日期同步到任务板（Goal）。幂等：已绑定的轮次返回 already_synced。
-  ipcMain.handle('submission:review:syncDeadline', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.strictObject({ projectId: z.string().min(1), caseId: z.string().min(1), roundId: z.string().min(1) }).safeParse(raw);
-      if (!p.success || !submissionDeadlineSync) return { ok: false as const, code: 'service_unavailable' };
-      return submissionDeadlineSync.syncRoundToGoal(p.data);
-    } catch { return { ok: false as const, code: 'service_unavailable' }; }
-  });
   // ── 投稿门户（Browser-assisted Submission）：法律/财务/声明/最终提交永不由 Agent 执行 ──
   ipcMain.handle('submission:portal:open', async (event, raw: unknown) => {
     try {
@@ -5085,6 +4938,7 @@ function setupIPC(): void {
   ipcDomainDisposers.push(registerSubmissionCaseIpc(domainIpcContext));
   ipcDomainDisposers.push(registerSubmissionJournalIpc(domainIpcContext));
   ipcDomainDisposers.push(registerSubmissionPackageIpc(domainIpcContext));
+  ipcDomainDisposers.push(registerSubmissionCommsIpc(domainIpcContext));
 
   // ── 远程开发桥（dev-only）：METIS_REMOTE_BRIDGE=1 时开启浏览器远程访问。
   // 服务器在 whenReady 后启动，确保 setupIPC 已注册全部通道。──
