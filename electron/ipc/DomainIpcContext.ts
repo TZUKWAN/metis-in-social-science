@@ -87,7 +87,14 @@ export interface DomainIpcContext {
   // ── Outcomes（数据管理子域）──────────────────────────────
   outcomeRepository(): import('../OutcomeRepository.js').OutcomeRepository | null;
   purgeExpiredOutcomeTrash(): void;
+  resolveProjectOutcomeProvider(
+    projectId: string,
+  ):
+    | { status: 'ready'; binding: import('../../engine/runtime/ProviderProfileContract.js').ProviderProfileBinding; agentLoop: import('../../engine/core/AgentLoop.js').AgentLoop }
+    | { status: 'pending'; reason: string };
   submissionRepository(): import('../SubmissionRepository.js').SubmissionRepository | null;
+  journalProfileRepository(): import('../JournalProfileRepository.js').JournalProfileRepository | null;
+  literatureSearchService(): import('../LiteratureSearchService.js').LiteratureSearchService | null;
   // ── Research browser domain ─────────────────────────────
   /** Live browser service instance, or null before first use. */
   browserService(): import('../BrowserService.js').BrowserService | null;
