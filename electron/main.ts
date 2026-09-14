@@ -122,7 +122,7 @@ import { JournalProfileRepository } from './JournalProfileRepository.js';
 
 import { SubmissionGapService } from './SubmissionGapService.js';
 import { SubmissionOptimizationService } from './SubmissionOptimizationService.js';
-import { SUBMISSION_PACKAGE_FILE_TYPES } from '../engine/submission/SubmissionPackageContract.js';
+
 import { PortalFieldActionSchema } from '../engine/submission/SubmissionPortalContract.js';
 import { ReviewCommentPatchSchema } from '../engine/submission/SubmissionReviewContract.js';
 import { SubmissionPackageRepository } from './SubmissionPackageRepository.js';
@@ -218,6 +218,7 @@ import { registerBrowserIpc } from './ipc/registerBrowserIpc.js';
 import { registerOutcomeDataIpc } from './ipc/registerOutcomeDataIpc.js';
 import { registerSubmissionCaseIpc } from './ipc/registerSubmissionCaseIpc.js';
 import { registerSubmissionJournalIpc } from './ipc/registerSubmissionJournalIpc.js';
+import { registerSubmissionPackageIpc } from './ipc/registerSubmissionPackageIpc.js';
 import { RemoteDevBridge, isRemoteBridgeSender, remoteBroadcast } from './RemoteBridge/remoteDevBridge.js';
 import { registerExperimentIpc } from './ipc/registerExperimentIpc.js';
 import { registerWeChatIpc } from './ipc/registerWeChatIpc.js';
@@ -735,6 +736,13 @@ type WordDocxImportSession = {
 const pptxImportSessions = new Map<string, PptxImportSession>();
 const wordDocxImportSessions = new Map<string, WordDocxImportSession>();
 
+// package 级写操作归属校验（模块级：远程桥 registrar 经 ctx 调用同一实现）。
+function submissionOwnedPackage(projectId: string, packageId: string) {
+  const pkg = submissionPackageRepository?.getPackage(packageId);
+  if (!pkg || !submissionRepository?.getCase(projectId, pkg.caseId)) return null;
+  return pkg;
+}
+
 // 垃圾箱过期清理（模块级：远程桥 registrar 经 ctx 调用同一实现）。
 async function purgeExpiredOutcomeTrash(): Promise<void> {
   if (!outcomeRepository) return;
@@ -874,6 +882,10 @@ const domainIpcContext: DomainIpcContext = {
   outcomeRepository: () => outcomeRepository,
   purgeExpiredOutcomeTrash,
   submissionRepository: () => submissionRepository,
+  submissionPreflightService: () => submissionPreflightService,
+  submissionPackageService: () => submissionPackageService,
+  submissionPackageRepository: () => submissionPackageRepository,
+  submissionOwnedPackage,
   journalProfileRepository: () => journalProfileRepository,
   literatureSearchService: () => literatureSearchService,
   goalEngine: () => goalEngine,
@@ -3712,130 +3724,16 @@ function setupIPC(): void {
 
   // ── Submission P2: 投稿预检 / 投稿包 / Cover Letter ──
   // 归属校验分层：case 级操作由服务内 getCase(projectId, caseId) 把关；
-  // package 级写操作由 SubmissionPackageService.ownedPackage（经 case 反查项目）把关；
-  // 查询类与 removeFile（不经服务）在本层显式做项目归属校验。
-  const submissionOwnedPackage = (projectId: string, packageId: string) => {
-    const pkg = submissionPackageRepository?.getPackage(packageId);
-    if (!pkg || !submissionRepository?.getCase(projectId, pkg.caseId)) return null;
-    return pkg;
-  };
 
-  ipcMain.handle('submission:preflight:run', async (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw);
-      if (!p.success || !submissionPreflightService) return null;
-      return await submissionPreflightService.run(p.data);
-    } catch { return null; }
-  });
 
-  ipcMain.handle('submission:preflight:latest', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw);
-      if (!p.success || !submissionPackageRepository || !submissionRepository) return null;
-      if (!submissionRepository.getCase(p.data.projectId, p.data.caseId)) return null;
-      const run = submissionPackageRepository.latestPreflightRun(p.data.caseId);
-      if (!run) return null;
-      return { run, checks: submissionPackageRepository.listPreflightChecks(run.id) };
-    } catch { return null; }
-  });
 
-  ipcMain.handle('submission:package:assemble', async (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw);
-      if (!p.success || !submissionPackageService) return null;
-      return await submissionPackageService.assemble(p.data);
-    } catch { return null; }
-  });
 
-  ipcMain.handle('submission:package:latest', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw);
-      if (!p.success || !submissionPackageRepository || !submissionRepository) return null;
-      if (!submissionRepository.getCase(p.data.projectId, p.data.caseId)) return null;
-      const pkg = submissionPackageRepository.latestPackageForCase(p.data.caseId);
-      if (!pkg) return null;
-      return { package: pkg, files: submissionPackageRepository.listPackageFiles(pkg.id) };
-    } catch { return null; }
-  });
 
-  ipcMain.handle('submission:package:attachOutcome', async (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.strictObject({
-        projectId: z.string().min(1),
-        packageId: z.string().min(1),
-        outcomeId: z.string().min(1),
-        type: z.enum(SUBMISSION_PACKAGE_FILE_TYPES),
-        required: z.boolean().optional(),
-        note: z.string().max(20000).optional(),
-      }).safeParse(raw);
-      if (!p.success || !submissionPackageService) return null;
-      return await submissionPackageService.attachOutcome(p.data);
-    } catch { return null; }
-  });
 
-  ipcMain.handle('submission:package:attachFile', async (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.strictObject({
-        projectId: z.string().min(1),
-        packageId: z.string().min(1),
-        type: z.enum(SUBMISSION_PACKAGE_FILE_TYPES),
-        filePath: z.string().min(1).max(2000),
-        required: z.boolean().optional(),
-      }).safeParse(raw);
-      if (!p.success || !submissionPackageService) return null;
-      // filePath 必须是已存在常规文件的绝对路径；拒绝目录与相对路径（选择对话框由 UI 复用现有通道）。
-      const filePath = p.data.filePath;
-      if (!path.isAbsolute(filePath) || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
-        return { ok: false as const, code: 'file_not_found' as const };
-      }
-      return await submissionPackageService.attachFile(p.data);
-    } catch { return null; }
-  });
 
-  ipcMain.handle('submission:package:removeFile', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.strictObject({ projectId: z.string().min(1), packageId: z.string().min(1), fileId: z.string().min(1) }).safeParse(raw);
-      if (!p.success || !submissionPackageRepository) return false;
-      // 项目归属校验：package 所属 case 必须属于该项目；frozen 由仓储层硬边界拒绝。
-      if (!submissionOwnedPackage(p.data.projectId, p.data.packageId)) return false;
-      return submissionPackageRepository.removePackageFile(p.data.packageId, p.data.fileId);
-    } catch { return false; }
-  });
 
-  ipcMain.handle('submission:package:export', async (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.strictObject({ projectId: z.string().min(1), packageId: z.string().min(1) }).safeParse(raw);
-      if (!p.success || !submissionPackageService) return null;
-      return await submissionPackageService.exportToDisk(p.data);
-    } catch { return null; }
-  });
 
-  ipcMain.handle('submission:package:freeze', async (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.strictObject({ projectId: z.string().min(1), packageId: z.string().min(1) }).safeParse(raw);
-      if (!p.success || !submissionPackageService) return null;
-      // preflight 门控（最近一次预检必须 passed）在服务内执行并返回真实 blockers。
-      return await submissionPackageService.freeze(p.data);
-    } catch { return null; }
-  });
 
-  ipcMain.handle('submission:package:validate', async (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.strictObject({ projectId: z.string().min(1), packageId: z.string().min(1) }).safeParse(raw);
-      if (!p.success || !submissionPackageService) return null;
-      return await submissionPackageService.validate(p.data);
-    } catch { return null; }
-  });
 
   ipcMain.handle('submission:coverLetter:generate', async (event, raw: unknown) => {
     try {
@@ -3913,63 +3811,6 @@ function setupIPC(): void {
   // ── Submission P3: 最终提交（强制 Human Approval 门控 + 回执）──
   // 直接经 submission:changeStatus 推到 SUBMITTED / RESUBMITTED 一律拒绝，
   // 必须走本通道：confirmed=true + 预检通过 + 材料包已冻结才放行。
-  ipcMain.handle('submission:submit', async (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.strictObject({
-        projectId: z.string().min(1),
-        caseId: z.string().min(1),
-        submissionMethod: z.enum(['portal_web', 'email', 'offline_manual']),
-        portalUrl: z.string().max(2000).optional(),
-        remoteSubmissionId: z.string().max(300).optional(),
-        notes: z.string().max(5000).optional(),
-        confirmed: z.literal(true),
-      }).safeParse(raw);
-      if (!p.success || !submissionRepository || !submissionPackageRepository) {
-        return p.success && !p.data.confirmed ? { ok: false as const, code: 'approval_required' as const } : null;
-      }
-      const { projectId, caseId } = p.data;
-      const submissionCase = submissionRepository.getCase(projectId, caseId);
-      if (!submissionCase) return { ok: false as const, code: 'case_not_found' as const };
-      // 预检门控：最近一次预检必须存在且无必须处理项。
-      const run = submissionPackageRepository.latestPreflightRun(caseId);
-      if (!run || !run.passed) return { ok: false as const, code: 'preflight_not_passed' as const };
-      // 材料包门控：必须已冻结（正式提交前冻结 Package）。
-      const pkg = submissionPackageRepository.latestPackageForCase(caseId);
-      if (!pkg || pkg.status !== 'frozen') return { ok: false as const, code: 'package_not_frozen' as const };
-      // 回执信息：remoteSubmissionId 是外部副作用的幂等凭证（人工从投稿系统回填）。
-      submissionRepository.updateCase(projectId, {
-        caseId,
-        submissionMethod: p.data.submissionMethod,
-        ...(p.data.portalUrl !== undefined ? { submissionPortalUrl: p.data.portalUrl } : {}),
-        ...(p.data.remoteSubmissionId !== undefined ? { remoteSubmissionId: p.data.remoteSubmissionId } : {}),
-        ...(p.data.notes !== undefined ? { notes: p.data.notes } : {}),
-      }, 'human');
-      // 状态链：READY_TO_SUBMIT → SUBMITTING → SUBMITTED；READY_TO_RESUBMIT → RESUBMITTED。
-      const before = submissionRepository.getCase(projectId, caseId)!;
-      if (before.status === 'READY_TO_SUBMIT') {
-        if (!submissionRepository.changeStatus(projectId, { caseId, to: 'SUBMITTING', reason: '进入提交流程（人工确认）', source: 'human', actor: 'human' })) {
-          return { ok: false as const, code: 'illegal_transition' as const };
-        }
-        if (!submissionRepository.changeStatus(projectId, { caseId, to: 'SUBMITTED', reason: `投稿回执：${p.data.remoteSubmissionId ?? '（无编号）'}`, source: 'human', actor: 'human' })) {
-          return { ok: false as const, code: 'illegal_transition' as const };
-        }
-      } else if (before.status === 'READY_TO_RESUBMIT') {
-        if (!submissionRepository.changeStatus(projectId, { caseId, to: 'RESUBMITTED', reason: '重新提交（人工确认）', source: 'human', actor: 'human' })) {
-          return { ok: false as const, code: 'illegal_transition' as const };
-        }
-      } else if (before.status !== 'SUBMITTING' && before.status !== 'SUBMISSION_STATE_UNCERTAIN') {
-        return { ok: false as const, code: 'illegal_status' as const };
-      }
-      const current = submissionRepository.getCase(projectId, caseId)!;
-      submissionRepository.addEvent(projectId, {
-        caseId, type: 'submission_receipt', source: 'human', actor: 'human',
-        description: `投稿确认完成：${current.targetJournalName} · ${p.data.submissionMethod === 'email' ? '邮件投稿' : '网页投稿'}${p.data.remoteSubmissionId ? ` · 编号 ${p.data.remoteSubmissionId}` : ''}`,
-        metadata: { method: p.data.submissionMethod, portalUrl: p.data.portalUrl ?? '', remoteSubmissionId: p.data.remoteSubmissionId ?? '', packageId: pkg.id },
-      });
-      return { ok: true as const, submissionCase: current };
-    } catch { return null; }
-  });
 
   // ── Submission P3/P4: 投稿通信（邮件外发/监听）与投稿门户操作 ──
   // 邮箱账户安全投影：绝不向渲染端暴露 encryptedSecret。
@@ -5243,6 +5084,7 @@ function setupIPC(): void {
   ipcDomainDisposers.push(registerOutcomeDataIpc(domainIpcContext));
   ipcDomainDisposers.push(registerSubmissionCaseIpc(domainIpcContext));
   ipcDomainDisposers.push(registerSubmissionJournalIpc(domainIpcContext));
+  ipcDomainDisposers.push(registerSubmissionPackageIpc(domainIpcContext));
 
   // ── 远程开发桥（dev-only）：METIS_REMOTE_BRIDGE=1 时开启浏览器远程访问。
   // 服务器在 whenReady 后启动，确保 setupIPC 已注册全部通道。──

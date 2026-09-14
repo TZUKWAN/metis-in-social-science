@@ -93,6 +93,10 @@ export interface DomainIpcContext {
     | { status: 'ready'; binding: import('../../engine/runtime/ProviderProfileContract.js').ProviderProfileBinding; agentLoop: import('../../engine/core/AgentLoop.js').AgentLoop }
     | { status: 'pending'; reason: string };
   submissionRepository(): import('../SubmissionRepository.js').SubmissionRepository | null;
+  submissionPreflightService(): import('../SubmissionPreflightService.js').SubmissionPreflightService | null;
+  submissionPackageService(): import('../SubmissionPackageService.js').SubmissionPackageService | null;
+  submissionPackageRepository(): import('../SubmissionPackageRepository.js').SubmissionPackageRepository | null;
+  submissionOwnedPackage(projectId: string, packageId: string): Record<string, unknown> | null;
   journalProfileRepository(): import('../JournalProfileRepository.js').JournalProfileRepository | null;
   literatureSearchService(): import('../LiteratureSearchService.js').LiteratureSearchService | null;
   // ── Research browser domain ─────────────────────────────
