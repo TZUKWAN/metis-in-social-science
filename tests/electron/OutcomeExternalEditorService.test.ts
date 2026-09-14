@@ -5,7 +5,8 @@ import { describe, expect, it } from 'vitest';
 import { OutcomeExternalEditorService } from '../../electron/OutcomeExternalEditorService.js';
 
 describe('OutcomeExternalEditorService', () => {
-  it('creates a scoped GenOffice session and rejects sync after an outcome version conflict', async () => {
+  // CI 双核 runner 上 GenOffice 会话建立可超默认 30s；放宽到 120s 只容忍慢机器。
+  it('creates a scoped GenOffice session and rejects sync after an outcome version conflict', { timeout: 120_000 }, async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'metis-genoffice-test-'));
     try {
       const service = new OutcomeExternalEditorService(root, async () => ({ pid: 1234 }));
