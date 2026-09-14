@@ -25,6 +25,27 @@ import {
 } from 'electron';
 import path from 'node:path';
 import { z } from 'zod';
+const workspaceAgentsByProject = new Map<string, WorkspaceAgentsManager>();
+function ensureWorkspaceManager(projectId: string): WorkspaceAgentsManager | null {
+  // Always re-validate against the repository on every call.
+  // Projects can be deleted between get/set invocations — cached managers
+  // for deleted or missing projects must be evicted immediately.
+  if (!researchRepository) return null;
+  const entity = researchRepository.getProject(projectId);
+  if (!entity || entity.deletedAt) {
+    workspaceAgentsByProject.delete(projectId);
+    return null;
+  }
+  const existing = workspaceAgentsByProject.get(projectId);
+  if (existing) return existing;
+  const mgr = new WorkspaceAgentsManager(DATA_DIR, projectId);
+  workspaceAgentsByProject.set(projectId, mgr);
+  return mgr;
+}
+
+function readOutcomeProjectMetis(projectId: string): OutcomeProjectMetisReadResult {
+  return readOutcomeProjectMetisFromWorkspace(ensureWorkspaceManager(projectId), projectId);
+}
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 import { spawn, spawnSync, exec } from 'node:child_process';
@@ -120,8 +141,6 @@ import { SubmissionRepository } from './SubmissionRepository.js';
 import { SUBMISSION_GAP_STATUSES } from '../engine/submission/JournalProfileContract.js';
 import { JournalProfileRepository } from './JournalProfileRepository.js';
 
-import { SubmissionGapService } from './SubmissionGapService.js';
-import { SubmissionOptimizationService } from './SubmissionOptimizationService.js';
 
 
 
@@ -221,6 +240,7 @@ import { registerSubmissionJournalIpc } from './ipc/registerSubmissionJournalIpc
 import { registerSubmissionPackageIpc } from './ipc/registerSubmissionPackageIpc.js';
 import { registerSubmissionCommsIpc } from './ipc/registerSubmissionCommsIpc.js';
 import { registerSubmissionPortalIpc } from './ipc/registerSubmissionPortalIpc.js';
+import { registerSubmissionPlanIpc } from './ipc/registerSubmissionPlanIpc.js';
 import { RemoteDevBridge, isRemoteBridgeSender, remoteBroadcast } from './RemoteBridge/remoteDevBridge.js';
 import { registerExperimentIpc } from './ipc/registerExperimentIpc.js';
 import { registerWeChatIpc } from './ipc/registerWeChatIpc.js';
@@ -903,6 +923,9 @@ const domainIpcContext: DomainIpcContext = {
   broadcastGoalChanged,
   resolveGoalExecutionOptions,
   resolveProjectOutcomeProvider,
+  artifactPromptService: () => artifactPromptService,
+  officePromptProfileService: () => officePromptProfileService,
+  readOutcomeProjectMetis,
 };
 const hitlApprovalRegistry = new ApprovalShutdownRegistry(runtimeShutdown, 'hitl-approval');
 const scenarioApprovalRegistry = new ScenarioApprovalRegistry(runtimeShutdown);
@@ -3626,95 +3649,6 @@ function setupIPC(): void {
 
   // ── Submission domain: 投稿事务（Series / Case / Events / 状态机） ──
 
-  ipcMain.handle('submission:plan:create', async (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1), gapItemIds: z.array(z.string().min(1)).max(100).optional() }).safeParse(raw);
-      if (!p.success || !journalProfileRepository || !submissionRepository || !outcomeRepository) return null;
-      return await new SubmissionOptimizationService({
-        submissionRepository,
-        journalRepository: journalProfileRepository,
-        outcomeRepository,
-        gapService: new SubmissionGapService({ submissionRepository, journalRepository: journalProfileRepository, outcomeRepository }),
-      }).createPlanFromGaps(p.data);
-    } catch { return null; }
-  });
-
-  ipcMain.handle('submission:plan:latest', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw);
-      if (!p.success || !journalProfileRepository || !submissionRepository) return null;
-      if (!submissionRepository.getCase(p.data.projectId, p.data.caseId)) return null;
-      const plan = journalProfileRepository.latestPlanForCase(p.data.caseId);
-      if (!plan) return null;
-      return { plan, items: journalProfileRepository.listPlanItems(plan.id) };
-    } catch { return null; }
-  });
-
-  ipcMain.handle('submission:plan:approve', async (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.object({ projectId: z.string().min(1), planId: z.string().min(1), selectedItemIds: z.array(z.string().min(1)).max(200).optional() }).safeParse(raw);
-      if (!p.success || !journalProfileRepository || !submissionRepository || !outcomeRepository) return null;
-      // 越权防护：方案所属 case 必须属于当前项目。
-      const plan = journalProfileRepository.getPlan(p.data.planId);
-      if (!plan || !submissionRepository.getCase(p.data.projectId, plan.caseId)) {
-        return { ok: false as const, code: 'plan_not_found' as const };
-      }
-      return await new SubmissionOptimizationService({
-        submissionRepository,
-        journalRepository: journalProfileRepository,
-        outcomeRepository,
-        gapService: new SubmissionGapService({ submissionRepository, journalRepository: journalProfileRepository, outcomeRepository }),
-      }).approvePlan(p.data);
-    } catch { return null; }
-  });
-
-  ipcMain.handle('submission:plan:apply', async (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.object({ projectId: z.string().min(1), planId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw);
-      if (!p.success || !journalProfileRepository || !submissionRepository || !outcomeRepository) return null;
-      // 自动修改依赖成果助手（LLM）；provider 未配置时结构化拒绝，不产生半执行状态。
-      const runtime = resolveProjectOutcomeProvider(p.data.projectId);
-      if (runtime.status !== 'ready') return { ok: false as const, code: 'provider_not_configured' as const };
-      const assistant = new OutcomeAssistantService({
-        repository: outcomeRepository,
-        agentLoop: runtime.agentLoop,
-        modelName: runtime.binding.model,
-        providerProfileBinding: runtime.binding,
-        projectContext: new OutcomeProjectContextService(outcomeRepository, { read: readOutcomeProjectMetis }),
-        resolveBehaviorPrompt: (promptId, outcomeId) => officePromptProfileService?.resolveForBasePrompt(promptId, outcomeId ?? null) ?? artifactPromptService?.resolve(promptId) ?? null,
-        getGlobalPrompt: (officeKind, outcomeId) => officePromptProfileService?.resolveGlobal(officeKind, outcomeId ?? null) ?? null,
-      });
-      return await new SubmissionOptimizationService({
-        submissionRepository,
-        journalRepository: journalProfileRepository,
-        outcomeRepository,
-        gapService: new SubmissionGapService({ submissionRepository, journalRepository: journalProfileRepository, outcomeRepository, agentLoop: runtime.agentLoop }),
-        assistant,
-      }).applyPlan(p.data);
-    } catch { return null; }
-  });
-
-  ipcMain.handle('submission:plan:verify', async (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.object({ projectId: z.string().min(1), planId: z.string().min(1) }).safeParse(raw);
-      if (!p.success || !journalProfileRepository || !submissionRepository || !outcomeRepository) return null;
-      const plan = journalProfileRepository.getPlan(p.data.planId);
-      if (!plan || !submissionRepository.getCase(p.data.projectId, plan.caseId)) {
-        return { ok: false as const, code: 'plan_not_found' as const };
-      }
-      return await new SubmissionOptimizationService({
-        submissionRepository,
-        journalRepository: journalProfileRepository,
-        outcomeRepository,
-        gapService: new SubmissionGapService({ submissionRepository, journalRepository: journalProfileRepository, outcomeRepository }),
-      }).verifyPlan(p.data);
-    } catch { return null; }
-  });
 
   ipcMain.handle('submission:gap:update', (event, raw: unknown) => {
     try {
@@ -4895,6 +4829,7 @@ function setupIPC(): void {
   ipcDomainDisposers.push(registerSubmissionPackageIpc(domainIpcContext));
   ipcDomainDisposers.push(registerSubmissionCommsIpc(domainIpcContext));
   ipcDomainDisposers.push(registerSubmissionPortalIpc(domainIpcContext));
+  ipcDomainDisposers.push(registerSubmissionPlanIpc(domainIpcContext));
 
   // ── 远程开发桥（dev-only）：METIS_REMOTE_BRIDGE=1 时开启浏览器远程访问。
   // 服务器在 whenReady 后启动，确保 setupIPC 已注册全部通道。──
@@ -7761,23 +7696,6 @@ function setupIPC(): void {
   // ── Project Metis.md (CAS-protected; legacy AGENTS.md migration) ──
   // Manager registry keyed by strictly-validated projectId.
   // On startup: scan existing projects from DATA_DIR/projects/.
-  const workspaceAgentsByProject = new Map<string, WorkspaceAgentsManager>();
-  function ensureWorkspaceManager(projectId: string): WorkspaceAgentsManager | null {
-    // Always re-validate against the repository on every call.
-    // Projects can be deleted between get/set invocations — cached managers
-    // for deleted or missing projects must be evicted immediately.
-    if (!researchRepository) return null;
-    const entity = researchRepository.getProject(projectId);
-    if (!entity || entity.deletedAt) {
-      workspaceAgentsByProject.delete(projectId);
-      return null;
-    }
-    const existing = workspaceAgentsByProject.get(projectId);
-    if (existing) return existing;
-    const mgr = new WorkspaceAgentsManager(DATA_DIR, projectId);
-    workspaceAgentsByProject.set(projectId, mgr);
-    return mgr;
-  }
 
   /**
    * Outcome assistants may only receive the current project's authoritative
@@ -7785,9 +7703,6 @@ function setupIPC(): void {
    * project-ownership check as the workspace IPC, and rejects conflicted or
    * malformed workspace views rather than passing raw files to the model.
    */
-  function readOutcomeProjectMetis(projectId: string): OutcomeProjectMetisReadResult {
-    return readOutcomeProjectMetisFromWorkspace(ensureWorkspaceManager(projectId), projectId);
-  }
   // Scan for existing projects at startup
   try {
     const projectsRoot = path.join(DATA_DIR, 'projects');

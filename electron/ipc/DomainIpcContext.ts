@@ -104,6 +104,9 @@ export interface DomainIpcContext {
   submissionCorrespondenceRepository(): import('../SubmissionCorrespondenceRepository.js').SubmissionCorrespondenceRepository | null;
   submissionDeadlineSync(): import('../SubmissionDeadlineSync.js').SubmissionDeadlineSync | null;
   submissionPortalService(): import('../SubmissionPortalService.js').SubmissionPortalService | null;
+  artifactPromptService(): import('../ArtifactPromptService.js').ArtifactPromptService | null;
+  officePromptProfileService(): import('../OfficePromptProfileService.js').OfficePromptProfileService | null;
+  readOutcomeProjectMetis(projectId: string): import('../OutcomeProjectContextService.js').OutcomeProjectMetisReadResult;
   submissionOwnedPackage(projectId: string, packageId: string): Record<string, unknown> | null;
   journalProfileRepository(): import('../JournalProfileRepository.js').JournalProfileRepository | null;
   literatureSearchService(): import('../LiteratureSearchService.js').LiteratureSearchService | null;
