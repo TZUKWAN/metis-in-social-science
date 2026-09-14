@@ -19,6 +19,10 @@ import { documentBridge } from './preload/documentBridge.js';
 import { officeBridge } from './preload/officeBridge.js';
 import { goalBridge } from './preload/goalBridge.js';
 import { terminalBridge } from './preload/terminalBridge.js';
+import { researchBridge } from './preload/researchBridge.js';
+import { currentAffairsBridge } from './preload/currentAffairsBridge.js';
+import { settingsBridge } from './preload/settingsBridge.js';
+import { capabilityBridge } from './preload/capabilityBridge.js';
 import { OutcomeExternalEditorStateRequestSchema, OutcomeExternalEditorStateSchema } from '../engine/runtime/OutcomeRuntimeContract.js';
 import { OutcomeAssistantChatRequestSchema, OutcomeAssistantChatResultSchema, OutcomeExternalEditorCloseRequestSchema, OutcomeExternalEditorOpenRequestSchema, OutcomeExternalEditorOpenResultSchema, OutcomeExternalEditorSyncRequestSchema, OutcomeExternalEditorSyncResultSchema, ScopedConversationMessageRequestSchema, ScopedConversationRequestSchema } from '../engine/runtime/OutcomeRuntimeContract.js';
 import {
@@ -48,70 +52,6 @@ import {
   decodeSessionUpdateRequest,
   type SessionUpdateRequest,
 } from '../engine/runtime/SessionRuntimeContract.js';
-import {
-  createApprovalMutationFailure,
-  decodeApprovalMutationResult,
-  decodeApprovalRequestView,
-  decodeApprovalRuleToggleRequest,
-  decodeApprovalRuleViews,
-  decodeApprovalResponseRequest,
-  type ApprovalRequestView,
-} from '../engine/runtime/ApprovalRuntimeContract.js';
-import {
-  createResearchMutationRecovery,
-  decodeResearchArtifactVersionListResult,
-  decodeResearchArtifactVersionRequest,
-  decodeResearchArtifactVersionResult,
-  decodeResearchCheckpointListResult,
-  decodeResearchCheckpointRequest,
-  decodeResearchCheckpointResult,
-  decodeResearchCrudRequest,
-  decodeResearchDecisionListResult,
-  decodeResearchDecisionRequest,
-  decodeResearchEntityListResult,
-  decodeResearchEntityResult,
-  decodeResearchLinkListResult,
-  decodeResearchLinkRequest,
-  decodeResearchMutationResult,
-  decodeResearchRestoreRequest,
-  decodeResearchReviewRequest,
-  decodeResearchSnapshotRequest,
-  decodeResearchSnapshotResult,
-  type ResearchArtifactVersionRequest,
-  type ResearchCheckpointRequest,
-  type ResearchCrudRequest,
-  type ResearchDecisionRequest,
-  type ResearchLinkRequest,
-  type ResearchRestoreRequest,
-  type ResearchReviewRequest,
-  type ResearchSnapshotRequest,
-} from '../engine/runtime/ResearchRuntimeContract.js';
-import {
-  decodeResearchMediaAttachRequest,
-  decodeResearchMediaAttachResult,
-  decodeResearchMediaPurgeRequest,
-  decodeResearchMediaPurgeResult,
-  type ResearchMediaAttachRequest,
-  type ResearchMediaPurgeRequest,
-} from '../engine/runtime/ResearchMediaRuntimeContract.js';
-import {
-  SETUP_RUNTIME_CONTRACT_VERSION,
-  SetupAbortResponseSchema,
-  decodeSetupAbortRequest,
-  decodeSetupProbeResponse,
-  decodeSetupProgressEvent,
-  decodeSetupRestoreRequest,
-  decodeSetupRestoreResponse,
-  decodeSetupSaveRequest,
-  decodeSetupSaveResponse,
-  type SetupAbortRequest,
-  type SetupProbeRequest,
-  type SetupProgressEvent,
-  type SetupRestoreRequest,
-  type SetupSaveRequest,
-  decodeSettingsProviderProbeRequest,
-  type SettingsProviderProbeRequest,
-} from '../engine/runtime/SetupRuntimeContract.js';
 import {
   createProviderProfileListRecovery,
   createProviderProfileMutationRecovery,
@@ -169,39 +109,6 @@ import type {
   ScenarioHarnessDiffEntry,
 } from '../engine/personalization/ScenarioHarnessCompiler.js';
 import {
-  PersonalizationExtensionIpcRequestSchema,
-  decodePersonalizationExtensionResponse,
-  type PersonalizationExtensionIpcRequest,
-} from '../engine/runtime/PersonalizationExtensionContract.js';
-import {
-  PersonalizationBundleExportIpcRequestSchema,
-  PersonalizationBundleImportIpcRequestSchema,
-  decodePersonalizationBundleIpcResponse,
-  type PersonalizationBundleExportIpcRequest,
-  type PersonalizationBundleImportIpcRequest,
-} from '../engine/runtime/PersonalizationBundleContract.js';
-import {
-  PersonalizationSecretListRequestSchema,
-  PersonalizationSecretRemoveRequestSchema,
-  PersonalizationSecretSetRequestSchema,
-  decodePersonalizationSecretListResponse,
-  decodePersonalizationSecretRemoveResponse,
-  decodePersonalizationSecretSetResponse,
-  type PersonalizationSecretListRequest,
-  type PersonalizationSecretRemoveRequest,
-  type PersonalizationSecretSetRequest,
-} from '../engine/runtime/PersonalizationSecretContract.js';
-import {
-  FundingTemplateIpcRequestSchema,
-  decodeFundingTemplateRuntimeResponse,
-  type FundingTemplateIpcRequest,
-} from '../engine/runtime/FundingTemplateRuntimeContract.js';
-import {
-  McpActivationIpcRequestSchema,
-  decodeMcpActivationResponse,
-  type McpActivationIpcRequest,
-} from '../engine/runtime/McpActivationContract.js';
-import {
   createProjectMemoryMutationFailure,
   decodeProjectMemoryMutationResult,
   decodeProjectMemoryWriteRequest,
@@ -215,55 +122,11 @@ import {
   decodeWorkspaceAgentsWriteRequest,
 } from '../engine/runtime/WorkspaceAgentsContract.js';
 import {
-  createSettingsMutationFailure,
-  decodeSettingsMutationResult,
-  decodeSettingsUpdateRequest,
-  decodeSettingsView,
-} from '../engine/runtime/SettingsRuntimeContract.js';
-import {
-  CurrentAffairsResearchRequestSchema,
-  CurrentAffairsApproveRequestSchema,
-  CurrentAffairsExportRequestSchema,
-  CurrentAffairsCancelRequestSchema,
-  CurrentAffairsListSourcesRequestSchema,
-  SourceReviewRequestSchema,
-  decodeCurrentAffairsResearchResponse,
-  decodeCurrentAffairsApproveResponse,
-  decodeCurrentAffairsExportResponse,
-  decodeCurrentAffairsCancelResponse,
-  decodeCurrentAffairsListSourcesResponse,
-  decodeSourceReviewResponse,
-  type CurrentAffairsResearchRequest,
-  type CurrentAffairsApproveRequest,
-  type CurrentAffairsExportRequest,
-  type CurrentAffairsCancelRequest,
-  type CurrentAffairsListSourcesRequest,
-  type SourceReviewRequest,
-} from '../engine/runtime/CurrentAffairsRuntimeContract.js';
-import {
   createEvalRunFailure,
   decodeEvalRunRequest,
   decodeEvalRunResult,
 } from '../engine/runtime/EvalRuntimeContract.js';
 
-
-async function invokeSetupWithProgress<T>(
-  channel: 'setup:probe' | 'setup:save',
-  request: SetupProbeRequest | SetupSaveRequest | SettingsProviderProbeRequest,
-  decodeResponse: (input: unknown) => T,
-  onProgress?: (event: SetupProgressEvent) => void,
-): Promise<T> {
-  const handler = (_event: Electron.IpcRendererEvent, raw: unknown) => {
-    const progress = decodeSetupProgressEvent(raw);
-    if (progress?.operationId === request.operationId) onProgress?.(progress);
-  };
-  ipcRenderer.on('setup:progress', handler);
-  try {
-    return decodeResponse(await ipcRenderer.invoke(channel, request));
-  } finally {
-    ipcRenderer.removeListener('setup:progress', handler);
-  }
-}
 
 import { submissionBridge } from './preload/submissionBridge.js';
 import { outcomeBridge } from './preload/outcomeBridge.js';
@@ -289,6 +152,12 @@ const api = {
   ...officeBridge,
   ...goalBridge,
   ...terminalBridge,
+  // 以下四个 bridge 由 preload.ts 原内联段迁出（2026-09-15 拆分）；放在
+  // spread 列表末尾以保持原先“内联定义覆盖各 bridge”的生效优先级。
+  ...researchBridge,
+  ...currentAffairsBridge,
+  ...settingsBridge,
+  ...capabilityBridge,
   // ── Acceptance Environment ───────────────────────────────
   acceptanceEnvironment: () => ipcRenderer.invoke('acceptance:environment') as Promise<
     | { enabled: false }
@@ -320,195 +189,6 @@ const api = {
   }>,
   acceptanceReleaseWindowControl: () =>
     ipcRenderer.invoke('acceptance:window:release') as Promise<{ released: true }>,
-
-  // ── Store ──────────────────────────────────────────────
-  storeReady: () => ipcRenderer.invoke('store:ready'),
-  startupStatus: () => ipcRenderer.invoke('startup:status') as Promise<{ ready: boolean; storeReady: boolean }>,
-  runtimeIdentity: () => ipcRenderer.invoke('runtime:identity') as Promise<{
-    buildId: 'metis-alpha2-release';
-    appVersion: string;
-    mode: 'development' | 'packaged';
-    sourceRoot: string;
-    mainEntry: string;
-    rendererEntry: string;
-    dataDir: string;
-    electronVersion: string;
-    startedAt: number;
-  }>,
-
-  setupProbe: async (
-    rawRequest: SettingsProviderProbeRequest,
-    onProgress?: (event: SetupProgressEvent) => void,
-  ) => {
-    const decoded = decodeSettingsProviderProbeRequest(rawRequest);
-    if (!decoded.ok) return decodeSetupProbeResponse(null);
-    return invokeSetupWithProgress(
-      'setup:probe',
-      decoded.value,
-      decodeSetupProbeResponse,
-      onProgress,
-    );
-  },
-  setupSave: async (
-    rawRequest: SetupSaveRequest,
-    onProgress?: (event: SetupProgressEvent) => void,
-  ) => {
-    const request = decodeSetupSaveRequest(rawRequest);
-    if (!request.ok) return decodeSetupSaveResponse(null);
-    return invokeSetupWithProgress(
-      'setup:save',
-      request.value,
-      decodeSetupSaveResponse,
-      onProgress,
-    );
-  },
-  setupRestore: async (rawRequest: SetupRestoreRequest) => {
-    const request = decodeSetupRestoreRequest(rawRequest);
-    if (!request.ok) return decodeSetupRestoreResponse(null);
-    return decodeSetupRestoreResponse(await ipcRenderer.invoke('setup:restore', request.value));
-  },
-  setupAbort: async (rawRequest: SetupAbortRequest) => {
-    const request = decodeSetupAbortRequest(rawRequest);
-    const fallback = {
-      version: SETUP_RUNTIME_CONTRACT_VERSION,
-      operationId: 'setup-recovery',
-      success: false,
-      code: 'setup_operation_not_found',
-    } as const;
-    if (!request.ok) return fallback;
-    const parsed = SetupAbortResponseSchema.safeParse(
-      await ipcRenderer.invoke('setup:abort', request.value),
-    );
-    return parsed.success ? parsed.data : fallback;
-  },
-
-  // Persistent research workspace (Project, Source, Evidence, NoteCode,
-  // Claim and Artifact). Requests and responses are independently decoded on
-  // both sides of the context-isolated bridge.
-  researchListProjects: async (options: { includeDeleted?: boolean; limit?: number; offset?: number } = {}) => {
-    const request = decodeResearchCrudRequest({
-      operation: 'list',
-      entityKind: 'project',
-      projectId: 'project-list',
-      includeDeleted: options.includeDeleted ?? false,
-      limit: options.limit ?? 100,
-      offset: options.offset ?? 0,
-    });
-    if (!request.ok) return decodeResearchEntityListResult(null);
-    return decodeResearchEntityListResult(
-      await ipcRenderer.invoke('research:crud', request.value),
-    );
-  },
-  researchCrud: async (rawRequest: ResearchCrudRequest) => {
-    const request = decodeResearchCrudRequest(rawRequest);
-    if (!request.ok) return createResearchMutationRecovery();
-    const raw = await ipcRenderer.invoke('research:crud', request.value) as unknown;
-    if (request.value.operation === 'get') return decodeResearchEntityResult(raw);
-    if (request.value.operation === 'list') return decodeResearchEntityListResult(raw);
-    return decodeResearchMutationResult(raw);
-  },
-  researchLink: async (rawRequest: ResearchLinkRequest) => {
-    const request = decodeResearchLinkRequest(rawRequest);
-    if (!request.ok) return createResearchMutationRecovery();
-    const raw = await ipcRenderer.invoke('research:link', request.value) as unknown;
-    return request.value.operation === 'list_links'
-      ? decodeResearchLinkListResult(raw)
-      : decodeResearchMutationResult(raw);
-  },
-  researchReview: async (rawRequest: ResearchReviewRequest) => {
-    const request = decodeResearchReviewRequest(rawRequest);
-    if (!request.ok) return createResearchMutationRecovery();
-    return decodeResearchMutationResult(
-      await ipcRenderer.invoke('research:review', request.value),
-    );
-  },
-  researchRestore: async (rawRequest: ResearchRestoreRequest) => {
-    const request = decodeResearchRestoreRequest(rawRequest);
-    if (!request.ok) return createResearchMutationRecovery();
-    return decodeResearchMutationResult(
-      await ipcRenderer.invoke('research:restore', request.value),
-    );
-  },
-  researchVersion: async (rawRequest: ResearchArtifactVersionRequest) => {
-    const request = decodeResearchArtifactVersionRequest(rawRequest);
-    if (!request.ok) return createResearchMutationRecovery();
-    const raw = await ipcRenderer.invoke('research:version', request.value) as unknown;
-    if (request.value.operation === 'get_version') return decodeResearchArtifactVersionResult(raw);
-    if (request.value.operation === 'list_versions') return decodeResearchArtifactVersionListResult(raw);
-    return decodeResearchMutationResult(raw);
-  },
-  researchCheckpoint: async (rawRequest: ResearchCheckpointRequest) => {
-    const request = decodeResearchCheckpointRequest(rawRequest);
-    if (!request.ok) return createResearchMutationRecovery();
-    const raw = await ipcRenderer.invoke('research:checkpoint', request.value) as unknown;
-    if (request.value.operation === 'latest_checkpoint') return decodeResearchCheckpointResult(raw);
-    if (request.value.operation === 'list_checkpoints') return decodeResearchCheckpointListResult(raw);
-    return decodeResearchMutationResult(raw);
-  },
-  researchDecision: async (rawRequest: ResearchDecisionRequest) => {
-    const request = decodeResearchDecisionRequest(rawRequest);
-    if (!request.ok) return createResearchMutationRecovery();
-    const raw = await ipcRenderer.invoke('research:decision', request.value) as unknown;
-    if (request.value.operation === 'list_decisions') return decodeResearchDecisionListResult(raw);
-    return decodeResearchMutationResult(raw);
-  },
-  researchSnapshot: async (rawRequest: ResearchSnapshotRequest) => {
-    const request = decodeResearchSnapshotRequest(rawRequest);
-    if (!request.ok) return decodeResearchSnapshotResult(null);
-    return decodeResearchSnapshotResult(
-      await ipcRenderer.invoke('research:snapshot', request.value),
-    );
-  },
-  researchMediaAttach: async (rawRequest: ResearchMediaAttachRequest) => {
-    const request = decodeResearchMediaAttachRequest(rawRequest);
-    if (!request) return decodeResearchMediaAttachResult(null);
-    return decodeResearchMediaAttachResult(
-      await ipcRenderer.invoke('research:mediaAttach', request),
-    );
-  },
-  researchMediaPurge: async (rawRequest: ResearchMediaPurgeRequest) => {
-    const request = decodeResearchMediaPurgeRequest(rawRequest);
-    if (!request) return decodeResearchMediaPurgeResult(null);
-    return decodeResearchMediaPurgeResult(
-      await ipcRenderer.invoke('research:mediaPurge', request),
-    );
-  },
-
-  // ── Current Affairs (strict decode) ─────────────────────
-  currentAffairsResearch: async (raw: CurrentAffairsResearchRequest) => {
-    const req = CurrentAffairsResearchRequestSchema.safeParse(raw);
-    if (!req.success) return decodeCurrentAffairsResearchResponse(null);
-    const result = await ipcRenderer.invoke('ca:research', req.data);
-    return decodeCurrentAffairsResearchResponse(result);
-  },
-  currentAffairsApprove: async (raw: CurrentAffairsApproveRequest) => {
-    const req = CurrentAffairsApproveRequestSchema.safeParse(raw);
-    if (!req.success) return decodeCurrentAffairsApproveResponse(null);
-    const result = await ipcRenderer.invoke('ca:approve', req.data);
-    return decodeCurrentAffairsApproveResponse(result);
-  },
-  currentAffairsExport: async (raw: CurrentAffairsExportRequest) => {
-    const req = CurrentAffairsExportRequestSchema.safeParse(raw);
-    if (!req.success) return decodeCurrentAffairsExportResponse(null);
-    const result = await ipcRenderer.invoke('ca:export', req.data);
-    return decodeCurrentAffairsExportResponse(result);
-  },
-  currentAffairsCancel: async (raw: CurrentAffairsCancelRequest) => {
-    const req = CurrentAffairsCancelRequestSchema.safeParse(raw);
-    if (!req.success) return decodeCurrentAffairsCancelResponse(null);
-    const result = await ipcRenderer.invoke('ca:cancel', req.data);
-    return decodeCurrentAffairsCancelResponse(result);
-  },
-  currentAffairsReviewSource: async (raw: SourceReviewRequest) => {
-    const req = SourceReviewRequestSchema.safeParse(raw);
-    if (!req.success) return decodeSourceReviewResponse(null);
-    return decodeSourceReviewResponse(await ipcRenderer.invoke('ca:review-source', req.data));
-  },
-  currentAffairsListSources: async (raw: CurrentAffairsListSourcesRequest) => {
-    const req = CurrentAffairsListSourcesRequestSchema.safeParse(raw);
-    if (!req.success) return decodeCurrentAffairsListSourcesResponse(null);
-    return decodeCurrentAffairsListSourcesResponse(await ipcRenderer.invoke('ca:list-sources', req.data));
-  },
 
   // ── Session ────────────────────────────────────────────
   createSession: async (sessionId: string, projectId?: string) => {
@@ -595,16 +275,6 @@ const api = {
     return decodeEvalRunResult(await ipcRenderer.invoke('eval:runSuite', request));
   },
 
-  // ── Settings ───────────────────────────────────────────
-  getSettings: async () => decodeSettingsView(await ipcRenderer.invoke('settings:get')),
-  markSetupSkipped: async () => ipcRenderer.invoke('settings:markSetupSkipped') as Promise<{ ok: boolean; error?: string }>,
-  checkForUpdates: async () => ipcRenderer.invoke('update:check') as Promise<unknown>,
-  getUpdateStatus: async () => ipcRenderer.invoke('update:status') as Promise<unknown>,
-  downloadUpdate: async () => ipcRenderer.invoke('update:download') as Promise<unknown>,
-  installUpdate: async () => ipcRenderer.invoke('update:install') as Promise<unknown>,
-  getHealthReport: async () => ipcRenderer.invoke('diagnostics:healthReport') as Promise<unknown>,
-  exportDiagnosticBundle: async () => ipcRenderer.invoke('diagnostics:exportBundle') as Promise<{ ok: boolean; path?: string; sha256?: string; entries?: number; error?: string }>,
-
   linkPaperToProject: async (request: { paperId: string; projectId: string; link?: boolean }) => ipcRenderer.invoke('paper:linkToProject', request) as Promise<{ ok: boolean; error?: string }>,
   exportProject: async (request: { projectId: string; destPath?: string }) =>
     ipcRenderer.invoke('project:export', request) as Promise<{ ok: boolean; path?: string; error?: string; manifest?: unknown }>,
@@ -614,34 +284,6 @@ const api = {
     | { success: true; projects: Array<{ id: string; title: string; updatedAt: number; archivedAt: number | null }> }
     | { success: false; code: string }
   >,
-  // ── O13: 项目级 provider/model 覆盖 ──
-  getProjectProviderOverride: async (projectId: string) =>
-    ipcRenderer.invoke('project:getProviderOverride', projectId) as Promise<
-      { ok: true; override: import('../engine/runtime/ProviderProfileContract.js').ProjectProviderOverride | null }
-      | { ok: false; code: string }
-    >,
-  setProjectProviderOverride: async (request: {
-    projectId: string;
-    override: import('../engine/runtime/ProviderProfileContract.js').ProjectProviderOverride | null;
-  }) =>
-    ipcRenderer.invoke('project:setProviderOverride', request) as Promise<{ ok: boolean; code?: string }>,
-  pickProjectArchive: async () => ipcRenderer.invoke('project:pickArchive') as Promise<{ canceled: boolean; path?: string }>,
-  // ── Storage location (user-configurable data directory) ──
-  storageGetLocation: async () => ipcRenderer.invoke('storage:getLocation') as Promise<{
-    ok: boolean;
-    dataDir?: string;
-    defaultDir?: string;
-    usingDefault?: boolean;
-    error?: string;
-  }>,
-
-  storageSetLocation: async (target: string) => ipcRenderer.invoke('storage:setLocation', target) as Promise<{
-    ok: boolean;
-    restarting?: boolean;
-    dataDir?: string;
-    error?: string;
-  }>,
-
   browserShow: async (bounds: { x: number; y: number; width: number; height: number }) =>
     ipcRenderer.invoke('browser:show', bounds) as Promise<{ ok: boolean; error?: string }>,
   browserHide: async () => ipcRenderer.invoke('browser:hide') as Promise<{ ok: boolean; error?: string }>,
@@ -734,7 +376,6 @@ const api = {
   openDirectoryDialog: async () => ipcRenderer.invoke('dialog:openDirectory') as Promise<string | null>,
   setProjectDir: async (projectId: string, projectDir: string) => ipcRenderer.invoke('research:setProjectDir', { projectId, projectDir }) as Promise<{ ok: boolean }>,
 
-  importIssnList: async () => ipcRenderer.invoke('settings:importIssnList') as Promise<{ ok: boolean; added: number; totalCandidates?: number; error?: string }>,
   browserState: async () => ipcRenderer.invoke('browser:state') as Promise<{
     ok: boolean;
     state?: { url: string; title: string; loading: boolean; canGoBack: boolean; canGoForward: boolean };
@@ -818,12 +459,6 @@ const api = {
       await ipcRenderer.invoke('providerProfiles:reset', request.value),
       request.value.operationId,
     );
-  },
-
-  setSettings: async (config: unknown) => {
-    const request = decodeSettingsUpdateRequest(config);
-    if (!request) return createSettingsMutationFailure('secure_setup_required');
-    return decodeSettingsMutationResult(await ipcRenderer.invoke('settings:set', request));
   },
 
   setProjectMemory: async (content: string) => {
@@ -922,28 +557,6 @@ const api = {
     ipcRenderer.invoke('fundingTemplate:draftOutline', request) as Promise<{
       ok: boolean; code?: string; message?: string; markdown?: string;
     }>,
-
-  // ── MCP Servers ────────────────────────────────────────
-  listMCPServers: () => ipcRenderer.invoke('mcp:list'),
-  addMCPServer: (_config: { id: string; name: string; command: string; args: string[]; env: Record<string, string>; enabled: boolean }) =>
-    (void _config, Promise.resolve({ success: false, code: 'managed_mcp_required' })),
-  removeMCPServer: (id: string) => ipcRenderer.invoke('mcp:remove', id),
-  toggleMCPServer: (id: string, enabled: boolean) => ipcRenderer.invoke('mcp:toggle', id, enabled),
-  testMCPServer: (_config: { command: string; args: string[]; env: Record<string, string> }) =>
-    (void _config, Promise.resolve({ success: false, code: 'managed_mcp_required' })),
-
-  // ── Skills ─────────────────────────────────────────────
-  listSkills: () => ipcRenderer.invoke('skill:list'),
-  getSkill: (id: string) => ipcRenderer.invoke('skill:get', id),
-  setActiveSkill: (id: string | null) => ipcRenderer.invoke('skill:setActive', id),
-  getActiveSkill: () => ipcRenderer.invoke('skill:getActive'),
-  generateSkillFromConversation: async (request: { messages: Array<{ role: string; content: string }>; userIntent?: string }) =>
-    ipcRenderer.invoke('skill:generateFromConversation', request) as Promise<{
-      ok: boolean;
-      error?: string;
-      skill?: { id: string; name: string; description: string; systemPrompt: string; allowedTools: string[]; maxTurns: number; rationale: string };
-    }>,
-  deleteCustomSkill: (id: string) => ipcRenderer.invoke('skill:deleteCustom', id) as Promise<{ ok: boolean; error?: string }>,
 
   listPersonalization: async (rawRequest: PersonalizationListRequest) => {
     const request = PersonalizationListRequestSchema.safeParse(rawRequest);
@@ -1261,100 +874,6 @@ const api = {
       return { ok: false as const, code: 'definition_corrupt' as const, issues: ['Invalid personalization request'] };
     }
     return decodePersonalizationResolveResponse(await ipcRenderer.invoke('personalization:resolve', request.data));
-  },
-
-  // ── HITL Approval ──────────────────────────────────────
-  applyPersonalizationExtension: async (rawRequest: PersonalizationExtensionIpcRequest) => {
-    const request = PersonalizationExtensionIpcRequestSchema.safeParse(rawRequest);
-    if (!request.success) return decodePersonalizationExtensionResponse(null);
-    return decodePersonalizationExtensionResponse(
-      await ipcRenderer.invoke('personalization:extension:apply', request.data),
-    );
-  },
-
-  activatePersonalizationMcp: async (rawRequest: McpActivationIpcRequest) => {
-    const request = McpActivationIpcRequestSchema.safeParse(rawRequest);
-    if (!request.success) return decodeMcpActivationResponse(null);
-    return decodeMcpActivationResponse(
-      await ipcRenderer.invoke('personalization:mcp:activate', request.data),
-    );
-  },
-
-  exportPersonalizationBundle: async (rawRequest: PersonalizationBundleExportIpcRequest) => {
-    const request = PersonalizationBundleExportIpcRequestSchema.safeParse(rawRequest);
-    if (!request.success) return decodePersonalizationBundleIpcResponse(null);
-    return decodePersonalizationBundleIpcResponse(
-      await ipcRenderer.invoke('personalization:bundle:export', request.data),
-    );
-  },
-  importPersonalizationBundle: async (rawRequest: PersonalizationBundleImportIpcRequest) => {
-    const request = PersonalizationBundleImportIpcRequestSchema.safeParse(rawRequest);
-    if (!request.success) return decodePersonalizationBundleIpcResponse(null);
-    return decodePersonalizationBundleIpcResponse(
-      await ipcRenderer.invoke('personalization:bundle:import', request.data),
-    );
-  },
-  listPersonalizationSecrets: async (rawRequest: PersonalizationSecretListRequest) => {
-    const request = PersonalizationSecretListRequestSchema.safeParse(rawRequest);
-    if (!request.success) return decodePersonalizationSecretListResponse(null);
-    return decodePersonalizationSecretListResponse(
-      await ipcRenderer.invoke('personalization:secrets:list', request.data),
-      request.data.operationId,
-    );
-  },
-  setPersonalizationSecret: async (rawRequest: PersonalizationSecretSetRequest) => {
-    const request = PersonalizationSecretSetRequestSchema.safeParse(rawRequest);
-    if (!request.success) return decodePersonalizationSecretSetResponse(null);
-    return decodePersonalizationSecretSetResponse(
-      await ipcRenderer.invoke('personalization:secrets:set', request.data),
-      request.data.operationId,
-    );
-  },
-  removePersonalizationSecret: async (rawRequest: PersonalizationSecretRemoveRequest) => {
-    const request = PersonalizationSecretRemoveRequestSchema.safeParse(rawRequest);
-    if (!request.success) return decodePersonalizationSecretRemoveResponse(null);
-    return decodePersonalizationSecretRemoveResponse(
-      await ipcRenderer.invoke('personalization:secrets:remove', request.data),
-      request.data.operationId,
-    );
-  },
-  fundingTemplate: async (rawRequest: FundingTemplateIpcRequest) => {
-    const request = FundingTemplateIpcRequestSchema.safeParse(rawRequest);
-    if (!request.success) return decodeFundingTemplateRuntimeResponse(null);
-    return decodeFundingTemplateRuntimeResponse(
-      await ipcRenderer.invoke('fundingTemplate:invoke', request.data),
-    );
-  },
-
-  onApprovalRequired: (callback: (request: ApprovalRequestView) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, rawRequest: unknown) => {
-      const request = decodeApprovalRequestView(rawRequest);
-      if (request) callback(request);
-    };
-    ipcRenderer.on('hitl:approval:required', handler);
-    return () => { ipcRenderer.removeListener('hitl:approval:required', handler); };
-  },
-  respondApproval: async (requestId: string, approved: boolean) => {
-    const request = decodeApprovalResponseRequest({
-      requestId,
-      decision: approved ? 'approve' : 'reject',
-    });
-    if (!request) return createApprovalMutationFailure();
-    return decodeApprovalMutationResult(await ipcRenderer.invoke('hitl:approval:respond', request));
-  },
-  getPendingApprovals: async () => {
-    const raw = await ipcRenderer.invoke('hitl:approvals:pending') as unknown;
-    if (!Array.isArray(raw)) return [];
-    return raw.flatMap((item) => {
-      const request = decodeApprovalRequestView(item);
-      return request ? [request] : [];
-    });
-  },
-  listHITLRules: async () => decodeApprovalRuleViews(await ipcRenderer.invoke('hitl:rules:list')),
-  toggleHITLRule: async (ruleId: string, enabled: boolean) => {
-    const request = decodeApprovalRuleToggleRequest({ ruleId, enabled });
-    if (!request) return createApprovalMutationFailure();
-    return decodeApprovalMutationResult(await ipcRenderer.invoke('hitl:rules:toggle', request));
   },
 
 };

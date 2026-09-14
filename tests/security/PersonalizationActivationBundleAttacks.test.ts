@@ -34,7 +34,9 @@ import { PersonalizationSkillInstaller } from '../../electron/PersonalizationSki
 const NOW = 1_901_000_000_000;
 const OPERATION = '00000000-0000-4000-8000-000000009901';
 const MAIN_SOURCE = fs.readFileSync(path.resolve('electron/main.ts'), 'utf8');
-const PRELOAD_SOURCE = fs.readFileSync(path.resolve('electron/preload.ts'), 'utf8');
+// preload 拆分（2026-09-15）：聚合 preload.ts 与 electron/preload/** 保持等价扫描强度。
+const PRELOAD_SOURCE = ['electron/preload.ts', ...fs.readdirSync('electron/preload').filter((f) => f.endsWith('.ts')).map((f) => `electron/preload/${f}`)]
+  .map((f) => fs.readFileSync(path.resolve(f), 'utf8')).join('\n');
 const PANEL_SOURCE = fs.readFileSync(path.resolve('src/personalization/McpActivationPanel.tsx'), 'utf8');
 const RUNTIME_SOURCE = fs.readFileSync(path.resolve('electron/PersonalizationRuntimeService.ts'), 'utf8');
 

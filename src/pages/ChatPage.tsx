@@ -1,13 +1,8 @@
-import { useState, useRef, useEffect, useCallback, useMemo, useLayoutEffect, memo, type ReactNode } from 'react';
-import type { Components } from 'react-markdown';
+import { useState, useRef, useEffect, useCallback, useMemo, useLayoutEffect, type ReactNode } from 'react';
 import { useMetisStore } from '../store';
 import { autoResizeTextarea } from '../lib/textareaAutosize.js';
 import { showToast } from '../lib/toast';
 import ModelThinkingSelector from '../components/ModelThinkingSelector';
-import { matchSlashCommand, SLASH_COMMANDS } from '../lib/slashCommands';
-import { CodeBlock } from '../components/CodeBlock';
-import { ScenarioStepCard, parseScenarioStepCard, type ScenarioStepCardData } from '../components/ScenarioStepCard';
-import { ScenarioStepCardWithActions } from '../conversation/ScenarioStepCardWithActions';
 
 import { ConversationController } from '../conversation/runtime/ConversationController.js';
 import { ingestChatStreamChunk } from '../conversation/runtime/chatStreamAdapter.js';
@@ -18,58 +13,50 @@ import {
   consumePendingChatIntent,
   peekPendingChatIntent,
 } from '../lib/chatIntent.js';
-import { PaperclipIcon, TagIcon, ClockIcon } from '../components/Icons';
+import { PaperclipIcon, TagIcon } from '../components/Icons';
 import VoiceMicButton from '../components/VoiceMicButton';
 import { useChatMessageQueue } from '../conversation/useChatMessageQueue';
 import { useChatToolRows } from '../conversation/useChatToolRows';
 import { useSlashCommands } from '../conversation/useSlashCommands';
 import { createGoalRunFlow } from '../conversation/goalRunFlow';
 import { useArtifactPreview } from '../conversation/artifactPreviewActions';
-import { buildGoalCardActions } from '../conversation/goalCardActions';
-import GoalCardInline, { type GoalCardData } from '../components/GoalCardInline';
-import ToolExecutionCard from '../components/ToolExecutionCard';
-import { isInternalExecutionCopy } from '../presentation/executionCopy';
-import AgentActivityTimeline, {
-  type AgentActivityEvent,
-  type AgentActivityStatus,
-} from '../components/AgentActivityTimeline';
 import {
-  assistantToolPartFromLegacy,
+  createChatTurnFlow,
+  AGENT_EXECUTION_EVENT_LIMIT,
+  DEFAULT_SCENARIO_ID,
+  ACTIVE_SCENARIO_KEY,
+} from '../conversation/chatTurnFlow';
+import { stripEmoji } from '../conversation/chatMarkdown';
+import type { GoalCardData } from '../components/GoalCardInline';
+import { isInternalExecutionCopy } from '../presentation/executionCopy';
+import type { AgentActivityEvent, AgentActivityStatus } from '../components/AgentActivityTimeline';
+import {
   createAssistantMessageParts,
   normalizeAssistantEvent,
   reduceAssistantMessageParts,
-  reduceAssistantMessagePartsBatch,
   type AssistantMessageParts,
-  type AssistantToolPart,
   type LegacyAssistantToolCall,
 } from '../lib/assistantMessagePartsReducer';
 import RightPanel, { type RightPanelTab } from '../components/RightPanel';
 import ChatSessionSidebar from '../components/chat/ChatSessionSidebar';
+import ChatMessageList from '../components/chat/ChatMessageList';
 import ArtifactPreviewPane from '../components/ArtifactPreviewPane';
 import { getDiagnosticMode, type UIMode } from '../../engine/capabilities/DiagnosticMode';
 import {
   presentDiagnosticText,
   presentExecutionError,
 } from '../presentation/executionPresentation';
-import {
-  SafeMarkdown,
-  presentSafeMarkdownText,
-  type SafeMarkdownMode,
-} from '../presentation/SafeMarkdown';
-import { StreamingMarkdown } from '../presentation/StreamingMarkdown';
+import { presentSafeMarkdownText } from '../presentation/SafeMarkdown';
 import { scrubPresentationProtocol } from '../presentation/presentationProtocolScrubber';
-import { presentReasoningDiagnostic, presentReasoningSummary } from '../presentation/reasoningPresentation';
 import { useFollowScroll } from '../hooks/useFollowScroll';
 import { extractCitations, extractDoiCitations } from '../../engine/core/Citation.js';
-import { toggleForkActive, loadForkMap, saveForkMap, type ForkRecord } from '../../engine/core/MessageFork.js';
+import { toggleForkActive, loadForkMap, type ForkRecord } from '../../engine/core/MessageFork.js';
 import {
   AgentExecutionEventSchema,
   AgentPresentationEventSchema,
-  decodeAgentResponse,
   decodeHistoryPayload,
   RuntimeIdSchema,
   type AgentExecutionEvent,
-  type AgentResponse,
   type GoalSnapshot,
 } from '../../engine/runtime/ChatRuntimeContract';
 import {
@@ -89,6 +76,11 @@ import {
   type SessionListItem,
 } from '../../engine/runtime/SessionRuntimeContract';
 import type { ScenarioDefinition } from '../../engine/runtime/PersonalizationRuntimeContract';
+
+// ToolCallCard 随消息渲染迁至 components/chat/ChatMessageList.tsx（2026-09-15
+// 拆分）；保留本模块的具名导出，既有 `import { ToolCallCard } from
+// '../pages/ChatPage'` 的测试与调用方不受影响。
+export { ToolCallCard } from '../components/chat/ChatMessageList';
 
 
 // ─── Types ────────────────────────────────────────────────────
@@ -196,39 +188,6 @@ function goalStatusToCardPhase(status: string): GoalCardData['phase'] {
   }
 }
 
-function runActivity(
-  response: AgentResponse,
-  initialParts: AssistantMessageParts = createAssistantMessageParts(),
-): NonNullable<ChatMessage['run']> {
-  // The final response owns the activity trace. Keep canonical live/replay tool
-  // parts as supplemental detail because the terminal response may omit the
-  // presenter-sanitized result/source payloads emitted by the live bridge.
-  const base: AssistantMessageParts = {
-    ...initialParts,
-    run: {
-      ...initialParts.run,
-      phases: [...initialParts.run.phases],
-      events: response.events.length > 0
-        ? initialParts.run.events.filter((event) => event.type === 'tool_result')
-        : [...initialParts.run.events],
-    },
-    tools: [...initialParts.tools],
-    seenEventIds: [...initialParts.seenEventIds],
-    seenSequences: [...initialParts.seenSequences],
-    seenEventKeys: [...initialParts.seenEventKeys],
-  };
-  const parts = reduceAssistantMessagePartsBatch(
-    response.events.map((event) => normalizeAssistantEvent(event)),
-    base,
-  );
-  return {
-    status: response.status,
-    events: parts.run.events.slice(-AGENT_EXECUTION_EVENT_LIMIT),
-    parts,
-    turnId: response.turnId,
-  };
-}
-
 function reduceExecutionEnvelope(
   state: AssistantMessageParts,
   payload: AgentExecutionEvent,
@@ -290,63 +249,9 @@ interface ArtifactItem {
   contentAvailable: boolean;
 }
 const validArtifactTypes: ArtifactItemType[] = ['pdf', 'docx', 'xlsx', 'pptx', 'md', 'latex', 'other'];
-const DEFAULT_SCENARIO_ID = '';
-const ACTIVE_SCENARIO_KEY = 'metis:active-scenario-id';
 const SCENARIO_CATALOG_MAX_ATTEMPTS = 2;
 const SCENARIO_CATALOG_RETRY_DELAY_MS = 150;
-const AGENT_EXECUTION_EVENT_LIMIT = 256;
 const AGENT_EXECUTION_TURN_BUFFER_LIMIT = 64;
-
-const triggerWordCharacterPattern = /[\p{Script=Latin}\p{N}_]/u;
-const triggerLetterPattern = /\p{L}/u;
-const triggerNumberPattern = /\p{N}/u;
-const triggerLatinLetterPattern = /\p{Script=Latin}/u;
-
-function requiresTriggerWordBoundaries(phrase: string): boolean {
-  let hasLatinLetterOrNumber = false;
-  for (const character of phrase) {
-    if (triggerNumberPattern.test(character)) {
-      hasLatinLetterOrNumber = true;
-    } else if (triggerLetterPattern.test(character)) {
-      if (!triggerLatinLetterPattern.test(character)) return false;
-      hasLatinLetterOrNumber = true;
-    }
-  }
-  return hasLatinLetterOrNumber;
-}
-
-function includesScenarioTrigger(content: string, phrase: string): boolean {
-  if (!requiresTriggerWordBoundaries(phrase)) return content.includes(phrase);
-
-  let searchFrom = 0;
-  while (searchFrom <= content.length - phrase.length) {
-    const matchIndex = content.indexOf(phrase, searchFrom);
-    if (matchIndex === -1) return false;
-    const before = Array.from(content.slice(0, matchIndex)).at(-1);
-    const after = Array.from(content.slice(matchIndex + phrase.length))[0];
-    const hasLeftBoundary = before === undefined || !triggerWordCharacterPattern.test(before);
-    const hasRightBoundary = after === undefined || !triggerWordCharacterPattern.test(after);
-    if (hasLeftBoundary && hasRightBoundary) return true;
-    searchFrom = matchIndex + 1;
-  }
-  return false;
-}
-
-function matchScenarioTrigger(
-  content: string,
-  scenarios: readonly ScenarioDefinition[],
-): ScenarioDefinition | undefined {
-  const normalized = content.trim().toLocaleLowerCase();
-  if (!normalized) return undefined;
-  return scenarios
-    .flatMap((scenario) => scenario.triggerPhrases.map((phrase) => ({
-      scenario,
-      phrase: phrase.trim().toLocaleLowerCase(),
-    })))
-    .filter((candidate) => candidate.phrase.length > 0 && includesScenarioTrigger(normalized, candidate.phrase))
-    .sort((left, right) => right.phrase.length - left.phrase.length
-      || left.scenario.name.localeCompare(right.scenario.name))[0]?.scenario;
-}
 
 // ─── Timestamp helper (avoids Date.now() in render) ───────────
 
@@ -354,76 +259,7 @@ function now(): number {
   return Date.now();
 }
 
-/** Renderer-owned run IDs let the execution event stream join an in-flight turn. */
-function createAgentTurnId(): string {
-  if (typeof globalThis.crypto?.randomUUID === 'function') {
-    return `chat-${globalThis.crypto.randomUUID()}`;
-  }
-  const randomPart = Math.random().toString(36).slice(2, 12);
-  return `chat-${Date.now().toString(36)}-${randomPart || 'run'}`;
-}
-
-// ─── Task detection heuristics ────────────────────────────────
-
-/**
- * UX-CHAT-003: 任务意图判定从「单关键词命中」收紧为「动作 + 交付物/持续执行
- * 信号」。疑问、讨论、列举研究问题等默认直接回答；显式 /goal、/task 命令和
- * 自主科研入口在路由层直接执行，不经过这里。
- */
-const TASK_ACTION_ZH = /(帮我|请|创建|构建|写|撰写|起草|生成|准备|分析|研究|总结|比较|评审|设计|实现|开发|翻译|核对|核查|验证|检索|收集|整理|制定|规划|梳理|调查|执行)/u;
-const TASK_DELIVERABLE_ZH = /(报告|论文|综述|大纲|方案|计划|表格|清单|列表|文档|文章|笔记|摘要|流程|代码|实验|项目|数据库|档案集|目录)/u;
-const TASK_LONG_RUNNING_ZH = /(完成|执行|跑完|整个|从头到尾|分阶段|逐步|持续|整理成|输出为)/u;
-const TASK_ACTION_EN = /\b(create|build|write|draft|generate|prepare|analyze|research|summarize|compare|review|design|implement|develop|conduct|perform|verify|collect|compile|organize)\b/i;
-const TASK_DELIVERABLE_EN = /\b(report|paper|outline|plan|list|document|article|summary|task|workflow|code|experiment|project|analysis|review|database|archive)\b/i;
-const TASK_LONG_RUNNING_EN = /\b(complete|execute|run|finish|entire|step by step|phase|deliverable)\b/i;
-
-/** 宽松旧规则：只要命中「研究/分析/写/总结」等宽泛词就算任务（误判源）。 */
-const OLD_BROAD_TASK_PATTERNS = [
-  /\b(help me|create|build|write|analyze|research|generate|prepare|draft|summarize|compare|review|design|implement|develop|conduct|perform)\b/i,
-  /(帮我|创建|构建|写|分析|研究|生成|准备|起草|总结|比较|评审|设计|实现|开发|翻译)/,
-];
-
-function isQuestionLike(trimmed: string): boolean {
-  // 疑问句：以问号结尾，或以典型疑问词开头。
-  if (/[?？]$/u.test(trimmed)) return true;
-  return /^(什么|谁|何时|哪里|为什么|怎么|如何|是否|能否|哪些|哪个|请(问|教)|what|who|when|where|why|how|is|are|can|could|would|do|does|did)(?:\b)?/iu.test(trimmed);
-}
-
-/** 讨论/列举类表达：默认直接回答，不进入任务链路。 */
-function isDiscussionLike(trimmed: string): boolean {
-  return /(提出|列出|列举|讨论|谈谈|分析一下|请分析|总结一下|介绍一下|梳理一下).{0,30}(问题|观点|看法|思路|方向|建议|想法|议题)/u.test(trimmed);
-}
-
-function isTaskLike(content: string): boolean {
-  const trimmed = content.trim();
-  if (!trimmed) return false;
-  // 显式命令（防御性；正常路由层已先行处理）。
-  if (/^\/(goal|task|autonomous)\b/u.test(trimmed)) return true;
-  // 疑问与讨论默认是聊天。
-  if (isQuestionLike(trimmed)) return false;
-  if (isDiscussionLike(trimmed)) return false;
-
-  const zhAction = TASK_ACTION_ZH.test(trimmed);
-  const zhSignal = TASK_DELIVERABLE_ZH.test(trimmed) || TASK_LONG_RUNNING_ZH.test(trimmed);
-  if (zhAction && zhSignal) return true;
-
-  const enAction = TASK_ACTION_EN.test(trimmed);
-  const enSignal = TASK_DELIVERABLE_EN.test(trimmed) || TASK_LONG_RUNNING_EN.test(trimmed);
-  if (enAction && enSignal) return true;
-
-  return false;
-}
-
-/**
- * 低置信度任务表达：旧宽泛规则命中、但新规则判定为直接回答的输入。
- * 用于在回答旁提供非阻塞的「转为研究任务」操作，不新增确认弹窗。
- */
-function isTaskAmbiguous(content: string): boolean {
-  const trimmed = content.trim();
-  if (!trimmed) return false;
-  if (isQuestionLike(trimmed)) return false;
-  return OLD_BROAD_TASK_PATTERNS.some((pattern) => pattern.test(trimmed));
-}
+// ─── Goal feedback heuristic ──────────────────────────────────
 
 function isLikelyGoalFeedback(content: string): boolean {
   const patterns = [
@@ -433,442 +269,7 @@ function isLikelyGoalFeedback(content: string): boolean {
   return patterns.some(p => p.test(content));
 }
 
-// ─── Inline SVG Icons ─────────────────────────────────────────
-
-
-const editIcon = (
-  <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" fill="none" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-  </svg>
-);
-
-const regenerateIcon = (
-  <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" fill="none" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M21.5 2v6h-6M2.5 22v-6h6" />
-    <path d="M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3" />
-  </svg>
-);
-
-const copyIcon = (
-  <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" fill="none" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="9" y="9" width="13" height="13" rx="2" />
-    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-  </svg>
-);
-
-// ─── Code Block Component（共享实现，见 components/CodeBlock）─────────────
-
-// ─── Emoji filter — keeps the UI free of emoji anywhere ─────────
-
-const EMOJI_REGEX = /[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F100}-\u{1F1FF}\u{1F200}-\u{1F2FF}\u{1F600}-\u{1F64F}\u{1F680}-\u{1F6FF}\u{1F700}-\u{1F77F}\u{1F780}-\u{1F7FF}\u{1F800}-\u{1F8FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2300}-\u{23FF}]/gu;
-
-function stripEmoji(text: string): string {
-  return text.replace(EMOJI_REGEX, '').replace(/\s{2,}/g, ' ').trim();
-}
-
-// ─── Markdown Renderer ────────────────────────────────────────
-
-function linkifyDois(content: string): string {
-  // Turn bare DOIs in the model output into clickable doi.org links so the
-  // message citation can be opened inside Metis.
-  return content.replace(
-    /(^|[^\w])10\.\d{4,9}\/[-._;()/:A-Z0-9]+/gi,
-    (match, prefix: string) => {
-      const doi = match.slice(prefix.length);
-      return `${prefix}[${doi}](https://doi.org/${doi})`;
-    },
-  );
-}
-
-/** Shared source transform for both the settled and streaming render paths. */
-function transformChatMarkdown(content: string): string {
-  return linkifyDois(stripEmoji(content));
-}
-
-/**
- * Module-level code renderer factory so the `code` component keeps a stable
- * identity across renders (a per-render closure would defeat memoization).
- * While `streaming` is true, fenced blocks skip Prism highlighting and render
- * as plain text; the settled path highlights as before.
- */
-/** T3：metadata.stepCard 消息的渲染协议（非 Markdown 围栏；content 前缀承载）。 */
-function parseStepCardPrefix(content: string): ScenarioStepCardData | null {
-  if (!content.startsWith('__STEP_CARD__')) return null;
-  try {
-    const value = JSON.parse(content.slice('__STEP_CARD__'.length)) as ScenarioStepCardData;
-    return value && typeof value === 'object' && typeof value.runId === 'string' ? value : null;
-  } catch {
-    return null;
-  }
-}
-
-function createChatCodeComponent(streaming: boolean): Components['code'] {
-  return function ChatMarkdownCode({ className, children, ...props }) {
-    const match = /language-([\w-]+)/.exec(className || '');
-    const code = String(children).replace(/\n$/, '');
-    if (match && match[1] === 'metis-step-card') {
-      // 步骤卡（2026-09-01 刘总方案）：场景工作流步骤的结构化卡片，
-      // 解析失败（旧消息/坏数据）降级为普通代码块展示。
-      const card = parseScenarioStepCard(code);
-      if (card) return <ScenarioStepCard card={card} />;
-    }
-    if (match && match[1]) {
-      return <CodeBlock language={match[1]} code={code} streaming={streaming} />;
-    }
-    return <code className="inline-code" {...props}>{children}</code>;
-  };
-}
-
-const settledChatCodeComponent = createChatCodeComponent(false);
-const streamingChatCodeComponent = createChatCodeComponent(true);
-
-const MarkdownContent = memo(function MarkdownContent({
-  content,
-  uiMode,
-  locale,
-  onOpenPaper,
-}: {
-  content: string;
-  uiMode: SafeMarkdownMode;
-  locale: 'en' | 'zh';
-  onOpenPaper?: (doi: string) => void;
-}) {
-  return (
-    <SafeMarkdown
-      content={transformChatMarkdown(content)}
-      uiMode={uiMode}
-      locale={locale}
-      onOpenPaper={onOpenPaper}
-      codeComponent={settledChatCodeComponent}
-    />
-  );
-});
-
-// ─── Tool Call Card ───────────────────────────────────────────
-
-export function ToolCallCard({
-  toolCall,
-  tool,
-  diagnosticMode,
-}: {
-  toolCall?: ChatMessage['toolCall'];
-  tool?: AssistantToolPart;
-  diagnosticMode: boolean;
-}) {
-  const { locale } = useTranslation();
-  const canonicalTool = tool ?? (toolCall ? assistantToolPartFromLegacy(toolCall) : undefined);
-  return canonicalTool
-    ? <ToolExecutionCard tool={canonicalTool} diagnosticMode={diagnosticMode} locale={locale} className="tool-call-card" />
-    : null;
-}
-
-// ─── Message Component ────────────────────────────────────────
-
-// Memoized at the module level so a token flush re-renders only the bubble
-// whose message object actually changed.
-const MemoizedAgentActivityTimeline = memo(AgentActivityTimeline);
-
-// Live elapsed timer for the streaming bubble. Isolated in its own component
-// so the 500ms ticker re-renders this span only, not the whole bubble.
-function MessageElapsed({
-  startedAt,
-  durationMs,
-  streaming,
-}: {
-  startedAt?: number;
-  durationMs?: number;
-  streaming?: boolean;
-}) {
-  const [elapsedMs, setElapsedMs] = useState(durationMs ?? 0);
-  useEffect(() => {
-    if (streaming && startedAt) {
-      const timer = window.setInterval(() => {
-        setElapsedMs(Date.now() - (startedAt ?? Date.now()));
-      }, 500);
-      return () => window.clearInterval(timer);
-    }
-    // Settle the timer once streaming stops; deferred so the effect body
-    // stays free of synchronous setState.
-    let cancelled = false;
-    void Promise.resolve().then(() => {
-      if (!cancelled) setElapsedMs(durationMs ?? 0);
-    });
-    return () => { cancelled = true; };
-  }, [streaming, startedAt, durationMs]);
-  return (
-    <span className="message-elapsed" data-testid="message-elapsed">
-      <ClockIcon size={12} /> {(elapsedMs / 1000).toFixed(1)}s
-    </span>
-  );
-}
-
-const ChatMessageItem = memo(function ChatMessageItem({
-  msg,
-  index,
-  onEdit,
-  onRegenerate,
-  onSwitchFork,
-  isLast,
-  diagnosticMode,
-  onOpenPaper,
-  onStepCardComment,
-}: {
-  msg: ChatMessage;
-  /** Source index in the messages array, forwarded to onEdit. */
-  index: number;
-  onEdit?: (index: number, content: string) => void;
-  onRegenerate?: () => void;
-  /** O16: switch which fork sibling is displayed. */
-  onSwitchFork?: (forkId: string, targetIndex: number) => void;
-  /** T3 二期：Step 卡三操作——提出意见/修改这步 打开 Composer Target Context。 */
-  onStepCardComment?: (card: import('../components/ScenarioStepCard').ScenarioStepCardData, mode: 'comment' | 'modify') => void;
-  isLast?: boolean;
-  onOpenPaper?: (doi: string) => void;
-  diagnosticMode: boolean;
-}) {
-  const { t, locale } = useTranslation();
-  const messageUIMode: SafeMarkdownMode = diagnosticMode ? 'diagnostic' : 'normal';
-  const [editing, setEditing] = useState(false);
-  const [editValue, setEditValue] = useState(stripEmoji(msg.content));
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = useCallback(() => {
-    const content = msg.content || msg.reasoning || '';
-    if (!content) return;
-    const fallback = () => {
-      const textarea = document.createElement('textarea');
-      textarea.value = content;
-      textarea.style.position = 'fixed';
-      textarea.style.opacity = '0';
-      document.body.appendChild(textarea);
-      textarea.select();
-      try { document.execCommand('copy'); } catch { /* clipboard unavailable */ }
-      document.body.removeChild(textarea);
-      setCopied(true);
-    };
-    if (navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(content).then(
-        () => setCopied(true),
-        () => fallback(),
-      );
-    } else {
-      fallback();
-    }
-    window.setTimeout(() => setCopied(false), 1500);
-  }, [msg.content, msg.reasoning]);
-
-  const handleEditSubmit = () => {
-    const cleaned = stripEmoji(editValue).trim();
-    if (cleaned && onEdit) {
-      onEdit(index, cleaned);
-    }
-    setEditing(false);
-  };
-
-  const avatarLabel = msg.role === 'user'
-    ? 'U'
-    : diagnosticMode && msg.role === 'tool'
-      ? 'T'
-      : diagnosticMode && msg.role === 'goal'
-        ? 'G'
-        : 'M';
-
-  // dsh-style live reasoning summary: while streaming a multi-line reasoning
-  // trace, the latest line surfaces next to the label. Single-line traces
-  // skip it so the summary never duplicates the body verbatim.
-  const reasoningSummary = msg.reasoning
-    ? presentReasoningSummary(msg.reasoning, locale)
-    : '';
-  const diagnosticReasoning = diagnosticMode && msg.reasoning
-    ? presentReasoningDiagnostic(msg.reasoning, locale)
-    : '';
-
-  return (
-    <div className={`chat-message ${msg.role}`}>
-      <div className="message-avatar">
-        {avatarLabel}
-      </div>
-      <div className="message-body">
-        {msg.role === 'assistant' && msg.run && (
-          <MemoizedAgentActivityTimeline
-            status={msg.run.status}
-            events={msg.run.events}
-            parts={msg.run.parts}
-            startedAt={msg.startedAt}
-            durationMs={msg.durationMs}
-            locale={locale}
-            diagnosticMode={diagnosticMode}
-            historyIncomplete={msg.run.historyIncomplete}
-            pendingLabel={msg.run.historyIncomplete
-              ? (locale === 'zh' ? '执行历史已部分裁剪' : 'Execution history is partially pruned')
-              : undefined}
-          />
-        )}
-        {msg.role === 'tool' ? (
-          msg.run?.parts?.tools[0] || msg.toolCall ? (
-            <ToolCallCard
-              tool={msg.run?.parts?.tools[0]}
-              toolCall={msg.toolCall}
-              diagnosticMode={diagnosticMode}
-            />
-          ) : (
-            <div className="message-content">
-              {diagnosticMode
-                ? <MarkdownContent content={presentDiagnosticText(msg.content)} uiMode={messageUIMode} locale={locale} onOpenPaper={onOpenPaper} />
-                : t('chat.researchOperationCompleted')}
-            </div>
-          )
-        ) : editing ? (
-          <div className="message-edit">
-            <textarea
-              value={editValue}
-              onChange={(e) => setEditValue(e.target.value)}
-              rows={3}
-              autoFocus
-            />
-            <div className="message-edit-actions">
-              <button className="btn-sm" onClick={() => setEditing(false)}>{t('chat.cancel')}</button>
-              <button className="btn-sm btn-primary" onClick={handleEditSubmit}>{t('chat.saveResend')}</button>
-            </div>
-          </div>
-        ) : (
-          <div className="message-content">
-            {msg.role === 'assistant' && reasoningSummary && (
-              <details className="chat-reasoning" open={Boolean(msg.streaming)}>
-                <summary>
-                  {msg.streaming ? t('chat.reasoningThinking') : t('chat.reasoningLabel')}
-                  <span className="chat-reasoning__latest">{reasoningSummary}</span>
-                </summary>
-                {diagnosticReasoning && <div className="chat-reasoning__body">{diagnosticReasoning}</div>}
-              </details>
-            )}
-            {msg.role === 'assistant' && parseStepCardPrefix(msg.content) ? (() => {
-              const card = parseStepCardPrefix(msg.content)!;
-              return <ScenarioStepCardWithActions card={card} onComment={(c, m) => onStepCardComment?.(c, m)} />;
-            })() : msg.role === 'assistant' && msg.streaming ? (
-              <StreamingMarkdown
-                text={msg.content}
-                streaming
-                uiMode={messageUIMode}
-                locale={locale}
-                onOpenPaper={onOpenPaper}
-                codeComponent={streamingChatCodeComponent}
-                transform={transformChatMarkdown}
-              />
-            ) : (
-              <MarkdownContent content={msg.content} uiMode={messageUIMode} locale={locale} onOpenPaper={onOpenPaper} />
-            )}
-            {msg.role === 'assistant' && msg.citations && msg.citations.length > 0 && (
-              <div className="chat-citations" data-testid="chat-citations">
-                {msg.citations.map((c) => (
-                  <button
-                    key={c.id}
-                    type="button"
-                    className="chat-citation"
-                    title={c.quote || c.label}
-                    onClick={() => {
-                      if (c.paperId) {
-                        window.dispatchEvent(new CustomEvent('metis:open-paper', { detail: { paperId: c.paperId, page: c.page } }));
-                      } else if (c.doi) {
-                        window.dispatchEvent(new CustomEvent('metis:open-browser-url', { detail: { url: `https://doi.org/${c.doi}` } }));
-                      } else if (c.url) {
-                        window.dispatchEvent(new CustomEvent('metis:open-browser-url', { detail: { url: c.url } }));
-                      }
-                    }}
-                  >
-                    <span className="chat-citation__id">[{c.id}]</span>
-                    <span className="chat-citation__label">{c.label}</span>
-                    {c.page !== undefined && <span className="chat-citation__page">p.{c.page}</span>}
-                  </button>
-                ))}
-              </div>
-            )}
-            {msg.role === 'assistant' && msg.incomplete && (
-              <div className="chat-incomplete-draft" data-testid="incomplete-draft">
-                {locale === 'zh' ? '（回答未完成——以上为中断前的草稿）' : '(Incomplete draft — captured before the turn ended)'}
-              </div>
-            )}
-          </div>
-        )}
-        {!editing && (
-          <div className="message-actions">
-            {msg.modelLabel && (
-              <span
-                className="message-model-label"
-                data-testid="message-model-label"
-                style={{
-                  fontSize: 11, padding: '1px 6px', borderRadius: 3,
-                  border: '1px solid var(--border)', background: 'var(--bg-secondary)',
-                  color: 'var(--text-secondary)',
-                }}
-              >
-                {msg.modelLabel}
-              </span>
-            )}
-            <span className="message-time">
-              {new Date(msg.timestamp).toLocaleTimeString()}
-            </span>
-            {msg.role === 'assistant' && (msg.streaming || msg.durationMs !== undefined) && (
-              <MessageElapsed startedAt={msg.startedAt} durationMs={msg.durationMs} streaming={msg.streaming} />
-            )}
-            {msg.role === 'user' && onEdit && (
-              <button
-                className="message-action-btn"
-                onClick={() => setEditing(true)}
-                title={t('common.edit')}
-                aria-label={t('common.edit')}
-              >
-                {editIcon}
-              </button>
-            )}
-            {(msg.role === 'user' || msg.role === 'assistant') && (
-              <button
-                className="message-action-btn"
-                onClick={handleCopy}
-                title={copied ? t('chat.copied') : t('chat.copy')}
-                aria-label={copied ? t('chat.copied') : t('chat.copy')}
-                data-testid="copy-message"
-              >
-                {copied ? '✓' : copyIcon}
-              </button>
-            )}
-            {msg.role === 'assistant' && isLast && onRegenerate && (
-              <button
-                className="message-action-btn"
-                onClick={onRegenerate}
-                title={t('chat.regenerate')}
-                aria-label={t('chat.regenerate')}
-              >
-                {regenerateIcon}
-              </button>
-            )}
-            {/* O16: fork switcher — appears when this answer has sibling branches. */}
-            {msg.role === 'assistant' && msg.forkId && (msg.forkCount ?? 0) > 1 && onSwitchFork && (
-              <span className="fork-switcher" data-testid="fork-switcher">
-                <button
-                  className="message-action-btn"
-                  onClick={() => onSwitchFork(msg.forkId!, (msg.forkIndex ?? 0) - 1)}
-                  disabled={(msg.forkIndex ?? 0) <= 0}
-                  title={t('chat.forkPrev')}
-                  aria-label={t('chat.forkPrev')}
-                >◀</button>
-                <span className="fork-switcher__label">{(msg.forkIndex ?? 0) + 1}/{msg.forkCount}</span>
-                <button
-                  className="message-action-btn"
-                  onClick={() => onSwitchFork(msg.forkId!, (msg.forkIndex ?? 0) + 1)}
-                  disabled={(msg.forkIndex ?? 0) >= (msg.forkCount ?? 1) - 1}
-                  title={t('chat.forkNext')}
-                  aria-label={t('chat.forkNext')}
-                >▶</button>
-              </span>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-});
+// ─── Message Component（迁出至 components/chat/ChatMessageList.tsx，2026-09-15 拆分）───
 
 // ─── Main Chat Page ───────────────────────────────────────────
 
@@ -1223,6 +624,19 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
       };
     });
   }, [currentSessionId, updateGoalCard]);
+
+  // Goal 卡步骤元素登记（消息列表迁出后由宿主以稳定回调提供；读写都在
+  // 事件回调里发生，与迁出前 registerStepElement 内联闭包语义一致）。
+  const registerGoalStepElement = useCallback((goalId: string, stepId: string, element: HTMLElement | null) => {
+    const key = `${goalId}\u0000${stepId}`;
+    if (element) goalStepElementRefs.current.set(key, element);
+    else goalStepElementRefs.current.delete(key);
+  }, []);
+
+  // 焦点回输入框（Goal 卡调整动作预填草稿后调用；与迁出前的内联闭包等价）。
+  const focusComposer = useCallback(() => {
+    inputRef.current?.focus();
+  }, []);
 
   const activateSession = useCallback((sessionId: string) => {
     sessionGenerationRef.current += 1;
@@ -2347,164 +1761,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
     return () => window.removeEventListener('metis:goal-focus', handler);
   }, [focusGoalFromBoard]);
 
-  // ─── Normal chat flow (extracted from old handleSend) ──────
-
-  async function handleChatFlow(content: string, scenarioId = activeScenarioId, sessionIdOverride?: string) {
-    const request = {
-      token: Symbol('chat-request'),
-      turnId: createAgentTurnId(),
-      sessionId: sessionIdOverride ?? currentSessionId,
-      generation: sessionGenerationRef.current,
-      projectId: currentProjectId,
-      startedAt: Date.now(),
-    };
-    activeChatRequestRef.current = request;
-    agentExecutionPartsBufferRef.current.delete(request.turnId);
-    agentExecutionEventIdentityRef.current.delete(request.turnId);
-    agentExecutionReplayInFlightRef.current.delete(request.turnId);
-    activeRunPartsRef.current = createAssistantMessageParts();
-    setActiveRunParts(createAssistantMessageParts());
-    setIsLoading(true);
-    streamingIndexRef.current = -1;
-
-    const metis = window.metis;
-    try {
-      if (!metis) throw new Error('Metis API not available');
-
-      const history = messages.concat({ role: 'user', content, timestamp: now() }).map((m) => ({
-        role: (m.role === 'tool' || m.role === 'goal') ? 'assistant' : m.role,
-        content: m.content,
-      }));
-      // 多对话架构第二期(2026-09-05):当前工作对象注入(真实进入模型上下文)。
-      if (activeArtifactIds.length > 0) {
-        const artifactTitles = activeArtifactIds
-          .map((artifactId) => projectOutcomes.find((outcome) => outcome.id === artifactId || `outcome:${outcome.id}` === artifactId)?.title)
-          .filter((title): title is string => Boolean(title));
-        if (artifactTitles.length > 0) {
-          history.unshift({ role: 'system', content: `[当前工作对象] ${artifactTitles.join('、')}。用户说"这篇文章/当前成果/这份PPT"等时指上述对象;对它的修改请使用对应的成果编辑能力。` });
-        }
-      }
-
-      const response = decodeAgentResponse(await metis.agentChat(
-        request.sessionId,
-        history,
-        activeSkillId ?? undefined,
-        { mode: 'send', turnId: request.turnId, ...(scenarioId ? { scenarioId } : {}), projectId: request.projectId },
-      ));
-      if (!isCurrentChatRequest(request)) return;
-
-      // P0 V2：以持久层权威内容结算流式 attempt（immediate 发布——不等帧）。
-      // interrupted/error 路径同样结算：保留已生成的部分内容并标记终态（规格四十六/四十七）。
-      const v2Controller = chatStreamControllerRef.current;
-      if (v2Controller && (streamingIndexRef.current >= 0 || v2Controller.nodeSource(request.turnId).get())) {
-        const v2Status = response.status === 'completed'
-          ? 'completed'
-          : (response.status === 'interrupted' || response.status === 'cancelled')
-            ? 'interrupted'
-            : 'failed';
-        // 空 answer（如 unverified/error）沿用流式累积内容作为终态呈现。
-        const accumulated = v2Controller.nodeSource(request.turnId).get();
-        v2Controller.settleTurn(request.turnId, scrubPresentationProtocol(response.answer || accumulated?.content || ''), '', v2Status);
-      }
-
-      if (response.status !== 'completed') {
-        // UX-CHAT-002: 先结算流式占位消息（空内容删除、部分内容标记草稿），
-        // 再追加明确收据；不残留空白气泡与错误气泡并存的序列。
-        const terminalRun = runActivity(
-          response,
-          response.turnId === request.turnId ? partsForAgentTurn(request.turnId) : createAssistantMessageParts(),
-        );
-        const retainedStreamDraft = settleStreamingPlaceholder(request, terminalRun);
-        if (response.status === 'interrupted' || response.status === 'cancelled') {
-          // User-initiated stop: an explicit receipt, never an error presentation.
-          setMessages((prev) => [...prev, {
-            role: 'assistant',
-            content: t('chat.interruptedNotice'),
-            timestamp: now(),
-            startedAt: request.startedAt,
-            durationMs: Date.now() - request.startedAt,
-            ...(retainedStreamDraft ? {} : { run: terminalRun }),
-          }]);
-        } else {
-          const diagnosticCode = response.diagnostics[0]?.code ?? response.status;
-          const errorMsg: ChatMessage = {
-            role: 'assistant',
-            content: presentExecutionError(diagnosticCode, locale, resolvedUIMode),
-            timestamp: now(),
-            startedAt: request.startedAt,
-            durationMs: Date.now() - request.startedAt,
-            ...(retainedStreamDraft ? {} : { run: terminalRun }),
-          };
-          setMessages((prev) => [...prev, errorMsg]);
-        }
-      } else if (response.answer) {
-        const safeAnswer = scrubPresentationProtocol(response.answer);
-        const streamedIndex = streamingIndexRef.current;
-        const durationMs = Date.now() - request.startedAt;
-        if (streamedIndex >= 0) {
-          // The stream already rendered the answer live; settle the message
-          // with the authoritative payload and the measured elapsed time.
-          // Settle dedupe: when the authoritative answer is byte-identical to
-          // the accumulated stream, keep the content field untouched so the
-          // bubble does not re-parse the full document a second time.
-          setMessages((prev) => prev.map((m, i) => i === streamedIndex
-            ? { ...m, ...(m.content === safeAnswer ? {} : { content: safeAnswer }), streaming: false, durationMs, run: runActivity(response, response.turnId === request.turnId ? partsForAgentTurn(request.turnId) : createAssistantMessageParts()), ...(response.citations?.length ? { citations: response.citations } : {}) }
-            : m));
-        } else {
-          const assistantMsg: ChatMessage = {
-            role: 'assistant',
-            content: safeAnswer,
-            timestamp: now(),
-            startedAt: request.startedAt,
-            durationMs,
-            run: runActivity(response, response.turnId === request.turnId ? partsForAgentTurn(request.turnId) : createAssistantMessageParts()),
-            ...(response.citations?.length ? { citations: response.citations } : {}),
-          };
-          setMessages((prev) => [...prev, assistantMsg]);
-          if (safeAnswer.length > 200 || /^#|^\*|\|.*\||```/.test(safeAnswer)) {
-            openPreview(safeAnswer);
-          }
-        }
-      }
-      if (response.status === 'completed') {
-        void refreshArtifactsForSession(request.sessionId, request.generation);
-      }
-    } catch (err) {
-      if (!isCurrentChatRequest(request)) return;
-      // UX-CHAT-002: 异常路径同样结算流式占位消息。
-      const terminalRun: ChatMessage['run'] = {
-        status: 'error',
-        events: partsForAgentTurn(request.turnId).run.events,
-        parts: partsForAgentTurn(request.turnId),
-        turnId: request.turnId,
-      };
-      const retainedStreamDraft = settleStreamingPlaceholder(request, terminalRun);
-      const errorMsg: ChatMessage = {
-        role: 'assistant',
-        content: presentExecutionError(err, locale, resolvedUIMode),
-        timestamp: now(),
-        startedAt: request.startedAt,
-        durationMs: Date.now() - request.startedAt,
-        ...(retainedStreamDraft ? {} : { run: terminalRun }),
-      };
-      setMessages((prev) => [...prev, errorMsg]);
-    } finally {
-      if (isCurrentChatRequest(request)) {
-        streamingIndexRef.current = -1;
-        activeChatRequestRef.current = null;
-        agentExecutionPartsBufferRef.current.delete(request.turnId);
-        activeRunPartsRef.current = createAssistantMessageParts();
-        setActiveRunParts(createAssistantMessageParts());
-        setIsLoading(false);
-        setControlState('idle');
-        // UX-CHAT-004: 主进程已在回合内持久化消息，刷新权威会话摘要。
-        refreshSessionSummaries();
-        // 2.5: run 结束后自动发送队列中的下一条（保持时序）。
-        queue.flushNext();
-      }
-    }
-  }
-
+  // ─── Normal chat flow（迁出至 conversation/chatTurnFlow.ts，2026-09-15 拆分）───
 
   // ─── Goal flow（迁出至 conversation/goalRunFlow.ts，2026-09-13 拆分）───
   const {
@@ -2681,181 +1938,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
     }]);
   }
 
-  /** Execute a slash command. Each maps to an existing system capability. */
-  async function handleSlashCommand(name: string, arg: string) {
-    const metis = window.metis;
-    const reply = (text: string) => {
-      setMessages((prev) => [...prev, {
-        role: 'user',
-        content: `/${name}${arg ? ' ' + arg : ''}`,
-        timestamp: now(),
-      }, {
-        role: 'system',
-        content: text,
-        timestamp: now(),
-      }]);
-    };
-    setInput('');
-
-    switch (name) {
-      case 'chat': {
-        if (!arg) { reply('用法：/chat <内容>'); return; }
-        // Dispatch as normal chat — keeps the active scenario (bypasses
-        // auto-match but does not clear an explicitly selected scenario).
-        setMessages((prev) => [...prev, { role: 'user', content: arg, timestamp: now() }]);
-        await handleChatFlow(arg, activeScenarioId || DEFAULT_SCENARIO_ID);
-        return;
-      }
-      case 'goal':
-      case 'task': {
-        if (!arg) { reply('用法：/' + name + ' <描述>'); return; }
-        await handleGoalFlow(arg);
-        return;
-      }
-      case 'autonomous': {
-        if (!arg) { reply('用法：/autonomous <研究目标>'); return; }
-        try {
-          const projectId = researchWorkspaceStore.getState().activeProjectId ?? undefined;
-          const result = await window.metis?.autonomousStart?.({ goal: arg, projectId });
-          if (result?.ok) {
-            reply(`🚀 已启动自主科研（目标：${arg}${projectId ? ` · 项目：${projectId}` : ''}）。请打开顶部「自主科研」面板查看 idea→实验→分析→论文 的实时进度，或用 /stop 中断。`);
-          } else {
-            reply(`启动失败：${result?.error ?? '未知错误'}。可能已有任务在运行，或引擎未就绪。`);
-          }
-        } catch (err) {
-          reply(`启动异常：${err instanceof Error ? err.message : String(err)}`);
-        }
-        return;
-      }
-      case 'scenario': {
-        if (!arg) { reply('用法：/scenario <名称>'); return; }
-        const matched = matchScenarioTrigger(arg, scenarios);
-        if (matched) {
-          setActiveScenarioId(matched.id);
-          try { window.localStorage.setItem(ACTIVE_SCENARIO_KEY, matched.id); } catch { /* preference persistence */ }
-          reply(`已切换到场景：${matched.name}`);
-        } else {
-          reply(`未找到匹配的场景「${arg}」。可用场景：${scenarios.map((s) => s.name).join('、')}`);
-        }
-        return;
-      }
-      case 'search': {
-        // Open the global search overlay (App-level state) through a bus event.
-        window.dispatchEvent(new CustomEvent('metis:open-search'));
-        reply(locale === 'zh' ? `已打开全局搜索${arg ? `，正在搜索「${arg}」` : ''}。` : `Global search opened${arg ? ` for “${arg}”` : ''}.`);
-        return;
-      }
-      case 'paper': {
-        if (!arg) { reply('用法：/paper <标题或 DOI>'); return; }
-        const projectId = researchWorkspaceStore.getState().activeProjectId ?? undefined;
-        const paper = {
-          id: `paper_slash_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
-          title: arg, authors: [] as string[], year: new Date().getFullYear(),
-          venue: '', abstract: '', tags: [], notes: '', readStatus: 'unread' as const,
-          rating: 0, referenceIds: [], addedAt: Date.now(), projectId,
-        };
-        const result = await useMetisStore.getState().addPaper(paper);
-        if (projectId && result.paper.id) {
-          await window.metis?.linkPaperToProject?.({ paperId: result.paper.id, projectId, link: true });
-        }
-        reply(projectId
-          ? `已添加文献并关联当前项目：${arg}`
-          : `已添加到资料库：${arg}`);
-        return;
-      }
-      case 'note': {
-        if (!arg) { reply('用法：/note <内容>'); return; }
-        await useMetisStore.getState().addNote({
-          id: `note_slash_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
-          title: arg.slice(0, 40), content: arg, tags: [], linkedPaperIds: [],
-          linkedNoteIds: [], updatedAt: Date.now(),
-        });
-        reply(`已添加笔记：${arg.slice(0, 40)}`);
-        return;
-      }
-      case 'export': {
-        const format = arg.trim().toLowerCase() || 'chat';
-        if (format === 'chat') {
-          const md = messages.map((m) => m.role === 'user' ? `\n## 我\n${m.content}` : m.role === 'system' ? `\n> ${m.content}` : `\n## AI\n${m.content}`).join('\n');
-          const blob = new Blob([md], { type: 'text/markdown' });
-          const a = document.createElement('a');
-          a.href = URL.createObjectURL(blob);
-          a.download = `chat-${currentSessionId.slice(0, 8)}.md`;
-          a.click();
-          URL.revokeObjectURL(a.href);
-          reply('会话已导出为 Markdown。');
-        } else {
-          reply(`文献库导出请在设置页操作（格式：${format}）。`);
-        }
-        return;
-      }
-      case 'stop': {
-        await handleInterrupt();
-        return;
-      }
-      case 'skill': {
-        // /skill [意图描述] — learn from the current conversation and install
-        // a reusable skill. The conversation history is sent to the AI which
-        // distills it into a structured systemPrompt + tool allow-list.
-        if (messages.length === 0) { reply('当前没有对话可学习。'); return; }
-        const convo = messages
-          .filter((m) => (m.role === 'user' || m.role === 'assistant') && m.content?.trim())
-          .map((m) => ({ role: m.role, content: m.content }));
-        if (convo.length < 2) { reply('对话太短，至少需要一轮问答才能学习。'); return; }
-        reply(`正在从 ${convo.length} 条对话中提取技能…`);
-        try {
-          const result = await window.metis?.generateSkillFromConversation?.({ messages: convo, userIntent: arg || undefined });
-          if (result?.ok && result.skill) {
-            const s = result.skill;
-            reply([
-              `技能「${s.name}」已生成并安装！`,
-              `用途：${s.description}`,
-              `工具：${s.allowedTools.length > 0 ? s.allowedTools.join(', ') : '（无）'}`,
-              `回合预算：${s.maxTurns}`,
-              `提取依据：${s.rationale}`,
-              ``,
-              `下次对话时在技能选择器中选择「${s.name}」即可复用这个工作流。`,
-            ].join('\n'));
-          } else {
-            reply(`技能生成失败：${result?.error ?? '未知错误'}`);
-          }
-        } catch (err) {
-          reply(`技能生成异常：${err instanceof Error ? err.message : String(err)}`);
-        }
-        return;
-      }
-      case 'pause': {
-        if (!activeGoalId) { reply('当前没有运行中的目标任务。'); return; }
-        const result = await metis?.pauseGoal?.(activeGoalId) as { success?: boolean; code?: string } | undefined;
-        reply(result?.success
-          ? '已请求暂停，当前步骤完成后会保存断点并停止。'
-          : '当前目标无法暂停，可能已经结束或没有活动运行。');
-        return;
-      }
-      case 'resume': {
-        if (!activeGoalId) { reply('当前没有暂停的目标任务。'); return; }
-        await metis?.resumeGoal?.(activeGoalId);
-        reply('目标已恢复运行。');
-        return;
-      }
-      case 'status': {
-        const parts: string[] = [];
-        parts.push(`项目：${researchWorkspaceStore.getState().activeProjectId ?? '未选择'}`);
-        parts.push(`场景：${scenarios.find((s) => s.id === activeScenarioId)?.name ?? '默认'}`);
-        parts.push(`目标：${activeGoalId ? '运行中' : '无'}`);
-        parts.push(`状态：${isLoading ? '正在处理' : '空闲'}`);
-        reply(parts.join('\n'));
-        return;
-      }
-      case 'help': {
-        const lines = SLASH_COMMANDS.map((c) => `/${c.name}${c.hasArg ? ' <参数>' : ''} — ${c.description}`);
-        reply('可用命令：\n' + lines.join('\n'));
-        return;
-      }
-      default:
-        reply(`未知命令：/${name}。输入 /help 查看可用命令。`);
-    }
-  }
+  /** Execute a slash command（迁出至 conversation/chatTurnFlow.ts，2026-09-15 拆分）。 */
 
   // 场景选择持久化兜底（2026-08-29 刘总要求：显示选中就必须走场景）。
   // React state 恢复是异步的——项目刚打开立刻发送时 state 可能还是空，
@@ -2971,122 +2054,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
     return () => window.removeEventListener('metis:session-deleted', handler);
   }, [currentSessionId, sessions, activateSession]);
 
-  async function runSendTurn(raw: string, scenarioOverride?: string) {
-
-    // Slash commands: intercept before scenario matching / task detection.
-    const slashMatch = matchSlashCommand(raw);
-    if (slashMatch) {
-      await handleSlashCommand(slashMatch.command.name, slashMatch.arg);
-      return;
-    }
-
-    // Force plain chat with prefix
-    const forceChat = raw.startsWith('/chat ') || raw.startsWith('? ');
-    const content = forceChat ? raw.replace(/^(\/chat |\? )/, '') : raw;
-
-    // Auto-create a session on first send: previously, messages sent without
-    // clicking 「新会话」 first were never persisted — the sidebar kept showing
-    // 无会话 and the whole conversation vanished on reload. The first message
-    // now implicitly creates (and persists) a session, matching what the UI
-    // already displays.
-    let sessionIdForTurn = currentSessionId;
-    let createdThisTurn = false;
-    if (!sessionIdForTurn) {
-      const created = await createNewSession();
-      if (created) {
-        sessionIdForTurn = created;
-        createdThisTurn = true;
-      }
-    }
-
-    // Append user message
-    const userMsg: ChatMessage = { role: 'user', content, timestamp: now() };
-    setMessages((prev) => [...prev, userMsg]);
-    setInput('');
-
-    // Auto-title a fresh session from its first user message so the sidebar
-    // distinguishes conversations instead of showing multiple "新会话".
-    const currentSession = sessions.find((session) => session.id === currentSessionId);
-    const defaultTitle = t('chat.newSessionTitle');
-    const trimmed = content.trim();
-    if (createdThisTurn && trimmed) {
-      // The session was just created, so it is not in `sessions` state yet —
-      // rename it directly from this first message.
-      void handleRenameSession(
-        sessionIdForTurn,
-        trimmed.length > 30 ? `${trimmed.slice(0, 30)}…` : trimmed,
-      );
-    } else if (currentSession && (!currentSession.title || currentSession.title === defaultTitle) && trimmed) {
-      void handleRenameSession(
-        currentSessionId,
-        trimmed.length > 30 ? `${trimmed.slice(0, 30)}…` : trimmed,
-      );
-    }
-
-    // Normal chat persistence is owned by the main process so each message is
-    // committed once. Goal-only messages still use appendMessage below.
-    const hasActiveGoal = activeGoalId !== null;
-
-    // UX-CHAT-003（2026-08-29 刘总要求）：已选场景时步骤规定明确，不再建议
-    // "转为研究任务"——任务直接按场景工作流执行；仅无场景时保留 Goal 兜底建议。
-    setGoalSuggestion(!forceChat && !activeScenarioId && isTaskAmbiguous(content) ? content : null);
-
-    // 场景选择持久化兜底统一走 readPersistedScenarioId（handleSend 的
-    // isLoading 兜底同样需要，2026-08-31 修复作用域断裂）。
-    const persistedScenarioId = readPersistedScenarioId();
-    const selectedScenarioId = scenarioOverride ?? (activeScenarioId || persistedScenarioId || '');
-    const matchedScenario = selectedScenarioId ? undefined : matchScenarioTrigger(content, scenarios);
-    const scenarioForTurn = selectedScenarioId || matchedScenario?.id || DEFAULT_SCENARIO_ID;
-    if (matchedScenario) {
-      setActiveScenarioId(matchedScenario.id);
-      try { window.localStorage.setItem(ACTIVE_SCENARIO_KEY, matchedScenario.id); } catch { /* preference persistence is best-effort */ }
-    }
-
-
-    void window.metis?.rendererLog?.(`route: user=${JSON.stringify(content.slice(0, 40))} activeScenarioId=${JSON.stringify(activeScenarioId)} persisted=${JSON.stringify(persistedScenarioId ?? null)} selected=${JSON.stringify(selectedScenarioId)} scenarioForTurn=${JSON.stringify(scenarioForTurn)} hasActiveScenarioRun=${hasActiveScenarioRun} hasActiveGoal=${hasActiveGoal} isTaskLike=${isTaskLike(content)} forceChat=${forceChat}`);
-    // 「继续」的系统级语义（2026-08-30 刘总点破：关闭后继续总是重开新任务）：
-    // 场景运行的可恢复断点由主进程自动 resume（场景绑定轮走 handleChatFlow，
-    // getRecoverableScenarioRun 会接上 interrupted/paused/running 的 checkpoint）；
-    // 没有场景运行时，「继续」必须接回最近一个 paused 的研究任务（Goal），
-    // 而不是当作新输入被普通聊天吞掉。
-    if (!hasActiveScenarioRun && !hasActiveGoal && !forceChat && !scenarioForTurn
-      && /^(继续|接着做|接着干|继续执行|continue|resume)[\s!！。.]*$/i.test(content.trim())) {
-      try {
-        const goalsResult = await window.metis?.listGoals?.();
-        // 选择策略与场景恢复同规（系统性教训：不能按列表顺序取第一个）：
-        // 优先当前项目的 paused 任务，再取最近创建的——「继续」必须接上
-        // 用户最可能指的那条工作，而不是任意一条。
-        const pausedGoals = (goalsResult?.goals ?? []).filter((goal) => goal.status === 'paused');
-        const resumableGoal = pausedGoals
-          .filter((goal) => !goal.projectId || goal.projectId === currentProjectId)
-          .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))[0]
-          ?? pausedGoals.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))[0];
-        if (resumableGoal) {
-          await handleResumeGoal(resumableGoal.goalId);
-          return;
-        }
-      } catch { /* goal 列表失败则按普通输入处理 */ }
-    }
-    if (hasActiveScenarioRun && !forceChat) {
-      // 场景工作流执行中（2026-08-29 刘总要求）：随时引导，新消息实时注入
-      // 当前运行，而不是当作新任务被"已有任务在执行"拒绝。若运行其实已被
-      // 中断（应用重启等），no_active_run 会自动降级为断点恢复轮。
-      await handleLiveInstruction(content, {
-        userBubbleVisible: true,
-        fallback: () => handleChatFlow(content, scenarioForTurn, sessionIdForTurn || undefined),
-      });
-      return;
-    }
-    if (scenarioForTurn) {
-      await handleChatFlow(content, scenarioForTurn, sessionIdForTurn || undefined);
-    } else if (!forceChat && !hasActiveGoal && isTaskLike(content)) {
-      await handleGoalFlow(content, sessionIdForTurn || undefined);
-    } else if (hasActiveGoal && !forceChat) {
-      await handleInterjection(content, sessionIdForTurn || undefined);
-    } else {
-      await handleChatFlow(content, DEFAULT_SCENARIO_ID, sessionIdForTurn || undefined);
-    }
-  }
+  // runSendTurn（发送路由，迁出至 conversation/chatTurnFlow.ts，2026-09-15 拆分）。
 
   // Consume a cross-page handoff only after the target session history and the
   // authoritative scenario list are both ready. Full Access launch intents may
@@ -3158,165 +2126,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
     setMessages((prev) => toggleForkActive(prev, forkId, targetIndex));
   }
 
-  // Regenerate last assistant response
-  async function handleRegenerate() {
-    const lastUserIndex = [...messages].reverse().findIndex((m) => m.role === 'user');
-    if (lastUserIndex === -1) return;
-    const actualIndex = messages.length - 1 - lastUserIndex;
-    const forkId = `fork-${Date.now()}`;
-    const history = messages.slice(0, actualIndex + 1);
-    const request = {
-      token: Symbol('regenerate-request'),
-      turnId: createAgentTurnId(),
-      sessionId: currentSessionId,
-      generation: sessionGenerationRef.current,
-      projectId: currentProjectId,
-      startedAt: Date.now(),
-    };
-    activeChatRequestRef.current = request;
-    agentExecutionPartsBufferRef.current.delete(request.turnId);
-    agentExecutionEventIdentityRef.current.delete(request.turnId);
-    agentExecutionReplayInFlightRef.current.delete(request.turnId);
-    activeRunPartsRef.current = createAssistantMessageParts();
-    setActiveRunParts(createAssistantMessageParts());
-    // O16: keep the previous answer as an inactive sibling branch. If it is
-    // already part of a fork group, extend that group (3rd, 4th regenerate…);
-    // otherwise start a new fork. Older siblings keep their original indexes.
-    const priorAssistant = messages[actualIndex + 1];
-    const existingForkId = priorAssistant?.forkId;
-    const priorForkCount = priorAssistant?.forkCount ?? 1;
-    const markedHistory = priorAssistant?.role === 'assistant'
-      ? [
-        ...history,
-        {
-          ...priorAssistant,
-          // Only promote the *old* answer to fork state when it isn't already
-          // in a group; if it is, it stays at its index and the new one gets
-          // the next index below.
-          ...(priorAssistant.forkId ? {} : { forkId, forkIndex: 0 }),
-          forkCount: existingForkId ? priorForkCount + 1 : 2,
-          forkActive: false,
-        },
-      ]
-      : history;
-    // O16: persist the fork bookkeeping (including sibling contents) so all
-    // branches survive a reload — the main-process history only keeps the
-    // final answer, so old siblings live in this side table.
-    if (priorAssistant?.role === 'assistant' && currentSessionId) {
-      const map = loadForkMap(currentSessionId, localStorage);
-      const targetForkId = existingForkId ?? forkId;
-      // Re-anchor any previously persisted siblings under the same forkId.
-      const siblings = [...map.values()]
-        .filter((r) => r.forkId === targetForkId)
-        .map((r) => ({ ...r, forkCount: priorForkCount + 1 }));
-      siblings.forEach((r) => map.set(r.forkId, r));
-      map.set(targetForkId, {
-        forkId: targetForkId,
-        forkIndex: existingForkId ? (priorAssistant.forkIndex ?? 0) : 0,
-        forkCount: existingForkId ? priorForkCount + 1 : 2,
-        content: priorAssistant.content,
-        timestamp: priorAssistant.timestamp,
-      });
-      saveForkMap(currentSessionId, map, localStorage);
-    }
-    setMessages(markedHistory);
-    setIsLoading(true);
-    streamingIndexRef.current = -1;
-
-    try {
-      const metis = window.metis;
-      if (!metis) throw new Error('Metis API not available');
-
-      const response = decodeAgentResponse(await metis.agentChat(
-        request.sessionId,
-        history.map((m) => ({ role: (m.role === 'tool' || m.role === 'goal') ? 'assistant' : m.role, content: m.content })),
-        activeSkillId ?? undefined,
-        { mode: 'regenerate', turnId: request.turnId, ...(activeScenarioId ? { scenarioId: activeScenarioId } : {}), projectId: request.projectId },
-      ));
-      if (!isCurrentChatRequest(request)) return;
-
-      if (response.status !== 'completed') {
-        const terminalRun = runActivity(
-          response,
-          response.turnId === request.turnId ? partsForAgentTurn(request.turnId) : createAssistantMessageParts(),
-        );
-        const retainedStreamDraft = settleStreamingPlaceholder(request, terminalRun);
-        const diagnosticCode = response.diagnostics[0]?.code ?? response.status;
-        setMessages((prev) => [...prev, {
-          role: 'assistant',
-          content: response.status === 'interrupted' || response.status === 'cancelled'
-            ? t('chat.interruptedNotice')
-            : presentExecutionError(diagnosticCode, locale, resolvedUIMode),
-          timestamp: now(),
-          startedAt: request.startedAt,
-          durationMs: Date.now() - request.startedAt,
-          ...(retainedStreamDraft ? {} : { run: terminalRun }),
-        }]);
-      } else if (response.answer) {
-        const safeAnswer = scrubPresentationProtocol(response.answer);
-        const streamedIndex = streamingIndexRef.current;
-        const durationMs = Date.now() - request.startedAt;
-        if (streamedIndex >= 0) {
-          // Settle dedupe identical to handleChatFlow: skip the content
-          // replacement when the authoritative answer matches the stream.
-          setMessages((prev) => prev.map((m, i) => i === streamedIndex
-            ? { ...m, ...(m.content === safeAnswer ? {} : { content: safeAnswer }), streaming: false, durationMs, run: runActivity(response, response.turnId === request.turnId ? partsForAgentTurn(request.turnId) : createAssistantMessageParts()), ...(response.citations?.length ? { citations: response.citations } : {}) }
-            : m));
-        } else {
-          const assistantMsg: ChatMessage = {
-            role: 'assistant',
-            content: safeAnswer,
-            timestamp: now(),
-            startedAt: request.startedAt,
-            durationMs,
-            run: runActivity(response, response.turnId === request.turnId ? partsForAgentTurn(request.turnId) : createAssistantMessageParts()),
-            ...(response.citations?.length ? { citations: response.citations } : {}),
-            // O16: the regenerated answer is the newest active sibling in its
-            // fork group (existing group extends, or a fresh group is born).
-            ...(priorAssistant?.role === 'assistant'
-              ? { forkId: existingForkId ?? forkId, forkIndex: existingForkId ? priorForkCount : 1, forkCount: existingForkId ? priorForkCount + 1 : 2, forkActive: true }
-              : {}),
-          };
-          setMessages((prev) => [...prev, assistantMsg]);
-        }
-        // Live preview: if the response is substantial (artifact-length), render it in the
-        // right panel's preview area (Claude-Artifacts-style split view).
-        if (safeAnswer.length > 200 || /^#|^\*|\|.*\||```/.test(safeAnswer)) {
-          openPreview(safeAnswer);
-        }
-      }
-      if (response.status === 'completed') {
-        void refreshArtifactsForSession(request.sessionId, request.generation);
-      }
-    } catch (err) {
-      if (!isCurrentChatRequest(request)) return;
-      const terminalRun: ChatMessage['run'] = {
-        status: 'error',
-        events: partsForAgentTurn(request.turnId).run.events,
-        parts: partsForAgentTurn(request.turnId),
-        turnId: request.turnId,
-      };
-      const retainedStreamDraft = settleStreamingPlaceholder(request, terminalRun);
-      setMessages((prev) => [...prev, {
-        role: 'assistant',
-        content: presentExecutionError(err, locale, resolvedUIMode),
-        timestamp: now(),
-        startedAt: request.startedAt,
-        durationMs: Date.now() - request.startedAt,
-        ...(retainedStreamDraft ? {} : { run: terminalRun }),
-      }]);
-    } finally {
-      if (isCurrentChatRequest(request)) {
-        streamingIndexRef.current = -1;
-        activeChatRequestRef.current = null;
-        agentExecutionPartsBufferRef.current.delete(request.turnId);
-        activeRunPartsRef.current = createAssistantMessageParts();
-        setActiveRunParts(createAssistantMessageParts());
-        setIsLoading(false);
-        setControlState('idle');
-      }
-    }
-  }
+  // handleRegenerate（O16 fork 重生成，迁出至 conversation/chatTurnFlow.ts，2026-09-15 拆分）。
 
   function handleEditMessage(index: number, newContent: string) {
     // Truncate messages after the edited one, then send the new content
@@ -3401,6 +2211,63 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
   }>>([]);
   // ── 多对话架构第二期(2026-09-04/05 刘总要求)──
   const [activeArtifactIds, setActiveArtifactIds] = useState<string[]>([]);
+
+  // ─── 聊天回合主流程（迁出至 conversation/chatTurnFlow.ts，2026-09-15 拆分）───
+  // handleChatFlow / runSendTurn / handleRegenerate 共享的宿主快照、refs 与
+  // 回调全部显式注入；每渲染重建构造器，与原内联函数声明等价。（handleSlashCommand
+  // 由 chatTurnFlow 内部的 runSendTurn 使用，宿主无需解构。）
+  const {
+    handleChatFlow,
+    runSendTurn,
+    handleRegenerate,
+  } = createChatTurnFlow({
+    metis: window.metis,
+    locale,
+    uiMode: resolvedUIMode,
+    t,
+    currentSessionId,
+    currentProjectId,
+    hasActiveScenarioRun,
+    messages,
+    sessions,
+    scenarios,
+    activeScenarioId,
+    activeSkillId,
+    activeGoalId,
+    isLoading,
+    activeArtifactIds,
+    projectOutcomes,
+    sessionGenerationRef,
+    streamingIndexRef,
+    activeChatRequestRef,
+    agentExecutionPartsBufferRef,
+    agentExecutionEventIdentityRef,
+    agentExecutionReplayInFlightRef,
+    activeRunPartsRef,
+    chatStreamControllerRef,
+    setMessages,
+    setInput,
+    setActiveRunParts,
+    setIsLoading,
+    setControlState,
+    setGoalSuggestion,
+    setActiveScenarioId,
+    isCurrentChatRequest,
+    partsForAgentTurn,
+    settleStreamingPlaceholder,
+    openPreview,
+    refreshArtifactsForSession,
+    refreshSessionSummaries,
+    flushNext: queue.flushNext,
+    createNewSession,
+    renameSession: handleRenameSession,
+    readPersistedScenarioId,
+    handleGoalFlow,
+    handleResumeGoal,
+    handleInterjection,
+    handleLiveInstruction,
+    handleInterrupt,
+  });
   const writeSessionDraft = (sessionId: string, value: string): void => {
     try {
       const map = JSON.parse(window.localStorage.getItem('metis:chat-drafts') || '{}') as Record<string, string>;
@@ -3633,230 +2500,38 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
             )}
           </div>
         )}
-        <div className="chat-messages" ref={chatMessagesRef}>
-          {messages.length === 0 && !isLoading && (
-            <div className="chat-empty">
-              <h2>{t('chat.emptyTitle')}</h2>
-              <p>{t('chat.emptyDescription')}</p>
-              <p className="chat-empty__examples">{t('chat.emptyExamples')}</p>
-            </div>
-          )}
-          {(() => {
-            // O15: side-by-side rendering — consecutive assistant messages of
-            // the same compareGroup are laid out in a flex row instead of a
-            // vertical stack.
-            const rendered: React.ReactNode[] = [];
-            let groupBuffer: Array<{ msg: ChatMessage; index: number }> = [];
-            let groupId: string | null = null;
-            const renderGoal = (msg: ChatMessage, index: number) => (
-              <GoalCardInline
-                key={msg.id ?? `goal-${index}`}
-                data={msg.goalCard!}
-                uiMode={resolvedUIMode}
-                registerStepElement={(stepId, element) => {
-                  const key = `${msg.goalCard!.goalId}\u0000${stepId}`;
-                  if (element) goalStepElementRefs.current.set(key, element);
-                  else goalStepElementRefs.current.delete(key);
-                }}
-                onPause={() => {
-                  const goalId = msg.goalCard!.goalId;
-                  if (goalId) void handlePauseGoal(goalId);
-                }}
-                onCancel={() => {
-                  const goalId = msg.goalCard!.goalId;
-                  if (goalId) void handleCancelGoal(goalId);
-                }}
-                onResume={() => {
-                  const goalId = msg.goalCard!.goalId;
-                  if (goalId) void handleResumeGoal(goalId);
-                }}
-                onRetry={() => {
-                  const goalId = msg.goalCard!.goalId;
-                  if (goalId) void handleResumeGoal(goalId);
-                }}
-                onOpenBoard={() => {
-                  const goalId = msg.goalCard!.goalId;
-                  if (!goalId) return;
-                  window.dispatchEvent(new CustomEvent('metis:open-kanban', { detail: { goalId } }));
-                }}
-                {...buildGoalCardActions({
-                  msg,
-                  locale,
-                  updateGoalCard,
-                  findGoalCardIndex,
-                  syncGoalCardWorkflow,
-                  createNewSession,
-                  renameSession: handleRenameSession,
-                  focusComposer: () => inputRef.current?.focus(),
-                  setComposerDraft: setInput,
-                  resumeGoal: handleResumeGoal,
-                  startPlannedGoal: handleStartPlannedGoal,
-                  showToast,
-                })}
-                onDeleteTask={() => {
-                  // 2.6/2.7 删除任务（GoalCardInline 已二次确认）。
-                  const goalId = msg.goalCard!.goalId;
-                  if (!goalId) return;
-                  void window.metis?.deleteGoal?.(goalId);
-                }}
-                onStepEditTask={(instruction) => {
-                  // 2.7 编辑任务：refinePlan 才会让模型按自然语言重规划；
-                  // updatePlan 只接受已结构化的 WorkflowDefinition，不能伪装成
-                  // “自动调整”。成功后同步权威工作流和当前卡片。
-                  const goalId = msg.goalCard!.goalId;
-                  if (!goalId) return;
-                  const cardIndex = findGoalCardIndex(goalId);
-                  if (cardIndex === undefined) return;
-                  void (async () => {
-                    const metis = window.metis;
-                    if (!metis?.refinePlan) return;
-                    const result = await metis.refinePlan(goalId, instruction);
-                    if (!result.success) {
-                      updateGoalCard(cardIndex, (card) => ({
-                        ...card,
-                        error: locale === 'zh' ? '任务调整未完成，原计划保持不变。' : 'Task adjustment did not complete; the original plan is unchanged.',
-                      }));
-                      return;
-                    }
-                    await syncGoalCardWorkflow(goalId, cardIndex);
-                  })();
-                }}
-                onStepStart={() => {
-                  // 2.7 启动：plan_ready 走 executeGoal（全新 run），
-                  // paused 走 resumeGoal（引擎要求已存在暂停 run）。
-                  const goalId = msg.goalCard!.goalId;
-                  if (!goalId) return;
-                  if (msg.goalCard!.phase === 'plan_ready') void handleStartPlannedGoal(goalId);
-                  else void handleResumeGoal(goalId);
-                }}
-                onStepsReorder={(orderedIds) => {
-                  // 2.8 拖动排序：以权威 WorkflowDefinition 为基准重排后整体提交
-                  // updatePlan。卡片上只有 id/name/description 摘要，直接拼凑的
-                  // 残缺定义会被 GoalPlanner 校验拒绝（缺 dependencies 等字段）。
-                  const goalId = msg.goalCard!.goalId;
-                  if (!goalId) return;
-                  const cardIndex = findGoalCardIndex(goalId);
-                  if (cardIndex === undefined) return;
-                  void (async () => {
-                    const metis = window.metis;
-                    if (!metis?.getGoalWorkflow || !metis.updatePlan) return;
-                    const view = await metis.getGoalWorkflow(goalId);
-                    const workflow = (view as { workflow?: Record<string, unknown> } | undefined)?.workflow;
-                    if (!workflow) {
-                      updateGoalCard(cardIndex, (card) => ({
-                        ...card,
-                        error: locale === 'zh' ? '暂时无法读取任务计划，排序未生效。' : 'Could not read the plan; reordering was not applied.',
-                      }));
-                      return;
-                    }
-                    const steps = Array.isArray(workflow.steps)
-                      ? (workflow.steps as Array<Record<string, unknown>>)
-                      : [];
-                    const position = new Map(orderedIds.map((id, order) => [id, order]));
-                    const orderedSteps = [...steps].sort((left, right) => (
-                      (position.get(String(left.id)) ?? Number.MAX_SAFE_INTEGER)
-                      - (position.get(String(right.id)) ?? Number.MAX_SAFE_INTEGER)
-                    ));
-                    const result = await metis.updatePlan(goalId, {
-                      ...workflow,
-                      steps: orderedSteps,
-                    } as unknown as Record<string, unknown>);
-                    if (!result || (result as { valid?: boolean }).valid !== true) {
-                      const errors = (result as { errors?: string[] } | null | undefined)?.errors ?? [];
-                      updateGoalCard(cardIndex, (card) => ({
-                        ...card,
-                        error: locale === 'zh'
-                          ? `排序未保存（${errors[0] ?? 'plan_update_rejected'}）；原顺序保持不变。`
-                          : `Reorder was not saved (${errors[0] ?? 'plan_update_rejected'}); the original order is kept.`,
-                      }));
-                      return;
-                    }
-                    await syncGoalCardWorkflow(goalId, cardIndex);
-                  })();
-                }}
-              />
-            );
-            const renderItem = (msg: ChatMessage, index: number) => (
-              <ChatMessageItem
-                key={msg.id ?? index}
-                msg={msg}
-                index={index}
-                isLast={index === messages.length - 1}
-                diagnosticMode={diagnosticMode}
-                onOpenPaper={openPaperByDoi}
-                onEdit={msg.role === 'user' ? handleEditMessageAtIndex : undefined}
-                onRegenerate={msg.role === 'assistant' ? stableRegenerate : undefined}
-                onSwitchFork={msg.forkId ? stableSwitchFork : undefined}
-                onStepCardComment={handleStepCardComment}
-              />
-            );
-            const flushGroup = () => {
-              if (groupBuffer.length === 0) return;
-              if (groupId) {
-                rendered.push(
-                  <div className="chat-compare-row" key={`compare-${groupId}`} data-testid={`compare-row-${groupId}`}>
-                    {groupBuffer.map(({ msg, index }) => renderItem(msg, index))}
-                  </div>,
-                );
-              } else {
-                for (const { msg, index } of groupBuffer) {
-                  if (msg.role === 'goal' && msg.goalCard) {
-                    rendered.push(renderGoal(msg, index));
-                  } else {
-                    rendered.push(renderItem(msg, index));
-                  }
-                }
-              }
-              groupBuffer = [];
-              groupId = null;
-            };
-            messages.forEach((msg, index) => {
-              // O16: hide inactive fork siblings.
-              if (msg.forkId && msg.forkActive === false) return;
-              if (msg.compareGroup) {
-                if (groupId !== null && msg.compareGroup !== groupId) flushGroup();
-                groupId = msg.compareGroup;
-                groupBuffer.push({ msg, index });
-              } else {
-                flushGroup();
-                if (msg.role === 'goal' && msg.goalCard) {
-                  rendered.push(renderGoal(msg, index));
-                } else {
-                  rendered.push(renderItem(msg, index));
-                }
-              }
-            });
-            flushGroup();
-            return rendered;
-          })()}
-          {isLoading && !activeGoalId && streamingIndexRef.current < 0 && (
-            <div className="chat-message assistant chat-run-pending" data-testid="active-run-timeline">
-              <div className="message-avatar">M</div>
-              <div className="message-body">
-                <MemoizedAgentActivityTimeline
-                  status="running"
-                  events={activeRunParts.run.events}
-                  parts={activeRunParts}
-                  startedAt={activeChatRequestRef.current?.startedAt}
-                  locale={locale}
-                  diagnosticMode={diagnosticMode}
-                  pendingLabel={locale === 'zh' ? '运行已发起，等待模型响应' : 'Run started; waiting for model response'}
-                />
-              </div>
-            </div>
-          )}
-          {!isFollowingLatest && (
-            <button
-              type="button"
-              className="chat-return-latest"
-              data-testid="return-to-latest"
-              onClick={scrollToLatest}
-            >
-              {locale === 'zh' ? '回到最新消息' : 'Return to latest'}
-            </button>
-          )}
-          <div ref={messagesEndRef} />
-        </div>
+        {/* 消息时间线（迁出至 components/chat/ChatMessageList.tsx，2026-09-15 拆分）：
+            气泡、Goal 卡、O15 对比分组、fork 隐藏与 pending 时间线由组件注入。 */}
+        <ChatMessageList
+          messages={messages}
+          isLoading={isLoading}
+          activeGoalId={activeGoalId}
+          streamPending={streamingIndexRef.current < 0}
+          activeRunParts={activeRunParts}
+          activeRunStartedAt={activeChatRequestRef.current?.startedAt}
+          uiMode={resolvedUIMode}
+          isFollowingLatest={isFollowingLatest}
+          onReturnToLatest={scrollToLatest}
+          chatMessagesRef={chatMessagesRef}
+          messagesEndRef={messagesEndRef}
+          onOpenPaper={openPaperByDoi}
+          onEditMessage={handleEditMessageAtIndex}
+          onRegenerate={stableRegenerate}
+          onSwitchFork={stableSwitchFork}
+          onStepCardComment={handleStepCardComment}
+          onRegisterStepElement={registerGoalStepElement}
+          updateGoalCard={updateGoalCard}
+          findGoalCardIndex={findGoalCardIndex}
+          syncGoalCardWorkflow={syncGoalCardWorkflow}
+          createNewSession={createNewSession}
+          renameSession={handleRenameSession}
+          pauseGoal={handlePauseGoal}
+          cancelGoal={handleCancelGoal}
+          resumeGoal={handleResumeGoal}
+          startPlannedGoal={handleStartPlannedGoal}
+          setInput={setInput}
+          onFocusComposer={focusComposer}
+        />
         {selectionAskButton}
         <div
           className={`chat-input-area ${dragOver ? 'drag-over' : ''}`}

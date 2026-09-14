@@ -13,7 +13,9 @@ function readSource(relativePath: string): string {
 }
 
 const mainSrc = readSource('electron/main.ts');
-const preloadSrc = readSource('electron/preload.ts');
+// preload 拆分（2026-09-15）：settingsBridge 随迁，聚合扫描保持等价强度。
+const preloadSrc = ['electron/preload.ts', ...fs.readdirSync('electron/preload').filter((f) => f.endsWith('.ts')).map((f) => `electron/preload/${f}`)]
+  .map((f) => readSource(f)).join('\n');
 const serviceSrc = readSource('electron/FirstRunSetupService.ts');
 const contractSrc = readSource('engine/runtime/WorkspaceAgentsContract.ts');
 

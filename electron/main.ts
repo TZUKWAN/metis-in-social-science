@@ -227,13 +227,14 @@ import { registerArtifactIpc } from './ipc/registerArtifactIpc.js';
 import { registerGoalIpc } from './ipc/registerGoalIpc.js';
 import { parseBrowserBounds } from './ipc/sharedGuards.js';
 import { registerBrowserIpc } from './ipc/registerBrowserIpc.js';
+import { registerOutcomeDataIpc } from './ipc/registerOutcomeDataIpc.js';
 import { RemoteDevBridge, isRemoteBridgeSender, remoteBroadcast } from './RemoteBridge/remoteDevBridge.js';
 import { registerExperimentIpc } from './ipc/registerExperimentIpc.js';
 import { registerWeChatIpc } from './ipc/registerWeChatIpc.js';
 import { registerFreeModelIpc } from './ipc/registerFreeModelIpc.js';
 import { OpenAICompatProvider } from '../engine/providers/OpenAICompatProvider.js';
 import { AgentLoop } from '../engine/core/AgentLoop.js';
-import { OutcomeAssistantChatRequestSchema, OutcomeAssistantChatResultSchema, OutcomeCategoryCreateSchema, OutcomeCategoryDeleteSchema, OutcomeCategoryRenameSchema, OutcomeCreateRequestSchema, OutcomeExternalEditorCloseRequestSchema, OutcomeExternalEditorOpenRequestSchema, OutcomeExternalEditorOpenResultSchema, OutcomeExternalEditorStateRequestSchema, OutcomeExternalEditorStateSchema, OutcomeExternalEditorSyncRequestSchema, OutcomeExternalEditorSyncResultSchema, OutcomeFinalRequestSchema, OutcomeGetRequestSchema, OutcomeImageGenerateResultSchema, OutcomeImageSettingsGetResultSchema, OutcomeImageSettingsSaveResultSchema, OutcomeListRequestSchema, OutcomeMediaImportRequestSchema, OutcomeMediaReadRequestSchema, OutcomeMoveRequestSchema, OutcomePptxExportRequestSchema, OutcomePptxExportResultSchema, OutcomePptxImportCommitRequestSchema, OutcomePptxImportCommitResultSchema, OutcomePptxImportRequestSchema, OutcomePptxImportResultSchema, OutcomeRenameRequestSchema, OutcomeRestoreRequestSchema, OutcomeSaveRequestSchema, OutcomeVersionsRequestSchema, OutcomeWordDocxExportRequestSchema, OutcomeWordDocxExportResultSchema, OutcomeWordDocxImportCommitRequestSchema, OutcomeWordDocxImportCommitResultSchema, OutcomeWordDocxImportRequestSchema, OutcomeWordDocxImportResultSchema, PptGenerationExecuteRequestSchema, PptGenerationResultSchema, PptGenerationSkillSaveRequestSchema, PptGenerationSkillSchema, PptTemplateSaveRequestSchema, PptTemplateSchema, ScenarioScopedConversationCreateSchema, ScenarioScopedConversationRequestSchema, ScopedConversationMessageRequestSchema, ScopedConversationRequestSchema, ScopedConversationCreateSchema, ScopedConversationRefSchema, ScopedConversationAppendToSchema, OutcomeSourceLocateRequestSchema, OutcomeSourceLocateResultSchema, OutcomeTrashListRequestSchema, OutcomeTrashRequestSchema } from '../engine/runtime/OutcomeRuntimeContract.js';
+import { OutcomeAssistantChatRequestSchema, OutcomeAssistantChatResultSchema, OutcomeCreateRequestSchema, OutcomeExternalEditorCloseRequestSchema, OutcomeExternalEditorOpenRequestSchema, OutcomeExternalEditorOpenResultSchema, OutcomeExternalEditorStateRequestSchema, OutcomeExternalEditorStateSchema, OutcomeExternalEditorSyncRequestSchema, OutcomeExternalEditorSyncResultSchema, OutcomeImageGenerateResultSchema, OutcomeImageSettingsGetResultSchema, OutcomeImageSettingsSaveResultSchema, OutcomeMediaImportRequestSchema, OutcomeMediaReadRequestSchema, OutcomePptxExportRequestSchema, OutcomePptxExportResultSchema, OutcomePptxImportCommitRequestSchema, OutcomePptxImportCommitResultSchema, OutcomePptxImportRequestSchema, OutcomePptxImportResultSchema, OutcomeSaveRequestSchema, OutcomeWordDocxExportRequestSchema, OutcomeWordDocxExportResultSchema, OutcomeWordDocxImportCommitRequestSchema, OutcomeWordDocxImportCommitResultSchema, OutcomeWordDocxImportRequestSchema, OutcomeWordDocxImportResultSchema, PptGenerationExecuteRequestSchema, PptGenerationResultSchema, PptGenerationSkillSchema, PptTemplateSaveRequestSchema, PptTemplateSchema, ScenarioScopedConversationCreateSchema, ScenarioScopedConversationRequestSchema, ScopedConversationRefSchema, ScopedConversationAppendToSchema, OutcomeTrashRequestSchema } from '../engine/runtime/OutcomeRuntimeContract.js';
 import { PptDocumentSchema, decodePptTemplateDefinition, decodePptTemplatePages } from '../engine/runtime/OutcomeRuntimeContract.js';
 import type { PptDocument, WordDocument } from '../engine/runtime/OutcomeRuntimeContract.js';
 import { applyWordFormatting } from '../engine/outcomes/WordDocumentFormatting.js';
@@ -743,6 +744,14 @@ type WordDocxImportSession = {
 };
 const pptxImportSessions = new Map<string, PptxImportSession>();
 const wordDocxImportSessions = new Map<string, WordDocxImportSession>();
+
+// 垃圾箱过期清理（模块级：远程桥 registrar 经 ctx 调用同一实现）。
+async function purgeExpiredOutcomeTrash(): Promise<void> {
+  if (!outcomeRepository) return;
+  let purged: Array<{ projectId: string; outcomeId: string; storedNames: string[] }>;
+  try { purged = outcomeRepository.purgeExpired(); } catch { return; }
+  for (const item of purged) { try { await outcomeMedia?.purgeFiles(item.projectId, item.storedNames); } catch { /* best-effort：数据库行已删，文件缺失不阻断 */ } }
+}
 async function discardPptxImportSession(token: string, session: PptxImportSession): Promise<void> {
   pptxImportSessions.delete(token);
   if (outcomeMedia && session.outcomeId && session.mediaIds.length > 0) await outcomeMedia.removeGenerated(session.projectId, session.outcomeId, session.mediaIds);
@@ -872,6 +881,8 @@ const domainIpcContext: DomainIpcContext = {
   backupService: () => backupService,
   ensureBrowserService,
   jobQueueService: () => jobQueueService,
+  outcomeRepository: () => outcomeRepository,
+  purgeExpiredOutcomeTrash,
   goalEngine: () => goalEngine,
   nextRequestId: () => ++requestCounter,
   broadcastGoalChanged,
@@ -4449,13 +4460,6 @@ function setupIPC(): void {
   });
 
   // ── Outcomes workbench: project-owned formal deliverables ──
-  ipcMain.handle('outcomes:categories:list', (event) => { try { requireRendererMainFrame(event); return outcomeRepository?.listCategories() ?? []; } catch { return []; } });
-  ipcMain.handle('outcomes:categories:create', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=OutcomeCategoryCreateSchema.safeParse(raw); return p.success && outcomeRepository ? outcomeRepository.createCategory(p.data.name) : null; } catch { return null; } });
-  ipcMain.handle('outcomes:categories:rename', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=OutcomeCategoryRenameSchema.safeParse(raw); return p.success && outcomeRepository ? outcomeRepository.renameCategory(p.data.categoryId,p.data.name) ?? null : null; } catch { return null; } });
-  ipcMain.handle('outcomes:categories:delete', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=OutcomeCategoryDeleteSchema.safeParse(raw); return Boolean(p.success && outcomeRepository?.deleteCategory(p.data.categoryId)); } catch { return false; } });
-  ipcMain.handle('outcomes:list', async (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=OutcomeListRequestSchema.safeParse(raw); if (!p.success || !outcomeRepository) return []; await purgeExpiredOutcomeTrash(); return outcomeRepository.list(p.data.projectId,p.data.query); } catch { return []; } });
-  ipcMain.handle('outcomes:get', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=OutcomeGetRequestSchema.safeParse(raw); return p.success && outcomeRepository ? outcomeRepository.get(p.data.projectId,p.data.outcomeId,p.data.version) ?? null : null; } catch { return null; } });
-  ipcMain.handle('outcomes:versions', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=OutcomeVersionsRequestSchema.safeParse(raw); return p.success && outcomeRepository ? outcomeRepository.versions(p.data.projectId,p.data.outcomeId) : []; } catch { return []; } });
   ipcMain.handle('outcomes:external-editor:open', async (event, raw: unknown) => {
     try {
       requireRendererMainFrame(event);
@@ -4673,29 +4677,10 @@ function setupIPC(): void {
       }
     } catch { return null; }
   });
-  ipcMain.handle('outcomes:restore', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=OutcomeRestoreRequestSchema.safeParse(raw); return p.success && outcomeRepository ? outcomeRepository.restore(p.data.projectId,p.data.outcomeId,p.data.version,p.data.note) : null; } catch { return null; } });
-  ipcMain.handle('outcomes:rename', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=OutcomeRenameRequestSchema.safeParse(raw); return p.success && outcomeRepository ? outcomeRepository.rename(p.data.projectId,p.data.outcomeId,p.data.title) ?? null : null; } catch { return null; } });
-  ipcMain.handle('outcomes:move', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=OutcomeMoveRequestSchema.safeParse(raw); return p.success && outcomeRepository ? outcomeRepository.move(p.data.projectId,p.data.outcomeId,p.data.categoryId) ?? null : null; } catch { return null; } });
-  ipcMain.handle('outcomes:markFinal', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=OutcomeFinalRequestSchema.safeParse(raw); return p.success && outcomeRepository ? outcomeRepository.markFinal(p.data.projectId,p.data.outcomeId,p.data.version) ?? null : null; } catch { return null; } });
   // ── 成果回收站（2026-08-24 刘总需求）：软删除进回收站，7 天无操作自动彻底删除（含磁盘媒体文件）──
   // 到期清理由列表类调用惰性触发，与个性化定义的保留期策略一致。
-  const purgeExpiredOutcomeTrash = async (): Promise<void> => {
-    if (!outcomeRepository) return;
-    let purged: Array<{ projectId: string; outcomeId: string; storedNames: string[] }>;
-    try { purged = outcomeRepository.purgeExpired(); } catch { return; }
-    for (const item of purged) { try { await outcomeMedia?.purgeFiles(item.projectId, item.storedNames); } catch { /* best-effort：数据库行已删，文件缺失不阻断 */ } }
-  };
   ipcMain.handle('outcomes:archive', async (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=OutcomeTrashRequestSchema.safeParse(raw); if (!p.success || !outcomeRepository) return false; if ((await outcomeExternalEditor.closeFor(p.data.projectId, p.data.outcomeId)) === 'dirty') return false; return outcomeRepository.archive(p.data.projectId,p.data.outcomeId); } catch { return false; } });
-  ipcMain.handle('outcomes:trash:list', async (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=OutcomeTrashListRequestSchema.safeParse(raw); if (!p.success || !outcomeRepository) return []; await purgeExpiredOutcomeTrash(); return outcomeRepository.listArchived(p.data.projectId); } catch { return []; } });
-  ipcMain.handle('outcomes:trash:restore', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=OutcomeTrashRequestSchema.safeParse(raw); return p.success && outcomeRepository ? outcomeRepository.restoreArchived(p.data.projectId,p.data.outcomeId) : false; } catch { return false; } });
   ipcMain.handle('outcomes:delete', async (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=OutcomeTrashRequestSchema.safeParse(raw); if (!p.success || !outcomeRepository) return false; if ((await outcomeExternalEditor.closeFor(p.data.projectId, p.data.outcomeId)) === 'dirty') return false; const storedNames = outcomeRepository.deletePermanent(p.data.projectId,p.data.outcomeId); if (!storedNames) return false; try { await outcomeMedia?.purgeFiles(p.data.projectId, storedNames); } catch { /* best-effort */ } return true; } catch { return false; } });
-  ipcMain.handle('outcomes:conversation:list', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=ScopedConversationRequestSchema.safeParse(raw); return p.success && outcomeRepository ? outcomeRepository.listConversation(p.data) : []; } catch { return []; } });
-  ipcMain.handle('outcomes:conversation:append', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=ScopedConversationMessageRequestSchema.safeParse(raw); return p.success && outcomeRepository ? outcomeRepository.appendConversation(p.data) : null; } catch { return null; } });
-  ipcMain.handle('outcomes:conversation:units', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=ScopedConversationRequestSchema.safeParse(raw); return p.success && outcomeRepository ? outcomeRepository.listConversations(p.data) : []; } catch { return []; } });
-  ipcMain.handle('outcomes:conversation:create', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=ScopedConversationCreateSchema.safeParse(raw); return p.success && outcomeRepository ? outcomeRepository.createConversation({ ...p.data, scope: 'outcome' }) : null; } catch { return null; } });
-  ipcMain.handle('outcomes:conversation:delete', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=ScopedConversationRefSchema.safeParse(raw); return p.success && outcomeRepository ? outcomeRepository.deleteConversation(p.data) : false; } catch { return false; } });
-  ipcMain.handle('outcomes:conversation:byId', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=ScopedConversationRefSchema.safeParse(raw); return p.success && outcomeRepository ? outcomeRepository.listMessagesByConversation(p.data) : []; } catch { return []; } });
-  ipcMain.handle('outcomes:conversation:appendTo', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=ScopedConversationAppendToSchema.safeParse(raw); return p.success && outcomeRepository ? outcomeRepository.appendToConversation(p.data) : null; } catch { return null; } });
   ipcMain.handle('scenario:conversation:units', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=ScenarioScopedConversationRequestSchema.safeParse(raw); if (!p.success || !outcomeRepository) return []; return outcomeRepository.listConversations({ ...p.data, scope: 'scenario', outcomeId: null }); } catch { return []; } });
   ipcMain.handle('scenario:conversation:create', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=ScenarioScopedConversationCreateSchema.safeParse(raw); if (!p.success || !outcomeRepository) return null; return outcomeRepository.createConversation({ ...p.data, scope: 'scenario', outcomeId: null }); } catch { return null; } });
   ipcMain.handle('scenario:conversation:delete', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p=ScopedConversationRefSchema.safeParse(raw); return p.success && outcomeRepository ? outcomeRepository.deleteConversation(p.data) : false; } catch { return false; } });
@@ -4798,20 +4783,6 @@ function setupIPC(): void {
       tracked.cleanup();
     }
   });
-  ipcMain.handle('outcomes:source:locate', (event, raw: unknown) => {
-    try { requireRendererMainFrame(event); } catch {
-      return OutcomeSourceLocateResultSchema.parse({ ok: false, code: 'invalid_request' });
-    }
-    const parsed = OutcomeSourceLocateRequestSchema.safeParse(raw);
-    if (!parsed.success || !outcomeRepository) {
-      return OutcomeSourceLocateResultSchema.parse({ ok: false, code: 'invalid_request' });
-    }
-    try {
-      return outcomeRepository.locateSource({ projectId: parsed.data.projectId, source: parsed.data.source });
-    } catch {
-      return OutcomeSourceLocateResultSchema.parse({ ok: false, code: 'source_not_found' });
-    }
-  });
   ipcMain.handle('outcomes:template:listByKind', (event, raw: unknown) => {
     try { requireRendererMainFrame(event); const p = OutcomeTemplateListRequestSchema.safeParse(raw); return p.success ? outcomeTemplateService?.list(p.data.kind) ?? [] : []; } catch { return []; }
   });
@@ -4859,8 +4830,6 @@ function setupIPC(): void {
   ipcMain.handle('outcomes:template:list', (event) => {
     try { requireRendererMainFrame(event); return outcomeTemplateService?.list('ppt') ?? []; } catch { return []; }
   });
-  ipcMain.handle('outcomes:generation-skill:save',(event,raw:unknown)=>{try{requireRendererMainFrame(event);const p=PptGenerationSkillSaveRequestSchema.safeParse(raw);if(!p.success||!store)return null;const now=Date.now();const value=PptGenerationSkillSchema.parse({id:'ppt-skill-'+randomUUID(),...p.data});store.raw.prepare('INSERT INTO outcome_templates (id,name,kind,definition_json,created_at,updated_at) VALUES (?,?,?,?,?,?)').run(value.id,value.name,'ppt_generation_skill',JSON.stringify(value),now,now);return value;}catch{return null;}});
-  ipcMain.handle('outcomes:generation-skill:list',(event)=>{try{requireRendererMainFrame(event);return (store?.raw.prepare("SELECT definition_json FROM outcome_templates WHERE kind = 'ppt_generation_skill' ORDER BY updated_at DESC").all() as Array<{definition_json:string}>??[]).flatMap(row=>{try{const p=PptGenerationSkillSchema.safeParse(JSON.parse(row.definition_json));return p.success?[p.data]:[];}catch{return[];}});}catch{return[];}});
   ipcMain.handle('outcomes:ppt:generation:execute', async (event, raw: unknown) => {
     try { requireRendererMainFrame(event); } catch {
       return PptGenerationResultSchema.parse({ status: 'error', code: 'generation_unavailable', message: 'PPT 生成服务当前不可用。', answer: '', sources: [], diagnostics: [{ code: 'generation_unavailable', message: '未授权的渲染进程请求 PPT 生成。' }] });
@@ -5595,6 +5564,7 @@ function setupIPC(): void {
   ipcDomainDisposers.push(registerArtifactIpc(domainIpcContext));
   ipcDomainDisposers.push(registerGoalIpc(domainIpcContext));
   ipcDomainDisposers.push(registerBrowserIpc(domainIpcContext));
+  ipcDomainDisposers.push(registerOutcomeDataIpc(domainIpcContext));
 
   // ── 远程开发桥（dev-only）：METIS_REMOTE_BRIDGE=1 时开启浏览器远程访问。
   // 服务器在 whenReady 后启动，确保 setupIPC 已注册全部通道。──

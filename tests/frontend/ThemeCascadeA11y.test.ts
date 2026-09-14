@@ -65,9 +65,12 @@ describe('FIX-METIS-476 final CSS cascade and selector contracts', () => {
   it('keeps forced-color selectors aligned with real page JSX classes', () => {
     const chatCss = read('src/pages/ChatPage.css');
     const chatTsx = read('src/pages/ChatPage.tsx');
+    // 2026-09-15 拆分：消息气泡/Goal 卡 JSX 迁至 ChatMessageList.tsx，
+    // 类名契约跟随真实渲染源扫描两个文件（并集即当前聊天页的真实 JSX）。
+    const chatMessageListTsx = read('src/components/chat/ChatMessageList.tsx');
     for (const className of ['message-content', 'chat-textarea']) {
       expect(chatCss).toContain(`.${className}`);
-      expect(chatTsx).toContain(className);
+      expect(chatTsx.includes(className) || chatMessageListTsx.includes(className)).toBe(true);
     }
     expect(chatCss).not.toContain('.message-bubble');
     expect(chatCss).not.toMatch(/\.chat-input(?:[^\w-]|$)/u);

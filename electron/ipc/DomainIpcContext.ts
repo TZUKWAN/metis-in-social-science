@@ -84,6 +84,9 @@ export interface DomainIpcContext {
   // ── WeChat bot domain ─────────────────────────────────────
   ensureWeChatBot(): WeChatBotService | null;
 
+  // ── Outcomes（数据管理子域）──────────────────────────────
+  outcomeRepository(): import('../OutcomeRepository.js').OutcomeRepository | null;
+  purgeExpiredOutcomeTrash(): void;
   // ── Research browser domain ─────────────────────────────
   /** Live browser service instance, or null before first use. */
   browserService(): import('../BrowserService.js').BrowserService | null;

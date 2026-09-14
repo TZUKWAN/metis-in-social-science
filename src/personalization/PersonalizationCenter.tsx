@@ -1,15 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  DefinitionProvenanceSchema,
-  FullAccessPolicySchema,
-  MemoryPolicySchema,
   PersonalizationDefinitionSchema,
   type AgentDefinition,
   type ArchivedPersonalizationDefinition,
   type McpDefinition,
   type PersonalizationDefinition,
   type PersonalizationIntegrityIssue,
-  type PersonalizationMutationResult,
   type PersonalizationVersionView,
   type ScenarioDefinition,
 } from '../../engine/runtime/PersonalizationRuntimeContract.js';
@@ -18,25 +14,42 @@ import { useResearchWorkspaceStore } from '../research/researchWorkspaceStore';
 import McpActivationPanel, {
   type McpActivationPanelDependencies,
 } from './McpActivationPanel';
-import McpCredentialPanel from './McpCredentialPanel';
-import {
-  missingMcpSecrets,
-  usePersonalizationSecrets,
-  type PersonalizationSecretVaultHandle,
-} from './mcpCredentialVault.js';
+import { usePersonalizationSecrets } from './mcpCredentialVault.js';
 import { SkillStudioDialog, SkillStudioDock, type SkillStudioDraft } from './SkillStudioPanel';
 import { McpBuilderDialog } from './McpBuilderDialog';
 import { availableUserId, createDefinition } from './personalizationLib.js';
 import ScenarioWorkbench from './ScenarioWorkbench.js';
-import { RotateCcw, Trash2, Upload, X } from 'lucide-react';
+import { Trash2 } from 'lucide-react';
 import './PersonalizationCenter.css';
 
 import MarketBrowserPanel from './MarketBrowserPanel.js';
 import { ExtensionInstaller } from './ExtensionInstaller.js';
 import { CapabilityVaultPanel } from './CapabilityVaultPanel';
 import { SkillUnifiedPanel } from './SkillUnifiedPanel';
-
-type Kind = PersonalizationDefinition['kind'];
+import { DefinitionReferencePicker } from './center/DefinitionReferencePicker.js';
+import { IntegrityRecoveryNotice } from './center/IntegrityRecoveryNotice.js';
+import { LibraryTrashPanel } from './center/LibraryTrashPanel.js';
+import { McpLibraryCards } from './center/McpLibraryCards.js';
+import { PaperTemplateDialog } from './center/PaperTemplateDialog.js';
+import { SecretVaultPanel } from './center/SecretVaultPanel.js';
+import { SimpleSchemaEditor } from './center/SimpleSchemaEditor.js';
+import {
+  clearPersonalizationDraft,
+  editableCopy,
+  KIND_LABELS,
+  KIND_ORDER,
+  LIBRARY_LABELS,
+  PERSONALIZATION_DRAFT_DEBOUNCE_MS,
+  personalizationDefinitionSignature,
+  readInvalidSimpleSchemaDraft,
+  readPersonalizationDraft,
+  readSimpleSchemaReplacementDraft,
+  rebasePersonalizationDraft,
+  retainedPersonalizationDraftIds,
+  resultMessage,
+  writePersonalizationDraft,
+  type Kind,
+} from './center/shared.js';
 
 export interface PersonalizationCenterProps {
   onActivateScenario?: (scenarioId: string) => void | Promise<void>;
@@ -51,17 +64,6 @@ function isDirectlyEditable(definition: PersonalizationDefinition): boolean {
   return definition.kind !== 'skill'
     || (definition.sourceMode === 'markdown' && definition.packageEntry === null);
 }
-
-const KIND_ORDER: Kind[] = ['scenario', 'skill', 'mcp', 'rules'];
-const KIND_LABELS = {
-  zh: { scenario: '场景', agent: '智能体', skill: '技能', mcp: 'MCP', rules: 'Metis.md' },
-  en: { scenario: 'Scenarios', agent: 'Agents', skill: 'Skills', mcp: 'MCP', rules: 'Metis.md' },
-} as const;
-
-const LIBRARY_LABELS = {
-  zh: { scenario: '场景库', agent: '智能体库', skill: '技能库', mcp: 'MCP 库', rules: 'Metis.md 库' },
-  en: { scenario: 'Scenario library', agent: 'Agent library', skill: 'Skill library', mcp: 'MCP library', rules: 'Metis.md library' },
-} as const;
 
 /** 技能分类沿用场景的「category: 标签」机制（刘总 2026-09）：分类名存进定义 tags，随定义持久化。 */
 const SKILL_CATEGORY_PREFIX = 'category:';
@@ -81,309 +83,7 @@ const MEMORY_SCOPE_OPTIONS: ReadonlyArray<{
   { value: 'scenario', zh: '当前场景', en: 'Scenario' },
 ];
 
-
-
-
-const PERSONALIZATION_DRAFT_PREFIX = 'metis:personalization-draft:v1:';
-const PERSONALIZATION_DRAFT_DEBOUNCE_MS = 200;
-
-interface StoredPersonalizationDraft {
-  version: 1;
-  baseRevision: number;
-  draft: PersonalizationDefinition;
-}
-
-const volatilePersonalizationDrafts = new Map<string, StoredPersonalizationDraft>();
-const volatileOnlyPersonalizationDraftIds = new Set<string>();
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string');
-}
-
-function isDraftOutput(value: unknown): value is AgentDefinition['output'] {
-  if (!isRecord(value)
-    || typeof value.format !== 'string'
-    || !('schema' in value)
-    || (value.schema !== null && !isRecord(value.schema))
-    || typeof value.requireEvidenceEnvelope !== 'boolean'
-    || typeof value.includeIntegrityReport !== 'boolean') return false;
-  if (value.plan === undefined || value.plan === null) return true;
-  return isRecord(value.plan)
-    && typeof value.plan.primaryDeliverable === 'string'
-    && isStringArray(value.plan.supportingArtifacts)
-    && isStringArray(value.plan.qualityCriteria);
-}
-
-function isDraftWorkflow(value: unknown): value is ScenarioDefinition['workflow'] {
-  return Array.isArray(value) && value.every((step) => isRecord(step)
-    && typeof step.id === 'string'
-    && typeof step.name === 'string'
-    && typeof step.description === 'string'
-    && typeof step.agentId === 'string'
-    && isStringArray(step.skillIds)
-    && isStringArray(step.toolIds)
-    && isStringArray(step.mcpIds)
-    && isStringArray(step.dependsOn)
-    && typeof step.maxTurns === 'number');
-}
-
-/**
- * Editor drafts deliberately accept temporarily incomplete business values (for example an empty
- * required name while it is being replaced). Stable structure is still checked so malformed
- * storage cannot reach the editor as an arbitrary object.
- */
-function isPersonalizationEditorDraft(value: unknown): value is PersonalizationDefinition {
-  if (!isRecord(value)
-    || value.contractVersion !== 1
-    || typeof value.id !== 'string'
-    || !['scenario', 'agent', 'skill', 'mcp', 'rules'].includes(String(value.kind))
-    || typeof value.name !== 'string'
-    || typeof value.description !== 'string'
-    || typeof value.enabled !== 'boolean'
-    || !isStringArray(value.tags)
-    || !Number.isSafeInteger(value.revision)
-    || !DefinitionProvenanceSchema.safeParse(value.provenance).success) return false;
-
-  if (value.kind === 'agent') {
-    return typeof value.role === 'string'
-      && typeof value.systemPrompt === 'string'
-      && (value.modelPreference === null || typeof value.modelPreference === 'string')
-      && isStringArray(value.skillIds)
-      && isStringArray(value.toolIds)
-      && isStringArray(value.mcpIds)
-      && MemoryPolicySchema.safeParse(value.memory).success
-      && isDraftOutput(value.output)
-      && typeof value.maxTurns === 'number'
-      && typeof value.retryLimit === 'number';
-  }
-  if (value.kind === 'skill') {
-    return ['markdown', 'package', 'url'].includes(String(value.sourceMode))
-      && typeof value.markdown === 'string'
-      && typeof value.systemPrompt === 'string'
-      && isStringArray(value.toolIds)
-      && isStringArray(value.mcpIds)
-      && typeof value.maxTurns === 'number'
-      && (value.inputSchema === null || isRecord(value.inputSchema))
-      && (value.outputSchema === null || isRecord(value.outputSchema))
-      && (value.packageEntry === null || typeof value.packageEntry === 'string');
-  }
-  if (value.kind === 'scenario') {
-    return isStringArray(value.agentIds)
-      && isStringArray(value.skillIds)
-      && isStringArray(value.mcpIds)
-      && isStringArray(value.rulesIds)
-      && isDraftWorkflow(value.workflow)
-      && FullAccessPolicySchema.safeParse(value.fullAccess).success
-      && MemoryPolicySchema.safeParse(value.memory).success
-      && isDraftOutput(value.output)
-      && isStringArray(value.triggerPhrases)
-      && ['research', 'writing', 'analysis', 'funding', 'presentation_reserved', 'custom']
-        .includes(String(value.capability));
-  }
-  if (value.kind === 'rules') {
-    return ['global', 'scenario', 'project'].includes(String(value.scope))
-      && (value.scopeId === null || typeof value.scopeId === 'string')
-      && typeof value.markdown === 'string';
-  }
-  return PersonalizationDefinitionSchema.safeParse(value).success;
-}
-
-function personalizationDraftKey(definitionId: string): string {
-  return `${PERSONALIZATION_DRAFT_PREFIX}${definitionId}`;
-}
-
-function parseStoredPersonalizationDraft(raw: string): StoredPersonalizationDraft | null {
-  try {
-    const candidate = JSON.parse(raw) as Partial<StoredPersonalizationDraft>;
-    if (candidate.version !== 1 || !Number.isInteger(candidate.baseRevision)) return null;
-    if (!isPersonalizationEditorDraft(candidate.draft)) return null;
-    return { version: 1, baseRevision: candidate.baseRevision!, draft: candidate.draft };
-  } catch {
-    return null;
-  }
-}
-
-function personalizationDefinitionSignature(definition: PersonalizationDefinition): string {
-  const parsed = PersonalizationDefinitionSchema.safeParse(definition);
-  return JSON.stringify(parsed.success ? parsed.data : definition);
-}
-
-function readPersonalizationDraft(definition: PersonalizationDefinition): PersonalizationDefinition | null {
-  const key = personalizationDraftKey(definition.id);
-  let stored = volatilePersonalizationDrafts.get(definition.id) ?? null;
-  let durableStorageReadable = false;
-  try {
-    let raw = window.localStorage.getItem(key);
-    durableStorageReadable = true;
-    if (!raw) {
-      raw = window.sessionStorage.getItem(key);
-      if (raw) {
-        window.localStorage.setItem(key, raw);
-      }
-    }
-    if (raw) {
-      stored = parseStoredPersonalizationDraft(raw);
-      if (!stored) {
-        clearPersonalizationDraft(definition.id);
-        return null;
-      }
-      volatilePersonalizationDrafts.set(definition.id, stored);
-    } else if (!volatileOnlyPersonalizationDraftIds.has(definition.id)) {
-      volatilePersonalizationDrafts.delete(definition.id);
-      stored = null;
-    }
-  } catch {
-    try {
-      const raw = window.sessionStorage.getItem(key);
-      if (raw) stored = parseStoredPersonalizationDraft(raw);
-    } catch {
-      // The in-memory mirror remains available when browser storage is restricted.
-    }
-  }
-  if (durableStorageReadable && stored) {
-    try {
-      window.sessionStorage.setItem(key, JSON.stringify(stored));
-    } catch {
-      // localStorage remains the durable copy when session storage is restricted.
-    }
-  }
-  if (!stored
-    || stored.baseRevision !== definition.revision
-    || stored.draft.id !== definition.id
-    || stored.draft.kind !== definition.kind) {
-    if (stored) clearPersonalizationDraft(definition.id);
-    return null;
-  }
-  return stored.draft;
-}
-
-function writePersonalizationDraft(
-  definition: PersonalizationDefinition,
-  draft: PersonalizationDefinition,
-): void {
-  const stored: StoredPersonalizationDraft = {
-    version: 1,
-    baseRevision: definition.revision,
-    draft,
-  };
-  volatilePersonalizationDrafts.set(definition.id, stored);
-  let persisted = false;
-  try {
-    const serialized = JSON.stringify(stored);
-    window.localStorage.setItem(personalizationDraftKey(definition.id), serialized);
-    persisted = true;
-    window.sessionStorage.setItem(personalizationDraftKey(definition.id), serialized);
-    volatileOnlyPersonalizationDraftIds.delete(definition.id);
-  } catch {
-    try {
-      window.sessionStorage.setItem(personalizationDraftKey(definition.id), JSON.stringify(stored));
-      persisted = true;
-    } catch {
-      // The in-memory mirror still protects navigation within this renderer session.
-    }
-    if (persisted) volatileOnlyPersonalizationDraftIds.delete(definition.id);
-    else volatileOnlyPersonalizationDraftIds.add(definition.id);
-  }
-}
-
-function clearPersonalizationDraft(definitionId: string): void {
-  volatilePersonalizationDrafts.delete(definitionId);
-  volatileOnlyPersonalizationDraftIds.delete(definitionId);
-  try {
-    window.localStorage.removeItem(personalizationDraftKey(definitionId));
-    window.sessionStorage.removeItem(personalizationDraftKey(definitionId));
-  } catch {
-    try {
-      window.sessionStorage.removeItem(personalizationDraftKey(definitionId));
-    } catch {
-      // A restricted storage implementation does not affect the in-memory cleanup.
-    }
-  }
-}
-
-function retainedPersonalizationDraftIds(): Set<string> {
-  const ids = new Set<string>();
-  try {
-    for (const storage of [window.localStorage, window.sessionStorage]) {
-      for (let index = 0; index < storage.length; index += 1) {
-        const key = storage.key(index);
-        if (key?.startsWith(PERSONALIZATION_DRAFT_PREFIX)) {
-          ids.add(key.slice(PERSONALIZATION_DRAFT_PREFIX.length));
-        }
-      }
-    }
-    volatileOnlyPersonalizationDraftIds.forEach((id) => ids.add(id));
-    volatilePersonalizationDrafts.forEach((_draft, id) => {
-      if (!ids.has(id)) volatilePersonalizationDrafts.delete(id);
-    });
-  } catch {
-    // The in-memory mirror is authoritative when browser storage is restricted.
-    volatilePersonalizationDrafts.forEach((_draft, id) => ids.add(id));
-  }
-  return ids;
-}
-
-
-
-function editableCopy(definition: PersonalizationDefinition): PersonalizationDefinition {
-  const now = Date.now();
-  return {
-    ...definition,
-    revision: definition.revision + 1,
-    provenance: {
-      ...definition.provenance,
-      locallyModified: true,
-      updatedAt: now,
-    },
-  };
-}
-
-function rebasePersonalizationDraft(
-  savedDefinition: PersonalizationDefinition,
-  retainedDraft: PersonalizationDefinition,
-): PersonalizationDefinition {
-  const baseline = editableCopy(savedDefinition);
-  if (retainedDraft.id !== savedDefinition.id || retainedDraft.kind !== savedDefinition.kind) {
-    return baseline;
-  }
-  return {
-    ...baseline,
-    ...retainedDraft,
-    contractVersion: savedDefinition.contractVersion,
-    id: savedDefinition.id,
-    kind: savedDefinition.kind,
-    revision: baseline.revision,
-    provenance: {
-      ...baseline.provenance,
-      ...retainedDraft.provenance,
-      locallyModified: true,
-      updatedAt: Math.max(retainedDraft.provenance.updatedAt, baseline.provenance.updatedAt),
-    },
-  } as PersonalizationDefinition;
-}
-
-function resultMessage(result: PersonalizationMutationResult, zh: boolean): string {
-  if (result.ok) return zh ? '已保存' : 'Saved';
-  const labels: Record<string, [string, string]> = {
-    invalid_request: ['内容不符合严格合同', 'Content does not match the strict contract'],
-    not_found: ['未找到定义', 'Definition not found'],
-    factory_protected: ['内置原版受保护，请先创建可编辑副本', 'Built-in factory version is protected; create an editable copy'],
-    revision_conflict: ['版本已变更，请刷新后重试', 'The definition changed; reload and try again'],
-    dependency_invalid: ['引用的智能体、技能或 MCP 不可用', 'A referenced agent, skill, or MCP is unavailable'],
-    io_error: ['持久化失败', 'Persistence failed'],
-  };
-  return (labels[result.code] ?? ['操作失败', 'Operation failed'])[zh ? 0 : 1];
-}
-
 function csv(values: readonly string[]): string { return values.join(', '); }
-/** 回收站条目的剩余保留天数（向上取整，永不低于 0）。 */
-function remainingTrashDays(expiresAt: number): number {
-  return Math.max(0, Math.ceil((expiresAt - Date.now()) / (24 * 60 * 60 * 1000)));
-}
 function parseCsv(value: string): string[] {
   return [...new Set(value.split(/[\n,]/u).map((item) => item.trim()).filter(Boolean))];
 }
@@ -391,411 +91,6 @@ function parseCsv(value: string): string[] {
 function boundedInteger(value: string, minimum: number, maximum: number, fallback: number): number {
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) ? Math.min(maximum, Math.max(minimum, parsed)) : fallback;
-}
-
-function DefinitionReferencePicker({
-  label,
-  help,
-  kind,
-  definitions,
-  selectedIds,
-  onChange,
-  filter,
-  emptyLabel,
-  compact = false,
-  onCreate,
-  createLabel,
-}: {
-  label: string;
-  help: string;
-  kind: Kind;
-  definitions: readonly PersonalizationDefinition[];
-  selectedIds: readonly string[];
-  onChange: (ids: string[]) => void;
-  filter?: (definition: PersonalizationDefinition) => boolean;
-  emptyLabel: string;
-  compact?: boolean;
-  onCreate?: () => void;
-  createLabel?: string;
-}) {
-  const candidates = definitions.filter((definition) => (
-    definition.kind === kind
-    && (definition.enabled || selectedIds.includes(definition.id))
-    && (!filter || filter(definition) || selectedIds.includes(definition.id))
-  ));
-  const selected = new Set(selectedIds);
-  return <fieldset className={`personalization-reference-picker${compact ? ' is-compact' : ''}`}>
-    <legend>{label}</legend>
-    <p>{help}</p>
-    {candidates.length === 0
-      ? <div className="personalization-reference-picker__empty">
-          <span>{emptyLabel}</span>
-          {onCreate && <button type="button" className="btn-sm btn-secondary" onClick={onCreate} data-testid={`quick-create-${kind}`}>{createLabel ?? (kind === 'agent' ? '新建智能体' : kind === 'skill' ? '新建技能' : kind === 'mcp' ? '新建 MCP' : '新建 Metis.md')}</button>}
-        </div>
-      : <div className="personalization-reference-picker__options">
-          {candidates.map((definition) => <label key={definition.id} data-definition-id={definition.id}>
-            <input
-              type="checkbox"
-              checked={selected.has(definition.id)}
-              onChange={(event) => {
-                const next = event.target.checked
-                  ? [...selectedIds, definition.id]
-                  : selectedIds.filter((id) => id !== definition.id);
-                onChange([...new Set(next)]);
-              }}
-            />
-            <span>
-              <strong>{definition.name}</strong>
-              <small>{definition.provenance.origin === 'builtin' ? 'Metis' : (definition.description || definition.id)}</small>
-            </span>
-          </label>)}
-        </div>}
-  </fieldset>;
-}
-
-type SimpleSchemaFieldType = 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object';
-
-const SIMPLE_SCHEMA_TYPE_OPTIONS: ReadonlyArray<{
-  value: SimpleSchemaFieldType;
-  zh: string;
-  en: string;
-}> = [
-  { value: 'string', zh: '文本', en: 'Text' },
-  { value: 'number', zh: '数值', en: 'Number' },
-  { value: 'integer', zh: '整数', en: 'Integer' },
-  { value: 'boolean', zh: '是 / 否', en: 'Yes / No' },
-  { value: 'array', zh: '列表', en: 'List' },
-  { value: 'object', zh: '对象', en: 'Object' },
-];
-interface SimpleSchemaField {
-  name: string;
-  type: SimpleSchemaFieldType;
-  description: string;
-  required: boolean;
-}
-
-const SIMPLE_SCHEMA_DRAFT_ROWS_KEY = 'x-metis-visual-schema-draft-rows';
-const SIMPLE_SCHEMA_REPLACEMENT_DRAFT_KEY = 'x-metis-visual-schema-replacement';
-
-interface SimpleSchemaDraftState {
-  rows: SimpleSchemaField[];
-  preserveEmptyObject: boolean;
-}
-
-interface SimpleSchemaReplacementDraft extends SimpleSchemaDraftState {
-  original: Record<string, unknown>;
-}
-
-function recordValue(value: unknown): Record<string, unknown> | null {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
-}
-
-function isSimpleSchemaField(value: unknown): value is SimpleSchemaField {
-  const record = recordValue(value);
-  return record !== null
-    && typeof record.name === 'string'
-    && ['string', 'number', 'integer', 'boolean', 'array', 'object'].includes(String(record.type))
-    && typeof record.description === 'string'
-    && typeof record.required === 'boolean';
-}
-
-function isSimpleSchemaRowsValid(rows: readonly SimpleSchemaField[]): boolean {
-  const names = rows.map((row) => row.name.trim());
-  return names.every((name) => /^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/u.test(name))
-    && new Set(names).size === names.length;
-}
-
-function readSimpleSchemaDraftState(value: unknown): SimpleSchemaDraftState | null {
-  if (Array.isArray(value)) {
-    return value.every(isSimpleSchemaField) ? { rows: value, preserveEmptyObject: false } : null;
-  }
-  const record = recordValue(value);
-  if (!record
-    || !Array.isArray(record.rows)
-    || !record.rows.every(isSimpleSchemaField)
-    || typeof record.preserveEmptyObject !== 'boolean') return null;
-  return { rows: record.rows, preserveEmptyObject: record.preserveEmptyObject };
-}
-
-function readInvalidSimpleSchemaDraft(schema: Record<string, unknown> | null): SimpleSchemaDraftState | null {
-  if (schema === null || Object.keys(schema).length !== 1) return null;
-  return readSimpleSchemaDraftState(schema[SIMPLE_SCHEMA_DRAFT_ROWS_KEY]);
-}
-
-function buildInvalidSimpleSchemaDraft(
-  rows: readonly SimpleSchemaField[],
-  preserveEmptyObject: boolean,
-): Record<string, unknown> {
-  return { [SIMPLE_SCHEMA_DRAFT_ROWS_KEY]: { rows, preserveEmptyObject } };
-}
-
-function readSimpleSchemaReplacementDraft(
-  schema: Record<string, unknown> | null,
-): SimpleSchemaReplacementDraft | null {
-  if (schema === null || Object.keys(schema).length !== 1) return null;
-  const replacement = recordValue(schema[SIMPLE_SCHEMA_REPLACEMENT_DRAFT_KEY]);
-  const state = readSimpleSchemaDraftState(replacement);
-  const original = recordValue(replacement?.original);
-  return replacement && state && original ? { ...state, original } : null;
-}
-
-function buildSimpleSchemaReplacementDraft(
-  original: Record<string, unknown>,
-  rows: readonly SimpleSchemaField[],
-  preserveEmptyObject: boolean,
-): Record<string, unknown> {
-  return {
-    [SIMPLE_SCHEMA_REPLACEMENT_DRAFT_KEY]: {
-      original,
-      rows,
-      preserveEmptyObject,
-    },
-  };
-}
-
-function readSimpleSchema(schema: Record<string, unknown> | null): SimpleSchemaField[] | null {
-  if (schema === null) return [];
-  const invalidDraft = readInvalidSimpleSchemaDraft(schema);
-  if (invalidDraft) return invalidDraft.rows;
-  const replacementDraft = readSimpleSchemaReplacementDraft(schema);
-  if (replacementDraft) return replacementDraft.rows;
-  if (schema.type !== 'object') return null;
-  const topLevelKeys = Object.keys(schema);
-  if (topLevelKeys.length !== 4
-    || !['type', 'additionalProperties', 'properties', 'required']
-      .every((key) => Object.hasOwn(schema, key))
-    || schema.additionalProperties !== false
-    || !Array.isArray(schema.required)
-    || !schema.required.every((item) => typeof item === 'string')
-    || new Set(schema.required).size !== schema.required.length) return null;
-  const properties = recordValue(schema.properties);
-  if (!properties) return null;
-  const required = new Set(schema.required);
-  if ([...required].some((name) => !Object.hasOwn(properties, name))) return null;
-  const supported = new Set<SimpleSchemaFieldType>(['string', 'number', 'integer', 'boolean', 'array', 'object']);
-  const rows: SimpleSchemaField[] = [];
-  for (const [name, rawProperty] of Object.entries(properties)) {
-    const property = recordValue(rawProperty);
-    if (!property
-      || typeof property.type !== 'string'
-      || !supported.has(property.type as SimpleSchemaFieldType)
-      || Object.keys(property).some((key) => key !== 'type' && key !== 'description')
-      || (property.description !== undefined
-        && (typeof property.description !== 'string'
-          || property.description.length === 0
-          || property.description.trim() !== property.description))) return null;
-    rows.push({
-      name,
-      type: property.type as SimpleSchemaFieldType,
-      description: typeof property.description === 'string' ? property.description : '',
-      required: required.has(name),
-    });
-  }
-  return rows;
-}
-
-function isStrictEmptySimpleSchema(schema: Record<string, unknown> | null): boolean {
-  if (!schema || readInvalidSimpleSchemaDraft(schema) || readSimpleSchemaReplacementDraft(schema)) return false;
-  const parsed = readSimpleSchema(schema);
-  return parsed !== null && parsed.length === 0 && schema !== null;
-}
-
-function buildSimpleSchema(
-  rows: readonly SimpleSchemaField[],
-  preserveEmptyObject = false,
-): Record<string, unknown> | null {
-  if (rows.length === 0 && !preserveEmptyObject) return null;
-  return {
-    type: 'object',
-    additionalProperties: false,
-    properties: Object.fromEntries(rows.map((row) => [row.name, {
-      type: row.type,
-      ...(row.description.trim() ? { description: row.description.trim() } : {}),
-    }])),
-    required: rows.filter((row) => row.required).map((row) => row.name),
-  };
-}
-
-function SimpleSchemaEditor({
-  label,
-  value,
-  onChange,
-  onValidityChange,
-  zh,
-}: {
-  label: string;
-  value: Record<string, unknown> | null;
-  onChange: (value: Record<string, unknown> | null) => void;
-  onValidityChange: (valid: boolean) => void;
-  zh: boolean;
-}) {
-  const parsed = readSimpleSchema(value);
-  const invalidDraft = readInvalidSimpleSchemaDraft(value);
-  const restoredReplacement = readSimpleSchemaReplacementDraft(value);
-  const [rows, setRows] = useState<SimpleSchemaField[]>(parsed ?? []);
-  const [unsupported, setUnsupported] = useState(parsed === null);
-  const [replacementOriginal, setReplacementOriginal] = useState<Record<string, unknown> | null>(
-    restoredReplacement?.original ?? null,
-  );
-  const [replacementMode, setReplacementMode] = useState(restoredReplacement !== null);
-  const [preserveEmptyObject, setPreserveEmptyObject] = useState(
-    invalidDraft?.preserveEmptyObject
-      ?? restoredReplacement?.preserveEmptyObject
-      ?? isStrictEmptySimpleSchema(value),
-  );
-  const [error, setError] = useState(invalidDraft
-    ? (zh ? '字段名必须唯一，以字母或下划线开头。' : 'Field names must be unique and start with a letter or underscore.')
-    : '');
-
-  const commit = (next: SimpleSchemaField[]) => {
-    setRows(next);
-    const names = next.map((row) => row.name.trim());
-    const valid = isSimpleSchemaRowsValid(next);
-    if (!valid) {
-      setError(zh ? '字段名必须唯一，以字母或下划线开头。' : 'Field names must be unique and start with a letter or underscore.');
-      onChange(replacementMode && replacementOriginal
-        ? buildSimpleSchemaReplacementDraft(replacementOriginal, next, preserveEmptyObject)
-        : buildInvalidSimpleSchemaDraft(next, preserveEmptyObject));
-      onValidityChange(false);
-      return;
-    }
-    setError('');
-    const normalizedRows = next.map((row, index) => ({ ...row, name: names[index]! }));
-    if (replacementMode && replacementOriginal) {
-      onChange(buildSimpleSchemaReplacementDraft(replacementOriginal, normalizedRows, preserveEmptyObject));
-      onValidityChange(false);
-    } else {
-      onChange(buildSimpleSchema(normalizedRows, preserveEmptyObject));
-      onValidityChange(true);
-    }
-  };
-
-  if (unsupported) return <fieldset className="personalization-schema-editor">
-    <legend>{label}</legend>
-    <div className="personalization-boundary"><strong>{zh ? '已保留现有复杂结构' : 'Existing advanced schema preserved'}</strong><span>{zh ? '此结构超出可视化字段编辑器范围。只有明确选择替换时才会清空。' : 'This schema is more complex than the visual field editor. It remains unchanged unless you explicitly replace it.'}</span></div>
-    <button type="button" onClick={() => {
-      if (!value) return;
-      setUnsupported(false);
-      setRows([]);
-      setError('');
-      setReplacementOriginal(value);
-      setReplacementMode(true);
-      setPreserveEmptyObject(true);
-      onChange(buildSimpleSchemaReplacementDraft(value, [], true));
-      onValidityChange(false);
-    }}>{zh ? '替换为可视化字段' : 'Replace with visual fields'}</button>
-  </fieldset>;
-
-  return <fieldset className="personalization-schema-editor">
-    <legend>{label}</legend>
-    {replacementMode && replacementOriginal && <div className="personalization-boundary">
-      <strong>{zh ? '可视化替换尚未应用' : 'Visual replacement not applied'}</strong>
-      <span>{zh ? '原始高级结构仍可恢复。应用替换后才能保存定义。' : 'The original advanced schema remains recoverable. Apply the replacement before saving the definition.'}</span>
-      <div className="personalization-actions">
-        <button type="button" onClick={() => {
-          setRows([]);
-          setError('');
-          setReplacementMode(false);
-          setReplacementOriginal(null);
-          setUnsupported(true);
-          setPreserveEmptyObject(false);
-          onChange(replacementOriginal);
-          onValidityChange(true);
-        }}>{zh ? '取消替换' : 'Cancel replacement'}</button>
-        <button type="button" disabled={!isSimpleSchemaRowsValid(rows)} onClick={() => {
-          const names = rows.map((row) => row.name.trim());
-          const normalizedRows = rows.map((row, index) => ({ ...row, name: names[index]! }));
-          setRows(normalizedRows);
-          setReplacementMode(false);
-          setReplacementOriginal(null);
-          setError('');
-          onChange(buildSimpleSchema(normalizedRows, preserveEmptyObject));
-          onValidityChange(true);
-        }}>{zh ? '应用可视化替换' : 'Apply visual replacement'}</button>
-      </div>
-    </div>}
-    <p>{zh ? '逐项定义字段；Metis 会生成严格结构，不需要直接编写 JSON。' : 'Define fields one by one. Metis builds a strict schema without raw JSON editing.'}</p>
-    <div className="personalization-schema-fields">
-      {rows.map((row, index) => <div className="personalization-schema-field" key={`schema-field-${index}`}>
-        <label><span>{zh ? '字段名' : 'Field name'}</span><input value={row.name} onChange={(event) => commit(rows.map((item, itemIndex) => itemIndex === index ? { ...item, name: event.target.value } : item))} /></label>
-        <label><span>{zh ? '类型' : 'Type'}</span><select value={row.type} onChange={(event) => commit(rows.map((item, itemIndex) => itemIndex === index ? { ...item, type: event.target.value as SimpleSchemaFieldType } : item))}>{SIMPLE_SCHEMA_TYPE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option[zh ? 'zh' : 'en']}</option>)}</select></label>
-        <label className="personalization-schema-field__description"><span>{zh ? '说明' : 'Description'}</span><input value={row.description} onChange={(event) => commit(rows.map((item, itemIndex) => itemIndex === index ? { ...item, description: event.target.value } : item))} /></label>
-        <label className="personalization-schema-field__required"><input type="checkbox" checked={row.required} onChange={(event) => commit(rows.map((item, itemIndex) => itemIndex === index ? { ...item, required: event.target.checked } : item))} />{zh ? '必填' : 'Required'}</label>
-        <button type="button" onClick={() => commit(rows.filter((_item, itemIndex) => itemIndex !== index))}>{zh ? '删除' : 'Remove'}</button>
-      </div>)}
-    </div>
-    {error && <p className="personalization-schema-error" role="alert">{error}</p>}
-    <button type="button" onClick={() => {
-      let ordinal = rows.length + 1;
-      while (rows.some((row) => row.name === `field_${ordinal}`)) ordinal += 1;
-      commit([...rows, { name: `field_${ordinal}`, type: 'string', description: '', required: false }]);
-    }}>{zh ? '添加字段' : 'Add field'}</button>
-  </fieldset>;
-}
-
-
-function SecretVaultPanel({ vault }: { vault: PersonalizationSecretVaultHandle }) {
-  const { locale } = useTranslation();
-  const zh = locale === 'zh';
-  const [name, setName] = useState('');
-  const [value, setValue] = useState('');
-  const [status, setStatus] = useState('');
-  const busy = vault.busy;
-
-  const loadStatus = !vault.available
-    ? (zh ? '加密凭据库不可用' : 'Encrypted credential vault is unavailable')
-    : vault.loadError === 'ipc'
-      ? (zh ? '无法连接加密凭据库，请重试。' : 'The encrypted credential vault could not be reached. Try again.')
-      : vault.loadError
-        ? `${zh ? '无法读取凭据元数据' : 'Credential metadata unavailable'}: ${vault.loadError}`
-        : '';
-
-  const save = async () => {
-    const result = await vault.save(name.trim(), value);
-    if (!result.ok) {
-      setStatus(result.transport
-        ? (zh ? '保存未完成，凭据值仍保留在输入框中，可直接重试。' : 'Save did not complete. The credential value remains in the field so you can retry.')
-        : `${zh ? '保存失败' : 'Save failed'}: ${result.code}`);
-      return;
-    }
-    setValue('');
-    setName('');
-    setStatus(zh ? '凭据已由操作系统加密保存；值不会回显' : 'Credential encrypted by the operating system; values are never displayed');
-  };
-
-  const remove = async (secretName: string) => {
-    const result = await vault.remove(secretName);
-    if (!result.ok) {
-      setStatus(result.transport
-        ? (zh ? '删除未完成，请重试。' : 'Remove did not complete. Try again.')
-        : `${zh ? '删除失败' : 'Remove failed'}: ${result.code}`);
-      return;
-    }
-    setStatus(zh ? '凭据已删除' : 'Credential removed');
-  };
-
-  return <section className="personalization-installer" aria-label={zh ? '加密凭据库' : 'Encrypted credential vault'}>
-    <div className="personalization-installer__header">
-      <div><span className="personalization-eyebrow">{zh ? '凭据' : 'SECRETS'}</span><h2>{zh ? 'MCP 凭据' : 'MCP credentials'}</h2></div>
-      <span>{zh ? '值仅在主进程通过系统安全存储加密；界面和配置包只使用 ${secret:NAME} 引用。' : 'Values are encrypted through OS secure storage in the main process; UI and bundles use only ${secret:NAME} references.'}</span>
-    </div>
-    {/* 刘总反馈（2026-10）：全局面板弱化为后备，说明这是不归属任何具体 MCP 的通用凭据。 */}
-    <p className="personalization-installer__mode-help">{zh ? '通用凭据（不属于任何具体 MCP）。单个 MCP 的凭据请在该 MCP 条目的「凭据」入口录入。' : 'Shared credentials (not tied to any specific MCP). Enter per-MCP credentials from the "Credentials" entry on each MCP item.'}</p>
-    <div className="personalization-grid personalization-grid--2">
-      <label><span>{zh ? '环境变量名称' : 'Environment name'}</span><input value={name} onChange={(event) => setName(event.target.value.toUpperCase())} placeholder="ZOTERO_API_KEY" autoComplete="off" spellCheck={false} /></label>
-      <label><span>{zh ? '凭据值' : 'Credential value'}</span><input type="password" value={value} onChange={(event) => setValue(event.target.value)} autoComplete="new-password" /></label>
-    </div>
-    <div className="personalization-actions"><button className="btn-primary" type="button" disabled={busy || !name.trim() || !value} onClick={() => void save()}>{zh ? '加密保存' : 'Save encrypted'}</button><span role="status" aria-live="polite">{status || loadStatus}</span></div>
-    <div className="personalization-cards">
-      {vault.secrets.map((secret) => <article className="personalization-card" key={secret.name}>
-        <div className="personalization-card__select"><strong>{secret.name}</strong><span>{zh ? '值已隐藏' : 'Value hidden'} · {new Date(secret.updatedAt).toLocaleString()}</span></div>
-        <div className="personalization-card__actions"><button type="button" disabled={busy} onClick={() => void remove(secret.name)}>{zh ? '删除' : 'Remove'}</button></div>
-      </article>)}
-      {vault.secrets.length === 0 && <p className="personalization-empty">{zh ? '还没有保存凭据。' : 'No credentials saved.'}</p>}
-    </div>
-  </section>;
 }
 
 function DefinitionEditor({
@@ -1956,64 +1251,22 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
   // 非场景页到此只剩技能/MCP 两种库（Metis.md 标签已移除，场景走工作台）。
   const libraryKind: 'skill' | 'mcp' = kind === 'mcp' ? 'mcp' : 'skill';
   const scenarioTemplatePanel = isScenarioKind && tplOpen ? (
-            <div className="scai-overlay" data-testid="template-parse-modal" role="dialog" aria-modal="true" aria-label={zh ? '模板识别' : 'Template recognition'}>
-              <div className="scai-dialog">
-                <header className="scai-dialog__head">
-                  <h2>{zh ? '模板识别（论文结构）' : 'Template recognition (paper structure)'}</h2>
-                  <button type="button" className="btn-secondary btn-sm" onClick={() => setTplOpen(false)} aria-label={zh ? '关闭' : 'Close'}><X size={14} aria-hidden="true" /></button>
-                </header>
-                <div className="scai-dialog__body">
-                <div className="personalization-template__panel" data-testid="template-parse-panel">
-                  <p>{zh ? '粘贴论文写作模板，或上传模板文件（txt/md/docx/pdf），AI 会解析为逐节写作指引，你可修改后保存为论文结构，供自主科研使用。' : 'Paste a paper template or upload a template file (txt/md/docx/pdf). AI parses it into per-section writing guides you can edit and save as a paper structure for autonomous research.'}</p>
-                  <label>
-                    <span>{zh ? '模板文本' : 'Template text'}</span>
-                    <textarea rows={3} value={tplText} onChange={(event) => setTplText(event.target.value)} data-testid="template-parse-input" placeholder={zh ? '粘贴模板文本…' : 'Paste template text…'} />
-                  </label>
-                  <div className="personalization-ai-create__actions">
-                    <button type="button" className="btn-secondary btn-sm" disabled={tplBusy} onClick={() => void importTemplateFile()} data-testid="template-upload-file">
-                      <Upload size={13} aria-hidden="true" /> {zh ? '上传文件' : 'Upload file'}
-                    </button>
-                    <button type="button" className="btn-primary btn-sm" disabled={tplBusy || tplText.trim().length < 10} onClick={() => void parsePaperTemplate()} data-testid="template-parse-submit">
-                      {tplBusy ? (zh ? '解析中…' : 'Parsing…') : (zh ? '解析模板' : 'Parse template')}
-                    </button>
-                  </div>
-                  {tplSections.length > 0 && (
-                    <div className="personalization-template__sections" data-testid="template-parse-sections">
-                      <label>
-                        <span>{zh ? '结构名称' : 'Structure name'}</span>
-                        <input className="settings-input" value={tplName} onChange={(event) => setTplName(event.target.value)} data-testid="template-name-input" />
-                      </label>
-                      {tplSections.map((section, index) => (
-                        <div key={index} className="personalization-template__section" data-testid="template-section">
-                          <input
-                            className="settings-input"
-                            value={section.title}
-                            aria-label={zh ? `第 ${index + 1} 节标题` : `Section ${index + 1} title`}
-                            onChange={(event) => updateTplSection(index, 'title', event.target.value)}
-                          />
-                          <textarea
-                            rows={2}
-                            value={section.instruction}
-                            aria-label={zh ? `第 ${index + 1} 节写作指引` : `Section ${index + 1} writing guide`}
-                            onChange={(event) => updateTplSection(index, 'instruction', event.target.value)}
-                          />
-                          <button type="button" className="btn-secondary btn-sm" onClick={() => removeTplSection(index)}>
-                            {zh ? '删除' : 'Remove'}
-                          </button>
-                        </div>
-                      ))}
-                      <div className="personalization-ai-create__actions">
-                        <button type="button" className="btn-primary btn-sm" disabled={!tplName.trim()} onClick={() => void savePaperTemplate()} data-testid="template-save">
-                          {zh ? '保存为论文结构' : 'Save as paper structure'}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                  {tplStatus && <p className="personalization-ai-create__status" role="status" aria-live="polite" data-testid="template-parse-status">{tplStatus}</p>}
-                </div>
-                </div>
-              </div>
-            </div>
+    <PaperTemplateDialog
+      zh={zh}
+      text={tplText}
+      busy={tplBusy}
+      status={tplStatus}
+      name={tplName}
+      sections={tplSections}
+      onTextChange={setTplText}
+      onNameChange={setTplName}
+      onUpdateSection={updateTplSection}
+      onRemoveSection={removeTplSection}
+      onClose={() => setTplOpen(false)}
+      onParse={() => void parsePaperTemplate()}
+      onImportFile={() => void importTemplateFile()}
+      onSave={() => void savePaperTemplate()}
+    />
   ) : null;
 
 
@@ -2034,18 +1287,12 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
       {isScenarioKind && !loading && loadError && (
         <div className="personalization-load-error" role="alert"><span>{loadError}</span><button type="button" onClick={() => void load()}>{zh ? '重试' : 'Retry'}</button></div>
       )}
-      {visibleIntegrityIssues.length > 0 && <section className="personalization-integrity-notice" role="alert" aria-label={zh ? '场景完整性恢复' : 'Personalization integrity recovery'}>
-        <strong>{zh ? '发现已隔离的保存异常' : 'Quarantined saved items detected'}</strong>
-        <p>{zh ? '这些定义没有通过版本完整性校验，因此不会被执行或静默当作不存在。可以仅从已验证历史版本恢复；异常快照会保留用于审计。' : 'These definitions failed version-integrity verification, so they are not executed or silently treated as absent. Recovery only uses verified history and retains the quarantined snapshot.'}</p>
-        <div>
-          {visibleIntegrityIssues.map((issue) => <article key={issue.id}>
-            <span><strong>{issue.id}</strong><small>{zh ? `当前 r${issue.currentRevision}：${issue.code}` : `current r${issue.currentRevision}: ${issue.code}`}</small></span>
-            {issue.latestVerifiedRevision === null
-              ? <em>{zh ? '没有可验证历史版本；保持隔离。' : 'No verified history; remains quarantined.'}</em>
-              : <button type="button" disabled={recoveringIntegrityIssueId === issue.id} onClick={() => void recoverIntegrityIssue(issue)}>{recoveringIntegrityIssueId === issue.id ? (zh ? '恢复中…' : 'Recovering…') : (zh ? `从可信 r${issue.latestVerifiedRevision} 恢复` : `Recover from trusted r${issue.latestVerifiedRevision}`)}</button>}
-          </article>)}
-        </div>
-      </section>}
+      {visibleIntegrityIssues.length > 0 && <IntegrityRecoveryNotice
+        zh={zh}
+        issues={visibleIntegrityIssues}
+        recoveringIssueId={recoveringIntegrityIssueId}
+        onRecover={(issue) => void recoverIntegrityIssue(issue)}
+      />}
       {status && <p className="personalization-load-error" role="status">{status}</p>}
       {isScenarioKind ? (
         <ScenarioWorkbench
@@ -2098,55 +1345,16 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
           {loading && <p>{zh ? '正在加载…' : 'Loading…'}</p>}
           {!loading && loadError && <div className="personalization-load-error" role="alert"><span>{loadError}</span><button type="button" onClick={() => void load()}>{zh ? '重试' : 'Retry'}</button></div>}
           {libraryMode === 'trash' ? (
-           <>
-            {!loading && !loadError && archivedForKind.length === 0 && (
-              <p>{zh
-                ? '回收站为空。已删除内容保留 7 天，到期自动清理；也可在此恢复或彻底删除。'
-                : 'Trash is empty. Deleted items are kept for 7 days, then cleaned up automatically; restore or purge them here.'}</p>
-            )}
-            <div className="personalization-cards">
-             {archivedForKind.map((item, index) => (
-              <article key={item.definition.id} className="personalization-card personalization-card--trashed">
-               <div className="personalization-card__select personalization-card__select--static" data-testid={`personalization-trash-item-${index}`}>
-                <span className="personalization-card__meta"><b>{item.definition.provenance.origin === 'url' ? (zh ? 'URL 安装' : 'URL install') : (zh ? '自定义' : 'Custom')}</b><span>r{item.definition.revision}</span></span>
-                <strong>{item.definition.name}</strong>
-                <span>{zh
-                  ? `剩余 ${remainingTrashDays(item.expiresAt)} 天后自动清理`
-                  : `${remainingTrashDays(item.expiresAt)} day(s) until automatic cleanup`}</span>
-               </div>
-               <div className="personalization-card__actions">
-                {trashDeleteId === item.definition.id ? (
-                 <span className="personalization-card__delete-confirm">
-                  {zh ? '彻底删除？不可恢复' : 'Purge forever? Irreversible'}
-                  <button
-                    className="personalization-card__delete personalization-card__delete--armed"
-                    data-testid={`personalization-trash-purge-confirm-${index}`}
-                    onClick={() => void deleteFromLibraryTrash(item)}
-                  >
-                    {zh ? '确认彻底删除' : 'Confirm purge'}
-                  </button>
-                  <button onClick={() => setTrashDeleteId(null)}>{zh ? '取消' : 'Cancel'}</button>
-                 </span>
-                ) : (
-                 <>
-                  <button data-testid={`personalization-trash-restore-${index}`} onClick={() => void restoreFromLibraryTrash(item)}>
-                    <RotateCcw size={12} />{zh ? '恢复' : 'Restore'}
-                  </button>
-                  <button
-                    className="personalization-card__delete"
-                    data-testid={`personalization-trash-purge-${index}`}
-                    title={zh ? '永久删除该内容及其全部版本历史' : 'Permanently delete this item and its version history'}
-                    onClick={() => setTrashDeleteId(item.definition.id)}
-                  >
-                    {zh ? '彻底删除' : 'Purge'}
-                  </button>
-                 </>
-                )}
-               </div>
-              </article>
-             ))}
-            </div>
-           </>
+            <LibraryTrashPanel
+              zh={zh}
+              items={archivedForKind}
+              isEmpty={!loading && !loadError && archivedForKind.length === 0}
+              trashDeleteId={trashDeleteId}
+              onRequestPurge={setTrashDeleteId}
+              onCancelPurge={() => setTrashDeleteId(null)}
+              onPurge={(item) => void deleteFromLibraryTrash(item)}
+              onRestore={(item) => void restoreFromLibraryTrash(item)}
+            />
           ) : kind === 'skill' ? (
             // 技能页：统一视图（已安装 + 目录条目合并、搜索、分类分组、显示更多）。
             <SkillUnifiedPanel
@@ -2170,59 +1378,19 @@ export default function PersonalizationCenter({ onActivateScenario }: Personaliz
           {!loading && !loadError && filtered.length === 0 && (
             <p>{zh ? '还没有自定义内容。' : 'No custom definitions yet.'}</p>
           )}
-          {(() => {
-            // 卡片序号跨分组连续，保证 data-testid 稳定。
-            let cardIndex = 0;
-            const renderCard = (definition: PersonalizationDefinition) => {
-              const index = cardIndex;
-              cardIndex += 1;
-              // 刘总反馈（2026-10）：已启用且声明了凭据但凭据库缺失的 MCP，条目上打「凭据未配置」标记。
-              const mcpMissing = definition.kind === 'mcp' ? missingMcpSecrets(definition, mcpSecrets.secretNames) : [];
-              const isBuiltin = definition.provenance.origin === 'builtin';
-              return <article key={definition.id} className={`personalization-card ${selectedId === definition.id ? 'selected' : ''}`}>
-                <button className="personalization-card__select" data-definition-id={definition.id} onClick={() => setSelectedId(definition.id)}>
-                  <span className="personalization-card__meta"><b>{isBuiltin ? (zh ? '内置' : 'Built-in') : (zh ? '自定义' : 'Custom')}</b><span>r{definition.revision}</span></span>
-                  <strong>{definition.name}</strong>
-                  <span>{definition.description || (zh ? '暂无说明' : 'No description')}</span>
-                </button>
-                <div className="personalization-card__actions">
-                  {draftIds.has(definition.id) && <span className="personalization-card__draft">{zh ? '草稿已保留' : 'Draft preserved'}</span>}
-                  {mcpMissing.length > 0 && (
-                    <span className="personalization-card__secrets-missing" data-testid={`personalization-mcp-secrets-missing-${index}`}>
-                      {zh ? `凭据未配置（${mcpMissing.join('、')}）` : `Credentials missing (${mcpMissing.join(', ')})`}
-                    </span>
-                  )}
-                  {definition.kind === 'mcp' && (
-                    <button
-                      type="button"
-                      data-testid={`personalization-mcp-secrets-${index}`}
-                      aria-expanded={secretsEditorId === definition.id}
-                      onClick={() => setSecretsEditorId((current) => (current === definition.id ? null : definition.id))}
-                    >
-                      {zh ? '凭据' : 'Credentials'}
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    data-testid={`personalization-studio-optimize-${index}`}
-                    onClick={() => {
-                      if (definition.kind === 'mcp') setMcpBuilder({ context: definition });
-                    }}
-                  >
-                    {zh ? '对话优化' : 'Improve via chat'}
-                  </button>
-                  {isBuiltin
-                    ? <button onClick={() => void fork(definition)}>{zh ? '创建可编辑副本' : 'Create editable copy'}</button>
-                    : <button onClick={() => void archive(definition)}>{zh ? '删除' : 'Delete'}</button>}
-                </div>
-                {definition.kind === 'mcp' && secretsEditorId === definition.id && (
-                  <McpCredentialPanel definition={definition} vault={mcpSecrets} testId={`personalization-mcp-secrets-panel-${index}`} />
-                )}
-              </article>;
-            };
-            // 技能统一视图已移交 SkillUnifiedPanel；此处只剩 MCP 平铺。
-            return <div className="personalization-cards">{libraryDefinitions.map(renderCard)}</div>;
-          })()}
+          <McpLibraryCards
+            zh={zh}
+            definitions={libraryDefinitions}
+            selectedId={selectedId}
+            draftIds={draftIds}
+            vault={mcpSecrets}
+            secretsEditorId={secretsEditorId}
+            onSelect={setSelectedId}
+            onToggleSecrets={(definitionId) => setSecretsEditorId((current) => (current === definitionId ? null : definitionId))}
+            onOptimizeViaChat={(definition) => setMcpBuilder({ context: definition })}
+            onFork={(definition) => void fork(definition)}
+            onArchive={(definition) => void archive(definition)}
+          />
             </>
           )}
           <div className="personalization-library__status" role="status" aria-live="polite">{status}</div>
