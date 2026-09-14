@@ -1096,3 +1096,30 @@
 .step-vault-picker__card small { color: var(--text-muted); font-size: 10.5px; }
 .step-vault-picker__card--installed { border-color: color-mix(in srgb, var(--accent, var(--primary)) 35%, transparent); background: var(--accent-soft, transparent); }
 .step-vault-picker__hint { grid-column: 1 / -1; margin: 8px 0; color: var(--text-muted); font-size: 12px; }
+
+/* ── S1 修复（2026-09-15 UI 统一重构）：场景页填满视口，滚动只发生在
+   三栏内部；tab 行与配置包行作为固定头部，不再被 100vh 硬算挤出视口。 ── */
+.personalization-page:has(.scenario-workbench) {
+  height: calc(100vh - var(--topbar-height, 46px));
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 0;
+  overflow: hidden;
+}
+.personalization-page:has(.scenario-workbench) .scenario-workbench {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
+}
+.personalization-page:has(.scenario-workbench) .personalization-tabs,
+.personalization-page:has(.scenario-workbench) .personalization-bundle-actions {
+  flex: none;
+  overflow-x: auto;
+}
+
+/* 场景页头部行与三栏左对齐（原 max-width:1520 居中在三栏布局下错位）。 */
+.personalization-page:has(.scenario-workbench) .personalization-tabs,
+.personalization-page:has(.scenario-workbench) .personalization-bundle-actions {
+  max-width: none;
+  margin: 0 0 12px;
+}
