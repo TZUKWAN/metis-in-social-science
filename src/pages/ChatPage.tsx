@@ -4,7 +4,7 @@ import { useMetisStore } from '../store';
 import { autoResizeTextarea } from '../lib/textareaAutosize.js';
 import { showToast } from '../lib/toast';
 import ModelThinkingSelector from '../components/ModelThinkingSelector';
-import { matchSlashCommand, SLASH_COMMANDS, filterSlashCommands } from '../lib/slashCommands';
+import { matchSlashCommand, SLASH_COMMANDS } from '../lib/slashCommands';
 import { CodeBlock } from '../components/CodeBlock';
 import { ScenarioStepCard, parseScenarioStepCard, type ScenarioStepCardData } from '../components/ScenarioStepCard';
 import { ScenarioStepCardWithActions } from '../conversation/ScenarioStepCardWithActions';
@@ -22,6 +22,9 @@ import { PaperclipIcon, TagIcon, ClockIcon } from '../components/Icons';
 import VoiceMicButton from '../components/VoiceMicButton';
 import { useChatMessageQueue } from '../conversation/useChatMessageQueue';
 import { useChatToolRows } from '../conversation/useChatToolRows';
+import { useSlashCommands } from '../conversation/useSlashCommands';
+import { createGoalRunFlow } from '../conversation/goalRunFlow';
+import { useArtifactPreview } from '../conversation/artifactPreviewActions';
 import { buildGoalCardActions } from '../conversation/goalCardActions';
 import GoalCardInline, { type GoalCardData } from '../components/GoalCardInline';
 import ToolExecutionCard from '../components/ToolExecutionCard';
@@ -41,6 +44,7 @@ import {
   type LegacyAssistantToolCall,
 } from '../lib/assistantMessagePartsReducer';
 import RightPanel, { type RightPanelTab } from '../components/RightPanel';
+import ChatSessionSidebar from '../components/chat/ChatSessionSidebar';
 import ArtifactPreviewPane from '../components/ArtifactPreviewPane';
 import { getDiagnosticMode, type UIMode } from '../../engine/capabilities/DiagnosticMode';
 import {
@@ -91,7 +95,7 @@ import type { ScenarioDefinition } from '../../engine/runtime/PersonalizationRun
 
 type ChatMessageRole = 'user' | 'assistant' | 'system' | 'tool' | 'goal';
 
-interface ChatMessage {
+export interface ChatMessage {
   /** Stable render id, assigned when the message enters state (React key). */
   id?: string;
   role: ChatMessageRole;
@@ -866,165 +870,6 @@ const ChatMessageItem = memo(function ChatMessageItem({
   );
 });
 
-// ─── Session Sidebar ──────────────────────────────────────────
-
-function SessionSidebar({
-  sessions,
-  currentSessionId,
-  onSelect,
-  onNew,
-  onDelete,
-  onRename,
-  onArchive,
-  showArchived,
-  onToggleArchived,
-  uiMode,
-}: {
-  sessions: Session[];
-  currentSessionId: string;
-  onSelect: (id: string) => void;
-  onNew: () => void;
-  onDelete: (id: string) => void;
-  onRename: (id: string, title: string) => void;
-  onArchive: (id: string) => void;
-  showArchived: boolean;
-  onToggleArchived: () => void;
-  uiMode: SafeMarkdownMode;
-}) {
-  const { t, locale } = useTranslation();
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editValue, setEditValue] = useState('');
-
-  const visibleSessions = sessions.filter((s) => (showArchived ? s.archived : !s.archived));
-
-  // Group by date relative to today
-  const today = new Date().setHours(0, 0, 0, 0);
-  const yesterday = today - 24 * 60 * 60 * 1000;
-  const groups: { label: string; items: Session[] }[] = [];
-  const todayItems: Session[] = [];
-  const yesterdayItems: Session[] = [];
-  const earlierItems: Session[] = [];
-  for (const s of visibleSessions) {
-    const d = new Date(s.lastActivity).setHours(0, 0, 0, 0);
-    if (d >= today) todayItems.push(s);
-    else if (d >= yesterday) yesterdayItems.push(s);
-    else earlierItems.push(s);
-  }
-  if (todayItems.length) groups.push({ label: t('chat.today') ?? '今天', items: todayItems });
-  if (yesterdayItems.length) groups.push({ label: t('chat.yesterday') ?? '昨天', items: yesterdayItems });
-  if (earlierItems.length) groups.push({ label: t('chat.earlier') ?? '更早', items: earlierItems });
-
-  const startRename = (s: Session) => {
-    setEditingId(s.id);
-    setEditValue(presentSafeMarkdownText(s.title || t('chat.newSessionTitle'), uiMode, locale));
-  };
-
-  const submitRename = () => {
-    if (editingId && editValue.trim()) {
-      onRename(editingId, editValue.trim());
-    }
-    setEditingId(null);
-  };
-
-  return (
-    <div className="chat-sidebar">
-      <div className="chat-sidebar-header">
-        <button className="btn-primary btn-full" onClick={onNew}>
-          {t('chat.newSession')}
-        </button>
-      </div>
-      <div className="chat-sidebar-toolbar">
-        <button
-          className={`chat-sidebar-filter ${!showArchived ? 'active' : ''}`}
-          onClick={() => { if (showArchived) onToggleArchived(); }}
-        >
-          {t('chat.activeSessions') ?? '进行中'}
-        </button>
-        <button
-          className={`chat-sidebar-filter ${showArchived ? 'active' : ''}`}
-          onClick={() => { if (!showArchived) onToggleArchived(); }}
-        >
-          {t('chat.archivedSessions') ?? '归档'}
-        </button>
-      </div>
-      <div className="chat-sidebar-list">
-        {groups.length === 0 && (
-          <div className="chat-sidebar-empty">{t('chat.noSessions')}</div>
-        )}
-        {groups.map((group) => (
-          <div key={group.label} className="chat-session-group">
-            <div className="chat-session-group-label">{group.label}</div>
-            {group.items.map((s) => {
-              const safeTitle = presentSafeMarkdownText(
-                s.title || t('chat.newSessionTitle'),
-                uiMode,
-                locale,
-              );
-              const safeMessageCount = Number.isFinite(s.messageCount)
-                ? Math.max(0, Math.trunc(s.messageCount))
-                : 0;
-              const activityDate = Number.isFinite(s.lastActivity)
-                ? new Date(s.lastActivity)
-                : null;
-              const safeDate = activityDate && !Number.isNaN(activityDate.getTime())
-                ? activityDate.toLocaleDateString()
-                : '';
-              return (
-              <div
-                key={s.id}
-                className={`chat-session-item ${s.id === currentSessionId ? 'active' : ''}`}
-                onClick={() => onSelect(s.id)}
-              >
-                {editingId === s.id ? (
-                  <input
-                    className="chat-session-title-input"
-                    value={editValue}
-                    onChange={(e) => setEditValue(e.target.value)}
-                    onBlur={submitRename}
-                    onKeyDown={(e) => { if (e.key === 'Enter') submitRename(); if (e.key === 'Escape') setEditingId(null); }}
-                    autoFocus
-                    onClick={(e) => e.stopPropagation()}
-                  />
-                ) : (
-                  <>
-                    <div
-                      className="chat-session-title"
-                      onDoubleClick={(e) => { e.stopPropagation(); startRename(s); }}
-                      title={t('chat.doubleClickRename') ?? '双击重命名'}
-                    >
-                      {safeTitle}
-                    </div>
-                    <div className="chat-session-meta">
-                      {t('chat.sessionMeta', { count: safeMessageCount, date: safeDate })}
-                    </div>
-                    <div className="chat-session-actions">
-                      <button
-                        className="chat-session-action"
-                        onClick={(e) => { e.stopPropagation(); onArchive(s.id); }}
-                        title={s.archived ? t('chat.unarchive') ?? '取消归档' : t('chat.archive') ?? '归档'}
-                      >
-                        {s.archived ? '↩' : '↩'}
-                      </button>
-                      <button
-                        className="chat-session-action chat-session-delete"
-                        onClick={(e) => { e.stopPropagation(); onDelete(s.id); }}
-                        title={t('chat.deleteSession')}
-                      >
-                        ×
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-              );
-            })}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 // ─── Main Chat Page ───────────────────────────────────────────
 
 export interface ChatPageLayoutSlots {
@@ -1095,8 +940,6 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
     setStepTargetMode(mode);
   }, []);
   const handleStepCardComment = useMemo(() => openStepCardComment, [openStepCardComment]);
-  const [slashActiveIndex, setSlashActiveIndex] = useState(0);
-  const [slashMenuDismissed, setSlashMenuDismissed] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   // Live control state: 'idle' until the user requests an interrupt, 'interrupting'
   // while the active run is draining, back to 'idle' when the run settles.
@@ -1136,6 +979,17 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
   useEffect(() => {
     if (inputRef.current) autoResizeTextarea(inputRef.current);
   }, [input]);
+  // 斜杠命令建议状态机（迁出自 ChatPage，2026-09-13 拆分）：
+  // 建议过滤/键盘导航/补全集中在 useSlashCommands。
+  const {
+    slashSuggestions,
+    slashMenuOpen,
+    activeSlashIndex,
+    setSlashActiveIndex,
+    completeSlashCommand,
+    handleSlashKeyDown,
+    resetSlashTracking,
+  } = useSlashCommands({ input, setInput, inputRef });
   useEffect(() => {
     historyReadyRef.current = historyReady;
   }, [historyReady]);
@@ -1200,10 +1054,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
 
   const [dragOver, setDragOver] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
-  const [previewContent, setPreviewContent] = useState('');
-  const [previewTitle, setPreviewTitle] = useState('');
-  /** Session-owned artifact backing the current preview; required for durable chart revisions. */
-  const [previewArtifact, setPreviewArtifact] = useState<{ sessionId: string; artifactId: string } | null>(null);
+  // 预览内容/标题/来源生成物状态由 useArtifactPreview 管理（2026-09-13 拆分）。
   const [artifactError, setArtifactError] = useState('');
   const [activeRightPanelTab, setActiveRightPanelTab] =
     useState<RightPanelTab>('tasks');
@@ -1233,17 +1084,60 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
 
   const hasActiveScenarioRun = projectScenarioRun?.status === 'running';
 
-  const openPreview = useCallback((
-    content: string,
-    title = locale === 'zh' ? 'AI 生成预览' : 'AI-generated preview',
-    artifact?: { sessionId: string; artifactId: string } | null,
+  // 会话代际校验与生成物列表刷新上移到预览 hook 之前（预览 hook 的图表重做
+  // 回调依赖刷新回调；2026-09-13 拆分时的定义顺序调整，行为不变）。
+  const isCurrentSessionGeneration = useCallback((
+    sessionId: string,
+    generation: number,
+  ) => (
+    activeSessionIdRef.current === sessionId
+    && sessionGenerationRef.current === generation
+  ), []);
+
+  const refreshArtifactsForSession = useCallback(async (
+    sessionId: string,
+    generation: number,
   ) => {
-    setPreviewContent(content);
-    setPreviewTitle(title);
-    setPreviewArtifact(artifact ?? null);
-    setArtifactError('');
-    setActiveRightPanelTab('artifacts');
-  }, [locale]);
+    const listArtifacts = window.metis?.listArtifacts;
+    if (!listArtifacts) return;
+    try {
+      const decoded = decodeArtifactListPayload(await listArtifacts(sessionId));
+      if (!isCurrentSessionGeneration(sessionId, generation)) return;
+      if (decoded.success) {
+        setArtifacts(decoded.items.map(normalizeArtifact));
+        setArtifactError('');
+      } else {
+        setArtifactError(locale === 'zh' ? '暂时无法加载本会话的生成物，请稍后重试。' : 'Artifacts could not be loaded. Please try again.');
+      }
+    } catch {
+      if (isCurrentSessionGeneration(sessionId, generation)) {
+        setArtifactError(locale === 'zh' ? '暂时无法加载本会话的生成物，请稍后重试。' : 'Artifacts could not be loaded. Please try again.');
+      }
+    }
+  }, [isCurrentSessionGeneration, locale, normalizeArtifact]);
+
+  // 生成物预览动作（迁出自 ChatPage，2026-09-13 拆分）：预览状态、
+  // openPreview、handleArtifactClick 与预览栏图表重做/导出接线集中在
+  // conversation/artifactPreviewActions.ts。
+  const {
+    previewContent,
+    previewTitle,
+    openPreview,
+    handleArtifactClick,
+    resetPreview,
+    closePreview,
+    onChartAdjust,
+    onExportDocx,
+  } = useArtifactPreview({
+    locale,
+    activeSessionIdRef,
+    sessionGenerationRef,
+    activeResearchProjectId,
+    isCurrentSessionGeneration,
+    refreshArtifactsForSession,
+    setArtifactError,
+    setActiveRightPanelTab,
+  });
 
   const acceptGoalEvent = useCallback((goalId: string, sequence: number) => {
     if (activeGoalIdRef.current !== goalId) return false;
@@ -1344,25 +1238,14 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
     setMessages([]);
     setHistoryReady(false);
     setArtifacts([]);
-    setPreviewContent('');
-    setPreviewTitle('');
-    setPreviewArtifact(null);
-    setArtifactError('');
+    resetPreview();
     setIsLoading(false);
     setActiveGoalId(null);
     activeGoalIdRef.current = null;
     goalEventSequenceRef.current.clear();
     goalCardIndexMapRef.current.clear();
     clearToolRows();
-  }, []);
-
-  const isCurrentSessionGeneration = useCallback((
-    sessionId: string,
-    generation: number,
-  ) => (
-    activeSessionIdRef.current === sessionId
-    && sessionGenerationRef.current === generation
-  ), []);
+  }, [resetPreview]);
 
   // 项目联动视图：有当前科研项目时，会话列表只显示该项目的会话与未关联的
   // 旧会话；其他项目的会话不混入（协同对话与项目聊天即「当前项目的对话」）。
@@ -1381,28 +1264,6 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
     const firstInProject = sessions.find((session) => session.projectId === activeResearchProjectId);
     activateSession(firstInProject?.id ?? '');
   }, [activeResearchProjectId, sessions, currentSessionId, activateSession]);
-
-  const refreshArtifactsForSession = useCallback(async (
-    sessionId: string,
-    generation: number,
-  ) => {
-    const listArtifacts = window.metis?.listArtifacts;
-    if (!listArtifacts) return;
-    try {
-      const decoded = decodeArtifactListPayload(await listArtifacts(sessionId));
-      if (!isCurrentSessionGeneration(sessionId, generation)) return;
-      if (decoded.success) {
-        setArtifacts(decoded.items.map(normalizeArtifact));
-        setArtifactError('');
-      } else {
-        setArtifactError(locale === 'zh' ? '暂时无法加载本会话的生成物，请稍后重试。' : 'Artifacts could not be loaded. Please try again.');
-      }
-    } catch {
-      if (isCurrentSessionGeneration(sessionId, generation)) {
-        setArtifactError(locale === 'zh' ? '暂时无法加载本会话的生成物，请稍后重试。' : 'Artifacts could not be loaded. Please try again.');
-      }
-    }
-  }, [isCurrentSessionGeneration, locale, normalizeArtifact]);
 
   const isCurrentChatRequest = useCallback((request: {
     token: symbol;
@@ -2645,255 +2506,33 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
   }
 
 
-  // ─── Goal flow ─────────────────────────────────────────────
-
-  async function handleGoalFlow(description: string, sessionIdOverride?: string) {
-    setIsLoading(true);
-    const sessionId = sessionIdOverride ?? currentSessionId;
-    const metis = window.metis;
-    if (metis?.appendMessage) {
-      void metis.appendMessage(sessionId, 'user', description);
-    }
-    if (!metis?.createGoal) {
-      setMessages((prev) => [...prev, {
-        role: 'assistant',
-        content: presentExecutionError('Research task service not available', locale, resolvedUIMode),
-        timestamp: now(),
-      }]);
-      setIsLoading(false);
-      return;
-    }
-
-    // 1. Insert GoalCard message
-    const goalCard: GoalCardData = {
-      goalId: '', description, phase: 'creating',
-      steps: [], stepStatuses: {},
-      progress: { completed: 0, total: 0, currentStep: '' },
-      canRefine: false,
-    };
-    const goalMsg: ChatMessage = { role: 'goal', content: '', timestamp: now(), goalCard };
-    // Index: messages.length is the user msg just pushed; +1 is the goal card
-    const goalMsgIndex = messages.length + 1;
-
-    setMessages((prev) => [...prev, goalMsg]);
-
-    try {
-      // 2. Create Goal
-      const goal = await metis.createGoal(description, undefined, activeResearchProjectId ?? undefined);
-      if (!goal.success) throw new Error(goal.code);
-      const goalId = goal.goalId;
-      updateGoalCard(goalMsgIndex, (card) => ({ ...card, goalId, phase: 'planning' }));
-      setActiveGoalId(goalId);
-      activeGoalIdRef.current = goalId;
-      goalEventSequenceRef.current.delete(goalId);
-      goalCardIndexMapRef.current.set(goalId, goalMsgIndex);
-
-      // 3. Generate Plan
-      const planResult = await metis.generatePlan(goalId);
-      if (!planResult.success) throw new Error(planResult.code);
-      const steps = planResult.steps.map((step) => ({
-        id: step.stepId,
-        name: t('rightPanel.researchStep', { number: step.ordinal }),
-        description: '',
-      }));
-      const executingCard: GoalCardData = {
-        ...goalCard,
-        goalId,
-        phase: 'executing',
-        planName: t('chat.researchPlan'),
-        steps,
-        stepStatuses: Object.fromEntries(steps.map((s) => [s.id, { stepId: s.id, stepName: s.name, status: 'pending' as const, output: '' }])),
-        progress: { completed: 0, total: steps.length, currentStep: '' },
-        canRefine: false,
-      };
-      updateGoalCard(goalMsgIndex, () => executingCard);
-      await syncGoalCardWorkflow(goalId, goalMsgIndex);
-
-      // 4. Persist goal card state
-      if (metis.appendMessage) {
-        void metis.appendMessage(sessionId, 'goal', `__GOAL_CARD__${JSON.stringify(executingCard)}`);
-      }
-
-      // 5. Auto-execute
-      const execution = await metis.executeGoal(goalId);
-      if (execution.success) {
-        updateGoalCard(goalMsgIndex, (card) => ({ ...card, phase: 'completed', pauseRequested: false }));
-      } else if (execution.code === 'paused') {
-        updateGoalCard(goalMsgIndex, (card) => ({ ...card, phase: 'paused', pauseRequested: false }));
-      } else if (execution.code === 'cancelled') {
-        updateGoalCard(goalMsgIndex, (card) => ({ ...card, phase: 'cancelled', pauseRequested: false }));
-      } else {
-        throw new Error(execution.code ?? 'goal_execution_failed');
-      }
-    } catch {
-      updateGoalCard(goalMsgIndex, (card) => ({
-        ...card,
-        phase: 'failed',
-        error: 'goal_execution_failed',
-      }));
-    } finally {
-      setActiveGoalId(null);
-      activeGoalIdRef.current = null;
-      goalEventSequenceRef.current.clear();
-      setIsLoading(false);
-      // UX-CHAT-004: 用户消息与 Goal 卡均已持久化，刷新会话摘要。
-      refreshSessionSummaries();
-      // 2.5: Goal 轮结算同样要消费排队消息，否则运行期间的用户输入永久滞留。
-      queue.flushNext();
-    }
-  }
-
-  /** Controls operate on the same persisted Goal ID as the visible timeline. */
-  async function handlePauseGoal(goalId: string) {
-    const metis = window.metis;
-    const index = findGoalCardIndex(goalId);
-    if (!metis?.pauseGoal || index === undefined) return;
-    try {
-      const result = await metis.pauseGoal(goalId);
-      if (result?.success) {
-        // The engine pauses at a Workflow boundary. Until its status event
-        // arrives this is intentionally a request receipt, not a fake pause.
-        updateGoalCard(index, (card) => ({ ...card, pauseRequested: true }));
-      } else {
-        // 暂停请求被引擎拒绝时必须给出可见回执，不能静默无反应。
-        updateGoalCard(index, (card) => ({
-          ...card,
-          error: locale === 'zh' ? '暂停请求未被执行：任务当前状态不接受暂停。' : 'The pause request was not applied: the task state does not accept a pause.',
-        }));
-      }
-    } catch {
-      updateGoalCard(index, (card) => ({
-        ...card,
-        error: locale === 'zh' ? '暂停服务暂时不可用，请稍后重试。' : 'The pause service is temporarily unavailable. Try again later.',
-      }));
-    }
-  }
-
-  async function handleCancelGoal(goalId: string) {
-    const metis = window.metis;
-    const index = findGoalCardIndex(goalId);
-    if (!metis?.cancelGoal || index === undefined) return;
-    try {
-      const result = await metis.cancelGoal(goalId);
-      if (result?.success) {
-        updateGoalCard(index, (card) => ({ ...card, phase: 'cancelled', pauseRequested: false }));
-      } else {
-        updateGoalCard(index, (card) => ({
-          ...card,
-          error: locale === 'zh' ? '取消请求未被执行：任务可能已经结束。' : 'The cancel request was not applied: the task may have already finished.',
-        }));
-      }
-    } catch {
-      updateGoalCard(index, (card) => ({
-        ...card,
-        error: locale === 'zh' ? '取消服务暂时不可用，请稍后重试。' : 'The cancel service is temporarily unavailable. Try again later.',
-      }));
-    } finally {
-      // 2.5: 取消也是一种结算——排队消息照常补发。
-      queue.flushNext();
-    }
-  }
-
-  async function handleResumeGoal(goalId: string) {
-    const metis = window.metis;
-    const index = findGoalCardIndex(goalId);
-    if (!metis?.resumeGoal || index === undefined) return;
-    setIsLoading(true);
-    setActiveGoalId(goalId);
-    activeGoalIdRef.current = goalId;
-    goalEventSequenceRef.current.delete(goalId);
-    updateGoalCard(index, (card) => ({ ...card, phase: 'executing', pauseRequested: false, error: undefined }));
-    try {
-      const execution = await metis.resumeGoal(goalId);
-      if (execution.success) {
-        updateGoalCard(index, (card) => ({ ...card, phase: 'completed', pauseRequested: false }));
-      } else if (execution.code === 'paused') {
-        updateGoalCard(index, (card) => ({ ...card, phase: 'paused', pauseRequested: false }));
-      } else if (execution.code === 'cancelled') {
-        updateGoalCard(index, (card) => ({ ...card, phase: 'cancelled', pauseRequested: false }));
-      } else if (execution.code === 'goal_cancelled' || execution.code === 'goal_not_found') {
-        // 终态目标（已取消/不存在）永远无法恢复——卡片必须转入诚实的终态：
-        // 收起注定失败的重试/继续按钮，清除僵死的“执行中”步骤显示，
-        // 并明确告诉用户需要重新发起，而不是提示“稍后重试”。
-        updateGoalCard(index, (card) => ({
-          ...card,
-          phase: 'cancelled',
-          pauseRequested: false,
-          stepStatuses: Object.fromEntries(Object.entries(card.stepStatuses).map(([stepId, status]) => [
-            stepId,
-            status.status === 'running' ? { ...status, status: 'pending' as const } : status,
-          ])),
-          error: locale === 'zh'
-            ? '该研究任务已被取消，无法继续恢复。请重新发送指令开始新的研究任务。'
-            : 'This research task was cancelled and can no longer be resumed. Send a new instruction to start a fresh task.',
-        }));
-      } else {
-        // 恢复失败必须带真实原因（2026-08-29 刘总要求：不再笼统"未能完成"）。
-        const codeText = String(execution.code ?? 'goal_execution_failed');
-        updateGoalCard(index, (card) => ({
-          ...card,
-          phase: codeText === 'goal_cancelled' ? 'cancelled' : 'failed',
-          error: locale === 'zh'
-            ? `恢复未执行（${codeText}）。若任务已取消请重新发起；若仍在运行请稍候重试。`
-            : `Resume did not run (${codeText}). Re-send if cancelled; retry shortly if still running.`,
-        }));
-      }
-      await syncGoalCardWorkflow(goalId, index);
-    } catch {
-      updateGoalCard(index, (card) => ({ ...card, phase: 'failed', error: 'goal_execution_failed' }));
-    } finally {
-      setActiveGoalId(null);
-      activeGoalIdRef.current = null;
-      goalEventSequenceRef.current.clear();
-      setIsLoading(false);
-      refreshSessionSummaries();
-      // 2.5: 恢复轮结算同样消费排队消息。
-      queue.flushNext();
-    }
-  }
-
-  /**
-   * 2.7 启动一个已生成计划但尚未执行的任务。executeGoal（全新 run）与
-   * resumeGoal（要求已存在 paused run）是不同引擎路径：对 plan_ready 调
-   * resume 会被引擎以 no run 拒绝，这里必须按阶段分流。
-   */
-  async function handleStartPlannedGoal(goalId: string) {
-    const metis = window.metis;
-    const index = findGoalCardIndex(goalId);
-    if (!metis?.executeGoal || index === undefined) return;
-    setIsLoading(true);
-    setActiveGoalId(goalId);
-    activeGoalIdRef.current = goalId;
-    goalEventSequenceRef.current.delete(goalId);
-    updateGoalCard(index, (card) => ({ ...card, phase: 'executing', pauseRequested: false, error: undefined }));
-    try {
-      const execution = await metis.executeGoal(goalId);
-      if (execution.success) {
-        updateGoalCard(index, (card) => ({ ...card, phase: 'completed', pauseRequested: false }));
-      } else if (execution.code === 'paused') {
-        updateGoalCard(index, (card) => ({ ...card, phase: 'paused', pauseRequested: false }));
-      } else if (execution.code === 'cancelled') {
-        updateGoalCard(index, (card) => ({ ...card, phase: 'cancelled', pauseRequested: false }));
-      } else {
-        const codeText = String(execution.code ?? 'goal_execution_failed');
-        updateGoalCard(index, (card) => ({
-          ...card,
-          phase: 'failed',
-          error: locale === 'zh' ? `启动未执行（${codeText}）。` : `Start did not run (${codeText}).`,
-        }));
-      }
-      await syncGoalCardWorkflow(goalId, index);
-    } catch {
-      updateGoalCard(index, (card) => ({ ...card, phase: 'failed', error: 'goal_execution_failed' }));
-    } finally {
-      setActiveGoalId(null);
-      activeGoalIdRef.current = null;
-      goalEventSequenceRef.current.clear();
-      setIsLoading(false);
-      refreshSessionSummaries();
-      queue.flushNext();
-    }
-  }
+  // ─── Goal flow（迁出至 conversation/goalRunFlow.ts，2026-09-13 拆分）───
+  const {
+    handleGoalFlow,
+    handlePauseGoal,
+    handleCancelGoal,
+    handleResumeGoal,
+    handleStartPlannedGoal,
+  } = createGoalRunFlow({
+    metis: window.metis,
+    locale,
+    uiMode: resolvedUIMode,
+    t,
+    currentSessionId,
+    activeResearchProjectId,
+    messagesLength: messages.length,
+    setMessages,
+    setIsLoading,
+    setActiveGoalId,
+    activeGoalIdRef,
+    goalEventSequenceRef,
+    goalCardIndexMapRef,
+    updateGoalCard,
+    findGoalCardIndex,
+    syncGoalCardWorkflow,
+    refreshSessionSummaries,
+    flushNext: queue.flushNext,
+  });
 
   // ─── Interjection flow ─────────────────────────────────────
 
@@ -3708,57 +3347,10 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
     switchForkHandlerRef.current(forkId, targetIndex);
   }, []);
 
-  const slashSuggestions = (() => {
-    if (slashMenuDismissed || !input.startsWith('/') || input.length > 80 || /\s/.test(input.slice(1))) return [];
-    return filterSlashCommands(input.slice(1));
-  })();
-  const slashMenuOpen = slashSuggestions.length > 0;
-  const activeSlashIndex = Math.min(slashActiveIndex, Math.max(0, slashSuggestions.length - 1));
-
-  function completeSlashCommand(index: number) {
-    const command = slashSuggestions[index];
-    if (!command) return;
-    setInput(`/${command.name}${command.hasArg ? ' ' : ''}`);
-    setSlashActiveIndex(0);
-    setSlashMenuDismissed(false);
-    requestAnimationFrame(() => inputRef.current?.focus());
-  }
-
   // Handle the slash listbox before Enter-to-send. Shift+Enter always preserves a newline.
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.nativeEvent.isComposing) return;
-    if (slashMenuOpen) {
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        setSlashActiveIndex((current) => (current + 1) % slashSuggestions.length);
-        return;
-      }
-      if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        setSlashActiveIndex((current) => (current - 1 + slashSuggestions.length) % slashSuggestions.length);
-        return;
-      }
-      if (e.key === 'Home') {
-        e.preventDefault();
-        setSlashActiveIndex(0);
-        return;
-      }
-      if (e.key === 'End') {
-        e.preventDefault();
-        setSlashActiveIndex(slashSuggestions.length - 1);
-        return;
-      }
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        setSlashMenuDismissed(true);
-        return;
-      }
-      if ((e.key === 'Enter' || e.key === 'Tab') && !e.shiftKey) {
-        e.preventDefault();
-        completeSlashCommand(activeSlashIndex);
-        return;
-      }
-    }
+    if (handleSlashKeyDown(e)) return;
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       void handleSend();
@@ -3892,116 +3484,8 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
       .sort((left, right) => right.createdAt - left.createdAt);
   })();
 
-  /**
-   * 结构化成果文档 → 可内嵌预览的 Markdown（2026-08-28 刘总要求：生成物点击
-   * 即刻预览）。Word/PPT 提取文本；PDF/表格等二进制文档返回 null，交给
-   * Metis Office 打开。
-   */
-  function outcomeDocumentToPreviewMarkdown(content: unknown): string | null {
-    if (!content || typeof content !== 'object') return null;
-    const doc = content as { type?: string };
-    if (doc.type === 'word') {
-      const word = content as {
-        type: 'word';
-        blocks?: Array<{ kind?: string; text?: string; level?: number; rows?: string[][] }>;
-        header?: string;
-        footer?: string;
-      };
-      const lines: string[] = [];
-      for (const block of word.blocks ?? []) {
-        if (block.kind === 'table' && Array.isArray(block.rows)) {
-          const [head, ...rest] = block.rows;
-          if (head?.length) {
-            lines.push(`| ${head.join(' | ')} |`, `| ${head.map(() => '---').join(' | ')} |`);
-            for (const row of rest) lines.push(`| ${(row ?? []).join(' | ')} |`);
-          }
-          continue;
-        }
-        const text = (block.text ?? '').trim();
-        if (!text) continue;
-        if (block.kind === 'heading') lines.push(`${'#'.repeat(Math.min(6, Math.max(1, block.level ?? 1)))} ${text}`);
-        else lines.push(text);
-      }
-      return lines.length > 0 ? lines.join('\n\n') : null;
-    }
-    if (doc.type === 'ppt') {
-      const ppt = content as {
-        type: 'ppt';
-        pages?: Array<{ title?: string; elements?: Array<{ type?: string; props?: Record<string, unknown> }> }>;
-      };
-      const lines: string[] = [];
-      (ppt.pages ?? []).forEach((page, index) => {
-        const title = (page.title ?? '').trim();
-        lines.push(`## ${index + 1}. ${title || (locale === 'zh' ? '未命名页' : 'Untitled page')}`);
-        for (const element of page.elements ?? []) {
-          if (element.type !== 'text') continue;
-          const text = String(element.props?.text ?? '').trim();
-          if (text) lines.push(text);
-        }
-      });
-      return lines.length > 0 ? lines.join('\n\n') : null;
-    }
-    return null;
-  }
-
-  async function handleArtifactClick(
-    item: Pick<ArtifactItem, 'id' | 'name' | 'contentAvailable'>,
-  ) {
-    const sessionId = activeSessionIdRef.current;
-    const generation = sessionGenerationRef.current;
-    // 项目成果：点击立即预览。文本型文档内嵌渲染；PDF/表格用 Metis Office 打开。
-    if (item.id.startsWith('outcome:')) {
-      const outcomeId = item.id.slice('outcome:'.length);
-      const getOutcome = window.metis?.getOutcome;
-      if (!activeResearchProjectId || !getOutcome) return;
-      setArtifactError('');
-      try {
-        const detail = await getOutcome({ projectId: activeResearchProjectId, outcomeId });
-        if (!detail) {
-          setArtifactError(locale === 'zh' ? '无法打开这个成果，请稍后重试。' : 'This outcome could not be opened. Please try again.');
-          return;
-        }
-        const content = (detail as { version?: { content?: unknown } }).version?.content;
-        const markdown = outcomeDocumentToPreviewMarkdown(content);
-        if (markdown) {
-          openPreview(markdown, item.name);
-          return;
-        }
-        const openExternal = window.metis?.openOutcomeInGenoffice;
-        if (openExternal) {
-          const result = await openExternal({ projectId: activeResearchProjectId, outcomeId });
-          if (result?.ok) return;
-        }
-        setArtifactError(locale === 'zh' ? '该成果类型暂不支持内嵌预览，Metis Office 也未能打开。' : 'This outcome type has no inline preview and Metis Office failed to open it.');
-      } catch {
-        setArtifactError(locale === 'zh' ? '无法打开这个成果，请稍后重试。' : 'This outcome could not be opened. Please try again.');
-      }
-      return;
-    }
-    if (!item.contentAvailable) return;
-    const getArtifactContent = window.metis?.getArtifactContent;
-    if (!sessionId || !getArtifactContent) return;
-    setArtifactError('');
-    try {
-      const response = await getArtifactContent(sessionId, item.id);
-      if (!isCurrentSessionGeneration(sessionId, generation)) return;
-      if (!response.success || response.sessionId !== sessionId || response.id !== item.id) {
-        setPreviewContent('');
-        setPreviewTitle('');
-        setArtifactError(locale === 'zh' ? '无法打开这个生成物，请重新选择或稍后重试。' : 'This artifact could not be opened. Please try again.');
-        return;
-      }
-      openPreview(response.content, item.name, { sessionId, artifactId: item.id });
-    } catch {
-      if (!isCurrentSessionGeneration(sessionId, generation)) return;
-      setPreviewContent('');
-      setPreviewTitle('');
-      setArtifactError(locale === 'zh' ? '无法打开这个生成物，请重新选择或稍后重试。' : 'This artifact could not be opened. Please try again.');
-    }
-  }
-
   const leftPanel = (
-    <SessionSidebar
+    <ChatSessionSidebar
       sessions={projectScopedSessions}
       currentSessionId={currentSessionId}
       onSelect={activateSession}
@@ -4547,8 +4031,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
                   onChange={(e) => {
                     setInput(e.target.value);
                     if (currentSessionId) writeSessionDraft(currentSessionId, e.target.value);
-                    setSlashActiveIndex(0);
-                    setSlashMenuDismissed(false);
+                    resetSlashTracking();
                   }}
                   onKeyDown={handleKeyDown}
                   role="combobox"
@@ -4638,39 +4121,9 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
       content={previewContent}
       uiMode={resolvedUIMode}
       locale={locale}
-      onClose={() => { setPreviewContent(''); setPreviewArtifact(null); }}
-      onChartAdjust={previewArtifact ? async (chartSource, chartLanguage, instruction, sourceData) => {
-        const result = await window.metis?.regenerateArtifactChart?.({
-          sessionId: previewArtifact.sessionId,
-          artifactId: previewArtifact.artifactId,
-          chartSource,
-          chartLanguage,
-          instruction,
-          sourceData,
-        });
-        if (!result?.success) {
-          return {
-            ok: false,
-            message: result?.code === 'source_data_required'
-              ? (locale === 'zh' ? '缺少原始数据，未执行图表重做。' : 'Source data is required; the chart was not regenerated.')
-              : (result?.message || (locale === 'zh' ? '图表重做未完成，原生成物未改动。' : 'Chart regeneration did not complete; the original artifact is unchanged.')),
-          };
-        }
-        // Backend stores a new session artifact + its dedicated source-data artifact
-        // before returning. Only now switch the preview to the durable revision.
-        setPreviewContent(result.content);
-        setPreviewTitle(result.name);
-        setPreviewArtifact({ sessionId: previewArtifact.sessionId, artifactId: result.artifactId });
-        await refreshArtifactsForSession(previewArtifact.sessionId, sessionGenerationRef.current);
-        return { ok: true, content: result.content };
-      } : undefined}
-      onExportDocx={async () => {
-        const result = await window.metis?.exportMarkdownAsDocx?.({
-          title: previewTitle || (locale === 'zh' ? '生成物' : 'Artifact'),
-          markdown: previewContent,
-        });
-        return result ?? { ok: false, message: 'export unavailable' };
-      }}
+      onClose={closePreview}
+      onChartAdjust={onChartAdjust}
+      onExportDocx={onExportDocx}
     />
   ) : null;
 

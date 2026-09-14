@@ -69,13 +69,14 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 import * as pty from 'node-pty';
 import { PersistenceStore, setSharedStore } from '../engine/persistence/PersistenceStore.js';
-import { BrowserService, type BrowserBounds } from './BrowserService.js';
+import { BrowserService } from './BrowserService.js';
 import { CollabService } from './CollabService.js';
 import { LiteratureSearchService } from './LiteratureSearchService.js';
 import { RESEARCH_CAPABILITY_TASKS } from '../engine/evals/research-capability-suite.js';
 import { extendSciSsciIssns } from '../engine/literature/CoreJournalLists.js';
 import { detectStage } from '../engine/research/StageDetector.js';
 import { configureJournalCatalogFetcher } from '../engine/research/JournalCatalog.js';
+import { writeFileSync } from 'node:fs';
 import { JobQueueService } from './JobQueueService.js';
 import { ResearchJournalService } from './ResearchJournalService.js';
 import { MethodLibraryService } from './MethodLibraryService.js';
@@ -224,6 +225,9 @@ import { OutcomeWorkbenchService } from './OutcomeWorkbenchService.js';
 import { OutcomeMemoryService, OutcomeReviewService, ResearchGraphService } from './OutcomeMemoryReviewGraphService.js';
 import { registerArtifactIpc } from './ipc/registerArtifactIpc.js';
 import { registerGoalIpc } from './ipc/registerGoalIpc.js';
+import { parseBrowserBounds } from './ipc/sharedGuards.js';
+import { registerBrowserIpc } from './ipc/registerBrowserIpc.js';
+import { RemoteDevBridge, isRemoteBridgeSender, remoteBroadcast } from './RemoteBridge/remoteDevBridge.js';
 import { registerExperimentIpc } from './ipc/registerExperimentIpc.js';
 import { registerWeChatIpc } from './ipc/registerWeChatIpc.js';
 import { registerFreeModelIpc } from './ipc/registerFreeModelIpc.js';
@@ -866,6 +870,8 @@ const domainIpcContext: DomainIpcContext = {
   userDataDir: () => USER_DATA_DIR,
   defaultDataDir: () => DEFAULT_DATA_DIR,
   backupService: () => backupService,
+  ensureBrowserService,
+  jobQueueService: () => jobQueueService,
   goalEngine: () => goalEngine,
   nextRequestId: () => ++requestCounter,
   broadcastGoalChanged,
@@ -1948,6 +1954,13 @@ function requireLayoutAcceptanceMainFrame(event: IpcMainInvokeEvent): BrowserWin
 export function requireRendererMainFrame(event: IpcMainInvokeEvent): BrowserWindow {
   const liveMainWindow = getMainWindow();
   const liveEntryUrl = getRendererEntryUrl();
+  // 远程开发桥（METIS_REMOTE_BRIDGE=1，仅回环）：浏览器连接没有
+  // WebContents，虚拟 sender 直接放行并复用主窗口上下文。
+  if (isRemoteBridgeSender(event.sender)) {
+    const bridgeWindow = liveMainWindow;
+    if (!bridgeWindow || bridgeWindow.isDestroyed()) throw new Error('Unauthorized IPC sender');
+    return bridgeWindow;
+  }
   const window = BrowserWindow.fromWebContents(event.sender);
   const senderFrame = event.senderFrame;
   const senderWindowMatches = Boolean(
@@ -2260,6 +2273,7 @@ function broadcastGoalChanged(_sender: Electron.WebContents, goal: Goal, statusO
         window.webContents.send('goal:changed', event);
       }
     }
+    remoteBroadcast('goal:changed', event);
   } catch {
     // Broadcast must never break the caller.
   }
@@ -3134,7 +3148,9 @@ function createWindow(): void {
     // Automated product simulations run against the real renderer and IPC
     // stack but must not steal focus from the researcher's desktop. This flag
     // is intentionally process-local and is never enabled by normal launches.
-    show: process.env.METIS_BACKGROUND_AUDIT !== '1',
+    // 远程开发桥模式（METIS_REMOTE_BRIDGE=1）同理：主进程只做后台 IPC 服务，
+    // 界面在研究者的浏览器里，桌面不弹 METIS 窗口。
+    show: process.env.METIS_BACKGROUND_AUDIT !== '1' && process.env.METIS_REMOTE_BRIDGE !== '1',
     // The acceptance run needs to exercise the real narrow-shell bands, so it
     // may shrink the window below the product minimum of 1000px.
     minWidth: layoutAcceptanceToken ? 320 : 1000,
@@ -5578,6 +5594,27 @@ function setupIPC(): void {
   // 任务3：域 registrar 迁移——channel/contract/恢复形状不变，注册走 IpcRegistry。
   ipcDomainDisposers.push(registerArtifactIpc(domainIpcContext));
   ipcDomainDisposers.push(registerGoalIpc(domainIpcContext));
+  ipcDomainDisposers.push(registerBrowserIpc(domainIpcContext));
+
+  // ── 远程开发桥（dev-only）：METIS_REMOTE_BRIDGE=1 时开启浏览器远程访问。
+  // 服务器在 whenReady 后启动，确保 setupIPC 已注册全部通道。──
+  if (process.env.METIS_REMOTE_BRIDGE === '1') {
+    const remoteBridge = new RemoteDevBridge({ ipcMain });
+    void app.whenReady().then(async () => {
+      try {
+        // 延迟到本轮宏任务末尾：setupIPC 同步注册完成后才能拿到全量通道。
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        const { port } = await remoteBridge.start();
+        const channels = remoteBridge.captureHandlers();
+        // Vite dev 中间件读取该文件，把实际端口提供给浏览器垫片。
+        try { writeFileSync(path.join(process.cwd(), '.metis-remote-port'), String(port)); } catch { /* dev-only best-effort */ }
+        console.log(`[RemoteBridge] listening on http://127.0.0.1:${port} (channels=${channels}, dev-only)`);
+      } catch (error) {
+        console.error('[RemoteBridge] failed to start:', error);
+      }
+    });
+    app.on('will-quit', () => remoteBridge.stop());
+  }
 
   // ── Messages ────────────────────────────────────────────
   ipcMain.handle('messages:get', (event, rawSessionId: unknown) => {
@@ -6286,81 +6323,6 @@ function setupIPC(): void {
   }));
 
 
-  // ── Research browser (embedded WebContentsView) ──────────────
-  ipcMain.handle('browser:show', (event, rawBounds: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const service = ensureBrowserService();
-      if (!service) return { ok: false, error: 'browser_unavailable' };
-      const bounds = parseBrowserBounds(rawBounds);
-      if (!bounds) return { ok: false, error: 'browser_invalid_bounds' };
-      // 与协同对话视图互斥：同一时间只显示一个嵌入视图。
-      collabService?.hide();
-      service.show(bounds);
-      return { ok: true };
-    } catch (err) {
-      return { ok: false, error: String((err as Error).message ?? err) };
-    }
-  });
-
-  ipcMain.handle('browser:hide', (event) => {
-    try {
-      requireRendererMainFrame(event);
-      browserService?.hide();
-      return { ok: true };
-    } catch (err) {
-      return { ok: false, error: String((err as Error).message ?? err) };
-    }
-  });
-
-  ipcMain.handle('browser:setBounds', (event, rawBounds: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const bounds = parseBrowserBounds(rawBounds);
-      if (!bounds || !browserService) return { ok: false, error: 'browser_invalid_bounds' };
-      browserService.setBounds(bounds);
-      return { ok: true };
-    } catch (err) {
-      return { ok: false, error: String((err as Error).message ?? err) };
-    }
-  });
-
-  ipcMain.handle('browser:navigate', async (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const service = ensureBrowserService();
-      if (!service) return { ok: false, error: 'browser_unavailable' };
-      // 任务2 上下文隔离：渲染端可显式声明该次导航归属的项目（对象参数）；
-      // 旧字符串参数与未声明归属的导航都记为「归属未知」（null）。
-      if (typeof raw === 'object' && raw !== null) {
-        const payload = raw as { url?: unknown; projectId?: unknown };
-        const url = typeof payload.url === 'string' ? payload.url : '';
-        const projectId = typeof payload.projectId === 'string' && payload.projectId.trim() ? payload.projectId.trim() : null;
-        service.setActiveOwnership(projectId);
-        return await service.navigate(url);
-      }
-      service.setActiveOwnership(null);
-      const url = typeof raw === 'string' ? raw : '';
-      return await service.navigate(url);
-    } catch (err) {
-      return { ok: false, error: String((err as Error).message ?? err) };
-    }
-  });
-
-  ipcMain.handle('browser:back', (event) => { try { requireRendererMainFrame(event); browserService?.goBack(); return { ok: true }; } catch { return { ok: false, error: 'browser_denied' }; } });
-  ipcMain.handle('browser:forward', (event) => { try { requireRendererMainFrame(event); browserService?.goForward(); return { ok: true }; } catch { return { ok: false, error: 'browser_denied' }; } });
-  ipcMain.handle('browser:reload', (event) => { try { requireRendererMainFrame(event); browserService?.reload(); return { ok: true }; } catch { return { ok: false, error: 'browser_denied' }; } });
-  ipcMain.handle('browser:stop', (event) => { try { requireRendererMainFrame(event); browserService?.stop(); return { ok: true }; } catch { return { ok: false, error: 'browser_denied' }; } });
-
-  ipcMain.handle('browser:focusRenderer', (event) => {
-    try {
-      requireRendererMainFrame(event);
-      event.sender.focus();
-      return { ok: true };
-    } catch (err) {
-      return { ok: false, error: String((err as Error).message ?? err) };
-    }
-  });
 
   // ── 协同对话（第三方 AI 网页版 WebContentsView） ─────────────
   ipcMain.handle('collab:show', (event, rawBounds: unknown) => {
@@ -6531,152 +6493,6 @@ function setupIPC(): void {
     }
   });
 
-  ipcMain.handle('browser:state', (event) => {
-    try {
-      requireRendererMainFrame(event);
-      const service = ensureBrowserService();
-      return service ? { ok: true, state: service.getState() } : { ok: false, error: 'browser_unavailable' };
-    } catch (err) {
-      return { ok: false, error: String((err as Error).message ?? err) };
-    }
-  });
-
-  ipcMain.handle('browser:click', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const service = ensureBrowserService();
-      if (!service) return { ok: false, error: 'browser_unavailable' };
-      const { x, y } = (raw as { x?: number; y?: number }) ?? {};
-      if (typeof x !== 'number' || typeof y !== 'number') return { ok: false, error: 'browser_invalid_point' };
-      service.click(x, y);
-      return { ok: true };
-    } catch (err) {
-      return { ok: false, error: String((err as Error).message ?? err) };
-    }
-  });
-
-  ipcMain.handle('browser:type', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const service = ensureBrowserService();
-      if (!service) return { ok: false, error: 'browser_unavailable' };
-      const text = typeof raw === 'string' ? raw.slice(0, 4000) : '';
-      if (!text) return { ok: false, error: 'browser_invalid_text' };
-      service.type(text);
-      return { ok: true };
-    } catch (err) {
-      return { ok: false, error: String((err as Error).message ?? err) };
-    }
-  });
-
-  ipcMain.handle('browser:key', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const service = ensureBrowserService();
-      if (!service) return { ok: false, error: 'browser_unavailable' };
-      const keyCode = typeof raw === 'string' ? raw : '';
-      if (!keyCode) return { ok: false, error: 'browser_invalid_key' };
-      service.key(keyCode);
-      return { ok: true };
-    } catch (err) {
-      return { ok: false, error: String((err as Error).message ?? err) };
-    }
-  });
-
-  ipcMain.handle('browser:scroll', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const service = ensureBrowserService();
-      if (!service) return { ok: false, error: 'browser_unavailable' };
-      const { deltaX, deltaY } = (raw as { deltaX?: number; deltaY?: number }) ?? {};
-      service.scroll(Number(deltaX) || 0, Number(deltaY) || 0);
-      return { ok: true };
-    } catch (err) {
-      return { ok: false, error: String((err as Error).message ?? err) };
-    }
-  });
-
-  ipcMain.handle('browser:screenshot', async (event) => {
-    try {
-      requireRendererMainFrame(event);
-      const service = ensureBrowserService();
-      if (!service) return { ok: false, error: 'browser_unavailable' };
-      return await service.screenshot();
-    } catch (err) {
-      return { ok: false, error: String((err as Error).message ?? err) };
-    }
-  });
-
-  ipcMain.handle('browser:extract', async (event) => {
-    try {
-      requireRendererMainFrame(event);
-      const service = ensureBrowserService();
-      if (!service) return { ok: false, error: 'browser_unavailable' };
-      return await service.extract();
-    } catch (err) {
-      return { ok: false, error: String((err as Error).message ?? err) };
-    }
-  });
-
-  ipcMain.handle('browser:collect', async (event) => {
-    try {
-      requireRendererMainFrame(event);
-      const service = ensureBrowserService();
-      if (!service) return { ok: false, error: 'browser_unavailable' };
-      return await service.collect();
-    } catch (err) {
-      return { ok: false, error: String((err as Error).message ?? err) };
-    }
-  });
-
-  ipcMain.handle('browser:listDownloads', (event) => {
-    try {
-      requireRendererMainFrame(event);
-      const service = ensureBrowserService();
-      if (!service) return { ok: false, error: 'browser_unavailable' };
-      return { ok: true, downloads: service.listPendingDownloads() };
-    } catch (err) {
-      return { ok: false, error: String((err as Error).message ?? err) };
-    }
-  });
-
-  ipcMain.handle('browser:acceptDownload', async (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const service = ensureBrowserService();
-      if (!service) return { ok: false, error: 'browser_unavailable' };
-      const request = (raw as { id?: string; projectId?: string | null }) ?? {};
-      if (!request.id) return { ok: false, error: 'download_not_found' };
-      // 项目自定义目录优先（批2）：PDF 归档到 projectDir/pdfs。
-      let projectDir: string | null = null;
-      try {
-        if (request.projectId && researchRepository) {
-          const project = researchRepository.getProject(request.projectId, false);
-          projectDir = (project?.metadata as { projectDir?: string } | undefined)?.projectDir ?? null;
-        }
-      } catch { /* 目录读取失败回退默认 */ }
-      const outcome = await service.acceptDownload({ id: request.id, projectId: request.projectId ?? null, projectDir });
-      // PDF 归档成功后自动入队全文抽取（T2：AI 可读全文的入口）。
-      if (outcome.ok && outcome.paperId && outcome.savedPath) {
-        jobQueueService.enqueueExtract(outcome.paperId, outcome.savedPath);
-      }
-      return outcome;
-    } catch (err) {
-      return { ok: false, error: String((err as Error).message ?? err) };
-    }
-  });
-
-  ipcMain.handle('browser:cancelDownload', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const id = typeof raw === 'string' ? raw : '';
-      if (!id || !browserService) return { ok: false, error: 'download_not_found' };
-      browserService.cancelDownload(id);
-      return { ok: true };
-    } catch (err) {
-      return { ok: false, error: String((err as Error).message ?? err) };
-    }
-  });
 
 
   // ── WeChat Bot (METIS-WX-1, iLink protocol — same as ZCode) ──
@@ -12050,17 +11866,6 @@ ${effectiveInstruction}`;
 // ─── App Lifecycle ────────────────────────────────────────────
 
 
-function parseBrowserBounds(raw: unknown): BrowserBounds | null {
-  const r = raw as { x?: unknown; y?: unknown; width?: unknown; height?: unknown } | null;
-  if (!r) return null;
-  const x = Number(r.x);
-  const y = Number(r.y);
-  const width = Number(r.width);
-  const height = Number(r.height);
-  if (![x, y, width, height].every((n) => Number.isFinite(n)) || width <= 0 || height <= 0) return null;
-  return { x, y, width, height };
-}
-
 // Enforce a single application instance per userData directory. Without this,
 // launching the app again opens a second instance that contends for the same
 // disk cache (producing "Unable to move the cache: access denied") and the
@@ -12903,6 +12708,7 @@ app.whenReady().then(async () => {
       for (const win of BrowserWindow.getAllWindows()) {
         try { if (!win.isDestroyed()) win.webContents.send('freeModel:autoRegisterProgress', snapshot); } catch { /* 窗口销毁竞态 */ }
       }
+      remoteBroadcast('freeModel:autoRegisterProgress', snapshot);
     },
   });
     // ── Submission P3/P4 外联服务：通信记录 / SMTP 外发 / IMAP 监听 / 投稿门户 ──

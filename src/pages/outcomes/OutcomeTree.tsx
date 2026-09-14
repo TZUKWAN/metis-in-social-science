@@ -1,0 +1,15 @@
+import { GripVertical, Pencil, Trash2 } from 'lucide-react';
+import { useState } from 'react';
+import { type OutcomeCategory, type OutcomeSummary } from '../../../engine/runtime/OutcomeRuntimeContract';
+import { kindIcon } from './shared';
+
+export function OutcomeCategorySection({ category, outcomes, activeId, onOpen, onMove, onTrash, onRename, onDelete }: { category: OutcomeCategory | null; outcomes: OutcomeSummary[]; activeId: string | undefined; onOpen: (id: string) => void; onMove: (id: string, categoryId: string | null) => void; onTrash: (item: OutcomeSummary) => void; onRename?: () => void; onDelete?: () => void }) {
+  const categoryId = category?.id ?? null;
+  // 刘总规格：拖拽归类必须给出落点高亮；dragOver 高频触发，仅在状态变化时 setState。
+  const [dropActive, setDropActive] = useState(false);
+  return <section className={`outcomes-category${dropActive ? ' drop-target' : ''}`} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; if (!dropActive) setDropActive(true); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropActive(false); }} onDrop={(event) => { event.preventDefault(); setDropActive(false); const outcomeId = event.dataTransfer.getData('application/x-metis-outcome'); if (outcomeId) onMove(outcomeId, categoryId); }}><div className="outcomes-category-title"><span>{category?.name ?? '未分类'}</span>{category && <span className="outcomes-category-title__actions"><button type="button" onClick={() => void onRename?.()} title="重命名分类" aria-label={`重命名${category.name}`}><Pencil size={13} /></button><button className="outcomes-category-title__delete" type="button" onClick={() => void onDelete?.()} title="删除分类（成果移回未分类）" aria-label={`删除分类${category.name}`}><Trash2 size={13} /></button></span>}</div>{outcomes.map((item) => <OutcomeRow key={item.id} item={item} active={activeId === item.id} open={onOpen} trash={onTrash} />)}</section>;
+}
+function OutcomeRow({ item, active, open, trash }: { item: OutcomeSummary; active: boolean; open: (id: string) => void; trash: (item: OutcomeSummary) => void }) {
+  // 刘总反馈：原来只有一个菜单项的「···」菜单让用户困惑，简化为悬停可见的直接回收站按钮。
+  return <div className={`outcome-tree-item ${active ? 'selected' : ''}`} role="button" tabIndex={0} draggable onDragStart={(event) => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-metis-outcome', item.id); }} onClick={() => open(item.id)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); open(item.id); } }} title="拖动到分类以整理成果"><GripVertical size={13} className="outcome-tree-item__grip" />{kindIcon(item.kind)}<span>{item.title}</span><small>v{item.currentVersion}</small><span className="outcome-tree-item__actions" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}><button className="outcome-tree-item__trash" type="button" title="移入回收站" aria-label={`将「${item.title}」移入回收站`} onClick={() => trash(item)}><Trash2 size={13} /></button></span></div>;
+}

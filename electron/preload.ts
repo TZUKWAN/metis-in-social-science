@@ -9,33 +9,23 @@ import { contextBridge, ipcRenderer } from 'electron';
 import { experimentBridge } from './preload/experimentBridge.js';
 import { outcomes2Bridge } from './preload/outcomes2Bridge.js';
 import { autonomousBridge } from './preload/autonomousBridge.js';
-import { inspectExternalNavigationUrl } from '../engine/security/ExternalNavigation.js';
+import { libraryBridge } from './preload/libraryBridge.js';
+import { agentBridge } from './preload/agentBridge.js';
+import { backupBridge } from './preload/backupBridge.js';
+import { jobsBridge } from './preload/jobsBridge.js';
+import { researchWorkflowBridge } from './preload/researchWorkflowBridge.js';
+import { submissionTrackingBridge } from './preload/submissionTrackingBridge.js';
+import { documentBridge } from './preload/documentBridge.js';
+import { officeBridge } from './preload/officeBridge.js';
+import { goalBridge } from './preload/goalBridge.js';
+import { terminalBridge } from './preload/terminalBridge.js';
 import { OutcomeExternalEditorStateRequestSchema, OutcomeExternalEditorStateSchema } from '../engine/runtime/OutcomeRuntimeContract.js';
 import { OutcomeAssistantChatRequestSchema, OutcomeAssistantChatResultSchema, OutcomeExternalEditorCloseRequestSchema, OutcomeExternalEditorOpenRequestSchema, OutcomeExternalEditorOpenResultSchema, OutcomeExternalEditorSyncRequestSchema, OutcomeExternalEditorSyncResultSchema, ScopedConversationMessageRequestSchema, ScopedConversationRequestSchema } from '../engine/runtime/OutcomeRuntimeContract.js';
 import {
-  AgentChatOptionsSchema,
-  decodeChatStreamChunkEvent,
-  decodeAgentExecutionEvent,
-  AgentEventReplayRequestSchema,
-  AgentEventReplayResponseSchema,
-  decodeAgentResponse,
-  decodeGoalLiveEvent,
   decodeHistoryItems,
   decodeStoredHistoryEntry,
   RuntimeIdSchema,
-  type AgentChatOptions,
-  type GoalLiveEvent,
 } from '../engine/runtime/ChatRuntimeContract.js';
-import {
-  decodeGoalChangedEvent,
-  decodeGoalCreateResponse,
-  decodeGoalExecutionResult,
-  decodeGoalListResponse,
-  decodeGoalPlanResponse,
-  decodeGoalSummaryResponse,
-  decodeGoalWorkflowResponse,
-  type GoalChangedEvent,
-} from '../engine/runtime/GoalRuntimeContract.js';
 import {
   createArtifactChartRegenerateRecovery,
   createArtifactListRecovery,
@@ -58,29 +48,6 @@ import {
   decodeSessionUpdateRequest,
   type SessionUpdateRequest,
 } from '../engine/runtime/SessionRuntimeContract.js';
-import {
-  createFileCapabilityFailure,
-  decodeFileCapabilityImportRequest,
-  decodeFileCapabilitySelectionRequest,
-  decodeFileCapabilitySelectionResult,
-  decodeFileCapabilityUseRequest,
-  decodeFileCapabilityUseResult,
-  type FileCapabilityPurpose,
-} from '../engine/runtime/FileCapabilityContract.js';
-import {
-  createLatexCompileRecovery,
-  decodeLatexCompileRequest,
-  decodeLatexCompileResponse,
-} from '../engine/runtime/LatexRuntimeContract.js';
-import {
-  createPaperAttachmentFailure,
-  createPaperDownloadFailure,
-  createPaperMutationFailure,
-  decodePaperAttachmentResult,
-  decodePaperDownloadResult,
-  decodePaperIdRequest,
-  decodePaperMutationResult,
-} from '../engine/runtime/PaperRuntimeContract.js';
 import {
   createApprovalMutationFailure,
   decodeApprovalMutationResult,
@@ -119,12 +86,6 @@ import {
   type ResearchReviewRequest,
   type ResearchSnapshotRequest,
 } from '../engine/runtime/ResearchRuntimeContract.js';
-import {
-  decodeExperimentDelete,
-  decodeExperimentList,
-  decodeExperimentMutationResult,
-  decodeExperimentSave,
-} from '../engine/runtime/ExperimentMetadataContract.js';
 import {
   decodeResearchMediaAttachRequest,
   decodeResearchMediaAttachResult,
@@ -167,12 +128,6 @@ import {
   type ProviderProfileSaveRequest,
   type ProviderProfileSwitchRequest,
 } from '../engine/runtime/ProviderProfileContract.js';
-import {
-  createExportFailure,
-  decodeExportRequest,
-  decodeExportResult,
-  type ExportRequest,
-} from '../engine/runtime/ExportRuntimeContract.js';
 import {
   PersonalizationDeleteRequestSchema,
   PersonalizationForkRequestSchema,
@@ -247,45 +202,6 @@ import {
   type McpActivationIpcRequest,
 } from '../engine/runtime/McpActivationContract.js';
 import {
-  AgentControlRequestSchema,
-  decodeAgentControlResponse,
-  type AgentControlRequest,
-} from '../engine/runtime/LiveSteeringContract.js';
-import {
-  ScenarioRunControlRequestSchema,
-  decodeScenarioRunControlResponse,
-  type ScenarioRunControlRequest,
-} from '../engine/runtime/ScenarioControlContract.js';
-import {
-  TerminalCreateRequestSchema,
-  TerminalDataEventSchema,
-  TerminalExitEventSchema,
-  TerminalKillRequestSchema,
-  TerminalResizeRequestSchema,
-  TerminalWriteRequestSchema,
-  createTerminalFailure,
-  decodeTerminalCreateResult,
-  decodeTerminalGrantResult,
-  decodeTerminalOperationResult,
-  type TerminalCreateRequest,
-  type TerminalDataEvent,
-  type TerminalExitEvent,
-  type TerminalKillRequest,
-  type TerminalResizeRequest,
-  type TerminalWriteRequest,
-} from '../engine/runtime/TerminalRuntimeContract.js';
-import {
-  createLibraryMutationFailure,
-  decodeLibraryCollection,
-  decodeLibraryCollectionList,
-  decodeLibraryDeleteRequest,
-  decodeLibraryMutationResult,
-  decodeLibraryNote,
-  decodeLibraryNoteList,
-  decodeLibraryPaperList,
-  decodeLibraryPaperSaveRequest,
-} from '../engine/runtime/LibraryRuntimeContract.js';
-import {
   createProjectMemoryMutationFailure,
   decodeProjectMemoryMutationResult,
   decodeProjectMemoryWriteRequest,
@@ -330,11 +246,6 @@ import {
   decodeEvalRunResult,
 } from '../engine/runtime/EvalRuntimeContract.js';
 
-type GoalStepStartEvent = Extract<GoalLiveEvent, { type: 'step-start' }>;
-type GoalStepCompleteEvent = Extract<GoalLiveEvent, { type: 'step-complete' }>;
-type GoalStepFailedEvent = Extract<GoalLiveEvent, { type: 'step-failed' }>;
-type GoalProgressEvent = Extract<GoalLiveEvent, { type: 'progress' }>;
-
 
 async function invokeSetupWithProgress<T>(
   channel: 'setup:probe' | 'setup:save',
@@ -368,6 +279,16 @@ const api = {
   ...topicBridge,
   ...freeModelBridge,
   ...systemBridge,
+  ...libraryBridge,
+  ...agentBridge,
+  ...jobsBridge,
+  ...researchWorkflowBridge,
+  ...submissionTrackingBridge,
+  ...backupBridge,
+  ...documentBridge,
+  ...officeBridge,
+  ...goalBridge,
+  ...terminalBridge,
   // ── Acceptance Environment ───────────────────────────────
   acceptanceEnvironment: () => ipcRenderer.invoke('acceptance:environment') as Promise<
     | { enabled: false }
@@ -674,60 +595,6 @@ const api = {
     return decodeEvalRunResult(await ipcRenderer.invoke('eval:runSuite', request));
   },
 
-  // ── LaTeX ────────────────────────────────────────────────
-  compileLatex: async (source: string, bib?: string) => {
-    const request = decodeLatexCompileRequest({ source, bibliography: bib });
-    if (!request.ok) return createLatexCompileRecovery();
-    return decodeLatexCompileResponse(
-      await ipcRenderer.invoke('latex:compile', request.value.source, request.value.bibliography),
-    );
-  },
-
-  useFileCapability: async (request: unknown) => {
-    const decoded = decodeFileCapabilityUseRequest(request);
-    if (!decoded.ok) return createFileCapabilityFailure();
-    return decodeFileCapabilityUseResult(
-      await ipcRenderer.invoke('fileCapability:use', decoded.value),
-    );
-  },
-
-  // ── Shell ────────────────────────────────────────────────
-  selectFileCapability: async (purpose: FileCapabilityPurpose) => {
-    const request = decodeFileCapabilitySelectionRequest({ purpose });
-    if (!request) return createFileCapabilityFailure();
-    return decodeFileCapabilitySelectionResult(
-      await ipcRenderer.invoke('fileCapability:select', request),
-    );
-  },
-  importFileCapability: async (request: unknown) => {
-    const decoded = decodeFileCapabilityImportRequest(request);
-    if (!decoded) return createFileCapabilityFailure();
-    return decodeFileCapabilitySelectionResult(
-      await ipcRenderer.invoke('fileCapability:import', decoded),
-    );
-  },
-  selectExportDestination: async () => decodeFileCapabilitySelectionResult(
-    await ipcRenderer.invoke('export:selectDestination'),
-  ),
-  previewResearchExport: async (rawRequest: ExportRequest) => {
-    const request = decodeExportRequest(rawRequest);
-    if (!request.ok) return createExportFailure();
-    return decodeExportResult(await ipcRenderer.invoke('export:preview', request.value));
-  },
-  executeResearchExport: async (rawRequest: ExportRequest) => {
-    const request = decodeExportRequest(rawRequest);
-    if (!request.ok) return createExportFailure();
-    return decodeExportResult(await ipcRenderer.invoke('export:execute', request.value));
-  },
-
-  openExternal: (rawUrl: string) => {
-    const decision = inspectExternalNavigationUrl(rawUrl);
-    if (!decision.ok) {
-      return Promise.resolve({ success: false, error: 'External link blocked' });
-    }
-    return ipcRenderer.invoke('shell:openExternal', decision.url);
-  },
-
   // ── Settings ───────────────────────────────────────────
   getSettings: async () => decodeSettingsView(await ipcRenderer.invoke('settings:get')),
   markSetupSkipped: async () => ipcRenderer.invoke('settings:markSetupSkipped') as Promise<{ ok: boolean; error?: string }>,
@@ -842,20 +709,6 @@ const api = {
       total?: number;
       warnings?: string[];
     }>,
-  // ── Background job queue (T10): long tasks like PDF full-text extraction ──
-  listJobs: async () => ipcRenderer.invoke('jobs:list') as Promise<Array<{
-    id: string;
-    kind: string;
-    label: string;
-    status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
-    progress: number;
-    progressNote: string;
-    error: string | null;
-    finishedAt: number | null;
-  }>>,
-  cancelJob: async (jobId: string) => ipcRenderer.invoke('jobs:cancel', jobId) as Promise<{ ok: boolean }>,
-  retryJob: async (jobId: string) => ipcRenderer.invoke('jobs:retry', jobId) as Promise<{ ok: boolean }>,
-  extractBacklog: async () => ipcRenderer.invoke('jobs:extractBacklog') as Promise<{ ok: boolean; jobId: string | null }>,
   getResumeBrief: async (projectId: string) => ipcRenderer.invoke('research:resumeBrief', projectId) as Promise<{
     projectId: string;
     generatedAt: number;
@@ -881,200 +734,7 @@ const api = {
   openDirectoryDialog: async () => ipcRenderer.invoke('dialog:openDirectory') as Promise<string | null>,
   setProjectDir: async (projectId: string, projectDir: string) => ipcRenderer.invoke('research:setProjectDir', { projectId, projectDir }) as Promise<{ ok: boolean }>,
 
-  skillStudioGenerate: async (request: { experience: string; source: 'from_scratch' | 'from_experience' | 'from_files' | 'from_session' }) => (
-    ipcRenderer.invoke('skillStudio:generate', request) as Promise<{ ok: boolean; code?: string; message?: string; skill?: Record<string, unknown> }>
-  ),
-  skillStudioTestRun: async (request: { systemPrompt: string; allowedTools: string[]; message: string }) => (
-    ipcRenderer.invoke('skillStudio:testRun', request) as Promise<{ ok: boolean; status?: string; answer?: string; message?: string }>
-  ),
-  officePromptCapabilities: async () => (
-    ipcRenderer.invoke('officePrompt:capabilities') as Promise<Array<{ kind: string; label: string; profileCount: number; defaultProfileId: string | null; aiEnabled: boolean }>>
-  ),
-  officePromptProfiles: async (officeKind: string) => (
-    ipcRenderer.invoke('officePrompt:profiles', { officeKind }) as Promise<Array<{ id: string; officeKind: string; name: string; description: string; builtin: boolean; slots: Record<string, string>; deletedAt: number | null; createdAt: number; updatedAt: number }>>
-  ),
-  officePromptCreateProfile: async (request: { officeKind: string; name: string; description?: string; fromProfileId?: string }) => (
-    ipcRenderer.invoke('officePrompt:createProfile', request) as Promise<{ ok: boolean; code?: string; profile?: Record<string, unknown> }>
-  ),
-  officePromptUpdateProfile: async (request: { profileId: string; name?: string; description?: string }) => (
-    ipcRenderer.invoke('officePrompt:updateProfile', request) as Promise<Record<string, unknown> | null>
-  ),
-  officePromptDeleteProfile: async (profileId: string) => (
-    ipcRenderer.invoke('officePrompt:deleteProfile', { profileId }) as Promise<boolean>
-  ),
-  officePromptDeletedProfiles: async (officeKind: string) =>
-    ipcRenderer.invoke('officePrompt:deletedProfiles', { officeKind }) as Promise<Array<Record<string, unknown>>>,
-  officePromptRestoreProfile: async (profileId: string) => (
-    ipcRenderer.invoke('officePrompt:restoreProfile', { profileId }) as Promise<Record<string, unknown> | null>
-  ),
-  officePromptGetGlobal: async (request: { officeKind: string; outcomeId?: string | null }) =>
-    ipcRenderer.invoke('officePrompt:getGlobal', request) as Promise<string | null>,
-  officePromptSetGlobal: async (request: { profileId: string; content: string }) =>
-    ipcRenderer.invoke('officePrompt:setGlobal', request) as Promise<Record<string, unknown> | null>,
-  officePromptSetSlot: async (request: { profileId: string; slotId: string; content: string }) => (
-    ipcRenderer.invoke('officePrompt:setSlot', request) as Promise<{ ok: boolean; code?: string }>
-  ),
-  officePromptSetDefault: async (request: { officeKind: string; profileId: string }) => (
-    ipcRenderer.invoke('officePrompt:setDefault', request) as Promise<{ ok: boolean; code?: string }>
-  ),
-  officePromptGetBinding: async (outcomeId: string) =>
-    ipcRenderer.invoke('officePrompt:getBinding', { outcomeId }) as Promise<string | null>,
-  officePromptBindOutcome: async (request: { outcomeId: string; profileId: string | null }) => (
-    ipcRenderer.invoke('officePrompt:bindOutcome', request) as Promise<{ ok: boolean }>
-  ),
-  officePromptResolveSlot: async (request: { officeKind: string; outcomeId?: string | null; slotId: string }) => (
-    ipcRenderer.invoke('officePrompt:resolveSlot', request) as Promise<{ content: string | null }>
-  ),
-
-  getDefaultScenario: async (projectId: string) => (
-    ipcRenderer.invoke('projects:getDefaultScenario', { projectId }) as Promise<{ scenarioId: string | null }>
-  ),
-  setDefaultScenario: async (projectId: string, scenarioId: string | null) => (
-    ipcRenderer.invoke('projects:setDefaultScenario', { projectId, scenarioId }) as Promise<{ ok: boolean }>
-  ),
-  detectStage: async (projectId: string) => ipcRenderer.invoke('research:detectStage', projectId) as Promise<{ stage: string; rationale: string[] } | null>,
-  // ── Method library (T4): reusable research workflows ──
-  listMethods: async () => ipcRenderer.invoke('methods:list') as Promise<Array<{
-    id: string;
-    name: string;
-    description: string;
-    params: Record<string, string>;
-    steps: Array<{ template: string }>;
-    confirmEachStep: boolean;
-    sourceProjectId: string | null;
-    createdAt: number;
-    updatedAt: number;
-    runCount: number;
-    lastRunAt: number | null;
-  }>>,
-  createMethod: async (request: { name: string; description?: string; steps: Array<{ template: string }>; confirmEachStep?: boolean; sourceProjectId?: string | null }) =>
-    ipcRenderer.invoke('methods:create', request) as Promise<{ id: string } | null>,
-  updateMethod: async (request: { id: string; name?: string; description?: string; steps?: Array<{ template: string }>; confirmEachStep?: boolean }) =>
-    ipcRenderer.invoke('methods:update', request) as Promise<{ id: string } | null>,
-  deleteMethod: async (methodId: string) => ipcRenderer.invoke('methods:delete', methodId) as Promise<boolean>,
-  renderMethod: async (methodId: string, params: Record<string, string>) =>
-    ipcRenderer.invoke('methods:render', { id: methodId, params }) as Promise<Array<{ instruction: string }> | null>,
-  recordMethodRun: async (request: { id: string; projectId: string | null; params: Record<string, string>; outcome: 'applied' | 'cancelled' }) =>
-    ipcRenderer.invoke('methods:recordRun', request) as Promise<void>,
-  // ── Submission tracking (T20) ──
-  listSubmissions: async (projectId?: string) => ipcRenderer.invoke('submissions:list', projectId ?? null) as Promise<Array<{
-    id: string;
-    projectId: string | null;
-    artifactId: string | null;
-    title: string;
-    journal: string;
-    status: 'submitted' | 'under_review' | 'revise' | 'accepted' | 'published' | 'rejected';
-    submittedAt: number;
-    updatedAt: number;
-    comments: Array<{ id: string; text: string; resolved: boolean; revisionNote: string; createdAt: number }>;
-    notes: string;
-  }>>,
-
-  previewSubmissionMail: async (request: {
-    accountId: string; to: string; cc?: string; bcc?: string; subject: string; bodyText: string;
-    attachments?: Array<{ filename: string; path?: string; contentBase64?: string }>;
-  }) =>
-    ipcRenderer.invoke('submission:mail:preview', request) as Promise<{ ok: true; preview: {
-      accountId: string; accountLabel: string; from: string; to: string; cc: string; bcc: string;
-      subject: string; bodyText: string;
-      attachments: Array<{ filename: string; source: 'content' | 'path' | 'empty' }>;
-      smtp: { host: string; port: number; secure: boolean } | null;
-    } } | { ok: false; code: string; message: string } | null>,
-  sendSubmissionMail: async (request: {
-    projectId: string; caseId?: string; accountId: string; operationId: string;
-    to: string; cc?: string; bcc?: string; subject: string; bodyText: string;
-    attachments?: Array<{ filename: string; path?: string; contentBase64?: string }>;
-    confirmed: true;
-  }) =>
-    ipcRenderer.invoke('submission:mail:send', request) as Promise<{ ok: true; alreadySent: boolean; record: import('../engine/submission/SubmissionCorrespondenceContract.js').SubmissionCorrespondence; messageId?: string } | { ok: false; code: string; message: string } | null>,
-
-  onSubmissionMailChanged: (callback: (notification: { at: number; items: Array<{ projectId: string; records: Array<{ id: string; subject: string; classification: string; caseId: string | null }> }> }) => void) => {
-    const listener = (_event: unknown, notification: Parameters<typeof callback>[0]) => callback(notification);
-    ipcRenderer.on('submission:mail:changed', listener);
-    return () => { ipcRenderer.removeListener('submission:mail:changed', listener); };
-  },
-
-  listWatchSubscriptions: async () => ipcRenderer.invoke('watch:list') as Promise<Array<{
-    id: string;
-    query: string;
-    sources: Array<'ncpssd' | 'openalex'>;
-    coreOnly: boolean;
-    createdAt: number;
-    lastCheckedAt: number | null;
-    lastNewCount: number;
-  }>>,
-  addWatchSubscription: async (request: { query: string; sources?: Array<'ncpssd' | 'openalex'>; coreOnly?: boolean }) =>
-    ipcRenderer.invoke('watch:add', request) as Promise<{ id: string } | null>,
-  removeWatchSubscription: async (id: string) => ipcRenderer.invoke('watch:remove', id) as Promise<boolean>,
-  checkWatchNow: async (id: string) => ipcRenderer.invoke('watch:checkNow', id) as Promise<{ ok: boolean; newCount: number; error?: string }>,
-  // ── PDF bulk import (T26) ──
-  importPdfFiles: async (files: string[]) => ipcRenderer.invoke('import:pdfFiles', files) as Promise<{ ok: boolean; imported: number; enriched: number; error?: string }>,
-  openPdfDialog: async () => ipcRenderer.invoke('dialog:openPdf') as Promise<string[]>,
-  // ── Research agenda (T24) ──
-  getAgendaState: async () => ipcRenderer.invoke('agenda:getState') as Promise<{
-    queue: Array<{ projectId: string; title: string; runsCompleted: number; maxRuns: number; enqueuedAt: number; autonomous?: boolean; goalPrompt?: string }>;
-    autoContinue: boolean;
-    cooldownMs: number;
-    lastAdvanceAt: number | null;
-  }>,
-  enqueueAgenda: async (request: { projectId: string; title: string; maxRuns?: number }) =>
-    ipcRenderer.invoke('agenda:enqueue', request) as Promise<{ projectId: string } | { error: string }>,
-  removeAgenda: async (projectId: string) => ipcRenderer.invoke('agenda:remove', projectId) as Promise<boolean>,
-  moveAgenda: async (projectId: string, direction: 'up' | 'down') => ipcRenderer.invoke('agenda:move', { projectId, direction }) as Promise<boolean>,
-  setAgendaAutoContinue: async (enabled: boolean) => ipcRenderer.invoke('agenda:setAutoContinue', enabled) as Promise<{ autoContinue: boolean }>,
-  reportAgendaCompletion: async (request: { projectId: string; success: boolean }) =>
-    ipcRenderer.invoke('agenda:reportCompletion', request) as Promise<{ action: string; projectId: string | null; waitMs?: number; note: string }>,
-  decideAgendaNext: async () => ipcRenderer.invoke('agenda:decideNext') as Promise<{ action: string; projectId: string | null; waitMs?: number; note: string }>,
-  enqueueAgendaBatch: async (request: { entries: Array<{ key: string; title: string; goalPrompt: string }>; maxRuns?: number }) =>
-    ipcRenderer.invoke('agenda:enqueueBatch', request) as Promise<{ added: number }>,
-  // ── Autonomous profile & batch topics (自主改造 A/B) ──
-  getAutonomousProfile: async () => ipcRenderer.invoke('autonomousProfile:get') as Promise<{
-    version: 1;
-    defaultPrompt: string;
-    defaultBatchSize: number;
-    injectUserProfile: boolean;
-    constraints: {
-      fieldPreference: string;
-      methodPreference: 'any' | 'quantitative' | 'qualitative' | 'mixed';
-      outputForm: 'any' | 'journal_article' | 'report';
-      journalTier: 'any' | 'core' | 'general';
-      language: 'zh' | 'en';
-      lengthTarget: string;
-      customRules: string[];
-    };
-  }>,
-  saveAutonomousProfile: async (request: Record<string, unknown>) => ipcRenderer.invoke('autonomousProfile:save', request) as Promise<{ version: 1 }>,
-  getAutonomousHardRules: async () => ipcRenderer.invoke('autonomousProfile:hardRules') as Promise<string[]>,
-  generateAutonomousBatch: async (request: { prompt: string; count: number; method?: 'any' | 'quantitative' | 'qualitative' | 'mixed'; output?: 'any' | 'journal_article' | 'report' }) =>
-    ipcRenderer.invoke('autonomous:generateBatch', request) as Promise<{
-      ok: boolean; error?: string; added?: number; raw?: string;
-      topics?: Array<{ title: string; researchQuestion: string; rationale: string }>;
-    }>,
-  createProjectForAutonomous: async (request: { title: string; researchQuestion?: string }) =>
-    ipcRenderer.invoke('autonomous:createProjectFor', request) as Promise<{ ok: boolean; projectId: string | null }>,
-  // ── Concept graph (T28) ──
-  getConceptGraph: async (projectId: string) => ipcRenderer.invoke('concept:getGraph', projectId) as Promise<{
-    nodes: Array<{ id: string; kind: 'source' | 'code' | 'claim'; label: string }>;
-    edges: Array<{ from: string; to: string; kind: 'supports' | 'coded' }>;
-  } | null>,
-  // ── Local rolling backups (task 1 §八：受控恢复，完整重启语义) ──
-  listBackups: async () => ipcRenderer.invoke('backup:list') as Promise<{ backups: Array<{ path: string; name: string }> }>,
-  restoreBackup: async (backupPath: string) => ipcRenderer.invoke('backup:restore', { backupPath }) as Promise<{ ok: boolean; error?: string; rollback?: string }>,
-  // ── WebDAV cloud backup (T33) ──
-  getCloudSyncConfig: async () => ipcRenderer.invoke('cloudSync:getConfig') as Promise<{ configured: boolean; url?: string; username?: string }>,
-  saveCloudSyncConfig: async (request: { url: string; username: string; password: string }) =>
-    ipcRenderer.invoke('cloudSync:saveConfig', request) as Promise<{ ok: boolean }>,
-  clearCloudSyncConfig: async () => ipcRenderer.invoke('cloudSync:clearConfig') as Promise<{ ok: boolean }>,
-  testCloudSync: async () => ipcRenderer.invoke('cloudSync:test') as Promise<{ ok: boolean; error?: string }>,
-  backupToCloud: async () => ipcRenderer.invoke('cloudSync:backup') as Promise<{ ok: boolean; objectName?: string; error?: string }>,
-  listCloudBackups: async () => ipcRenderer.invoke('cloudSync:listBackups') as Promise<string[]>,
-  stageCloudRestore: async (objectName: string) => ipcRenderer.invoke('cloudSync:stageRestore', objectName) as Promise<{ ok: boolean; error?: string }>,
   importIssnList: async () => ipcRenderer.invoke('settings:importIssnList') as Promise<{ ok: boolean; added: number; totalCandidates?: number; error?: string }>,
-  onJobsChanged: (callback: (jobs: Array<{ id: string; kind: string; label: string; status: string; progress: number; progressNote: string; error: string | null; finishedAt: number | null }>) => void): (() => void) => {
-    const handler = (_event: unknown, jobs: Parameters<typeof callback>[0]) => callback(jobs);
-    ipcRenderer.on('jobs:changed', handler as never);
-    return () => { ipcRenderer.removeListener('jobs:changed', handler as never); };
-  },
   browserState: async () => ipcRenderer.invoke('browser:state') as Promise<{
     ok: boolean;
     state?: { url: string; title: string; loading: boolean; canGoBack: boolean; canGoForward: boolean };
@@ -1118,7 +778,6 @@ const api = {
   searchPapersFullText: async (query: string, limit?: number) => ipcRenderer.invoke('papers:searchFullText', query, limit) as Promise<{ results: Array<{ id: string; title: string; snippet: string }> }>,
   aiExplainPaper: async (request: { passage: string; paperTitle?: string; action?: 'explain' | 'translate' | 'summarize' }) => ipcRenderer.invoke('papers:aiExplain', request) as Promise<{ ok: boolean; text?: string; error?: string }>,
   aiSynthesis: async (request: { mode?: 'synthesis' | 'compare' | 'report'; papers: Array<{ title: string; authors: string[]; year: number; venue: string; abstract: string }> }) => ipcRenderer.invoke('papers:aiSynthesis', request) as Promise<{ ok: boolean; text?: string; error?: string }>,
-  aiPolishLatex: async (request: { text: string; action?: 'polish' | 'rewrite' | 'expand' }) => ipcRenderer.invoke('latex:aiPolish', request) as Promise<{ ok: boolean; text?: string; error?: string }>,
 
   providerProfilesList: async (rawRequest: ProviderProfileListRequest) => {
     const request = decodeProviderProfileListRequest(rawRequest);
@@ -1165,168 +824,6 @@ const api = {
     const request = decodeSettingsUpdateRequest(config);
     if (!request) return createSettingsMutationFailure('secure_setup_required');
     return decodeSettingsMutationResult(await ipcRenderer.invoke('settings:set', request));
-  },
-
-  // ── Agent ──────────────────────────────────────────────
-  agentStatus: () => ipcRenderer.invoke('agent:status'),
-  agentChat: async (sessionId: string, messages: unknown[], skillId: string | undefined, rawOptions: AgentChatOptions) => {
-    const options = AgentChatOptionsSchema.safeParse(rawOptions);
-    if (!options.success) return decodeAgentResponse(null);
-    return decodeAgentResponse(await ipcRenderer.invoke('agent:chat', sessionId, messages, skillId, options.data));
-  },
-  /**
-   * O15: 多模型同会话对比——用指定 provider profile 跑一个临时对话回合。
-   * 主进程用 ProviderProfileStore.configFor(profileId) 构建临时 provider /
-   * AgentLoop，响应契约与 agentChat 完全一致（AgentResponse）；区别是该路径
-   * 不在主进程落库，对比消息的持久化由渲染端统一负责，避免 N 个 profile
-   * 各写一遍用户消息。
-   */
-  agentChatWithProfile: async (profileId: string, sessionId: string, messages: unknown[], skillId: string | undefined, rawOptions: AgentChatOptions) => {
-    const options = AgentChatOptionsSchema.safeParse(rawOptions);
-    if (!options.success) return decodeAgentResponse(null);
-    return decodeAgentResponse(await ipcRenderer.invoke('agent:chatWithProfile', profileId, sessionId, messages, skillId, options.data));
-  },
-  agentControl: async (rawRequest: AgentControlRequest) => {
-    const request = AgentControlRequestSchema.safeParse(rawRequest);
-    if (!request.success) return decodeAgentControlResponse(null);
-    return decodeAgentControlResponse(
-      await ipcRenderer.invoke('agent:control', request.data),
-      request.data.operationId,
-    );
-  },
-  /**
-   * Public Scenario run control: pause persists a durable paused checkpoint
-   * (the next turn resumes it); cancel moves the run to terminal cancelled.
-   */
-  scenarioControl: async (rawRequest: ScenarioRunControlRequest) => {
-    const request = ScenarioRunControlRequestSchema.safeParse(rawRequest);
-    if (!request.success) return decodeScenarioRunControlResponse(null);
-    return decodeScenarioRunControlResponse(
-      await ipcRenderer.invoke('scenario:control', request.data),
-      request.data.operationId,
-    );
-  },
-  /**
-   * 步骤卡控制（2026-09-01 刘总方案二期）：对运行的某一步「指导重做/跳过」。
-   * 落库成功后前端补发「继续」即可触发断点恢复。
-   */
-  scenarioStepControl: async (request: { sessionId: string; stepId: string; action: 'redo' | 'skip'; guidance?: string }) => (
-    ipcRenderer.invoke('scenario:stepControl', request) as Promise<
-      { ok: true; runId: string; message: string } | { ok: false; code: string; message: string }
-    >
-  ),
-  /**
-   * Metis Office 关闭自动同步事件（2026-09-01 刘总要求）：编辑器进程退出时
-   * 主进程自动同步（有改动建新版本/无改动安静收尾）并推送结果。
-   * 返回取消订阅函数。
-   */
-  onOutcomeExternalEditorAutoSync: (callback: (payload: {
-    projectId: string; outcomeId: string; ok: boolean; changed: boolean;
-    version?: number; title?: string; code?: string; message?: string;
-  }) => void) => {
-    const listener = (_event: unknown, payload: Parameters<typeof callback>[0]) => callback(payload);
-    ipcRenderer.on('outcomes:external-editor:auto-sync', listener);
-    return () => { ipcRenderer.removeListener('outcomes:external-editor:auto-sync', listener); };
-  },
-
-  // ── Papers ─────────────────────────────────────────────
-  listPapers: async () => decodeLibraryPaperList(await ipcRenderer.invoke('paper:list')),
-  savePaper: async (paper: unknown) => {
-    const request = decodeLibraryPaperSaveRequest(paper);
-    if (!request) return createLibraryMutationFailure();
-    return decodeLibraryMutationResult(await ipcRenderer.invoke('paper:save', request));
-  },
-  deletePaper: async (id: string) => {
-    const request = decodeLibraryDeleteRequest({ id });
-    if (!request) return createLibraryMutationFailure();
-    return decodeLibraryMutationResult(await ipcRenderer.invoke('paper:delete', request.id));
-  },
-  attachPaperPdf: async (paperId: string) => {
-    const request = decodePaperIdRequest({ paperId });
-    if (!request.ok) return createPaperAttachmentFailure();
-    return decodePaperAttachmentResult(await ipcRenderer.invoke('paper:attachPdf', request.value));
-  },
-  detachPaperPdf: async (paperId: string) => {
-    const request = decodePaperIdRequest({ paperId });
-    if (!request.ok) return createPaperMutationFailure();
-    return decodePaperMutationResult(await ipcRenderer.invoke('paper:detachPdf', request.value));
-  },
-  downloadPaperPdf: async (paperId: string) => {
-    const request = decodePaperIdRequest({ paperId });
-    if (!request.ok) return createPaperDownloadFailure();
-    return decodePaperDownloadResult(await ipcRenderer.invoke('paper:downloadPdf', request.value));
-  },
-  reconcilePaper: async (request: { paperId: string; doi?: string; title?: string }) =>
-    ipcRenderer.invoke('paper:reconcile', request) as Promise<{
-      ok: boolean;
-      paper?: { title: string; authors: string[]; year: number; venue: string; doi?: string; abstract?: string };
-      error?: string;
-    }>,
-
-  // ── Collections ────────────────────────────────────────
-  listCollections: async () => decodeLibraryCollectionList(await ipcRenderer.invoke('collection:list')),
-  saveCollection: async (collection: unknown) => {
-    const request = decodeLibraryCollection(collection);
-    if (!request) return createLibraryMutationFailure();
-    return decodeLibraryMutationResult(await ipcRenderer.invoke('collection:save', request));
-  },
-  deleteCollection: async (id: string) => {
-    const request = decodeLibraryDeleteRequest({ id });
-    if (!request) return createLibraryMutationFailure();
-    return decodeLibraryMutationResult(await ipcRenderer.invoke('collection:delete', request.id));
-  },
-
-  // ── Notes ──────────────────────────────────────────────
-  listNotes: async () => decodeLibraryNoteList(await ipcRenderer.invoke('note:list')),
-  saveNote: async (note: unknown) => {
-    const request = decodeLibraryNote(note);
-    if (!request) return createLibraryMutationFailure();
-    return decodeLibraryMutationResult(await ipcRenderer.invoke('note:save', request));
-  },
-  deleteNote: async (id: string) => {
-    const request = decodeLibraryDeleteRequest({ id });
-    if (!request) return createLibraryMutationFailure();
-    return decodeLibraryMutationResult(await ipcRenderer.invoke('note:delete', request.id));
-  },
-
-  saveExperiment: async (input: unknown) => {
-    const request = decodeExperimentSave(input);
-    if (!request) return decodeExperimentMutationResult({
-      success: false,
-      code: 'experiment_metadata_invalid',
-    });
-    return decodeExperimentMutationResult(await ipcRenderer.invoke('experiment:save', request));
-  },
-  deleteExperiment: async (id: string) => {
-    const requestId = decodeExperimentDelete({ id });
-    if (!requestId) return decodeExperimentMutationResult({
-      success: false,
-      code: 'experiment_metadata_invalid',
-    });
-    return decodeExperimentMutationResult(
-      await ipcRenderer.invoke('experiment:delete', { id: requestId }),
-    );
-  },
-
-  loadAllData: async () => {
-    const raw = await ipcRenderer.invoke('data:loadAll') as unknown;
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-      return { papers: [], notes: [], experiments: [], collections: [] };
-    }
-    const data = raw as Record<string, unknown>;
-    return {
-      papers: Array.isArray(data.papers)
-        ? data.papers.flatMap((item) => {
-            const parsed = decodeLibraryPaperSaveRequest(item);
-            return parsed && !(parsed as Record<string, unknown>).pdfPath && !(parsed as Record<string, unknown>).owner
-              ? [parsed]
-              : [];
-          })
-        : [],
-      notes: Array.isArray(data.notes) ? data.notes : [],
-      experiments: decodeExperimentList(data.experiments),
-      collections: Array.isArray(data.collections) ? data.collections : [],
-    };
   },
 
   setProjectMemory: async (content: string) => {
@@ -1425,123 +922,6 @@ const api = {
     ipcRenderer.invoke('fundingTemplate:draftOutline', request) as Promise<{
       ok: boolean; code?: string; message?: string; markdown?: string;
     }>,
-
-  createGoal: async (description: string, context?: string, projectId?: string) =>
-    decodeGoalCreateResponse(await ipcRenderer.invoke('goal:create', description, context, projectId)),
-  getGoal: async (goalId: string) =>
-    decodeGoalSummaryResponse(await ipcRenderer.invoke('goal:get', goalId)),
-  // O17: 读取 goal 的工作流定义 + 最新 run 步骤状态（WorkflowGraph 只读可视化）。
-  getGoalWorkflow: async (goalId: string) =>
-    decodeGoalWorkflowResponse(await ipcRenderer.invoke('goal:getWorkflow', goalId)),
-  listGoals: async () => decodeGoalListResponse(await ipcRenderer.invoke('goal:list')),
-  generatePlan: async (goalId: string) =>
-    decodeGoalPlanResponse(await ipcRenderer.invoke('goal:generatePlan', goalId)),
-  refinePlan: async (goalId: string, feedback: string) =>
-    decodeGoalPlanResponse(await ipcRenderer.invoke('goal:refinePlan', goalId, feedback)),
-  updatePlan: (goalId: string, workflow: Record<string, unknown>) => ipcRenderer.invoke('goal:updatePlan', goalId, workflow),
-  executeGoal: async (goalId: string) =>
-    decodeGoalExecutionResult(await ipcRenderer.invoke('goal:execute', goalId)),
-  pauseGoal: (goalId: string) => ipcRenderer.invoke('goal:pause', goalId),
-  resumeGoal: async (goalId: string, fromStepId?: string) =>
-    decodeGoalExecutionResult(await ipcRenderer.invoke('goal:resume', goalId, fromStepId)),
-  resolveStepDecision: async (goalId: string, action: 'retry' | 'skip' | 'stop') =>
-    ipcRenderer.invoke('goal:resolveStepDecision', { goalId, action }) as Promise<{ success: boolean; code?: string }>,
-  cancelGoal: (goalId: string) => ipcRenderer.invoke('goal:cancel', goalId),
-  getGoalProgress: (goalId: string) => ipcRenderer.invoke('goal:getProgress', goalId),
-  archiveGoal: (goalId: string) => ipcRenderer.invoke('goal:archive', goalId),
-  listArchives: () => ipcRenderer.invoke('goal:listArchives'),
-  updateGoalStatus: async (request: { goalId: string; status: string }) => ipcRenderer.invoke('goal:updateStatus', request) as Promise<{ ok: boolean; error?: string }>,
-  updateGoalPriority: async (request: { goalId: string; priority: string }) => ipcRenderer.invoke('goal:updatePriority', request) as Promise<{ ok: boolean; error?: string }>,
-  deleteGoal: async (goalId: string) => ipcRenderer.invoke('goal:delete', goalId) as Promise<{ ok: boolean; error?: string }>,
-
-  onGoalStepStart: (callback: (data: GoalStepStartEvent) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: unknown) => {
-      const decoded = decodeGoalLiveEvent(data);
-      if (decoded.ok && decoded.value.type === 'step-start') callback(decoded.value);
-    };
-    ipcRenderer.on('goal:step:start', handler);
-    return () => { ipcRenderer.removeListener('goal:step:start', handler); };
-  },
-  onGoalStepComplete: (callback: (data: GoalStepCompleteEvent) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: unknown) => {
-      const decoded = decodeGoalLiveEvent(data);
-      if (decoded.ok && decoded.value.type === 'step-complete') callback(decoded.value);
-    };
-    ipcRenderer.on('goal:step:complete', handler);
-    return () => { ipcRenderer.removeListener('goal:step:complete', handler); };
-  },
-  onGoalStepFailed: (callback: (data: GoalStepFailedEvent) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: unknown) => {
-      const decoded = decodeGoalLiveEvent(data);
-      if (decoded.ok && decoded.value.type === 'step-failed') callback(decoded.value);
-    };
-    ipcRenderer.on('goal:step:failed', handler);
-    return () => { ipcRenderer.removeListener('goal:step:failed', handler); };
-  },
-  onGoalProgress: (callback: (data: GoalProgressEvent) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: unknown) => {
-      const decoded = decodeGoalLiveEvent(data);
-      if (decoded.ok && decoded.value.type === 'progress') callback(decoded.value);
-    };
-    ipcRenderer.on('goal:progress', handler);
-    return () => { ipcRenderer.removeListener('goal:progress', handler); };
-  },
-  onGoalChanged: (callback: (data: GoalChangedEvent) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: unknown) => {
-      const decoded = decodeGoalChangedEvent(data);
-      if (decoded) callback(decoded);
-    };
-    ipcRenderer.on('goal:changed', handler);
-    return () => { ipcRenderer.removeListener('goal:changed', handler); };
-  },
-
-
-  // ── Chat streaming ───────────────────────────────────────
-  // O15: 对比回合的流式分片额外携带 profileId，渲染端据此把 token 路由到
-  // 对应模型的气泡；普通回合不带该字段，行为与之前完全一致。
-  onChatStreamChunk: (callback: (data: import('../engine/runtime/ChatRuntimeContract.js').ChatStreamChunkEvent) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: unknown) => {
-      const decoded = decodeChatStreamChunkEvent(data);
-      if (decoded.ok) callback(decoded.value);
-    };
-    ipcRenderer.on('chat:stream-chunk', handler);
-    return () => { ipcRenderer.removeListener('chat:stream-chunk', handler); };
-  },
-  onChatToolEvent: (callback: (data: { sessionId: string; turnId?: string; tool: string | null; toolCallId?: string | null; state: 'done' | 'failed' | 'running'; summary?: string | null }) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: unknown) => {
-      // 轻量契约校验：形状不对的事件直接丢弃，不进渲染状态。
-      if (typeof data !== 'object' || data === null) return;
-      const row = data as { sessionId?: unknown; turnId?: unknown; tool?: unknown; toolCallId?: unknown; state?: unknown; summary?: unknown };
-      if (typeof row.sessionId !== 'string' || row.sessionId.length === 0) return;
-      if (row.state !== 'running' && row.state !== 'done' && row.state !== 'failed') return;
-      callback({
-        sessionId: row.sessionId,
-        ...(typeof row.turnId === 'string' ? { turnId: row.turnId } : {}),
-        tool: typeof row.tool === 'string' ? row.tool : null,
-        ...(typeof row.toolCallId === 'string' ? { toolCallId: row.toolCallId } : {}),
-        state: row.state,
-        summary: typeof row.summary === 'string' ? row.summary : null,
-      });
-    };
-    ipcRenderer.on('chat:tool-event', handler);
-    return () => { ipcRenderer.removeListener('chat:tool-event', handler); };
-  },
-  onAgentExecutionEvent: (callback: (payload: import('../engine/runtime/ChatRuntimeContract.js').AgentExecutionEvent) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, raw: unknown) => {
-      const decoded = decodeAgentExecutionEvent(raw);
-      if (decoded.ok) callback(decoded.value);
-    };
-    ipcRenderer.on('agent:execution-event', handler);
-    return () => { ipcRenderer.removeListener('agent:execution-event', handler); };
-  },
-  replayAgentEvents: async (rawRequest: import('../engine/runtime/ChatRuntimeContract.js').AgentEventReplayRequest) => {
-    const request = AgentEventReplayRequestSchema.safeParse(rawRequest);
-    if (!request.success) return null;
-    const response = AgentEventReplayResponseSchema.safeParse(
-      await ipcRenderer.invoke('agent:execution-replay', request.data),
-    );
-    return response.success ? response.data : null;
-  },
 
   // ── MCP Servers ────────────────────────────────────────
   listMCPServers: () => ipcRenderer.invoke('mcp:list'),
@@ -1975,48 +1355,6 @@ const api = {
     const request = decodeApprovalRuleToggleRequest({ ruleId, enabled });
     if (!request) return createApprovalMutationFailure();
     return decodeApprovalMutationResult(await ipcRenderer.invoke('hitl:rules:toggle', request));
-  },
-
-  // ── Terminal ───────────────────────────────────────────
-  requestTerminalGrant: async () => decodeTerminalGrantResult(
-    await ipcRenderer.invoke('terminal:requestGrant'),
-  ),
-  createTerminal: async (rawRequest: TerminalCreateRequest) => {
-    const request = TerminalCreateRequestSchema.safeParse(rawRequest);
-    if (!request.success) return createTerminalFailure();
-    return decodeTerminalCreateResult(await ipcRenderer.invoke('terminal:create', request.data));
-  },
-  writeTerminal: async (rawRequest: TerminalWriteRequest) => {
-    const request = TerminalWriteRequestSchema.safeParse(rawRequest);
-    if (!request.success) return createTerminalFailure();
-    return decodeTerminalOperationResult(await ipcRenderer.invoke('terminal:write', request.data));
-  },
-  resizeTerminal: async (rawRequest: TerminalResizeRequest) => {
-    const request = TerminalResizeRequestSchema.safeParse(rawRequest);
-    if (!request.success) return createTerminalFailure();
-    return decodeTerminalOperationResult(await ipcRenderer.invoke('terminal:resize', request.data));
-  },
-  killTerminal: async (rawRequest: TerminalKillRequest) => {
-    const request = TerminalKillRequestSchema.safeParse(rawRequest);
-    if (!request.success) return createTerminalFailure();
-    return decodeTerminalOperationResult(await ipcRenderer.invoke('terminal:kill', request.data));
-  },
-
-  onTerminalData: (callback: (data: TerminalDataEvent) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, raw: unknown) => {
-      const data = TerminalDataEventSchema.safeParse(raw);
-      if (data.success) callback(data.data);
-    };
-    ipcRenderer.on('terminal:data', handler);
-    return () => { ipcRenderer.removeListener('terminal:data', handler); };
-  },
-  onTerminalExit: (callback: (data: TerminalExitEvent) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, raw: unknown) => {
-      const data = TerminalExitEventSchema.safeParse(raw);
-      if (data.success) callback(data.data);
-    };
-    ipcRenderer.on('terminal:exit', handler);
-    return () => { ipcRenderer.removeListener('terminal:exit', handler); };
   },
 
 };

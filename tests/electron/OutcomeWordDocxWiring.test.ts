@@ -9,6 +9,11 @@ const preloadSource = [
   ...readdirSync(path.resolve(process.cwd(), 'electron/preload')).filter((f) => f.endsWith('.ts')).map((f) => 'electron/preload/' + f),
 ].map((f) => readFileSync(path.resolve(process.cwd(), f), 'utf8')).join('\n');
 const pageSource = readFileSync(path.resolve(process.cwd(), 'src/pages/OutcomesPage.tsx'), 'utf8');
+// D 批拆分（2026-09-15）：WordEditor 家族迁出到 src/pages/outcomes/WordEditor.tsx。
+const wordEditorSource = readFileSync(path.resolve(process.cwd(), 'src/pages/outcomes/WordEditor.tsx'), 'utf8');
+// readOutcomeMedia 等 managed-image 边界标记分散在编辑器家族各文件中，聚合后断言。
+const outcomesEditorSources = ['WordEditor.tsx', 'MediaEditor.tsx', 'PptStudioEditor.tsx']
+  .map((f) => readFileSync(path.resolve(process.cwd(), 'src/pages/outcomes', f), 'utf8')).join('\n');
 const contractSource = readFileSync(path.resolve(process.cwd(), 'engine/runtime/OutcomeRuntimeContract.ts'), 'utf8');
 
 function handlerBlock(source: string, channel: string): string {
@@ -50,10 +55,10 @@ describe('Outcomes DOCX managed-image boundary wiring', () => {
     expect(importPageFlow).toContain('window.metis.createOutcome');
     expect(importPageFlow).toContain('importToken: imported.importToken');
 
-    const wordEditor = functionBlock(pageSource, 'function WordEditor(', 'function LocalWordAssistantPopover(');
+    const wordEditor = functionBlock(wordEditorSource, 'function WordEditor(', 'function LocalWordAssistantPopover(');
     expect(wordEditor).toContain('block.kind === \'image\'');
-    expect(pageSource).toContain('readOutcomeMedia');
-    expect(pageSource).toContain('docx-import-image-');
+    expect(outcomesEditorSources).toContain('readOutcomeMedia');
+    expect(wordEditor).toContain('docx-import-image-');
 
     expect(contractSource).toContain('OutcomeWordDocxImportCommitRequestSchema');
     expect(contractSource).toContain('OutcomeWordDocxImportPreviewSchema');

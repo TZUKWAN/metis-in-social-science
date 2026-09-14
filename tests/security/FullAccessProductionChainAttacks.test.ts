@@ -243,7 +243,9 @@ describe('Full Access production chain attacks', () => {
     const root = process.cwd();
     const app = fs.readFileSync(path.join(root, 'src/App.tsx'), 'utf8');
     const chatPage = fs.readFileSync(path.join(root, 'src/pages/ChatPage.tsx'), 'utf8');
-    const preload = fs.readFileSync(path.join(root, 'electron/preload.ts'), 'utf8');
+    // A 批拆分（2026-09-15）：preload 桥迁出到 electron/preload/**，聚合扫描保持等价强度。
+    const preload = ['electron/preload.ts', ...fs.readdirSync(path.join(root, 'electron/preload')).filter((f) => f.endsWith('.ts')).map((f) => `electron/preload/${f}`)]
+      .map((f) => fs.readFileSync(path.join(root, f), 'utf8')).join('\n');
     const main = fs.readFileSync(path.join(root, 'electron/main.ts'), 'utf8');
     const chatTurn = fs.readFileSync(path.join(root, 'electron/ChatTurnService.ts'), 'utf8');
     const scenarioWorkflow = fs.readFileSync(path.join(root, 'electron/ScenarioWorkflowService.ts'), 'utf8');

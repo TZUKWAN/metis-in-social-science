@@ -84,6 +84,14 @@ export interface DomainIpcContext {
   // ── WeChat bot domain ─────────────────────────────────────
   ensureWeChatBot(): WeChatBotService | null;
 
+  // ── Research browser domain ─────────────────────────────
+  /** Live browser service instance, or null before first use. */
+  browserService(): import('../BrowserService.js').BrowserService | null;
+  /** Lazily constructs the embedded research browser service. */
+  ensureBrowserService(): import('../BrowserService.js').BrowserService | null;
+  /** Background job queue (PDF extraction etc.); present after data dir init. */
+  jobQueueService(): import('../JobQueueService.js').JobQueueService | null;
+
   // ── Collab domain ─────────────────────────────────────────
   browserService(): BrowserService | null;
   collabService(): CollabService | null;

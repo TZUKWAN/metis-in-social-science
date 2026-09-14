@@ -26,6 +26,7 @@
     "rebuild:node": "npm rebuild better-sqlite3",
     "rebuild:electron": "electron-rebuild -f -o better-sqlite3",
     "start": "electron .",
+    "start:remote": "node scripts/start-remote-bridge.mjs",
     "acceptance:layout": "python scripts/run-electron-layout-acceptance.py --output-dir logs/layout-acceptance-current",
     "acceptance:commercial": "node scripts/generate-commercial-acceptance.mjs",
     "acceptance:goal-recovery": "electron scripts/electron-goal-recovery-e2e.cjs",
