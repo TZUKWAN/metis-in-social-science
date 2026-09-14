@@ -123,7 +123,7 @@ import { JournalProfileRepository } from './JournalProfileRepository.js';
 import { SubmissionGapService } from './SubmissionGapService.js';
 import { SubmissionOptimizationService } from './SubmissionOptimizationService.js';
 
-import { PortalFieldActionSchema } from '../engine/submission/SubmissionPortalContract.js';
+
 
 import { SubmissionPackageRepository } from './SubmissionPackageRepository.js';
 import { SubmissionReviewRepository } from './SubmissionReviewRepository.js';
@@ -220,6 +220,7 @@ import { registerSubmissionCaseIpc } from './ipc/registerSubmissionCaseIpc.js';
 import { registerSubmissionJournalIpc } from './ipc/registerSubmissionJournalIpc.js';
 import { registerSubmissionPackageIpc } from './ipc/registerSubmissionPackageIpc.js';
 import { registerSubmissionCommsIpc } from './ipc/registerSubmissionCommsIpc.js';
+import { registerSubmissionPortalIpc } from './ipc/registerSubmissionPortalIpc.js';
 import { RemoteDevBridge, isRemoteBridgeSender, remoteBroadcast } from './RemoteBridge/remoteDevBridge.js';
 import { registerExperimentIpc } from './ipc/registerExperimentIpc.js';
 import { registerWeChatIpc } from './ipc/registerWeChatIpc.js';
@@ -893,6 +894,7 @@ const domainIpcContext: DomainIpcContext = {
   submissionMailboxStore: () => submissionMailboxStore,
   submissionCorrespondenceRepository: () => submissionCorrespondenceRepository,
   submissionDeadlineSync: () => submissionDeadlineSync,
+  submissionPortalService: () => submissionPortalService,
   submissionOwnedPackage,
   journalProfileRepository: () => journalProfileRepository,
   literatureSearchService: () => literatureSearchService,
@@ -3781,53 +3783,6 @@ function setupIPC(): void {
   // 从已确认关联的 Decision/Revision 邮件一键建审稿轮次（服务内部再校验分类与确认状态）。
   // 返修截止日期同步到任务板（Goal）。幂等：已绑定的轮次返回 already_synced。
   // ── 投稿门户（Browser-assisted Submission）：法律/财务/声明/最终提交永不由 Agent 执行 ──
-  ipcMain.handle('submission:portal:open', async (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.strictObject({ projectId: z.string().min(1), caseId: z.string().min(1), portalUrl: z.string().max(2000).optional() }).safeParse(raw);
-      if (!p.success || !submissionPortalService) return null;
-      return await submissionPortalService.openPortal(p.data);
-    } catch { return null; }
-  });
-  ipcMain.handle('submission:portal:planFill', async (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw);
-      if (!p.success || !submissionPortalService) return null;
-      return await submissionPortalService.planFill(p.data);
-    } catch { return null; }
-  });
-  ipcMain.handle('submission:portal:execute', async (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.strictObject({
-        projectId: z.string().min(1), caseId: z.string().min(1),
-        actions: z.array(PortalFieldActionSchema).max(50),
-        confirmed: z.boolean().optional(),
-      }).safeParse(raw);
-      if (!p.success || !submissionPortalService) return null;
-      return await submissionPortalService.executeAutoSteps(p.data);
-    } catch { return null; }
-  });
-  ipcMain.handle('submission:portal:confirmSubmitted', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.strictObject({
-        projectId: z.string().min(1), caseId: z.string().min(1),
-        remoteSubmissionId: z.string().max(300).optional(), receiptNote: z.string().max(5000).optional(),
-      }).safeParse(raw);
-      if (!p.success || !submissionPortalService) return null;
-      return submissionPortalService.confirmSubmitted(p.data);
-    } catch { return null; }
-  });
-  ipcMain.handle('submission:portal:markUncertain', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.strictObject({ projectId: z.string().min(1), caseId: z.string().min(1), reason: z.string().min(1).max(2000) }).safeParse(raw);
-      if (!p.success || !submissionPortalService) return null;
-      return submissionPortalService.markUncertain(p.data);
-    } catch { return null; }
-  });
 
   // ── Outcomes workbench: project-owned formal deliverables ──
   ipcMain.handle('outcomes:external-editor:open', async (event, raw: unknown) => {
@@ -4939,6 +4894,7 @@ function setupIPC(): void {
   ipcDomainDisposers.push(registerSubmissionJournalIpc(domainIpcContext));
   ipcDomainDisposers.push(registerSubmissionPackageIpc(domainIpcContext));
   ipcDomainDisposers.push(registerSubmissionCommsIpc(domainIpcContext));
+  ipcDomainDisposers.push(registerSubmissionPortalIpc(domainIpcContext));
 
   // ── 远程开发桥（dev-only）：METIS_REMOTE_BRIDGE=1 时开启浏览器远程访问。
   // 服务器在 whenReady 后启动，确保 setupIPC 已注册全部通道。──
