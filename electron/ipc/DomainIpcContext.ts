@@ -36,6 +36,22 @@ export interface DomainIpcContext {
   agentLoop(): AgentLoop | null;
   provider(): OpenAICompatProvider | null;
 
+  // ── Goal domain ───────────────────────────────────────────
+  /** Live Goal engine, or null before the runtime is ready. */
+  goalEngine(): import('../../engine/goal/GoalEngine.js').GoalEngine | null;
+  /** Process-wide monotonic request counter (shutdown ids, dedupe keys). */
+  nextRequestId(): number;
+  /** Broadcast a goal change to every live window (schema-decoded). */
+  broadcastGoalChanged(
+    sender: IpcMainInvokeEvent['sender'],
+    goal: import('../../engine/goal/GoalPlanner.js').Goal,
+    statusOverride?: 'draft' | 'planning' | 'ready' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled',
+  ): void;
+  /** O13: resolve project-scoped provider overrides for a goal execution. */
+  resolveGoalExecutionOptions(
+    goal: { projectId?: string },
+  ): import('../../engine/goal/GoalEngine.js').GoalExecutionOptions;
+
   // ── Persistence ───────────────────────────────────────────
   store(): PersistenceStore | null;
   researchRepository(): ResearchRepository | null;

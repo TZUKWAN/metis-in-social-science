@@ -3,13 +3,18 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const mainSource = fs.readFileSync(path.resolve(process.cwd(), 'electron/main.ts'), 'utf8');
+// goal 域已迁出到独立 registrar（2026-09-13 拆分）：goal 相关 needle 在两个
+// 源文件中查找，先命中的作为该断言的宿主，保持与迁移前的等价强度。
+const goalRegistrarSource = fs.readFileSync(path.resolve(process.cwd(), 'electron/ipc/registerGoalIpc.ts'), 'utf8');
+const registrarAwareSource = (needle: string): string => (mainSource.includes(needle) ? mainSource : goalRegistrarSource);
 
 function sectionBetween(startNeedle: string, endNeedle: string): string {
-  const start = mainSource.indexOf(startNeedle);
-  const end = mainSource.indexOf(endNeedle, start + startNeedle.length);
+  const source = registrarAwareSource(startNeedle);
+  const start = source.indexOf(startNeedle);
+  const end = source.indexOf(endNeedle, start + startNeedle.length);
   expect(start, `missing section start: ${startNeedle}`).toBeGreaterThanOrEqual(0);
   expect(end, `missing section end: ${endNeedle}`).toBeGreaterThan(start);
-  return mainSource.slice(start, end);
+  return source.slice(start, end);
 }
 
 describe('runtime shutdown admission wiring', () => {
@@ -83,8 +88,8 @@ describe('runtime shutdown admission wiring', () => {
   });
 
   it('wires goal planning admission and signal propagation for both plan operations', () => {
-    const generate = sectionBetween("ipcMain.handle('goal:generatePlan'", "ipcMain.handle('goal:refinePlan'");
-    const refine = sectionBetween("ipcMain.handle('goal:refinePlan'", "ipcMain.handle('goal:updatePlan'");
+    const generate = sectionBetween("dom.handle('goal:generatePlan'", "dom.handle('goal:refinePlan'");
+    const refine = sectionBetween("dom.handle('goal:refinePlan'", "dom.handle('goal:updatePlan'");
     for (const section of [generate, refine]) {
       expect(section).toContain('trackEphemeralOperation');
       expect(section).toContain("code: 'application_shutting_down'");
@@ -92,8 +97,8 @@ describe('runtime shutdown admission wiring', () => {
       expect(section).toContain('tracked.cleanup()');
       expect(section).toContain('finally');
     }
-    expect(generate).toContain('goalEngine.generatePlan(goalId, { signal: tracked.signal })');
-    expect(refine).toContain('goalEngine.refinePlan(request.goalId, request.feedback, { signal: tracked.signal })');
+    expect(generate).toContain('generatePlan(goalId, { signal: tracked.signal })');
+    expect(refine).toContain('refinePlan(request.goalId, request.feedback, { signal: tracked.signal })');
   });
 
   it('does not leave ignored coordinator registration results in main', () => {

@@ -20,6 +20,9 @@ import {
 } from '../lib/chatIntent.js';
 import { PaperclipIcon, TagIcon, ClockIcon } from '../components/Icons';
 import VoiceMicButton from '../components/VoiceMicButton';
+import { useChatMessageQueue } from '../conversation/useChatMessageQueue';
+import { useChatToolRows } from '../conversation/useChatToolRows';
+import { buildGoalCardActions } from '../conversation/goalCardActions';
 import GoalCardInline, { type GoalCardData } from '../components/GoalCardInline';
 import ToolExecutionCard from '../components/ToolExecutionCard';
 import { isInternalExecutionCopy } from '../presentation/executionCopy';
@@ -1084,11 +1087,6 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
     });
   }, []);
   const [input, setInput] = useState('');
-  // 2.5 消息排队（刘总 2026-09）：任务运行中用户仍可继续输入，消息进入
-  // 队列并在输入栏上方以小条展示（立即发送/编辑/删除）。
-  const [queuedMessages, setQueuedMessages] = useState<Array<{ id: number; text: string }>>([]);
-  // 2.4 Harness 式工具行：运行中逐条展示 AI 正在调用/已完成/失败的工具。
-  const [liveToolRows, setLiveToolRows] = useState<Array<{ key: string; tool: string | null; state: 'running' | 'done' | 'failed'; summary: string | null }>>([]);
   // T3 二期：Step 卡 Target Context（提出意见/修改这步）
   const [stepTarget, setStepTarget] = useState<Extract<import('../conversation/types').ConversationTarget, { type: 'scenario_step' }> | null>(null);
   const [stepTargetMode, setStepTargetMode] = useState<'comment' | 'modify'>('comment');
@@ -1142,6 +1140,12 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
     historyReadyRef.current = historyReady;
   }, [historyReady]);
   const activeSessionIdRef = useRef('');
+
+  // 2.5 消息队列（迁出自 ChatPage）：状态与 FIFO 补发逻辑集中管理。
+  const queue = useChatMessageQueue({ send: (text, opts) => handleSend(text, undefined, opts) });
+  const { queuedMessages } = queue;
+  // 2.4 工具行（迁出自 ChatPage）：订阅 + run 结算收起。
+  const { liveToolRows, clearToolRows } = useChatToolRows(activeSessionIdRef, isLoading);
   const sessionGenerationRef = useRef(0);
   // P0（2026-09-12）：历史局部损坏的一次性 toast 防重——记录上次提示过的会话，
   // 避免 StrictMode 双跑 effect 或来回切换会话时重复弹「部分历史加载失败」。
@@ -1349,7 +1353,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
     activeGoalIdRef.current = null;
     goalEventSequenceRef.current.clear();
     goalCardIndexMapRef.current.clear();
-    setLiveToolRows([]);
+    clearToolRows();
   }, []);
 
   const isCurrentSessionGeneration = useCallback((
@@ -1942,29 +1946,6 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
     return () => { unsub(); };
   }, [refreshArtifactsForSession]);
 
-  // 2.4 工具行：running 行按 toolCallId 去重，完成/失败事件原位更新；
-  // 回合结算后由 isLoading effect 统一收起（时间线已在消息气泡内留档）。
-  useEffect(() => {
-    const subscribe = window.metis?.onChatToolEvent;
-    if (!subscribe) return;
-    return subscribe((row) => {
-      if (row.sessionId !== activeSessionIdRef.current) return;
-      setLiveToolRows((current) => {
-        const key = row.toolCallId || `tool-${current.length}-${row.tool ?? ''}`;
-        if (row.state === 'running') {
-          if (current.some((item) => item.key === key)) return current;
-          return [...current.slice(-11), { key, tool: row.tool, state: row.state, summary: row.summary ?? null }];
-        }
-        return current.map((item) => (item.key === key
-          ? { ...item, state: row.state, summary: row.summary ?? item.summary }
-          : item));
-      });
-    });
-  }, []);
-
-  useEffect(() => {
-    if (!isLoading) setLiveToolRows([]);
-  }, [isLoading]);
 
   // Load messages and artifacts when session changes
   useEffect(() => {
@@ -2658,26 +2639,11 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
         // UX-CHAT-004: 主进程已在回合内持久化消息，刷新权威会话摘要。
         refreshSessionSummaries();
         // 2.5: run 结束后自动发送队列中的下一条（保持时序）。
-        flushNextQueuedMessage();
+        queue.flushNext();
       }
     }
   }
 
-  /**
-   * 2.5 统一队列收口：任何一个 run（聊天/Goal 执行/Goal 恢复/取消）结算后
-   * 都从这里补发下一条排队消息。放在函数声明层，所有结算路径都能调用；
-   * 若补发时又有 run 在跑，handleSend 会把它放回队首而不是变成引导。
-   */
-  function flushNextQueuedMessage() {
-    window.setTimeout(() => {
-      setQueuedMessages((current) => {
-        if (current.length === 0) return current;
-        const next = current[0]!;
-        window.setTimeout(() => { void handleSend(next.text, undefined, { fromQueue: true }); }, 50);
-        return current.slice(1);
-      });
-    }, 100);
-  }
 
   // ─── Goal flow ─────────────────────────────────────────────
 
@@ -2773,7 +2739,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
       // UX-CHAT-004: 用户消息与 Goal 卡均已持久化，刷新会话摘要。
       refreshSessionSummaries();
       // 2.5: Goal 轮结算同样要消费排队消息，否则运行期间的用户输入永久滞留。
-      flushNextQueuedMessage();
+      queue.flushNext();
     }
   }
 
@@ -2824,7 +2790,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
       }));
     } finally {
       // 2.5: 取消也是一种结算——排队消息照常补发。
-      flushNextQueuedMessage();
+      queue.flushNext();
     }
   }
 
@@ -2882,7 +2848,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
       setIsLoading(false);
       refreshSessionSummaries();
       // 2.5: 恢复轮结算同样消费排队消息。
-      flushNextQueuedMessage();
+      queue.flushNext();
     }
   }
 
@@ -2925,7 +2891,7 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
       goalEventSequenceRef.current.clear();
       setIsLoading(false);
       refreshSessionSummaries();
-      flushNextQueuedMessage();
+      queue.flushNext();
     }
   }
 
@@ -3274,14 +3240,14 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
     if (!raw) return;
     // 2.5 运行中入队：AI 工作时用户发送的消息自动排队（不打断当前 run）。
     if (isLoading && !options?.fromQueue && !options?.immediate && !overrideContent) {
-      setQueuedMessages((current) => [...current, { id: Date.now() + Math.floor(Math.random() * 1000), text: raw }]);
+      queue.enqueue(raw);
       setInput('');
       return;
     }
     // 队列自动补发撞上新一轮 run：放回队首而不是变成实时引导——排队语义
     // 必须保持 FIFO。小条上的「立即发送」（immediate）是显式插队，仍走引导。
     if (isLoading && options?.fromQueue && !options?.immediate) {
-      setQueuedMessages((current) => [{ id: Date.now() + Math.floor(Math.random() * 1000), text: raw }, ...current]);
+      queue.requeueFront(raw);
       return;
     }
     // T3 二期：Step Target Context——结构化上下文随消息进 Runtime（禁裸「针对步骤6」）。
@@ -4229,32 +4195,20 @@ export default function ChatPage({ renderLayout, uiMode, intentRevision = 0, pre
                   if (!goalId) return;
                   window.dispatchEvent(new CustomEvent('metis:open-kanban', { detail: { goalId } }));
                 }}
-                onStepAdjust={(_stepId, stepName, summary) => {
-                  // 2.6 调整：创建并激活一个正式会话，标题直接反映来源任务。
-                  // 输入框只预填上下文，用户写下具体调整要求后再发送，避免把
-                  // “我会告诉你”这种占位句误当成真实任务提交给模型。
-                  const goalCard = msg.goalCard!;
-                  const adjustText = locale === 'zh'
-                    ? `【任务调整】针对任务「${goalCard.description}」的步骤「${stepName}」：
-已完成的工作摘要：${summary.slice(0, 400) || '（无输出记录）'}
-请说明你希望如何调整。`
-                    : `[Task adjustment] Step "${stepName}" of "${goalCard.description}":
-Completed-work summary: ${summary.slice(0, 400) || '(no recorded output)'}
-Describe the change you would like to make.`;
-                  void (async () => {
-                    const newSessionId = await createNewSession();
-                    if (!newSessionId) {
-                      showToast({ kind: 'error', text: locale === 'zh' ? '无法创建调整对话，请稍后重试。' : 'Could not create the adjustment conversation. Please try again.' });
-                      return;
-                    }
-                    const title = locale === 'zh'
-                      ? `调整 · ${stepName || goalCard.description}`
-                      : `Adjust · ${stepName || goalCard.description}`;
-                    await handleRenameSession(newSessionId, title.slice(0, 120));
-                    setInput(adjustText);
-                    inputRef.current?.focus();
-                  })();
-                }}
+                {...buildGoalCardActions({
+                  msg,
+                  locale,
+                  updateGoalCard,
+                  findGoalCardIndex,
+                  syncGoalCardWorkflow,
+                  createNewSession,
+                  renameSession: handleRenameSession,
+                  focusComposer: () => inputRef.current?.focus(),
+                  setComposerDraft: setInput,
+                  resumeGoal: handleResumeGoal,
+                  startPlannedGoal: handleStartPlannedGoal,
+                  showToast,
+                })}
                 onDeleteTask={() => {
                   // 2.6/2.7 删除任务（GoalCardInline 已二次确认）。
                   const goalId = msg.goalCard!.goalId;
@@ -4557,16 +4511,16 @@ Describe the change you would like to make.`;
                   <span className="chat-queue-item__text" title={queued.text}>{queued.text.slice(0, 80)}{queued.text.length > 80 ? '…' : ''}</span>
                   <span className="chat-queue-item__actions">
                     <button type="button" className="chat-queue-item__btn" data-testid="chat-queue-send" title={locale === 'zh' ? '立即插队发送（作为实时引导下发给当前 run）' : 'Send now'} onClick={() => {
-                      setQueuedMessages((current) => current.filter((item) => item.id !== queued.id));
-                      void handleSend(queued.text, undefined, { fromQueue: true, immediate: true });
+                      queue.remove(queued.id);
+                      queue.sendNow(queued.text);
                     }}>{locale === 'zh' ? '立即发送' : 'Send now'}</button>
                     <button type="button" className="chat-queue-item__btn" data-testid="chat-queue-edit" title={locale === 'zh' ? '放回输入框编辑' : 'Edit in composer'} onClick={() => {
-                      setQueuedMessages((current) => current.filter((item) => item.id !== queued.id));
+                      queue.takeForEdit(queued.id);
                       setInput(queued.text);
                       inputRef.current?.focus();
                     }}>{locale === 'zh' ? '编辑' : 'Edit'}</button>
                     <button type="button" className="chat-queue-item__btn chat-queue-item__btn--danger" data-testid="chat-queue-delete" title={locale === 'zh' ? '删除' : 'Delete'} onClick={() => {
-                      setQueuedMessages((current) => current.filter((item) => item.id !== queued.id));
+                      queue.remove(queued.id);
                     }}>×</button>
                   </span>
                 </div>

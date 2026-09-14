@@ -6,6 +6,9 @@
  */
 
 import { contextBridge, ipcRenderer } from 'electron';
+import { experimentBridge } from './preload/experimentBridge.js';
+import { outcomes2Bridge } from './preload/outcomes2Bridge.js';
+import { autonomousBridge } from './preload/autonomousBridge.js';
 import { inspectExternalNavigationUrl } from '../engine/security/ExternalNavigation.js';
 import { OutcomeExternalEditorStateRequestSchema, OutcomeExternalEditorStateSchema } from '../engine/runtime/OutcomeRuntimeContract.js';
 import { OutcomeAssistantChatRequestSchema, OutcomeAssistantChatResultSchema, OutcomeExternalEditorCloseRequestSchema, OutcomeExternalEditorOpenRequestSchema, OutcomeExternalEditorOpenResultSchema, OutcomeExternalEditorSyncRequestSchema, OutcomeExternalEditorSyncResultSchema, ScopedConversationMessageRequestSchema, ScopedConversationRequestSchema } from '../engine/runtime/OutcomeRuntimeContract.js';
@@ -33,14 +36,6 @@ import {
   decodeGoalWorkflowResponse,
   type GoalChangedEvent,
 } from '../engine/runtime/GoalRuntimeContract.js';
-import {
-  AUTONOMOUS_CHANNELS,
-  AUTONOMOUS_CONTRACT_VERSION,
-  decodeAutonomousLiveEvent,
-  decodeAutonomousStartRequest,
-  decodeAutonomousControlRequest,
-  type AutonomousLiveEvent,
-} from '../engine/runtime/AutonomousRuntimeContract.js';
 import {
   createArtifactChartRegenerateRecovery,
   createArtifactListRecovery,
@@ -130,15 +125,6 @@ import {
   decodeExperimentMutationResult,
   decodeExperimentSave,
 } from '../engine/runtime/ExperimentMetadataContract.js';
-import {
-  ExperimentIdSchema,
-  decodeExperimentExecutionGrantRequest,
-  decodeExperimentExecutionGrantResult,
-  decodeExperimentRunRequest,
-  decodeExperimentRunResult,
-  decodeExperimentScriptAttachRequest,
-  decodeExperimentScriptAttachResult,
-} from '../engine/runtime/ExperimentRuntimeContract.js';
 import {
   decodeResearchMediaAttachRequest,
   decodeResearchMediaAttachResult,
@@ -349,17 +335,6 @@ type GoalStepCompleteEvent = Extract<GoalLiveEvent, { type: 'step-complete' }>;
 type GoalStepFailedEvent = Extract<GoalLiveEvent, { type: 'step-failed' }>;
 type GoalProgressEvent = Extract<GoalLiveEvent, { type: 'progress' }>;
 
-// Autonomous research live event subtypes (typed narrowing for subscribers).
-type AutonomousEngineStartedEvent = Extract<AutonomousLiveEvent, { type: 'engine-started' }>;
-type AutonomousEngineFailedEvent = Extract<AutonomousLiveEvent, { type: 'engine-failed' }>;
-type AutonomousPhaseStartedEvent = Extract<AutonomousLiveEvent, { type: 'phase-started' }>;
-type AutonomousStepEvent = Extract<AutonomousLiveEvent, { type: 'step-start' | 'step-complete' | 'step-failed' }>;
-type AutonomousReflectionEvent = Extract<AutonomousLiveEvent, { type: 'reflection' }>;
-type AutonomousProgressEvent = Extract<AutonomousLiveEvent, { type: 'progress' }>;
-type AutonomousEngineCompletedEvent = Extract<AutonomousLiveEvent, { type: 'engine-completed' }>;
-type AutonomousEngineInterruptedEvent = Extract<AutonomousLiveEvent, { type: 'engine-interrupted' }>;
-type AutonomousEnginePausedEvent = Extract<AutonomousLiveEvent, { type: 'engine-paused' }>;
-type AutonomousEngineResumedEvent = Extract<AutonomousLiveEvent, { type: 'engine-resumed' }>;
 
 async function invokeSetupWithProgress<T>(
   channel: 'setup:probe' | 'setup:save',
@@ -385,6 +360,9 @@ import { topicBridge } from './preload/topicBridge.js';
 import { freeModelBridge } from './preload/freeModelBridge.js';
 import { systemBridge } from './preload/systemBridge.js';
 const api = {
+  ...experimentBridge,
+  ...outcomes2Bridge,
+  ...autonomousBridge,
   ...submissionBridge,
   ...outcomeBridge,
   ...topicBridge,
@@ -1329,34 +1307,6 @@ const api = {
       await ipcRenderer.invoke('experiment:delete', { id: requestId }),
     );
   },
-  // ── Experiments secure execution (GLM-102) ────────────────
-  attachExperimentScript: async (experimentId: string) => {
-    const request = decodeExperimentScriptAttachRequest({ experimentId });
-    return decodeExperimentScriptAttachResult(
-      request
-        ? await ipcRenderer.invoke('experiment:attachScript', request)
-        : undefined,
-    );
-  },
-  requestExperimentRunGrant: async (experimentId: string) => {
-    const request = decodeExperimentExecutionGrantRequest({ experimentId });
-    return decodeExperimentExecutionGrantResult(
-      request
-        ? await ipcRenderer.invoke('experiment:requestRunGrant', request)
-        : undefined,
-    );
-  },
-  runExperiment: async (input: { experimentId: string; grant: unknown }) => {
-    const request = decodeExperimentRunRequest(input);
-    return decodeExperimentRunResult(
-      request ? await ipcRenderer.invoke('experiment:run', request) : undefined,
-    );
-  },
-  cancelExperiment: async (experimentId: string) => {
-    const parsed = ExperimentIdSchema.safeParse(experimentId);
-    if (!parsed.success) return false;
-    return (await ipcRenderer.invoke('experiment:cancel', parsed.data)) === true;
-  },
 
   loadAllData: async () => {
     const raw = await ipcRenderer.invoke('data:loadAll') as unknown;
@@ -1410,97 +1360,6 @@ const api = {
   appendScopedConversation: async (raw: unknown) => { const p=ScopedConversationMessageRequestSchema.safeParse(raw); return p.success ? ipcRenderer.invoke('outcomes:conversation:append',p.data) : null; },
   chatOutcomeAssistant: async (raw: unknown) => { const p=OutcomeAssistantChatRequestSchema.safeParse(raw); if (!p.success) return OutcomeAssistantChatResultSchema.parse({ status:'error', code:'invalid_request', message:'成果助手请求无效。', answer:'', sources:[], diagnostics:[{code:'invalid_request',message:'成果助手请求未通过契约校验。'}] }); const value=await ipcRenderer.invoke('outcomes:assistant:chat',p.data); const result=OutcomeAssistantChatResultSchema.safeParse(value); return result.success ? result.data : OutcomeAssistantChatResultSchema.parse({ status:'error', code:'assistant_unavailable', message:'成果助手响应无效，请重试。', answer:'', sources:[], diagnostics:[{code:'assistant_unavailable',message:'主进程返回了无效的成果助手响应。'}] }); },
 
-  // ── Outcomes 2.0（draft/snapshot/revision/memory/review/graph；registerOutcomes2Ipc）──
-  outcome2DraftOpen: async (request: { projectId: string; outcomeId: string; version?: number }) =>
-    ipcRenderer.invoke('outcomes2:draft:open', request) as Promise<{ ok: boolean; code?: string; outcome?: unknown; draft?: unknown; conflict?: boolean; requestedHistorical?: boolean }>,
-  outcome2DraftGet: async (request: { projectId: string; outcomeId: string }) =>
-    ipcRenderer.invoke('outcomes2:draft:get', request) as Promise<unknown>,
-  outcome2DraftSave: async (request: { projectId: string; outcomeId: string; baseVersion: number; content: unknown; updatedBy: 'human' | 'ai_revision' | 'office_sync'; force?: boolean }) =>
-    ipcRenderer.invoke('outcomes2:draft:save', request) as Promise<{ ok: boolean; code?: string; value?: { draft: unknown; conflict: boolean } }>,
-  outcome2DraftClear: async (request: { projectId: string; outcomeId: string }) =>
-    ipcRenderer.invoke('outcomes2:draft:clear', request) as Promise<{ ok: boolean }>,
-  outcome2DraftResolveConflict: async (request: { projectId: string; outcomeId: string; action: 'discard' | 'keep' | 'rebase' }) =>
-    ipcRenderer.invoke('outcomes2:draft:resolveConflict', request) as Promise<{ ok: boolean; code?: string; value?: { draft: unknown } }>,
-  outcome2SnapshotCreate: async (request: { projectId: string; outcomeId: string; reason: 'autosave' | 'manual' | 'before_ai_revision' | 'before_import' | 'before_office_sync' | 'before_restore'; content?: unknown; baseVersion?: number }) =>
-    ipcRenderer.invoke('outcomes2:snapshot:create', request) as Promise<{ ok: boolean; code?: string; value?: unknown }>,
-  outcome2SnapshotList: async (request: { projectId: string; outcomeId: string }) =>
-    ipcRenderer.invoke('outcomes2:snapshot:list', request) as Promise<unknown[]>,
-  outcome2SnapshotRestore: async (request: { projectId: string; snapshotId: string }) =>
-    ipcRenderer.invoke('outcomes2:snapshot:restore', request) as Promise<{ ok: boolean; code?: string; value?: { draft: unknown; snapshot: unknown } }>,
-  outcome2SnapshotPurge: async (request: { projectId: string; outcomeId: string; scope?: 'auto' | 'all' }) =>
-    ipcRenderer.invoke('outcomes2:snapshot:purge', request) as Promise<{ ok: boolean; deleted: number }>,
-  outcome2RevisionCreate: async (request: { projectId: string; outcomeId: string; instruction: string; createdBy: 'ai' | 'review_issue' | 'conversation' | 'user'; conversationId?: string | null; reviewIssueId?: string | null; proposals: Array<{ target: unknown; after: unknown; reason: string; sourceRefs?: unknown[]; evidenceIds?: string[] }> }) =>
-    ipcRenderer.invoke('outcomes2:revision:create', request) as Promise<{ ok: boolean; code?: string; message?: string; value?: { set: unknown; revisions: unknown[] } }>,
-  outcome2RevisionListSets: async (request: { projectId: string; outcomeId: string }) =>
-    ipcRenderer.invoke('outcomes2:revision:listSets', request) as Promise<unknown[]>,
-  outcome2RevisionGetSet: async (request: { projectId: string; setId: string }) =>
-    ipcRenderer.invoke('outcomes2:revision:getSet', request) as Promise<{ set: unknown; revisions: unknown[] } | null>,
-  outcome2RevisionAccept: async (request: { projectId: string; setId: string; revisionId: string }) =>
-    ipcRenderer.invoke('outcomes2:revision:accept', request) as Promise<{ ok: boolean; code?: string; value?: { draft: unknown; revision: unknown; set: unknown } }>,
-  outcome2RevisionReject: async (request: { projectId: string; setId: string; revisionId: string }) =>
-    ipcRenderer.invoke('outcomes2:revision:reject', request) as Promise<{ ok: boolean; code?: string; value?: { revision: unknown; set: unknown } }>,
-  outcome2RevisionAcceptSet: async (request: { projectId: string; setId: string }) =>
-    ipcRenderer.invoke('outcomes2:revision:acceptSet', request) as Promise<{ ok: boolean; code?: string; value?: { accepted: number; stale: number; rejected: number; failed: number } }>,
-  outcome2RevisionRejectSet: async (request: { projectId: string; setId: string }) =>
-    ipcRenderer.invoke('outcomes2:revision:rejectSet', request) as Promise<{ ok: boolean; code?: string; value?: { rejected: number } }>,
-  outcome2RevisionCancelSet: async (request: { projectId: string; setId: string }) =>
-    ipcRenderer.invoke('outcomes2:revision:cancelSet', request) as Promise<{ ok: boolean; code?: string; value?: { set: unknown } }>,
-  outcome2RevisionMarkStaleByHash: async (request: { projectId: string; outcomeId: string }) =>
-    ipcRenderer.invoke('outcomes2:revision:markStaleByHash', request) as Promise<{ ok: boolean; marked: number }>,
-  outcome2MemoryGet: async (request: { projectId: string; outcomeId: string }) =>
-    ipcRenderer.invoke('outcomes2:memory:get', request) as Promise<unknown>,
-  outcome2MemorySave: async (memory: unknown) =>
-    ipcRenderer.invoke('outcomes2:memory:save', memory) as Promise<{ ok: boolean; code?: string; value?: unknown }>,
-  outcome2MemoryPropose: async (request: { projectId: string; outcomeId: string; field: string; value: unknown; reason: string }) =>
-    ipcRenderer.invoke('outcomes2:memory:propose', request) as Promise<unknown>,
-  outcome2MemoryListProposals: async (request: { projectId: string; outcomeId: string; status?: 'pending' | 'accepted' | 'rejected' }) =>
-    ipcRenderer.invoke('outcomes2:memory:listProposals', request) as Promise<unknown[]>,
-  outcome2MemoryAcceptProposal: async (request: { projectId: string; proposalId: string }) =>
-    ipcRenderer.invoke('outcomes2:memory:acceptProposal', request) as Promise<{ ok: boolean; code?: string; value?: unknown }>,
-  outcome2MemoryRejectProposal: async (request: { projectId: string; proposalId: string }) =>
-    ipcRenderer.invoke('outcomes2:memory:rejectProposal', request) as Promise<{ ok: boolean }>,
-  outcome2ReviewStart: async (request: { projectId: string; outcomeId: string; mode: string; baseVersion: number; baseDraftHash: string }) =>
-    ipcRenderer.invoke('outcomes2:review:start', request) as Promise<unknown>,
-  outcome2ReviewListRuns: async (request: { projectId: string; outcomeId: string }) =>
-    ipcRenderer.invoke('outcomes2:review:listRuns', request) as Promise<unknown[]>,
-  outcome2ReviewListIssues: async (request: { projectId: string; outcomeId: string; status?: string }) =>
-    ipcRenderer.invoke('outcomes2:review:listIssues', request) as Promise<unknown[]>,
-  outcome2ReviewIssueAdd: async (issue: unknown) =>
-    ipcRenderer.invoke('outcomes2:review:issue:add', issue) as Promise<unknown>,
-  outcome2ReviewIssueUpdate: async (request: { projectId: string; issueId: string; status: string }) =>
-    ipcRenderer.invoke('outcomes2:review:issue:update', request) as Promise<unknown>,
-  outcome2ReviewCancel: async (request: { projectId: string; runId: string }) =>
-    ipcRenderer.invoke('outcomes2:review:cancel', request) as Promise<{ ok: boolean }>,
-  outcome2ReviewMarkStaleByDraftHash: async (request: { projectId: string; outcomeId: string; currentDraftHash: string | null }) =>
-    ipcRenderer.invoke('outcomes2:review:markStaleByDraftHash', request) as Promise<{ ok: boolean; marked: number }>,
-  outcome2GraphUpsertNode: async (node: unknown) =>
-    ipcRenderer.invoke('outcomes2:graph:upsertNode', node) as Promise<{ ok: boolean; code?: string; value?: unknown }>,
-  outcome2GraphUpsertEdge: async (edge: unknown) =>
-    ipcRenderer.invoke('outcomes2:graph:upsertEdge', edge) as Promise<{ ok: boolean; code?: string; value?: unknown }>,
-  outcome2GraphNodes: async (request: { projectId: string }) =>
-    ipcRenderer.invoke('outcomes2:graph:nodes', request) as Promise<unknown[]>,
-  outcome2GraphEdges: async (request: { projectId: string }) =>
-    ipcRenderer.invoke('outcomes2:graph:edges', request) as Promise<unknown[]>,
-  outcome2GraphConfirmNode: async (request: { projectId: string; nodeId: string }) =>
-    ipcRenderer.invoke('outcomes2:graph:confirmNode', request) as Promise<{ ok: boolean; code?: string; value?: unknown }>,
-  outcome2GraphConfirmEdge: async (request: { projectId: string; edgeId: string }) =>
-    ipcRenderer.invoke('outcomes2:graph:confirmEdge', request) as Promise<{ ok: boolean; code?: string; value?: unknown }>,
-  outcome2GraphRejectNode: async (request: { projectId: string; nodeId: string }) =>
-    ipcRenderer.invoke('outcomes2:graph:rejectNode', request) as Promise<{ ok: boolean; code?: string; value?: unknown }>,
-  outcome2GraphRejectEdge: async (request: { projectId: string; edgeId: string }) =>
-    ipcRenderer.invoke('outcomes2:graph:rejectEdge', request) as Promise<{ ok: boolean; code?: string; value?: unknown }>,
-  outcome2GraphDedupCandidate: async (request: { projectId: string; label: string; canonicalEntityType?: string | null; canonicalEntityId?: string | null }) =>
-    ipcRenderer.invoke('outcomes2:graph:dedupCandidate', request) as Promise<unknown>,
-  outcome2ReviewRun: async (request: { projectId: string; outcomeId: string; mode: 'full' | 'argument' | 'evidence' | 'theory' | 'method' | 'structure' | 'language' | 'submission_check' }) =>
-    ipcRenderer.invoke('outcomes2:review:run', request) as Promise<{ ok: boolean; code?: string; runId?: string; segments?: number; issues?: number }>,
-  outcome2GraphExtractFromOutcome: async (request: { projectId: string; outcomeId: string }) =>
-    ipcRenderer.invoke('outcomes2:graph:extractFromOutcome', request) as Promise<{ ok: boolean; code?: string; segments?: number; nodes?: number; edges?: number }>,
-  outcome2GraphProjectClaimEvidence: async (request: { projectId: string }) =>
-    ipcRenderer.invoke('outcomes2:graph:projectClaimEvidence', request) as Promise<unknown>,
-  outcome2GraphProjectArgument: async (request: { projectId: string }) =>
-    ipcRenderer.invoke('outcomes2:graph:projectArgument', request) as Promise<unknown>,
-  outcome2GraphProjectKnowledge: async (request: { projectId: string }) =>
-    ipcRenderer.invoke('outcomes2:graph:projectKnowledge', request) as Promise<unknown>,
 
   analyzeFundingTemplateForAssistant: async (projectId: string) =>
     ipcRenderer.invoke('fundingTemplate:analyzeForAssistant', { projectId }) as Promise<{
@@ -1636,125 +1495,6 @@ const api = {
     return () => { ipcRenderer.removeListener('goal:changed', handler); };
   },
 
-  // ── Autonomous research engine ───────────────────────────
-  autonomousStart: async (request: { goal: string; projectId?: string; sessionId?: string; strategyId?: string; structureId?: string }) => {
-    const decoded = decodeAutonomousStartRequest({ version: AUTONOMOUS_CONTRACT_VERSION, ...request });
-    if (!decoded) return { ok: false, error: 'invalid_request' };
-    return ipcRenderer.invoke(AUTONOMOUS_CHANNELS.start, decoded) as Promise<{ ok: boolean; sessionId?: string; projectId?: string; error?: string }>;
-  },
-  autonomousControl: async (request: { sessionId: string; action: 'pause' | 'resume' | 'interrupt'; reason?: string }) => {
-    const decoded = decodeAutonomousControlRequest({ version: AUTONOMOUS_CONTRACT_VERSION, ...request });
-    if (!decoded) return { ok: false, code: 'invalid_request' };
-    return ipcRenderer.invoke(AUTONOMOUS_CHANNELS.control, decoded) as Promise<{ ok: boolean; code?: string }>;
-  },
-  autonomousListSessions: async () => ipcRenderer.invoke(AUTONOMOUS_CHANNELS.listSessions) as Promise<{
-    sessions: Array<{
-      sessionId: string;
-      goal: string;
-      projectId?: string;
-      executions: number;
-      completedPhases: number;
-      savedAt: number;
-      state: 'running' | 'paused';
-      failureReason?: string;
-    }>;
-  }>,
-  onAutonomousEngineStarted: (callback: (data: AutonomousEngineStartedEvent) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: unknown) => {
-      const decoded = decodeAutonomousLiveEvent(data);
-      if (decoded && decoded.type === 'engine-started') callback(decoded);
-    };
-    ipcRenderer.on(AUTONOMOUS_CHANNELS.live.engineStarted, handler);
-    return () => { ipcRenderer.removeListener(AUTONOMOUS_CHANNELS.live.engineStarted, handler); };
-  },
-  onAutonomousPhaseStarted: (callback: (data: AutonomousPhaseStartedEvent) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: unknown) => {
-      const decoded = decodeAutonomousLiveEvent(data);
-      if (decoded && decoded.type === 'phase-started') callback(decoded);
-    };
-    ipcRenderer.on(AUTONOMOUS_CHANNELS.live.phaseStarted, handler);
-    return () => { ipcRenderer.removeListener(AUTONOMOUS_CHANNELS.live.phaseStarted, handler); };
-  },
-  onAutonomousStep: (callback: (data: AutonomousStepEvent) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: unknown) => {
-      const decoded = decodeAutonomousLiveEvent(data);
-      if (decoded && (decoded.type === 'step-start' || decoded.type === 'step-complete' || decoded.type === 'step-failed')) callback(decoded);
-    };
-    ipcRenderer.on(AUTONOMOUS_CHANNELS.live.stepStart, handler);
-    ipcRenderer.on(AUTONOMOUS_CHANNELS.live.stepComplete, handler);
-    ipcRenderer.on(AUTONOMOUS_CHANNELS.live.stepFailed, handler);
-    return () => {
-      ipcRenderer.removeListener(AUTONOMOUS_CHANNELS.live.stepStart, handler);
-      ipcRenderer.removeListener(AUTONOMOUS_CHANNELS.live.stepComplete, handler);
-      ipcRenderer.removeListener(AUTONOMOUS_CHANNELS.live.stepFailed, handler);
-    };
-  },
-  onAutonomousReflection: (callback: (data: AutonomousReflectionEvent) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: unknown) => {
-      const decoded = decodeAutonomousLiveEvent(data);
-      if (decoded && decoded.type === 'reflection') callback(decoded);
-    };
-    ipcRenderer.on(AUTONOMOUS_CHANNELS.live.reflection, handler);
-    return () => { ipcRenderer.removeListener(AUTONOMOUS_CHANNELS.live.reflection, handler); };
-  },
-  onAutonomousProgress: (callback: (data: AutonomousProgressEvent) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: unknown) => {
-      const decoded = decodeAutonomousLiveEvent(data);
-      if (decoded && decoded.type === 'progress') callback(decoded);
-    };
-    ipcRenderer.on(AUTONOMOUS_CHANNELS.live.progress, handler);
-    return () => { ipcRenderer.removeListener(AUTONOMOUS_CHANNELS.live.progress, handler); };
-  },
-  onAutonomousCompleted: (callback: (data: AutonomousEngineCompletedEvent) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: unknown) => {
-      const decoded = decodeAutonomousLiveEvent(data);
-      if (decoded && decoded.type === 'engine-completed') callback(decoded);
-    };
-    ipcRenderer.on(AUTONOMOUS_CHANNELS.live.engineCompleted, handler);
-    return () => { ipcRenderer.removeListener(AUTONOMOUS_CHANNELS.live.engineCompleted, handler); };
-  },
-  onAutonomousFailed: (callback: (data: AutonomousEngineFailedEvent) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, raw: unknown) => {
-      const decoded = decodeAutonomousLiveEvent(raw);
-      if (decoded && decoded.type === 'engine-failed') callback(decoded);
-    };
-    ipcRenderer.on(AUTONOMOUS_CHANNELS.live.engineFailed, handler);
-    return () => ipcRenderer.removeListener(AUTONOMOUS_CHANNELS.live.engineFailed, handler);
-  },
-  onAutonomousInterrupted: (callback: (data: AutonomousEngineInterruptedEvent) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: unknown) => {
-      const decoded = decodeAutonomousLiveEvent(data);
-      if (decoded && decoded.type === 'engine-interrupted') callback(decoded);
-    };
-    ipcRenderer.on(AUTONOMOUS_CHANNELS.live.engineInterrupted, handler);
-    return () => { ipcRenderer.removeListener(AUTONOMOUS_CHANNELS.live.engineInterrupted, handler); };
-  },
-  onAutonomousPaused: (callback: (data: AutonomousEnginePausedEvent) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: unknown) => {
-      const decoded = decodeAutonomousLiveEvent(data);
-      if (decoded && decoded.type === 'engine-paused') callback(decoded);
-    };
-    ipcRenderer.on(AUTONOMOUS_CHANNELS.live.enginePaused, handler);
-    return () => { ipcRenderer.removeListener(AUTONOMOUS_CHANNELS.live.enginePaused, handler); };
-  },
-  onAutonomousResumed: (callback: (data: AutonomousEngineResumedEvent) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: unknown) => {
-      const decoded = decodeAutonomousLiveEvent(data);
-      if (decoded && decoded.type === 'engine-resumed') callback(decoded);
-    };
-    ipcRenderer.on(AUTONOMOUS_CHANNELS.live.engineResumed, handler);
-    return () => { ipcRenderer.removeListener(AUTONOMOUS_CHANNELS.live.engineResumed, handler); };
-  },
-  autonomousResumeSession: async (sessionId: string) => {
-    return ipcRenderer.invoke(AUTONOMOUS_CHANNELS.resumeSession, sessionId) as Promise<{ ok: boolean; goal?: string; error?: string }>;
-  },
-  strategyList: async () => ipcRenderer.invoke('strategy:list') as Promise<{ ok: boolean; strategies?: Array<Record<string, unknown>> }>,
-  strategySave: async (strategy: Record<string, unknown>) => ipcRenderer.invoke('strategy:save', { strategy }) as Promise<{ ok: boolean; error?: string }>,
-  strategyDelete: async (strategyId: string) => ipcRenderer.invoke('strategy:delete', { strategyId }) as Promise<{ ok: boolean; error?: string }>,
-  strategySetDefault: async (strategyId: string) => ipcRenderer.invoke('strategy:setDefault', { strategyId }) as Promise<{ ok: boolean; error?: string }>,
-  structureList: async () => ipcRenderer.invoke('structure:list') as Promise<{ ok: boolean; templates?: Array<Record<string, unknown>> }>,
-  structureSave: async (template: Record<string, unknown>) => ipcRenderer.invoke('structure:save', { template }) as Promise<{ ok: boolean; error?: string }>,
-  structureDelete: async (templateId: string) => ipcRenderer.invoke('structure:delete', { templateId }) as Promise<{ ok: boolean; error?: string }>,
 
   // ── Chat streaming ───────────────────────────────────────
   // O15: 对比回合的流式分片额外携带 profileId，渲染端据此把 token 路由到

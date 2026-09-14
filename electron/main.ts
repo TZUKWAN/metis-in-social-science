@@ -223,6 +223,7 @@ import { registerOutcomes2Ipc } from './ipc/registerOutcomes2Ipc.js';
 import { OutcomeWorkbenchService } from './OutcomeWorkbenchService.js';
 import { OutcomeMemoryService, OutcomeReviewService, ResearchGraphService } from './OutcomeMemoryReviewGraphService.js';
 import { registerArtifactIpc } from './ipc/registerArtifactIpc.js';
+import { registerGoalIpc } from './ipc/registerGoalIpc.js';
 import { registerExperimentIpc } from './ipc/registerExperimentIpc.js';
 import { registerWeChatIpc } from './ipc/registerWeChatIpc.js';
 import { registerFreeModelIpc } from './ipc/registerFreeModelIpc.js';
@@ -313,7 +314,6 @@ import {
   decodeAutonomousLiveEvent,
 } from '../engine/runtime/AutonomousRuntimeContract.js';
 import { parseLatexLog } from '../engine/latex/LatexLogParser.js';
-import type { WorkflowDefinition, WorkflowHooks, WorkflowRun } from '../engine/workflow/types.js';
 import { MCPManager } from '../engine/mcp/MCPManager.js';
 import { SkillRegistry, registerDefaultSkills } from '../engine/skills/SkillRegistry.js';
 import { createGordenPptSkill, GORDEN_PPT_SKILL_ID, shouldAutoMountPptSkill } from '../engine/skills/PptDeckSkill.js';
@@ -424,7 +424,6 @@ import {
   AgentEventReplayRequestSchema,
   AgentEventReplayResponseSchema,
   CHAT_RUNTIME_CONTRACT_VERSION,
-  decodeGoalLiveEvent,
   decodeStoredHistoryEntry,
   decodeStoredHistory,
   RuntimeIdSchema,
@@ -442,21 +441,7 @@ import {
   decodeScenarioRunControlResponse,
 } from '../engine/runtime/ScenarioControlContract.js';
 import { terminateStoredScenarioRun } from '../engine/personalization/ScenarioRunCoordinator.js';
-import {
-  createGoalWorkflowRecovery,
-  decodeGoalChangedEvent,
-  decodeGoalCreateResponse,
-  decodeGoalListResponse,
-  decodeGoalPlanResponse,
-  decodeGoalSummaryResponse,
-  decodeGoalWorkflowResponse,
-  GOAL_PLAN_LABEL,
-  GOAL_PLAN_STEP_LABEL,
-  GOAL_RUNTIME_LIMITS,
-  GoalCreateRequestSchema,
-  GoalIdRequestSchema,
-  GoalRefineRequestSchema,
-} from '../engine/runtime/GoalRuntimeContract.js';
+import { decodeGoalChangedEvent } from '../engine/runtime/GoalRuntimeContract.js';
 import {
 } from '../engine/runtime/ArtifactRuntimeContract.js';
 import {
@@ -881,6 +866,10 @@ const domainIpcContext: DomainIpcContext = {
   userDataDir: () => USER_DATA_DIR,
   defaultDataDir: () => DEFAULT_DATA_DIR,
   backupService: () => backupService,
+  goalEngine: () => goalEngine,
+  nextRequestId: () => ++requestCounter,
+  broadcastGoalChanged,
+  resolveGoalExecutionOptions,
 };
 const hitlApprovalRegistry = new ApprovalShutdownRegistry(runtimeShutdown, 'hitl-approval');
 const scenarioApprovalRegistry = new ScenarioApprovalRegistry(runtimeShutdown);
@@ -2142,130 +2131,7 @@ function nextTerminalId(): string {
   return `ts_${randomBytes(32).toString('base64url')}`;
 }
 
-function presentGoalPlan(goalId: string, workflow: WorkflowDefinition) {
-  return decodeGoalPlanResponse({
-    success: true,
-    goalId,
-    label: GOAL_PLAN_LABEL,
-    steps: workflow.steps.map((step, index) => ({
-      stepId: step.id,
-      label: GOAL_PLAN_STEP_LABEL,
-      ordinal: index + 1,
-    })),
-  });
-}
 
-function presentGoalSummary(
-  goal: { id: string; description?: unknown; status: unknown; createdAt: number; projectId?: string },
-  checkpoint?: { resumable: boolean; completedSteps: number; totalSteps: number },
-) {
-  // UX-GOAL-001: 看板/列表展示持久化的 goal.description，而不是统一占位
-  // 标题。空值或损坏记录才回退到固定兜底文案。
-  const rawDescription = typeof goal.description === 'string' ? goal.description.trim() : '';
-  const label = rawDescription
-    ? rawDescription.slice(0, GOAL_RUNTIME_LIMITS.labelChars)
-    : 'Research goal';
-  return {
-    goalId: goal.id,
-    label,
-    status: goal.status,
-    createdAt: goal.createdAt,
-    ...(goal.projectId ? { projectId: goal.projectId } : {}),
-    // O14: 附带 checkpoint 摘要，渲染端据此显示「从上次断点继续」。
-    ...(checkpoint ? { checkpoint } : {}),
-  };
-}
-
-/** O14: 读取 goal 的 checkpoint 摘要；无持久化 run 时返回 undefined。 */
-function goalCheckpointSummary(goalId: string): { resumable: boolean; completedSteps: number; totalSteps: number } | undefined {
-  if (!goalEngine) return undefined;
-  const info = goalEngine.getCheckpointInfo(goalId);
-  if (!info.hasCheckpoint) return undefined;
-  return { resumable: info.resumable, completedSteps: info.completedSteps, totalSteps: info.totalSteps };
-}
-
-// ─── O17: 工作流可视化 presenter ──────────────────────────────
-
-/** 契约文本上限，与 GoalRuntimeContract 的 WORKFLOW_VIEW_TEXT_LIMIT 对齐。 */
-const WORKFLOW_VIEW_TEXT_LIMIT = 20_000;
-// eslint-disable-next-line no-control-regex
-const WORKFLOW_VIEW_UNSAFE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu;
-
-/** 契约化清洗：去控制字符（保留换行/回车）并截断到上限。 */
-function workflowViewText(value: unknown, limit = WORKFLOW_VIEW_TEXT_LIMIT): string {
-  if (typeof value !== 'string') return '';
-  return value.replace(WORKFLOW_VIEW_UNSAFE, ' ').slice(0, limit);
-}
-
-function workflowViewId(value: unknown): string {
-  return workflowViewText(value, 200).replace(/\s+/gu, ' ').trim();
-}
-
-/** 验收标准 → 人类可读摘要串（kind + 值/描述）。 */
-function presentAcceptanceCriteria(criteria: readonly import('../engine/workflow/AcceptanceCriteria.js').AcceptanceCriterion[] | undefined): string[] | undefined {
-  if (!criteria || criteria.length === 0) return undefined;
-  return criteria.map((criterion) => {
-    const note = criterion.description?.trim();
-    const base = note ? `${note}` : criterion.kind;
-    return workflowViewText(`${base} (${criterion.kind}: ${criterion.value})`, 500);
-  });
-}
-
-/**
- * O17: 把 GoalEngine 的只读视图映射为契约形状。所有自由文本都在这里
- * 截断清洗，保证渲染端拿到的内容可直接安全渲染。
- */
-function presentGoalWorkflow(
-  goalId: string,
-  view: { workflow: WorkflowDefinition; run: WorkflowRun | undefined },
-) {
-  const { workflow, run } = view;
-  const stepIds = new Set(workflow.steps.map((step) => step.id));
-  const dependencies: Record<string, string[]> = {};
-  for (const [stepId, deps] of Object.entries(workflow.dependencies)) {
-    if (!stepIds.has(stepId)) continue;
-    dependencies[stepId] = deps.filter((dep) => stepIds.has(dep));
-  }
-  const KNOWN_STEP_STATUSES = new Set(['pending', 'running', 'completed', 'failed', 'skipped']);
-  const stepResults: Record<string, {
-    status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
-    output: string;
-    retryCount: number;
-    failureReasons?: string[];
-    decisionRequired?: boolean;
-  }> = {};
-  for (const [stepId, result] of Object.entries(run?.stepResults ?? {})) {
-    if (!stepIds.has(stepId)) continue;
-    stepResults[stepId] = {
-      status: (KNOWN_STEP_STATUSES.has(result.status) ? result.status : 'pending') as 'pending' | 'running' | 'completed' | 'failed' | 'skipped',
-      output: workflowViewText(result.output),
-      retryCount: Number.isFinite(result.retryCount) ? Math.max(0, Math.floor(result.retryCount)) : 0,
-      ...(result.failureReasons?.length ? { failureReasons: result.failureReasons.map((reason) => workflowViewText(reason, 500)) } : {}),
-      ...(result.decisionRequired ? { decisionRequired: true } : {}),
-    };
-  }
-  return {
-    success: true as const,
-    goalId,
-    workflow: {
-      id: workflowViewId(workflow.id) || 'workflow',
-      name: workflowViewText(workflow.name, 500),
-      description: workflowViewText(workflow.description, 2000),
-      version: workflowViewId(workflow.version) || '1',
-      steps: workflow.steps.map((step) => ({
-        id: step.id,
-        name: workflowViewText(step.name, 500),
-        description: workflowViewText(step.description, 2000),
-        prompt: workflowViewText(step.prompt),
-        tools: step.tools.map((tool) => workflowViewId(tool)).filter(Boolean),
-        maxTurns: Number.isFinite(step.maxTurns) ? Math.max(0, Math.floor(step.maxTurns)) : 0,
-        ...(presentAcceptanceCriteria(step.acceptanceCriteria) ? { acceptanceCriteria: presentAcceptanceCriteria(step.acceptanceCriteria) } : {}),
-      })),
-      dependencies,
-    },
-    stepResults,
-  };
-}
 
 /**
  * O13: 解析 goal 执行的 provider 绑定。goal 所属项目存在覆盖时，用覆盖
@@ -5711,6 +5577,7 @@ function setupIPC(): void {
   // ── Artifacts ───────────────────────────────────────────
   // 任务3：域 registrar 迁移——channel/contract/恢复形状不变，注册走 IpcRegistry。
   ipcDomainDisposers.push(registerArtifactIpc(domainIpcContext));
+  ipcDomainDisposers.push(registerGoalIpc(domainIpcContext));
 
   // ── Messages ────────────────────────────────────────────
   ipcMain.handle('messages:get', (event, rawSessionId: unknown) => {
@@ -8843,391 +8710,11 @@ function setupIPC(): void {
       return { success: false, code: 'io_error' };
     }
   });
-  // ── Goal Engine ─────────────────────────────────────────
-  ipcMain.handle('goal:create', (event, rawDescription: unknown, rawContext?: unknown, rawProjectId?: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      if (!goalEngine) return decodeGoalCreateResponse(null);
-      const request = GoalCreateRequestSchema.parse({
-        description: rawDescription,
-        context: rawContext,
-        projectId: typeof rawProjectId === 'string' ? rawProjectId : undefined,
-      });
-      const goal = goalEngine.createGoal(request.description, request.context, request.projectId);
-      broadcastGoalChanged(event.sender, goal);
-      return decodeGoalCreateResponse({
-        success: true,
-        goalId: goal.id,
-        status: goal.status,
-      });
-    } catch {
-      return decodeGoalCreateResponse(null);
-    }
-  });
-  ipcMain.handle('goal:get', (event, rawGoalId: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      if (!goalEngine) return decodeGoalSummaryResponse(null);
-      const { goalId } = GoalIdRequestSchema.parse({ goalId: rawGoalId });
-      const goal = goalEngine.getGoal(goalId);
-      return goal
-        ? decodeGoalSummaryResponse({ success: true, goal: presentGoalSummary(goal, goalCheckpointSummary(goal.id)) })
-        : decodeGoalSummaryResponse(null);
-    } catch {
-      return decodeGoalSummaryResponse(null);
-    }
-  });
-  // O17: 工作流可视化——返回 goal 的 WorkflowDefinition（契约化截断）与最新
-  // run 的步骤状态，供渲染端 WorkflowGraph 只读渲染 DAG 节点图。
-  ipcMain.handle('goal:getWorkflow', (event, rawGoalId: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      if (!goalEngine) return createGoalWorkflowRecovery();
-      const { goalId } = GoalIdRequestSchema.parse({ goalId: rawGoalId });
-      const view = goalEngine.getWorkflowView(goalId);
-      if (!view) return createGoalWorkflowRecovery();
-      return decodeGoalWorkflowResponse(presentGoalWorkflow(goalId, view));
-    } catch {
-      return createGoalWorkflowRecovery();
-    }
-  });
   // 渲染端路由诊断（2026-08-29）：进入文件日志，终结"发送走了哪条路"的猜测。
   ipcMain.handle('diag:rendererLog', (event, rawLine: unknown) => {
     try { requireRendererMainFrame(event); } catch { return null; }
     console.log(`[Renderer] ${typeof rawLine === 'string' ? rawLine.slice(0, 600) : String(rawLine)}`);
     return null;
-  });
-  ipcMain.handle('goal:list', (event) => {
-    try {
-      requireRendererMainFrame(event);
-      if (!goalEngine) return decodeGoalListResponse(null);
-      return decodeGoalListResponse({
-        success: true,
-        goals: goalEngine.listGoals().map((goal) => presentGoalSummary(goal, goalCheckpointSummary(goal.id))),
-      });
-    } catch {
-      return decodeGoalListResponse(null);
-    }
-  });
-  ipcMain.handle('goal:generatePlan', async (event, rawGoalId: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      if (!goalEngine) return decodeGoalPlanResponse(null);
-      const { goalId } = GoalIdRequestSchema.parse({ goalId: rawGoalId });
-      const tracked = trackEphemeralOperation(runtimeShutdown, {
-        id: `goal:generatePlan:${goalId}:${++requestCounter}`,
-        rejection: decodeGoalPlanResponse({ success: false, code: 'application_shutting_down', label: GOAL_PLAN_LABEL, steps: [] }),
-      });
-      if (!tracked.admitted) return tracked.rejection;
-      try {
-        const result = await goalEngine.generatePlan(goalId, { signal: tracked.signal });
-        if (tracked.signal.aborted) return decodeGoalPlanResponse({ success: false, code: 'application_shutting_down', label: GOAL_PLAN_LABEL, steps: [] });
-        const goal = goalEngine.getGoal(goalId);
-        if (goal) broadcastGoalChanged(event.sender, goal);
-        return presentGoalPlan(goalId, result.workflow);
-      } catch (error) {
-        if (tracked.signal.aborted) return decodeGoalPlanResponse({ success: false, code: 'application_shutting_down', label: GOAL_PLAN_LABEL, steps: [] });
-        throw error;
-      } finally {
-        tracked.cleanup();
-      }
-    } catch {
-      return decodeGoalPlanResponse(null);
-    }
-  });
-  ipcMain.handle('goal:refinePlan', async (event, rawGoalId: unknown, rawFeedback: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      if (!goalEngine) return decodeGoalPlanResponse(null);
-      const request = GoalRefineRequestSchema.parse({
-        goalId: rawGoalId,
-        feedback: rawFeedback,
-      });
-      const tracked = trackEphemeralOperation(runtimeShutdown, {
-        id: `goal:refinePlan:${request.goalId}:${++requestCounter}`,
-        rejection: decodeGoalPlanResponse({ success: false, code: 'application_shutting_down', label: GOAL_PLAN_LABEL, steps: [] }),
-      });
-      if (!tracked.admitted) return tracked.rejection;
-      try {
-        const result = await goalEngine.refinePlan(request.goalId, request.feedback, { signal: tracked.signal });
-        if (tracked.signal.aborted) return decodeGoalPlanResponse({ success: false, code: 'application_shutting_down', label: GOAL_PLAN_LABEL, steps: [] });
-        const goal = goalEngine.getGoal(request.goalId);
-        if (goal) broadcastGoalChanged(event.sender, goal);
-        return presentGoalPlan(request.goalId, result.workflow);
-      } catch (error) {
-        if (tracked.signal.aborted) return decodeGoalPlanResponse({ success: false, code: 'application_shutting_down', label: GOAL_PLAN_LABEL, steps: [] });
-        throw error;
-      } finally {
-        tracked.cleanup();
-      }
-    } catch {
-      return decodeGoalPlanResponse(null);
-    }
-  });
-  ipcMain.handle('goal:updatePlan', async (event, rawGoalId: unknown, rawWorkflow: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const goalId = RuntimeIdSchema.parse(rawGoalId);
-      // O17: the renderer builds a WorkflowDefinition-shaped object; decode it
-      // leniently (structure is validated by GoalPlanner.validatePlan below).
-      if (!goalEngine || typeof rawWorkflow !== 'object' || rawWorkflow === null) {
-        return { valid: false, errors: ['goal_plan_update_unavailable'], warnings: [] };
-      }
-      const workflow = rawWorkflow as WorkflowDefinition;
-      const result = goalEngine.updatePlan(goalId, workflow);
-      if (result.valid) {
-        const goal = goalEngine.getGoal(goalId);
-        if (goal) broadcastGoalChanged(event.sender, goal);
-      }
-      return { valid: result.valid, errors: result.errors, warnings: result.warnings };
-    } catch {
-      return { valid: false, errors: ['goal_plan_update_unavailable'], warnings: [] };
-    }
-  });
-  ipcMain.handle('goal:execute', async (event, rawGoalId: unknown) => {
-    if (runtimeShutdown.isDraining()) return { success: false, code: 'application_shutting_down' };
-    let goalId: string;
-    try {
-      requireRendererMainFrame(event);
-      goalId = RuntimeIdSchema.parse(rawGoalId);
-    } catch {
-      return { success: false, code: 'goal_execution_unavailable' };
-    }
-    if (!goalEngine) return { success: false, code: 'goal_execution_unavailable' };
-    let sequence = 0;
-    const sendGoalEvent = (channel: string, payload: unknown) => {
-      const decoded = decodeGoalLiveEvent(payload);
-      if (decoded.ok) event.sender.send(channel, decoded.value);
-    };
-    const hooks: WorkflowHooks = {
-      onStepStart: (step) => {
-        sendGoalEvent('goal:step:start', {
-          version: CHAT_RUNTIME_CONTRACT_VERSION,
-          type: 'step-start',
-          goalId,
-          sequence: sequence++,
-          stepId: step.id,
-          stepName: 'Research step',
-        });
-      },
-      onStepComplete: (step) => {
-        sendGoalEvent('goal:step:complete', {
-          version: CHAT_RUNTIME_CONTRACT_VERSION,
-          type: 'step-complete',
-          goalId,
-          sequence: sequence++,
-          stepId: step.id,
-          stepName: 'Research step',
-          output: '',
-        });
-      },
-      onStepFailed: (step) => {
-        sendGoalEvent('goal:step:failed', {
-          version: CHAT_RUNTIME_CONTRACT_VERSION,
-          type: 'step-failed',
-          goalId,
-          sequence: sequence++,
-          stepId: step.id,
-          stepName: 'Research step',
-          error: 'goal_step_failed',
-        });
-      },
-      onProgress: (completed, total) => {
-        sendGoalEvent('goal:progress', {
-          version: CHAT_RUNTIME_CONTRACT_VERSION,
-          type: 'progress',
-          goalId,
-          sequence: sequence++,
-          completed,
-          total,
-          currentStep: 'Research step',
-        });
-      },
-    };
-    try {
-      // O13: 解析项目级 provider 覆盖（无覆盖时返回全局绑定）。
-      const executeTarget = goalEngine.getGoal(goalId);
-      const executionOptions = executeTarget ? resolveGoalExecutionOptions(executeTarget) : undefined;
-      const run = await goalEngine.executeGoal(goalId, hooks, executionOptions);
-      const goal = goalEngine.getGoal(goalId);
-      if (goal) broadcastGoalChanged(event.sender, goal);
-      if (run.status === 'completed') return { success: true, code: 'completed' };
-      if (run.status === 'paused') return { success: false, code: 'paused' };
-      if (run.status === 'cancelled') return { success: false, code: 'cancelled' };
-      return { success: false, code: 'failed' };
-    } catch (error) {
-      console.error('[goal:execute] execution failed', error);
-      return { success: false, code: 'goal_execution_unavailable' };
-    }
-  });
-  ipcMain.handle('goal:pause', (event, rawGoalId: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const { goalId } = GoalIdRequestSchema.parse({ goalId: rawGoalId });
-      if (!goalEngine) return { success: false, code: 'goal_execution_unavailable' };
-      const paused = goalEngine.pauseGoal(goalId);
-      const goal = goalEngine.getGoal(goalId);
-      if (goal) broadcastGoalChanged(event.sender, goal);
-      return paused
-        ? { success: true, code: 'pause_requested' }
-        : { success: false, code: 'goal_execution_unavailable' };
-    } catch {
-      return { success: false };
-    }
-  });
-  ipcMain.handle('goal:resume', async (event, rawGoalId: unknown, rawFromStepId?: unknown) => {
-    if (runtimeShutdown.isDraining()) return { success: false, code: 'application_shutting_down' };
-    try {
-      requireRendererMainFrame(event);
-      const { goalId } = GoalIdRequestSchema.parse({ goalId: rawGoalId });
-      const fromStepId = rawFromStepId === undefined
-        ? undefined
-        : RuntimeIdSchema.parse(rawFromStepId);
-      if (!goalEngine) return { success: false, code: 'goal_execution_unavailable' };
-      // O13/O14: resume 同样解析项目级 provider 覆盖；fromStepId 省略时
-      // 由 GoalEngine 从 checkpoint 推导恢复点。
-      const resumeTarget = goalEngine.getGoal(goalId);
-      const executionOptions = resumeTarget ? resolveGoalExecutionOptions(resumeTarget) : undefined;
-      const run = await goalEngine.resumeGoal(goalId, fromStepId, undefined, executionOptions);
-      const goal = goalEngine.getGoal(goalId);
-      if (goal) broadcastGoalChanged(event.sender, goal);
-      if (run.status === 'completed') return { success: true, code: 'completed' };
-      if (run.status === 'paused') return { success: false, code: 'paused' };
-      if (run.status === 'cancelled') return { success: false, code: 'cancelled' };
-      return { success: false, code: 'failed' };
-    } catch (error) {
-      console.error('[goal:resume] resume failed', error);
-      // 已取消/已完成的目标是终态，恢复永远不可能成功——必须把这个事实
-      // 如实返回给渲染端，而不是笼统的 unavailable（那会让用户一直重试）。
-      const message = String((error as Error)?.message ?? error);
-      if (message.includes('was cancelled and cannot be resumed')) {
-        return { success: false, code: 'goal_cancelled' };
-      }
-      if (message.includes('not found')) {
-        return { success: false, code: 'goal_not_found' };
-      }
-      return { success: false, code: 'goal_execution_unavailable' };
-    }
-  });
-  // O7: human decision on an escalated step (retry / skip / stop).
-  ipcMain.handle('goal:resolveStepDecision', async (event, rawRequest: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const request = rawRequest as { goalId?: string; action?: string };
-      const goalId = typeof request?.goalId === 'string' ? request.goalId : '';
-      const action = request?.action;
-      if (!goalId || (action !== 'retry' && action !== 'skip' && action !== 'stop') || !goalEngine) {
-        return { success: false, code: 'invalid_request' };
-      }
-      const goal = goalEngine.getGoal(goalId);
-      const executionOptions = goal ? resolveGoalExecutionOptions(goal) : undefined;
-      await goalEngine.resolveStepDecision(goalId, action, undefined, executionOptions);
-      const updated = goalEngine.getGoal(goalId);
-      if (updated) broadcastGoalChanged(event.sender, updated);
-      return { success: true };
-    } catch {
-      return { success: false, code: 'goal_execution_unavailable' };
-    }
-  });
-  ipcMain.handle('goal:cancel', (event, rawGoalId: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const { goalId } = GoalIdRequestSchema.parse({ goalId: rawGoalId });
-      if (!goalEngine) return { success: false, code: 'goal_execution_unavailable' };
-      const cancelled = goalEngine.cancelGoal(goalId);
-      const goal = goalEngine.getGoal(goalId);
-      if (goal) broadcastGoalChanged(event.sender, goal);
-      return cancelled
-        ? { success: true, code: 'cancelled' }
-        : { success: false, code: 'goal_not_found' };
-    } catch {
-      return { success: false };
-    }
-  });
-  ipcMain.handle('goal:getProgress', (event, rawGoalId: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const { goalId } = GoalIdRequestSchema.parse({ goalId: rawGoalId });
-      return goalEngine?.getProgress(goalId);
-    } catch {
-      return undefined;
-    }
-  });
-  ipcMain.handle('goal:archive', async (event, rawGoalId: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const { goalId } = GoalIdRequestSchema.parse({ goalId: rawGoalId });
-      if (!goalEngine) return { success: false };
-      await goalEngine.archiveGoal(goalId);
-      return { success: true };
-    } catch {
-      return { success: false };
-    }
-  });
-  ipcMain.handle('goal:listArchives', (event) => {
-    try {
-      requireRendererMainFrame(event);
-      return goalEngine?.getArchives() ?? [];
-    } catch {
-      return [];
-    }
-  });
-
-  // ── Kanban status/priority transitions ──────────────────
-  ipcMain.handle('goal:updateStatus', (event, rawRequest: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const request = rawRequest as { goalId?: unknown; status?: unknown };
-      const goalId = typeof request?.goalId === 'string' ? request.goalId : '';
-      const status = typeof request?.status === 'string' ? request.status : '';
-      const valid = new Set(['draft', 'planning', 'ready', 'running', 'paused', 'completed', 'failed']);
-      if (!goalId || !valid.has(status) || !goalEngine) return { ok: false, error: 'invalid_request' };
-      const updated = goalEngine.setStatus(goalId, status as Goal['status']);
-      if (updated) {
-        const goal = goalEngine.getGoal(goalId);
-        if (goal) broadcastGoalChanged(event.sender, goal);
-      }
-      return updated ? { ok: true } : { ok: false, error: 'not_found' };
-    } catch {
-      return { ok: false, error: 'unauthorized_renderer' };
-    }
-  });
-
-  ipcMain.handle('goal:updatePriority', (event, rawRequest: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const request = rawRequest as { goalId?: unknown; priority?: unknown };
-      const goalId = typeof request?.goalId === 'string' ? request.goalId : '';
-      const priority = typeof request?.priority === 'string' ? request.priority : '';
-      const valid = new Set(['low', 'medium', 'high', 'urgent']);
-      if (!goalId || !valid.has(priority) || !goalEngine) return { ok: false, error: 'invalid_request' };
-      const updated = goalEngine.setPriority(goalId, priority as Goal['priority']);
-      if (updated) {
-        const goal = goalEngine.getGoal(goalId);
-        if (goal) broadcastGoalChanged(event.sender, goal);
-      }
-      return updated ? { ok: true } : { ok: false, error: 'not_found' };
-    } catch {
-      return { ok: false, error: 'unauthorized_renderer' };
-    }
-  });
-
-  ipcMain.handle('goal:delete', (event, rawGoalId: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const goalId = typeof rawGoalId === 'string' ? rawGoalId : '';
-      if (!goalId || !goalEngine) return { ok: false, error: 'invalid_request' };
-      const goal = goalEngine.getGoal(goalId);
-      const deleted = goalEngine.deleteGoal(goalId);
-      if (deleted && goal) {
-        // Deletion is presented to open cards as a cancellation so chat cards
-        // never dangle; the board reloads and the card disappears.
-        broadcastGoalChanged(event.sender, goal, 'cancelled');
-      }
-      return deleted ? { ok: true } : { ok: false, error: 'not_found' };
-    } catch {
-      return { ok: false, error: 'unauthorized_renderer' };
-    }
   });
 
   // ── Autonomous Research Engine ─────────────────────────
