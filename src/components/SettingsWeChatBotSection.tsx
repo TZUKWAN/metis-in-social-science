@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useTranslation } from '../i18n';
+import { SectionGroup } from './settings/SectionGroup';
 
 export type WeChatPhase =
   | 'unbound'
@@ -167,12 +168,11 @@ export default function SettingsWeChatBotSection() {
   const isBound = phase === 'bound';
 
   return (
-    <div className="settings-group" data-testid="wechat-bot-section">
-      <h3>{t('settings.wechatBot')}</h3>
-      <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>
-        {t('settings.wechatBotDescription')}
-      </p>
-
+    <SectionGroup
+      title={t('settings.wechatBot')}
+      description={t('settings.wechatBotDescription')}
+      testId="wechat-bot-section"
+    >
       {!isBound && (
         <div data-testid="wechat-login-area">
           {phase === 'unbound' || phase === 'error' ? (
@@ -252,23 +252,25 @@ export default function SettingsWeChatBotSection() {
             </button>
           </div>
 
-          <div style={{ marginTop: 12, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div className="ds-field" style={{ marginTop: 12 }}>
             <label style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{t('settings.projectSelect')}</label>
-            <select
-              className="settings-input"
-              value={status?.activeProjectId ?? ''}
-              onChange={(e) => void handleSetProject(e.target.value)}
-              style={{ maxWidth: 260 }}
-              data-testid="wechat-project-select"
-            >
-              <option value="">{t('settings.wechatNoProject')}</option>
-              {projects.map((project) => (
-                <option key={project.id} value={project.id}>{project.title || project.id}</option>
-              ))}
-            </select>
+            <div className="ds-field__control">
+              <select
+                className="settings-input"
+                value={status?.activeProjectId ?? ''}
+                onChange={(e) => void handleSetProject(e.target.value)}
+                style={{ maxWidth: 260 }}
+                data-testid="wechat-project-select"
+              >
+                <option value="">{t('settings.wechatNoProject')}</option>
+                {projects.map((project) => (
+                  <option key={project.id} value={project.id}>{project.title || project.id}</option>
+                ))}
+              </select>
+            </div>
           </div>
 
-          <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div className="ds-field__control" style={{ marginTop: 12 }}>
             <input
               className="settings-input"
               value={testText}
@@ -318,7 +320,7 @@ export default function SettingsWeChatBotSection() {
           role={notice.type === 'error' ? 'alert' : 'status'}
           data-testid="wechat-notice"
           style={{
-            marginTop: 10, fontSize: 13, padding: '8px 10px', borderRadius: 'var(--radius, 4px)',
+            fontSize: 13, padding: '8px 10px', borderRadius: 'var(--radius, 4px)',
             color: notice.type === 'error' ? 'var(--status-failed)' : 'var(--status-completed)',
             background: 'var(--bg-secondary)',
           }}
@@ -326,6 +328,6 @@ export default function SettingsWeChatBotSection() {
           {notice.message}
         </div>
       )}
-    </div>
+    </SectionGroup>
   );
 }

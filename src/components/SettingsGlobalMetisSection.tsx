@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { MetisRulesDefinition, PersonalizationDefinition } from '../../engine/runtime/PersonalizationRuntimeContract.js';
 import { useTranslation } from '../i18n';
+import { SectionGroup } from './settings/SectionGroup';
 
 const DEFAULT_GLOBAL_METIS_MARKDOWN = [
   '# METIS.md',
@@ -125,11 +126,14 @@ export default function SettingsGlobalMetisSection() {
   }, [definition, markdown, saving, zh]);
 
   return (
-    <div className="settings-group settings-group--wide" data-testid="settings-global-metis">
-      <h3>{zh ? '全局 METIS.md' : 'Global METIS.md'}</h3>
-      <p>{zh
+    <SectionGroup
+      className="settings-global-metis"
+      title={zh ? '全局 METIS.md' : 'Global METIS.md'}
+      description={zh
         ? '对全部对话与研究任务生效的长期规则。场景/项目级 Metis.md 会在此基础上叠加。'
-        : 'Long-term rules applied to every conversation and research task. Scenario/project Metis.md layer on top.'}</p>
+        : 'Long-term rules applied to every conversation and research task. Scenario/project Metis.md layer on top.'}
+      testId="settings-global-metis"
+    >
       {loading ? (
         <p role="status" style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{zh ? '加载中…' : 'Loading…'}</p>
       ) : (
@@ -137,14 +141,15 @@ export default function SettingsGlobalMetisSection() {
           <textarea
             value={markdown}
             onChange={(event) => setMarkdown(event.target.value)}
-            rows={10}
+            rows={12}
             spellCheck={false}
             aria-label={zh ? '全局 METIS.md 内容' : 'Global METIS.md content'}
             data-testid="settings-global-metis-markdown"
             placeholder={zh ? '编写全局规则，例如真实性、引用、数据处理与工具使用纪律。' : 'Write global rules: truthfulness, citation, data handling, tool discipline.'}
-            style={{ width: '100%', boxSizing: 'border-box', fontFamily: 'var(--font-mono, monospace)', fontSize: 12, lineHeight: 1.6, padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-primary)', color: 'var(--text-primary)', resize: 'vertical' }}
+            className="ds-prompt-textarea"
+            style={{ width: '100%', boxSizing: 'border-box', fontFamily: 'var(--font-mono, monospace)', fontSize: 12, lineHeight: 1.6, padding: '8px 10px', border: '1px solid var(--ds-border)', borderRadius: 6, background: 'var(--bg-primary)', color: 'var(--text-primary)', resize: 'vertical' }}
           />
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+          <div className="ds-field__control">
             <button
               type="button"
               className="btn-primary btn-sm"
@@ -164,6 +169,6 @@ export default function SettingsGlobalMetisSection() {
           </div>
         </>
       )}
-    </div>
+    </SectionGroup>
   );
 }

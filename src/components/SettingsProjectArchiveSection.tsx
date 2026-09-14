@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from '../i18n';
 import type { UIMode } from '../../engine/capabilities/DiagnosticMode';
+import { SectionGroup } from './settings/SectionGroup';
 
 interface ProjectSummary {
   id: string;
@@ -114,53 +115,50 @@ export default function SettingsProjectArchiveSection({ uiMode }: { uiMode: UIMo
   };
 
   return (
-    <div className="settings-group">
-      <h3>{t('settings.projectArchive')}</h3>
-      <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>
-        {t('settings.projectArchiveDescription')}
-      </p>
-
-      <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-        <label htmlFor="project-archive-select" style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{t('settings.projectSelect')}</label>
-        <select
-          className="settings-input"
-          id="project-archive-select"
-          value={selectedProjectId}
-          onChange={(e) => setSelectedProjectId(e.target.value)}
-          disabled={busy || projects.length === 0}
-          style={{ maxWidth: 320 }}
-          data-testid="project-archive-select"
-        >
-          {projects.length === 0 && <option value="">{t('settings.noProjects')}</option>}
-          {projects.map((project) => (
-            <option key={project.id} value={project.id}>
-              {project.title || project.id}
-            </option>
-          ))}
-        </select>
-        <button
-          type="button"
-          className="btn-primary"
-          onClick={() => void handleExport()}
-          disabled={busy || !selectedProjectId}
-          data-testid="project-export-button"
-        >
-          {busy ? t('common.loading') : t('settings.exportProject')}
-        </button>
-        <button
-          type="button"
-          className="btn-secondary"
-          onClick={() => void handleImport()}
-          disabled={busy}
-          data-testid="project-import-button"
-        >
-          {t('settings.importProject')}
-        </button>
+    <SectionGroup title={t('settings.projectArchive')} description={t('settings.projectArchiveDescription')}>
+      <div className="ds-field">
+        <label htmlFor="project-archive-select" className="ds-field__label">{t('settings.projectSelect')}</label>
+        <div className="ds-field__control">
+          <select
+            className="settings-input"
+            id="project-archive-select"
+            value={selectedProjectId}
+            onChange={(e) => setSelectedProjectId(e.target.value)}
+            disabled={busy || projects.length === 0}
+            style={{ maxWidth: 320 }}
+            data-testid="project-archive-select"
+          >
+            {projects.length === 0 && <option value="">{t('settings.noProjects')}</option>}
+            {projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.title || project.id}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="btn-primary"
+            onClick={() => void handleExport()}
+            disabled={busy || !selectedProjectId}
+            data-testid="project-export-button"
+          >
+            {busy ? t('common.loading') : t('settings.exportProject')}
+          </button>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => void handleImport()}
+            disabled={busy}
+            data-testid="project-import-button"
+          >
+            {t('settings.importProject')}
+          </button>
+        </div>
       </div>
 
       <label
         style={{
-          display: 'flex', gap: 8, alignItems: 'center', marginTop: 10, fontSize: 13,
+          display: 'flex', gap: 8, alignItems: 'center', fontSize: 13,
           color: 'var(--text-secondary)', cursor: 'pointer',
         }}
       >
@@ -174,7 +172,7 @@ export default function SettingsProjectArchiveSection({ uiMode }: { uiMode: UIMo
       </label>
 
       {lastExportPath && (
-        <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 8 }}>
+        <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
           {t('settings.archiveExportedTo')}: <code>{lastExportPath}</code>
         </div>
       )}
@@ -183,7 +181,7 @@ export default function SettingsProjectArchiveSection({ uiMode }: { uiMode: UIMo
           role={status.type === 'error' ? 'alert' : 'status'}
           data-testid="project-archive-status"
           style={{
-            marginTop: 10, fontSize: 13, padding: '8px 10px', borderRadius: 'var(--radius, 4px)',
+            fontSize: 13, padding: '8px 10px', borderRadius: 'var(--radius, 4px)',
             color: status.type === 'error' ? 'var(--status-failed)' : 'var(--status-completed)',
             background: 'var(--bg-secondary)',
           }}
@@ -191,6 +189,6 @@ export default function SettingsProjectArchiveSection({ uiMode }: { uiMode: UIMo
           {status.message}
         </div>
       )}
-    </div>
+    </SectionGroup>
   );
 }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from '../i18n';
 import FreeModelCenter from '../personalization/FreeModelCenter.js';
+import { SectionGroup } from './settings/SectionGroup';
 import type {
   ProviderProfileSaveRequest,
   ProviderProfileSummary,
@@ -274,18 +275,19 @@ export default function ProviderProfilesSection() {
   const isBusy = busy !== 'idle';
 
   return (
-    <section className="settings-group provider-profiles" aria-labelledby="provider-profiles-title">
-      <div className="settings-section-heading">
-        <div>
-          <p className="settings-section-kicker">{zh ? '连接' : 'Connections'}</p>
-          <h3 id="provider-profiles-title">{zh ? '模型连接' : 'Model connections'}</h3>
-        </div>
+    <SectionGroup
+      className="provider-profiles"
+      kicker={zh ? '连接' : 'Connections'}
+      title={zh ? '模型连接' : 'Model connections'}
+      description={zh
+        ? '每个连接独立保存模型、上下文窗口和加密密钥。当前连接会在下次启动时自动恢复。'
+        : 'Each connection keeps its model, context window, and encrypted key separately. The current connection is restored at startup.'}
+      action={(
         <button type="button" className="btn-sm btn-secondary" onClick={() => setConnectionModeOpen(true)} disabled={isBusy} data-testid="provider-profile-new">
           {zh ? '新增连接' : 'New connection'}
         </button>
-      </div>
-      <p className="settings-hint">{zh ? '每个连接独立保存模型、上下文窗口和加密密钥。当前连接会在下次启动时自动恢复。' : 'Each connection keeps its model, context window, and encrypted key separately. The current connection is restored at startup.'}</p>
-
+      )}
+    >
       <div className="provider-profiles__layout">
         <div className="provider-profiles__list" aria-label={zh ? '已保存的模型连接' : 'Saved model connections'}>
           {profiles.length === 0 && (
@@ -403,6 +405,6 @@ export default function ProviderProfilesSection() {
           </div>
         </div>
       )}
-    </section>
+    </SectionGroup>
   );
 }

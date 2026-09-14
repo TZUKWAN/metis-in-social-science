@@ -10,6 +10,7 @@
 
 import { useEffect, useState } from 'react';
 import { useTranslation } from '../i18n';
+import { SectionGroup } from './settings/SectionGroup';
 
 interface StorageLocationState {
   dataDir: string;
@@ -123,43 +124,34 @@ export default function SettingsStorageSection() {
   };
 
   return (
-    <div className="settings-group" data-testid="storage-section">
-      <h3>{t('settings.storageSectionTitle')}</h3>
-      <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>
-        {t('settings.storageSectionDescription')}
-      </p>
-
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          fontSize: 13,
-          color: 'var(--text-primary)',
-          marginBottom: 12,
-          flexWrap: 'wrap',
-        }}
-      >
-        <span style={{ color: 'var(--text-secondary)' }}>{t('settings.storageCurrentLocation')}：</span>
-        <code
-          data-testid="storage-current-path"
-          style={{ fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 12, wordBreak: 'break-all' }}
-          title={location?.dataDir ?? ''}
-        >
-          {location ? truncatePath(location.dataDir) : '…'}
-        </code>
-        {location?.usingDefault && (
-          <span
-            className="badge"
-            data-testid="storage-default-badge"
-            style={{ fontSize: 11, color: 'var(--text-secondary)' }}
+    <SectionGroup
+      title={t('settings.storageSectionTitle')}
+      description={t('settings.storageSectionDescription')}
+      testId="storage-section"
+    >
+      <div className="ds-field">
+        <span className="ds-field__label">{t('settings.storageCurrentLocation')}：</span>
+        <div className="ds-field__control" style={{ fontSize: 13, color: 'var(--text-primary)' }}>
+          <code
+            data-testid="storage-current-path"
+            style={{ fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 12, wordBreak: 'break-all' }}
+            title={location?.dataDir ?? ''}
           >
-            {t('settings.storageDefaultBadge')}
-          </span>
-        )}
+            {location ? truncatePath(location.dataDir) : '…'}
+          </code>
+          {location?.usingDefault && (
+            <span
+              className="badge"
+              data-testid="storage-default-badge"
+              style={{ fontSize: 11, color: 'var(--text-secondary)' }}
+            >
+              {t('settings.storageDefaultBadge')}
+            </span>
+          )}
+        </div>
       </div>
 
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+      <div className="ds-field__control">
         <button
           type="button"
           className="btn-sm btn-primary"
@@ -195,7 +187,6 @@ export default function SettingsStorageSection() {
         <div
           data-testid="storage-confirm-dialog"
           style={{
-            marginTop: 12,
             padding: 12,
             border: '1px solid var(--border-color)',
             borderRadius: 8,
@@ -206,7 +197,7 @@ export default function SettingsStorageSection() {
           <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 10, wordBreak: 'break-all' }}>
             {t('settings.storageConfirmBody').replace('{path}', truncatePath(pendingTarget, 120))}
           </div>
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div className="ds-field__control">
             <button
               type="button"
               className="btn-sm btn-primary"
@@ -230,15 +221,15 @@ export default function SettingsStorageSection() {
       )}
 
       {restarting && (
-        <div role="status" data-testid="storage-restarting" style={{ marginTop: 12, fontSize: 13, color: 'var(--status-completed)' }}>
+        <div role="status" data-testid="storage-restarting" style={{ fontSize: 13, color: 'var(--status-completed)' }}>
           {t('settings.storageRestarting')}
         </div>
       )}
       {error && !restarting && (
-        <div role="alert" data-testid="storage-error" style={{ marginTop: 12, fontSize: 12, color: 'var(--status-error)' }}>
+        <div role="alert" data-testid="storage-error" style={{ fontSize: 12, color: 'var(--status-error)' }}>
           {error}
         </div>
       )}
-    </div>
+    </SectionGroup>
   );
 }

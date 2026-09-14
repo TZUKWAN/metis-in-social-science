@@ -115,13 +115,7 @@ import { OfficePromptProfileService } from './OfficePromptProfileService.js';
 import { buildExperienceElicitationPrompt, buildTestRunOptions, type SkillStudioSource } from '../engine/skills/SkillStudio.js';
 import { TopicService, TOPIC_SEARCH_TOOLS } from './TopicService.js';
 import { SubmissionRepository } from './SubmissionRepository.js';
-import {
-  SUBMISSION_STATUSES,
-  TargetingCriteriaSchema,
-  SubmissionCaseCreateRequestSchema,
-  SubmissionCaseUpdateRequestSchema,
-  SubmissionStatusChangeRequestSchema,
-} from '../engine/submission/SubmissionRuntimeContract.js';
+import { TargetingCriteriaSchema } from '../engine/submission/SubmissionRuntimeContract.js';
 
 import { aggregateVenueCandidates } from '../engine/submission/JournalTargeting.js';
 import { buildVenueMatchQuery, filterRelevantPapers, outcomeContentToMatchText } from './SubmissionVenueMatching.js';
@@ -151,8 +145,6 @@ import { SubmissionDeadlineSync } from './SubmissionDeadlineSync.js';
 import { SubmissionMailWatcher } from './SubmissionMailWatcher.js';
 import type { ImapFlowConstructor } from '../engine/mail/MailboxPool.js';
 
-const SUBMISSION_STATUS_SET: ReadonlySet<string> = new Set<string>(SUBMISSION_STATUSES);
-type SubmissionStatusName = (typeof SUBMISSION_STATUSES)[number];
 import { OutcomeMediaService } from './OutcomeMediaService.js';
 import { GenofficeEmbeddedViewService } from './genofficeEmbedded/GenofficeEmbeddedViewService.js';
 import { registerGenofficeDocsCompat, onEmbeddedThemeChanged } from './genofficeEmbedded/genofficeEmbeddedDocsCompat.js';
@@ -228,6 +220,7 @@ import { registerGoalIpc } from './ipc/registerGoalIpc.js';
 import { parseBrowserBounds } from './ipc/sharedGuards.js';
 import { registerBrowserIpc } from './ipc/registerBrowserIpc.js';
 import { registerOutcomeDataIpc } from './ipc/registerOutcomeDataIpc.js';
+import { registerSubmissionCaseIpc } from './ipc/registerSubmissionCaseIpc.js';
 import { RemoteDevBridge, isRemoteBridgeSender, remoteBroadcast } from './RemoteBridge/remoteDevBridge.js';
 import { registerExperimentIpc } from './ipc/registerExperimentIpc.js';
 import { registerWeChatIpc } from './ipc/registerWeChatIpc.js';
@@ -883,6 +876,7 @@ const domainIpcContext: DomainIpcContext = {
   jobQueueService: () => jobQueueService,
   outcomeRepository: () => outcomeRepository,
   purgeExpiredOutcomeTrash,
+  submissionRepository: () => submissionRepository,
   goalEngine: () => goalEngine,
   nextRequestId: () => ++requestCounter,
   broadcastGoalChanged,
@@ -3609,70 +3603,6 @@ function setupIPC(): void {
 
 
   // ── Submission domain: 投稿事务（Series / Case / Events / 状态机） ──
-  ipcMain.handle('submission:listSeries', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p = z.string().min(1).safeParse(raw); return p.success && submissionRepository ? submissionRepository.listSeries(p.data) : []; } catch { return []; } });
-  ipcMain.handle('submission:listCases', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.object({ projectId: z.string().min(1), status: z.string().optional(), query: z.string().max(200).optional(), includeClosed: z.boolean().optional() }).safeParse(raw);
-      if (!p.success || !submissionRepository) return [];
-      const status = SUBMISSION_STATUS_SET.has(p.data.status ?? '') ? (p.data.status as SubmissionStatusName) : undefined;
-      return submissionRepository.listCases(p.data.projectId, { status, query: p.data.query, includeClosed: p.data.includeClosed });
-    } catch (error) {
-      if (error instanceof Error && error.message.startsWith('submission_duplicate_active')) throw error;
-      return [];
-    }
-  });
-  ipcMain.handle('submission:getCase', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw); return p.success && submissionRepository ? submissionRepository.getCase(p.data.projectId, p.data.caseId) ?? null : null; } catch { return null; } });
-  ipcMain.handle('submission:createCase', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = SubmissionCaseCreateRequestSchema.safeParse(raw);
-      if (!p.success || !submissionRepository) {
-        console.error('[submission:createCase] rejected:', p.success ? 'repository_unavailable' : JSON.stringify(p.error.issues));
-        return null;
-      }
-      return submissionRepository.createCase(p.data);
-    } catch (error) {
-      // 一稿多投风险：结构化返回，不静默吞掉。
-      if (error instanceof Error && error.message.startsWith('submission_duplicate_active')) {
-        const [, caseId, journal] = error.message.split(':');
-        return { ok: false as const, code: 'duplicate_active' as const, activeCaseId: caseId ?? '', activeJournal: journal ?? '' };
-      }
-      console.error('[submission:createCase] failed:', error instanceof Error ? error.stack : error);
-      return null;
-    }
-  });
-  ipcMain.handle('submission:updateCase', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p = z.object({ projectId: z.string().min(1), patch: SubmissionCaseUpdateRequestSchema }).safeParse(raw); if (!p.success || !submissionRepository) return null; return submissionRepository.updateCase(p.data.projectId, p.data.patch) ?? null; } catch { return null; } });
-  ipcMain.handle('submission:changeStatus', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.object({ projectId: z.string().min(1), change: SubmissionStatusChangeRequestSchema }).safeParse(raw);
-      if (!p.success || !submissionRepository) return null;
-      // 最终提交是外部副作用，必须走 submission:submit（Human Approval 门控 + 回执），
-      // 不允许经通用状态通道直接推到已提交/已重投。
-      if (p.data.change.to === 'SUBMITTED' || p.data.change.to === 'RESUBMITTED') {
-        return { ok: false as const, code: 'use_submit_flow' as const, message: '正式提交/重投必须通过「确认投稿」流程完成（需人工确认与投稿回执）。' };
-      }
-      return submissionRepository.changeStatus(p.data.projectId, p.data.change) ?? null;
-    } catch (error) {
-      if (error instanceof Error && error.message.startsWith('Illegal submission status transition')) {
-        return { ok: false as const, code: 'illegal_transition' as const, message: error.message };
-      }
-      return null;
-    }
-  });
-  ipcMain.handle('submission:listEvents', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw); return p.success && submissionRepository ? submissionRepository.listEvents(p.data.projectId, p.data.caseId) : []; } catch { return []; } });
-  ipcMain.handle('submission:addEvent', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1), type: z.string().min(1).max(60), source: z.enum(['human', 'system', 'browser', 'email', 'agent']).default('human'), sourceId: z.string().max(300).nullable().optional(), actor: z.string().max(120).optional(), description: z.string().max(2000).optional(), metadata: z.record(z.string(), z.unknown()).optional() }).safeParse(raw);
-      if (!p.success || !submissionRepository) return null;
-      return submissionRepository.addEvent(p.data.projectId, { caseId: p.data.caseId, type: p.data.type, source: p.data.source, sourceId: p.data.sourceId ?? null, actor: p.data.actor, description: p.data.description, metadata: p.data.metadata }) ?? null;
-    } catch { return null; }
-  });
-  ipcMain.handle('submission:archiveCase', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw); return p.success && submissionRepository ? submissionRepository.archiveCase(p.data.projectId, p.data.caseId) : false; } catch { return false; } });
-  ipcMain.handle('submission:checkActive', (event, raw: unknown) => { try { requireRendererMainFrame(event); const p = z.object({ projectId: z.string().min(1), sourceOutcomeId: z.string().min(1) }).safeParse(raw); return p.success && submissionRepository ? submissionRepository.findActiveCase(p.data.projectId, p.data.sourceOutcomeId) ?? null : null; } catch { return null; } });
-
   ipcMain.handle('submission:matchJournals', async (event, raw: unknown) => {
     try {
       requireRendererMainFrame(event);
@@ -5565,6 +5495,7 @@ function setupIPC(): void {
   ipcDomainDisposers.push(registerGoalIpc(domainIpcContext));
   ipcDomainDisposers.push(registerBrowserIpc(domainIpcContext));
   ipcDomainDisposers.push(registerOutcomeDataIpc(domainIpcContext));
+  ipcDomainDisposers.push(registerSubmissionCaseIpc(domainIpcContext));
 
   // ── 远程开发桥（dev-only）：METIS_REMOTE_BRIDGE=1 时开启浏览器远程访问。
   // 服务器在 whenReady 后启动，确保 setupIPC 已注册全部通道。──
@@ -9305,44 +9236,6 @@ function buildFundingTemplateDigest(pkg: { source?: { sourceFormat?: string; pag
   });
   // 投稿参谋（2026-09-01 刘总规格）：Artifact+Browser+Intent 三上下文编排对话。
   // ── 投稿短名单持久化（任务6 补齐 2026-09-08）：schema/桥已在，handler 此前缺失 ──
-  ipcMain.handle('submission:shortlist:list', (event, rawRequest: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const parsed = z.object({ projectId: z.string().min(1) }).safeParse(rawRequest);
-      if (!parsed.success || !store) return [];
-      return store.raw.prepare('SELECT id, name, source, url, note, created_at FROM submission_shortlists WHERE project_id = ? ORDER BY created_at DESC')
-        .all(parsed.data.projectId) as Array<{ id: string; name: string; source: string; url: string; note: string; created_at: number }>;
-    } catch { return []; }
-  });
-  ipcMain.handle('submission:shortlist:add', (event, rawRequest: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const parsed = z.object({
-        projectId: z.string().min(1),
-        name: z.string().min(1).max(300),
-        source: z.string().max(120).optional(),
-        url: z.string().max(2000).optional(),
-        note: z.string().max(2000).optional(),
-      }).safeParse(rawRequest);
-      if (!parsed.success || !store) return { ok: false };
-      const existing = store.raw.prepare('SELECT id FROM submission_shortlists WHERE project_id = ? AND name = ?')
-        .get(parsed.data.projectId, parsed.data.name);
-      if (existing) return { ok: true };
-      store.raw.prepare('INSERT INTO submission_shortlists (id, project_id, name, source, url, note, created_at) VALUES (?,?,?,?,?,?,?)')
-        .run(`sl-${randomUUID()}`, parsed.data.projectId, parsed.data.name, parsed.data.source ?? '', parsed.data.url ?? '', parsed.data.note ?? '', Date.now());
-      return { ok: true };
-    } catch { return { ok: false }; }
-  });
-  ipcMain.handle('submission:shortlist:remove', (event, rawRequest: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const parsed = z.object({ projectId: z.string().min(1), name: z.string().min(1) }).safeParse(rawRequest);
-      if (!parsed.success || !store) return { ok: false };
-      const info = store.raw.prepare('DELETE FROM submission_shortlists WHERE project_id = ? AND name = ?')
-        .run(parsed.data.projectId, parsed.data.name);
-      return { ok: info.changes > 0 };
-    } catch { return { ok: false }; }
-  });
   ipcMain.handle('submission:assistant:chat', async (event, raw: unknown) => {
     try {
       requireRendererMainFrame(event);

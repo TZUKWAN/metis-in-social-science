@@ -87,6 +87,7 @@ export interface DomainIpcContext {
   // ── Outcomes（数据管理子域）──────────────────────────────
   outcomeRepository(): import('../OutcomeRepository.js').OutcomeRepository | null;
   purgeExpiredOutcomeTrash(): void;
+  submissionRepository(): import('../SubmissionRepository.js').SubmissionRepository | null;
   // ── Research browser domain ─────────────────────────────
   /** Live browser service instance, or null before first use. */
   browserService(): import('../BrowserService.js').BrowserService | null;

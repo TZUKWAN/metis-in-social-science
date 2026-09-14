@@ -6,6 +6,7 @@ import {
   type ImageGenerationSettings,
 } from '../../engine/runtime/OutcomeRuntimeContract.js';
 import './SettingsImageGenerationSection.css';
+import { SectionGroup } from './settings/SectionGroup';
 
 const OUTCOME_IMAGE_SECRET = 'OUTCOME_IMAGE_API_KEY';
 const QUALITY_OPTIONS = [
@@ -255,20 +256,18 @@ export default function SettingsImageGenerationSection() {
     : phase;
 
   return (
-    <section className="settings-group settings-image-generation" aria-labelledby="image-generation-settings-title" data-testid="image-generation-settings-section">
-      <div className="settings-section-heading">
-        <div>
-          <p className="settings-section-kicker">成果</p>
-          <h3 id="image-generation-settings-title">成果图片生成</h3>
-        </div>
+    <SectionGroup
+      className="settings-image-generation"
+      kicker="成果"
+      title="成果图片生成"
+      description="为 Word 和 PPT 成果中的图片生成配置独立模型。API 密钥仅写入现有加密凭据库，界面不会回显，也不会在此页面伪造连通性结果。"
+      action={(
         <span className={`settings-image-generation__state settings-image-generation__state--${stateKind}`} data-testid="image-generation-settings-state">
           {stateLabel}
         </span>
-      </div>
-      <p className="settings-hint">
-        为 Word 和 PPT 成果中的图片生成配置独立模型。API 密钥仅写入现有加密凭据库，界面不会回显，也不会在此页面伪造连通性结果。
-      </p>
-
+      )}
+      testId="image-generation-settings-section"
+    >
       <div className="settings-image-generation__grid">
         <label className="settings-label">
           <span>服务商</span>
@@ -307,6 +306,6 @@ export default function SettingsImageGenerationSection() {
         </button>
       </div>
       {notice && <p role="status" aria-live="polite" data-testid="image-generation-settings-notice" className={`settings-image-generation__notice settings-image-generation__notice--${notice.tone}`}>{notice.text}</p>}
-    </section>
+    </SectionGroup>
   );
 }

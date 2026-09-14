@@ -16,8 +16,9 @@ import { presentReasoningSummary } from '../presentation/reasoningPresentation';
 
 /**
  * 选题 Topic Workspace(2026-09-04 刘总要求:选题一级功能)。
- * 布局:主区顶部=会话 tab 条(按分类分组,可切换/关闭,「+」新建);中=AI 研究过程
- * (真实检索/研究版图/结构化选择);右=候选池(可折叠)。
+ * 布局:左=会话列表(按分类分组);中=AI 研究过程(真实检索/研究版图/结构化选择);
+ * 右=候选池(可折叠;候选为空时弱化为窄提示条,不占整列)。
+ * 空状态=居中卡片式引导组:说明文案+候选机制+示例 chips+偏好 chips 紧凑排在输入框上方。
  * 复用 METIS 桌面工作台设计(高信息密度、克制、无卡片墙/评分圆环)。
  */
 
@@ -425,6 +426,10 @@ export default function TopicWorkspacePage() {
 
   const activeCandidate = candidates.find((candidate) => candidate.id === activeCandidateId) ?? candidates.find((candidate) => candidate.status === 'selected') ?? null;
   const selectedCandidate = candidates.find((candidate) => candidate.status === 'selected') ?? null;
+  // 任务文档第十节（UI 统一重构 2026-09-15）：Candidates 为空时右栏弱化——
+  // 自动收窄为窄提示条，避免「候选选题(0)」空态占整列；真实检索产出候选后恢复整栏。
+  const candidatesEmpty = candidates.length === 0;
+  const rightHidden = rightCollapsed || candidatesEmpty;
 
   const buildScenario = async () => {
     if (!selectedCandidate || !session) return;
@@ -666,11 +671,13 @@ export default function TopicWorkspacePage() {
           </div>
         )}
         {notice && <div className="topic-workspace__notice" role="status">{notice}</div>}
-        <div className="topic-workspace__messages">
+        <div className={`topic-workspace__messages${messages.length === 0 && !session ? ' topic-workspace__messages--empty' : ''}`}>
           {messages.length === 0 && !session && (
             <div className="topic-workspace__intro" data-testid="topic-intro">
               <h2>选题</h2>
-              <p>从一个模糊的研究兴趣开始，METIS 会真实检索中英文文献，和你一起比较候选、确认选题。</p>
+              <p className="topic-workspace__intro-lede">从一个模糊的研究兴趣开始，把它变成可以确认的选题。</p>
+              {/* 任务文档第十节：空状态四要素之候选题机制说明——讲清 METIS 的真实检索行为与确认后的去向。 */}
+              <p className="topic-workspace__intro-mechanism">METIS 会真实检索中英文文献并给出候选题，确认后进入研究工作流。</p>
               {/* T05.01：空状态提供真实研究兴趣示例与研究偏好快捷选择，
                   点击即填入下方输入框并聚焦，不引入额外持久化状态。 */}
               <div className="topic-workspace__intro-examples" role="list" aria-label="研究兴趣示例">
@@ -774,7 +781,7 @@ export default function TopicWorkspacePage() {
         </footer>
       </section>
 
-      {!rightCollapsed && (
+      {!rightHidden && (
         <div
           className="topic-workspace__col-resize topic-workspace__col-resize--right"
           onMouseDown={startDrag('right')}
@@ -783,14 +790,31 @@ export default function TopicWorkspacePage() {
           aria-orientation="vertical"
         />
       )}
-      <aside className={`topic-workspace__candidates${rightCollapsed ? ' collapsed' : ''}`} aria-label="候选选题池" style={rightCollapsed ? undefined : { width: rightWidth, flex: `0 0 ${rightWidth}px` }}>
-        <header>
-          <strong>候选选题({candidates.length})</strong>
-          <button type="button" className="btn-secondary btn-sm" onClick={() => setRightCollapsed((value) => !value)} aria-label={rightCollapsed ? '展开候选池' : '折叠候选池'}>
-            <ChevronRight size={13} className={rightCollapsed ? undefined : 'rotated'} />
-          </button>
-        </header>
-        {!rightCollapsed && (
+      <aside
+        className={`topic-workspace__candidates${rightHidden ? ' collapsed' : ''}${candidatesEmpty ? ' topic-workspace__candidates--empty' : ''}`}
+        aria-label="候选选题池"
+        style={rightHidden ? undefined : { width: rightWidth, flex: `0 0 ${rightWidth}px` }}
+      >
+        {candidatesEmpty ? (
+          /* 候选为空：右栏弱化为窄提示条（任务文档第十节），检索产出候选后自动恢复整栏。 */
+          <header>
+            <span
+              className="topic-workspace__candidates-hint"
+              data-testid="topic-candidates-empty-hint"
+              title="候选选题会在真实检索完成后出现在这里"
+            >
+              候选选题
+            </span>
+          </header>
+        ) : (
+          <header>
+            <strong>候选选题({candidates.length})</strong>
+            <button type="button" className="btn-secondary btn-sm" onClick={() => setRightCollapsed((value) => !value)} aria-label={rightCollapsed ? '展开候选池' : '折叠候选池'}>
+              <ChevronRight size={13} className={rightCollapsed ? undefined : 'rotated'} />
+            </button>
+          </header>
+        )}
+        {!rightHidden && (
           <>
             <ul className="topic-workspace__candidate-list">
               {candidates.map((candidate) => (
@@ -801,7 +825,6 @@ export default function TopicWorkspacePage() {
                   </button>
                 </li>
               ))}
-              {candidates.length === 0 && <li className="topic-workspace__empty">检索完成后,候选选题会出现在这里。</li>}
             </ul>
             {activeCandidate && (
               <div className="topic-workspace__candidate-detail" data-testid="topic-candidate-detail">

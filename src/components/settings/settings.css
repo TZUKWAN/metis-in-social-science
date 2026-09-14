@@ -1,0 +1,171 @@
+/*
+ * Settings shared section layout — UI 统一重构阶段（任务文档第十节 Settings）。
+ *
+ * 结构契约：section（标题 14px/600 + 描述 13px + 控件 + 分隔线），
+ * 禁止卡片边框堆叠（无 Card Wall）；分组分隔线一律 1px var(--ds-border)。
+ * 颜色 / 间距 / 字阶全部取自 src/design/designTokens.css 的 --ds-* tokens。
+ *
+ * 加载顺序：本文件随 SectionGroup 在组件树中引入，位于 App.css 之后；
+ * 对少量 App.css 旧值（provider-profiles 间距等）用更高优先级选择器覆盖。
+ */
+
+/* ── 页面骨架 ─────────────────────────────────────────────── */
+
+.settings-page__sections {
+  display: flex;
+  flex-direction: column;
+  margin-top: var(--ds-space-2);
+}
+
+/* 语言 + 外观：一行两列（720px 以下塌成单列）。 */
+.settings-page__columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: var(--ds-space-8);
+}
+
+@media (max-width: 720px) {
+  .settings-page__columns {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── section 分组：标题 + 描述 + 控件 + 分隔线 ─────────────── */
+
+.ds-section {
+  padding: var(--ds-space-5) 0 var(--ds-space-6);
+  border-bottom: 1px solid var(--ds-border);
+}
+
+/* 首组与双列组（语言/外观）收紧上边距；分隔线只挂在组底部。 */
+.settings-page__sections > .ds-section:first-child,
+.settings-page__columns .ds-section {
+  padding-top: var(--ds-space-4);
+}
+
+/* 最后一个分组不带分隔线（仅针对分组列表的直接子级）。 */
+.settings-page__sections > .ds-section:last-child {
+  border-bottom: none;
+  padding-bottom: var(--ds-space-2);
+}
+
+.ds-section__heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--ds-space-4);
+  margin-bottom: var(--ds-space-3);
+}
+
+.ds-section__heading-text {
+  min-width: 0;
+}
+
+.ds-section__kicker {
+  margin: 0 0 2px;
+  font-size: var(--ds-font-meta);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--ds-text-muted);
+}
+
+.ds-section__title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--ds-text-primary);
+}
+
+.ds-section__desc {
+  margin: var(--ds-space-1) 0 0;
+  max-width: 72ch;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ds-text-secondary);
+}
+
+.ds-section__action {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+}
+
+.ds-section__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-3);
+  min-width: 0;
+}
+
+/* ── label 与控件左对齐成列 ───────────────────────────────── */
+
+/* 单行布局：label 固定列宽，控件占满剩余宽度，多行时左边缘对齐。 */
+.ds-field {
+  display: grid;
+  grid-template-columns: minmax(128px, 220px) minmax(0, 1fr);
+  gap: var(--ds-space-2) var(--ds-space-4);
+  align-items: center;
+}
+
+.ds-field__label {
+  font-size: 13px;
+  color: var(--ds-text-secondary);
+}
+
+.ds-field__control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-space-2);
+  min-width: 0;
+}
+
+@media (max-width: 720px) {
+  .ds-field {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ProviderProfiles / ImageGeneration 共用的「label 在上、控件在下」
+   堆叠标签（此前该类没有任何样式定义）；两列网格中各列左对齐成列。 */
+.settings-label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-1);
+  min-width: 0;
+  font-size: 13px;
+  color: var(--ds-text-secondary);
+}
+
+/* ── Prompt editor 给足空间 ───────────────────────────────── */
+
+.ds-prompt-textarea {
+  min-height: 280px;
+}
+
+/* 成果提示词主编辑器：可长文撰写，给足纵向空间。 */
+.settings-outcome-prompts__editor > textarea {
+  min-height: 380px;
+}
+
+.settings-outcome-prompts__suggestion textarea {
+  min-height: 200px;
+}
+
+/* ── ProviderProfiles 表单呼吸感（不改字段，仅间距）─────────── */
+
+.provider-profiles .provider-profiles__layout {
+  gap: var(--ds-space-5);
+}
+
+.provider-profiles .provider-profiles__editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-3);
+}
+
+.provider-profiles .provider-profiles__editor .settings-actions {
+  margin-top: var(--ds-space-2);
+}

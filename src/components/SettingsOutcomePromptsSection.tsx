@@ -3,6 +3,7 @@ import SettingsOfficeProfilesSection from './SettingsOfficeProfilesSection';
 import React from 'react';
 import { RotateCcw, Sparkles } from 'lucide-react';
 import type { ArtifactPromptDefinition } from '../../engine/artifacts/prompts/ArtifactPromptRegistry.js';
+import { SectionGroup } from './settings/SectionGroup';
 // 本区（含 Office Profiles）的样式定义在 scenarioWorkbench.css 里，但该文件
 // 历史上只被懒加载的 ScenarioWorkbench 引入——直接打开设置页时样式缺失、
 // 整个提示词工程区退化成无样式列表（刘总 2026-09 截图问题）。
@@ -137,9 +138,12 @@ export default function SettingsOutcomePromptsSection() {
   };
 
   return (
-    <div className="settings-outcome-prompts" data-testid="settings-outcome-prompts">
-      <h3>成果提示词工程</h3>
-      <p className="settings-outcome-prompts__desc">自定义 METIS 在生成、修改、规划和审查各类成果时使用的 AI 工作指令。工具协议与文件保存规则不受影响,恢复默认永远可用。</p>
+    <SectionGroup
+      className="settings-outcome-prompts"
+      title="成果提示词工程"
+      description="自定义 METIS 在生成、修改、规划和审查各类成果时使用的 AI 工作指令。工具协议与文件保存规则不受影响,恢复默认永远可用。"
+      testId="settings-outcome-prompts"
+    >
       <div className="settings-outcome-prompts__toolbar">
         <button type="button" className="btn-secondary btn-sm" onClick={exportPack}>导出配置</button>
         <label className="btn-secondary btn-sm" style={{ cursor: 'pointer' }}>
@@ -234,6 +238,6 @@ export default function SettingsOutcomePromptsSection() {
         </div>
       </div>
       <SettingsOfficeProfilesSection />
-    </div>
+    </SectionGroup>
   );
 }
