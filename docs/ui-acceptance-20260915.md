@@ -41,8 +41,19 @@ MutationObserver 异步生效，capturePage 合成时原生层尚未退场。修
   网格三行模板与四个子元素错位——1fr 落在 notice 行，空态掉进隐式 auto 行
   高度塌陷。终版：四行模板 + 编辑区/空态显式 `grid-row: 4`，空态水平垂直
   居中。judge PASS（20260915075822 截图）。
-- ⏳ **积压（环境依赖）**：投稿内嵌浏览器首屏空白（eshukan.com）。按验收边界
-  「Native WebContentsView 只审宿主边界」不阻断；待联网环境复核内容加载。
+- ✅ **已关闭（2026-09-15 联网复核）**：投稿内嵌浏览器首屏空白。复核结论：
+  **站点加载与渲染均正常，非产品缺陷**。证据链：
+  1. 站点侧：`curl -sI https://www.eshukan.com/` → 200 + 138KB HTML；
+  2. 产品 API：`browserState()` → `{url:"https://www.eshukan.com/",
+     title:"论文投稿,投稿邮箱大全,…万维书刊", loading:false}`；
+  3. 像素证据：对内嵌 view 自身 webContents 调 `capturePage()`
+     （logs/ui-resolution-matrix-20260915152826/1920x1080-embedded-view.png），
+     万维书刊门户页完整渲染（logo/导航/期刊列表/征稿信息）。
+  「空白」根因：`BrowserWindow.webContents.capturePage()` 只合成宿主 DOM
+  层，**不合成原生 WebContentsView 层**——宿主截图盲区 ≠ 显示空白；真实
+  窗口中原生层永远盖在 DOM 之上，用户看到的是正常站点。该取证已固化为
+  矩阵 `embedded-site-content` 断言（`METIS_MATRIX_SUBS_WAIT_MS` 开启）：
+  主框架标题非空 + view 自身合成 >5000 字节双条件（单视口 37/37 PASS）。
 - ✅ topics 空态卡片锚定下半部：判定为设计取向（三分辨率一致），不修。
 
 ## P2 观察项（第一批记录，其中两项已在上文修复）

@@ -229,7 +229,7 @@ async function startProvider() {
 const rendererExpression = (expr) => `(async () => { try { return await (${expr}); } catch (error) { return { __e2eError: String(error && (error.stack || error.message) || error) }; } })()`;
 
 async function childMain() {
-  const { app, BrowserWindow } = require('electron');
+  const { app, BrowserWindow, webContents } = require('electron');
   const profileDir = process.env.METIS_RESOLUTION_MATRIX_PROFILE;
   const providerUrl = process.env.METIS_RESOLUTION_MATRIX_PROVIDER;
   const reportPath = process.env.METIS_RESOLUTION_MATRIX_REPORT;
@@ -428,6 +428,34 @@ const appliedOk = Boolean(measured) && Math.abs(measured.iw - vw) <= 2 + vw * 0.
         // 上一 surface 的原生层可能在 capturePage 合成时仍盖在窗口上（1600x900
         // settings 曾中招）。统一 settle 后再断言/截图，关闭该竞态窗口。
         if (surfaceOk) await sleep(700);
+        // 联网复核（2026-09-15 积压关闭项）：submissions 内嵌 view 加载外部站点，
+        // 主框架完成可能远慢于本地 DOM。METIS_MATRIX_SUBS_WAIT_MS 开启时轮询产品
+        // API browserState() 直到 eshukan 主框架标题非空，最终状态如实入 detail。
+        if (surfaceOk && surface.id === 'submissions' && process.env.METIS_MATRIX_SUBS_WAIT_MS) {
+          const waitMs = Number(process.env.METIS_MATRIX_SUBS_WAIT_MS) || 0;
+          // browserState() 返回 { ok, state: { url, title, loading, ... } } 包装，
+          // 轮询与判定都取内层 state。
+          const state = await run(`(async () => { const t0 = Date.now(); let s = null; while (Date.now() - t0 < ${waitMs}) { const raw = await (window.metis && window.metis.browserState ? window.metis.browserState() : null); s = raw && raw.state ? raw.state : raw; if (s && /eshukan\\.com/i.test(s.url || '') && (s.title || '').trim()) break; await new Promise((r) => setTimeout(r, 3000)); } return s; })()`);
+          // 像素级取证：宿主 capturePage 不合成原生 WebContentsView 层（其空白
+          // 不能证明渲染缺陷），必须对 view 自己的 webContents 单独 capturePage。
+          let viewShot = null;
+          try {
+            const viewWc = webContents.getAllWebContents().find((wc) => {
+              try { return !wc.isDestroyed() && /eshukan\.com/i.test(wc.getURL()); } catch { return false; }
+            });
+            if (viewWc) {
+              const img = await viewWc.capturePage();
+              const file = path.join(shotDir, `${viewportLabel}-embedded-view.png`);
+              fs.writeFileSync(file, img.toPNG());
+              viewShot = { file, bytes: img.toPNG().length, url: viewWc.getURL(), title: viewWc.getTitle() };
+              report.evidence.screenshots.push(file);
+            }
+          } catch (e) {
+            viewShot = { error: String((e && e.message) || e) };
+          }
+          const painted = Boolean(viewShot && viewShot.bytes > 5000);
+          check('submissions', viewportLabel, 'embedded-site-content', Boolean(state && (state.title || '').trim()) && painted, { state, viewShot, waitedMs: waitMs, note: 'bytes>5000 视为 view 自身合成出站点像素' });
+        }
         if (surfaceOk) {
           surfaceOk = check(surface.id, viewportLabel, 'surface-ready', true, { root: surface.readySelector, navId: surface.navId });
         }
