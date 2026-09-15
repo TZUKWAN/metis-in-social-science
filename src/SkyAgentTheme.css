@@ -493,3 +493,40 @@ button:active:not(:disabled),
     animation-duration: 0.01ms !important;
   }
 }
+
+/* ── Accent swatch 色板例外（2026-09-15 P2 复核）────────────────
+   上方全局 button 重置（background/border-radius/box-shadow !important）
+   会把设置页强调色色板的内联样式全部压掉，色板只剩空心方框。这里以
+   class 例外恢复圆形填充；填充色由组件经 --swatch-fill 按主题注入。 */
+button.accent-swatch {
+  min-height: 0 !important;
+  width: 24px;
+  height: 24px;
+  padding: 0 !important;
+  border-radius: 50% !important;
+  border: 2px solid var(--ds-bg1) !important;
+  background: var(--swatch-fill, var(--bg-input)) !important;
+  box-shadow: 0 0 0 1px var(--ds-border-strong) !important;
+}
+
+button.accent-swatch:hover:not(:disabled) {
+  background: var(--swatch-fill, var(--bg-input)) !important;
+}
+
+button.accent-swatch[aria-checked="true"] {
+  box-shadow: var(--focus-ring) !important;
+}
+
+/* 自定义强调色圆（label 版色板）：同样的 class 例外机制，填充为渐变环。 */
+label.accent-swatch-custom {
+  min-height: 0 !important;
+  padding: 0 !important;
+  border-radius: 50% !important;
+  border: 2px solid var(--ds-bg1) !important;
+  background: conic-gradient(from 0deg, #EF4444, #F59E0B, #10B981, #3B82F6, #8B5CF6, #EC4899, #EF4444) !important;
+  box-shadow: 0 0 0 1px var(--ds-border-strong) !important;
+}
+
+label.accent-swatch-custom[data-custom-active="true"] {
+  box-shadow: var(--focus-ring) !important;
+}

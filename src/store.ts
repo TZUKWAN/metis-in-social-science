@@ -26,7 +26,7 @@ export type AccentTheme = 'gold' | 'blue' | 'green' | 'gray';
 /** Preset id or a custom #RRGGBB hex picked from the settings palette. */
 export type AccentSetting = AccentTheme | `#${string}`;
 
-function resolveTheme(theme: ThemeMode): 'light' | 'dark' {
+export function resolveTheme(theme: ThemeMode): 'light' | 'dark' {
   if (theme === 'system') {
     if (typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches) {
       return 'dark';

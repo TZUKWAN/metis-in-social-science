@@ -10,7 +10,7 @@
 
 import { useState, useCallback } from 'react';
 import { useTranslation } from '../i18n';
-import { useMetisStore, isCustomAccent, type AccentSetting, type AccentTheme, type LocaleKey, type ThemeMode } from '../store';
+import { useMetisStore, isCustomAccent, resolveTheme, type AccentSetting, type AccentTheme, type LocaleKey, type ThemeMode } from '../store';
 import type { UIMode } from '../../engine/capabilities/DiagnosticMode';
 import { Settings as SettingsIcon } from 'lucide-react';
 import { Select } from './ui';
@@ -29,18 +29,21 @@ export interface SettingsPanelProps {
   onUIModeChange: (mode: UIMode) => void;
 }
 
-/** Accent swatch preview colors (light-mode accent values from AcademicTheme.css). */
-const ACCENT_OPTIONS: Array<{ id: AccentTheme; labelKey: string; swatch: string }> = [
-  { id: 'blue', labelKey: 'settings.accentBlue', swatch: '#2563EB' },
-  { id: 'gold', labelKey: 'settings.accentGold', swatch: '#A16207' },
-  { id: 'green', labelKey: 'settings.accentGreen', swatch: '#15803D' },
-  { id: 'gray', labelKey: 'settings.accentGray', swatch: '#52525B' },
+/** Accent swatch preview colors, per resolved theme (values from AcademicTheme.css). */
+const ACCENT_OPTIONS: Array<{ id: AccentTheme; labelKey: string; swatch: string; swatchDark: string }> = [
+  { id: 'blue', labelKey: 'settings.accentBlue', swatch: '#2563EB', swatchDark: '#3B82F6' },
+  { id: 'gold', labelKey: 'settings.accentGold', swatch: '#A16207', swatchDark: '#D97706' },
+  { id: 'green', labelKey: 'settings.accentGreen', swatch: '#15803D', swatchDark: '#22C55E' },
+  { id: 'gray', labelKey: 'settings.accentGray', swatch: '#52525B', swatchDark: '#A1A1AA' },
 ];
 
 export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelProps) {
   const { t, locale, setLocale } = useTranslation();
   const theme = useMetisStore((s) => s.theme);
   const setTheme = useMetisStore((s) => s.setTheme);
+  // 色板预览跟随解析后的主题（system 也解析），暗色下展示暗色 accent 值，
+  // 避免亮色深值块在暗背景上不可辨（P2：外观区色板对比度）。
+  const resolvedTheme = resolveTheme(theme);
   const accent = useMetisStore((s) => s.accent);
   const setAccent = useMetisStore((s) => s.setAccent);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -107,15 +110,16 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
                   aria-label={t(option.labelKey)}
                   onClick={() => setAccent(option.id)}
                   data-testid={`accent-swatch-${option.id}`}
+                  className="accent-swatch"
                   style={{
                     width: 24,
                     height: 24,
-                    borderRadius: '50%',
-                    background: option.swatch,
-                    border: '2px solid var(--ds-bg1)',
-                    boxShadow: accent === option.id ? 'var(--focus-ring)' : '0 0 0 1px var(--ds-border-strong)',
-                    cursor: 'pointer',
                     padding: 0,
+                    cursor: 'pointer',
+                    // SkyAgentTheme 的全局 button 重置带 !important，内联
+                    // background/radius/shadow 都会被压掉；改由例外规则
+                    // 消费该变量渲染圆形色板（见 SkyAgentTheme.css 尾部）。
+                    ['--swatch-fill' as string]: resolvedTheme === 'dark' ? option.swatchDark : option.swatch,
                   }}
                 />
               ))}
@@ -123,16 +127,14 @@ export default function SettingsPanel({ uiMode, onUIModeChange }: SettingsPanelP
               <label
                 htmlFor="accent-custom"
                 title={t('settings.accentCustom')}
+                className="accent-swatch accent-swatch-custom"
+                data-custom-active={isCustomAccent(accent) ? 'true' : 'false'}
                 style={{
                   position: 'relative',
                   display: 'inline-block',
                   width: 24,
                   height: 24,
-                  borderRadius: '50%',
-                  border: '2px solid var(--ds-bg1)',
-                  boxShadow: isCustomAccent(accent) ? 'var(--focus-ring)' : '0 0 0 1px var(--ds-border-strong)',
                   cursor: 'pointer',
-                  background: 'conic-gradient(#EF4444, #F59E0B, #10B981, #3B82F6, #8B5CF6, #EC4899, #EF4444)',
                   overflow: 'hidden',
                   padding: 0,
                 }}
