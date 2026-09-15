@@ -240,6 +240,7 @@ import { registerSubmissionJournalIpc } from './ipc/registerSubmissionJournalIpc
 import { registerSubmissionPackageIpc } from './ipc/registerSubmissionPackageIpc.js';
 import { registerSubmissionCommsIpc } from './ipc/registerSubmissionCommsIpc.js';
 import { registerSubmissionPortalIpc } from './ipc/registerSubmissionPortalIpc.js';
+import { registerSubmissionWorkflowIpc } from './ipc/registerSubmissionWorkflowIpc.js';
 import { registerSubmissionPlanIpc } from './ipc/registerSubmissionPlanIpc.js';
 import { RemoteDevBridge, isRemoteBridgeSender, remoteBroadcast } from './RemoteBridge/remoteDevBridge.js';
 import { registerExperimentIpc } from './ipc/registerExperimentIpc.js';
@@ -914,6 +915,7 @@ const domainIpcContext: DomainIpcContext = {
   submissionMailboxStore: () => submissionMailboxStore,
   submissionCorrespondenceRepository: () => submissionCorrespondenceRepository,
   submissionDeadlineSync: () => submissionDeadlineSync,
+  submissionCoverLetterService: () => submissionCoverLetterService,
   submissionPortalService: () => submissionPortalService,
   submissionOwnedPackage,
   journalProfileRepository: () => journalProfileRepository,
@@ -4829,6 +4831,7 @@ function setupIPC(): void {
   ipcDomainDisposers.push(registerSubmissionPackageIpc(domainIpcContext));
   ipcDomainDisposers.push(registerSubmissionCommsIpc(domainIpcContext));
   ipcDomainDisposers.push(registerSubmissionPortalIpc(domainIpcContext));
+  ipcDomainDisposers.push(registerSubmissionWorkflowIpc(domainIpcContext));
   ipcDomainDisposers.push(registerSubmissionPlanIpc(domainIpcContext));
 
   // ── 远程开发桥（dev-only）：METIS_REMOTE_BRIDGE=1 时开启浏览器远程访问。

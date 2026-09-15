@@ -96,6 +96,7 @@ export interface DomainIpcContext {
   submissionPreflightService(): import('../SubmissionPreflightService.js').SubmissionPreflightService | null;
   submissionPackageService(): import('../SubmissionPackageService.js').SubmissionPackageService | null;
   submissionPackageRepository(): import('../SubmissionPackageRepository.js').SubmissionPackageRepository | null;
+  submissionCoverLetterService(): import('../CoverLetterService.js').CoverLetterService | null;
   submissionReviewService(): import('../SubmissionReviewService.js').SubmissionReviewService | null;
   submissionReviewRepository(): import('../SubmissionReviewRepository.js').SubmissionReviewRepository | null;
   mailSendService(): import('../MailSendService.js').MailSendService | null;
