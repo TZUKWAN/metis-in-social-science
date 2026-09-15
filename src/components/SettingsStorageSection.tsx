@@ -187,10 +187,10 @@ export default function SettingsStorageSection() {
         <div
           data-testid="storage-confirm-dialog"
           style={{
-            padding: 12,
-            border: '1px solid var(--border-color)',
-            borderRadius: 8,
-            background: 'var(--bg-secondary)',
+            padding: 'var(--ds-space-3)',
+            border: 'none',
+            borderLeft: '2px solid var(--ds-border-strong)',
+            background: 'var(--bg-hover)',
           }}
         >
           <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>{t('settings.storageConfirmTitle')}</div>

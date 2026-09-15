@@ -87,10 +87,10 @@ export default function SettingsHealthSection() {
           key={`${issue.id}-${issue.message.slice(0, 24)}`}
           data-testid={`health-issue-${issue.id}`}
           style={{
-            display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 12px',
-            border: `1px solid ${issue.severity === 'error' ? 'var(--status-failed)' : 'var(--border)'}`,
-            borderLeft: `4px solid ${issue.severity === 'error' ? 'var(--status-failed)' : 'var(--status-running, var(--border))'}`,
-            borderRadius: 6, marginBottom: 8, background: 'var(--bg-secondary)',
+            display: 'flex', alignItems: 'flex-start', gap: 10, padding: 'var(--ds-space-2) var(--ds-space-3)',
+            border: 'none',
+            borderLeft: `3px solid ${issue.severity === 'error' ? 'var(--ds-danger)' : 'var(--ds-warning)'}`,
+            borderRadius: 'var(--ds-radius-control)', marginBottom: 8, background: 'var(--ds-bg2)',
           }}
         >
           <span style={{ fontSize: 14, lineHeight: 1.5 }}>{issue.severity === 'error' ? '⛔' : '⚠️'}</span>

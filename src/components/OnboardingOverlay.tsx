@@ -209,7 +209,7 @@ export default function OnboardingOverlay() {
 
   return createPortal(
     <div className="onboarding-overlay" role="dialog" aria-modal="true" aria-label={zh ? 'METIS 新手引导' : 'METIS onboarding'} data-testid="onboarding-overlay">
-      <section className="onboarding-card">
+      <section className="onboarding-card ds-glass-modal">
         <div className="onboarding-card__glow" aria-hidden />
         {step === 0 && (
           <>

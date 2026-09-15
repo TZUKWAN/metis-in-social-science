@@ -195,7 +195,7 @@ export default function SettingsWeChatBotSection() {
           ) : (
             <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
               {/* White canvas stays literal so the QR code always scans. */}
-              <div style={{ background: '#fff', padding: 8, borderRadius: 'var(--radius, 4px)' }}>
+              <div style={{ background: '#fff', padding: 8, borderRadius: 'var(--ds-radius-control)' }}>
                 {status?.qrContent ? (
                   <QRCodeSVG value={status.qrContent} size={180} data-testid="wechat-qr" />
                 ) : (
@@ -237,7 +237,7 @@ export default function SettingsWeChatBotSection() {
             <span
               data-testid="wechat-bound-badge"
               style={{
-                padding: '3px 10px', borderRadius: 'var(--radius, 4px)', fontSize: 12,
+                padding: '3px 10px', borderRadius: 'var(--ds-radius-control)', fontSize: 12,
                 background: status?.busy ? 'var(--bg-secondary)' : 'var(--status-completed-bg)',
                 color: status?.busy ? 'var(--text-secondary)' : 'var(--status-completed)',
               }}
@@ -296,8 +296,8 @@ export default function SettingsWeChatBotSection() {
               <div
                 data-testid="wechat-log"
                 style={{
-                  fontSize: 12, color: 'var(--text-secondary)', background: 'var(--bg-secondary)',
-                  borderRadius: 'var(--radius, 4px)', padding: '8px 10px', maxHeight: 140, overflowY: 'auto',
+                  fontSize: 12, color: 'var(--text-secondary)', background: 'var(--ds-bg2)',
+                  borderRadius: 'var(--ds-radius-control)', padding: 'var(--ds-space-2) var(--ds-space-3)', maxHeight: 140, overflowY: 'auto',
                   lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-all',
                 }}
               >
@@ -320,9 +320,10 @@ export default function SettingsWeChatBotSection() {
           role={notice.type === 'error' ? 'alert' : 'status'}
           data-testid="wechat-notice"
           style={{
-            fontSize: 13, padding: '8px 10px', borderRadius: 'var(--radius, 4px)',
+            fontSize: 13, padding: 'var(--ds-space-2) var(--ds-space-3)',
+            border: 'none', borderLeft: `2px solid ${notice.type === 'error' ? 'var(--ds-danger)' : 'var(--ds-accent)'}`,
             color: notice.type === 'error' ? 'var(--status-failed)' : 'var(--status-completed)',
-            background: 'var(--bg-secondary)',
+            background: 'var(--bg-hover)',
           }}
         >
           {notice.message}

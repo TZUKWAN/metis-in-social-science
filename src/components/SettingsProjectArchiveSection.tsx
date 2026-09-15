@@ -181,9 +181,10 @@ export default function SettingsProjectArchiveSection({ uiMode }: { uiMode: UIMo
           role={status.type === 'error' ? 'alert' : 'status'}
           data-testid="project-archive-status"
           style={{
-            fontSize: 13, padding: '8px 10px', borderRadius: 'var(--radius, 4px)',
+            fontSize: 13, padding: 'var(--ds-space-2) var(--ds-space-3)',
+            border: 'none', borderLeft: `2px solid ${status.type === 'error' ? 'var(--ds-danger)' : 'var(--ds-accent)'}`,
             color: status.type === 'error' ? 'var(--status-failed)' : 'var(--status-completed)',
-            background: 'var(--bg-secondary)',
+            background: 'var(--bg-hover)',
           }}
         >
           {status.message}

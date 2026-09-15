@@ -673,7 +673,7 @@ button.tool-call-header { cursor: pointer; }
 .settings-group {
   background: transparent;
   border: none;
-  border-bottom: 1px solid var(--border-light);
+  border-bottom: 1px solid var(--ds-border);
   border-radius: 0;
   padding: var(--space-4) 0;
   margin-bottom: 0;
@@ -3561,15 +3561,15 @@ button.tool-call-header { cursor: pointer; }
 .connection-mode-option span { color: var(--text-muted); font-size: 11.5px; line-height: 1.5; }
 
 /* 楂樼骇璁剧疆寮圭獥锛?026-08-23锛?*/
-.settings-advanced-overlay { position: fixed; z-index: var(--z-modal-top, 1000); inset: 0; display: grid; place-items: center; padding: 24px; background: var(--bg-modal-overlay); }
-.settings-advanced-dialog { display: flex; flex-direction: column; width: min(880px, calc(100vw - 48px)); max-height: calc(100vh - 64px); border: 1px solid var(--border-light); border-radius: 6px; background: var(--bg-card); box-shadow: 0 18px 48px rgba(14, 27, 43, .28); overflow: hidden; }
-.settings-advanced-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--border-light); }
+.settings-advanced-overlay { position: fixed; z-index: var(--z-modal-top, 1000); inset: 0; display: grid; place-items: center; padding: var(--ds-space-6); background: var(--ds-overlay-scrim); }
+.settings-advanced-dialog { display: flex; flex-direction: column; width: min(880px, calc(100vw - 48px)); max-height: calc(100vh - 64px); border-radius: var(--ds-radius-modal); overflow: hidden; }
+.settings-advanced-header { display: flex; align-items: center; justify-content: space-between; padding: var(--ds-space-3) var(--ds-space-5); border-bottom: 1px solid var(--ds-border); }
 .settings-advanced-header h3 { margin: 0; font-size: 15px; color: var(--text-primary); }
 .settings-advanced-close { display: grid; place-items: center; width: 28px; height: 28px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text-secondary); cursor: pointer; font-size: 16px; transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out); }
 @media (hover: hover) and (pointer: fine) { .settings-advanced-close:hover { background: var(--bg-hover); color: var(--text-primary); } }
 .settings-advanced-close:active { transform: scale(0.95); }
-.settings-advanced-tabs { display: flex; gap: 4px; padding: 10px 16px; border-bottom: 1px solid var(--border-light); overflow-x: auto; }
-.settings-advanced-tabs button { flex: none; display: inline-flex; align-items: center; gap: 5px; padding: 5px 12px; border: 1px solid transparent; border-radius: 3px; background: transparent; color: var(--text-secondary); font-size: 12px; cursor: pointer; white-space: nowrap; }
+.settings-advanced-tabs { display: flex; gap: 4px; padding: 10px 16px; border-bottom: 1px solid var(--ds-border); overflow-x: auto; }
+.settings-advanced-tabs button { flex: none; display: inline-flex; align-items: center; gap: 5px; padding: 5px 12px; border: 1px solid transparent; border-radius: var(--ds-radius-control); background: transparent; color: var(--text-secondary); font-size: 12px; cursor: pointer; white-space: nowrap; }
 .settings-advanced-tabs button:hover { color: var(--text-primary); background: color-mix(in srgb, var(--primary) 6%, transparent); }
 .settings-advanced-tabs button.active { color: var(--primary); border-color: color-mix(in srgb, var(--primary) 35%, transparent); background: color-mix(in srgb, var(--primary) 6%, var(--bg-card)); font-weight: 600; }
 .settings-advanced-body { flex: 1; min-height: 0; overflow-y: auto; }
@@ -3709,21 +3709,21 @@ button.tool-call-header { cursor: pointer; }
 .artifact-chart-adjust__ok { color: var(--status-completed); font-size: 12px; }
 .artifact-chart-adjust__err { color: var(--status-failed); font-size: 12px; }
 
-/* ── 新手引导（刘总 2026-09）：全屏简约科技风 ───────────────────── */
-.onboarding-overlay { position: fixed; inset: 0; z-index: 1400; display: grid; place-items: center; padding: 24px; background: radial-gradient(1200px 600px at 20% -10%, color-mix(in srgb, var(--primary, #2563eb) 16%, transparent), transparent), rgba(8, 14, 26, .62); backdrop-filter: blur(10px); }
-.onboarding-card { position: relative; overflow: hidden; width: min(560px, 94vw); max-height: 88vh; overflow-y: auto; box-sizing: border-box; padding: 30px 32px 26px; border: 1px solid color-mix(in srgb, var(--primary, #2563eb) 30%, transparent); border-radius: 14px; background: var(--bg-card, #10192b); box-shadow: 0 24px 80px rgba(4, 10, 24, .5); }
-.onboarding-card__glow { position: absolute; inset: -40% -30% auto auto; width: 340px; height: 340px; background: radial-gradient(closest-side, color-mix(in srgb, var(--primary, #2563eb) 32%, transparent), transparent); filter: blur(8px); pointer-events: none; }
-.onboarding-card h1 { margin: 0 0 10px; font-family: var(--font-serif, inherit); font-size: 24px; font-weight: 650; color: var(--text-primary); }
-.onboarding-card__lead { margin: 0 0 14px; font-size: 13.5px; line-height: 1.7; color: var(--text-secondary); }
-.onboarding-card__points { margin: 0 0 18px; padding-left: 18px; display: grid; gap: 7px; font-size: 12.5px; line-height: 1.6; color: var(--text-secondary); }
-.onboarding-card__actions { display: flex; align-items: center; justify-content: flex-end; gap: 9px; margin-top: 18px; }
-.onboarding-form { display: grid; gap: 11px; margin-top: 4px; }
-.onboarding-form label { display: grid; gap: 5px; font-size: 12px; font-weight: 600; color: var(--text-primary); }
-.onboarding-form input { padding: 8px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-primary); color: var(--text-primary); font-size: 13px; }
-.onboarding-form__row { display: flex; align-items: center; gap: 10px; }
-.onboarding-form .is-ok, .onboarding-card .is-ok { color: var(--status-completed, #3d9970); font-size: 12px; }
-.onboarding-form .is-err, .onboarding-card .is-err { color: var(--status-failed, #b3403a); font-size: 12px; }
-.onboarding-textarea { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-primary); color: var(--text-primary); font-size: 13px; line-height: 1.65; resize: vertical; }
+/* ── 新手引导（刘总 2026-09）：全屏简约科技风（T05.07 对齐 designTokens）───────── */
+.onboarding-overlay { position: fixed; inset: 0; z-index: 1400; display: grid; place-items: center; padding: var(--ds-space-6); background: var(--ds-overlay-scrim); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
+.onboarding-card { position: relative; overflow: hidden; width: min(560px, 94vw); max-height: 88vh; overflow-y: auto; box-sizing: border-box; padding: var(--ds-space-8) var(--ds-space-8) var(--ds-space-6); border-radius: var(--ds-radius-modal); }
+.onboarding-card__glow { position: absolute; inset: -40% -30% auto auto; width: 340px; height: 340px; background: radial-gradient(closest-side, var(--ds-accent-dim), transparent); filter: blur(8px); pointer-events: none; }
+.onboarding-card h1 { margin: 0 0 var(--ds-space-2); font-size: var(--ds-font-page-title); font-weight: 600; color: var(--ds-text-primary); }
+.onboarding-card__lead { margin: 0 0 var(--ds-space-3); font-size: var(--ds-font-body); line-height: 1.7; color: var(--ds-text-secondary); }
+.onboarding-card__points { margin: 0 0 var(--ds-space-4); padding-left: var(--ds-space-5); display: grid; gap: var(--ds-space-2); font-size: var(--ds-font-meta); line-height: 1.6; color: var(--ds-text-secondary); }
+.onboarding-card__actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--ds-space-2); margin-top: var(--ds-space-5); }
+.onboarding-form { display: grid; gap: var(--ds-space-3); margin-top: var(--ds-space-1); }
+.onboarding-form label { display: grid; gap: var(--ds-space-1); font-size: var(--ds-font-meta); font-weight: 600; color: var(--ds-text-primary); }
+.onboarding-form input { padding: var(--ds-space-2) var(--ds-space-3); border: 1px solid var(--ds-border); border-radius: var(--ds-radius-control); background: var(--ds-bg2); color: var(--ds-text-primary); font-size: 13px; }
+.onboarding-form__row { display: flex; align-items: center; gap: var(--ds-space-2); }
+.onboarding-form .is-ok, .onboarding-card .is-ok { color: var(--ds-accent); font-size: var(--ds-font-meta); }
+.onboarding-form .is-err, .onboarding-card .is-err { color: var(--ds-danger); font-size: var(--ds-font-meta); }
+.onboarding-textarea { width: 100%; box-sizing: border-box; padding: var(--ds-space-2) var(--ds-space-3); border: 1px solid var(--ds-border); border-radius: var(--ds-radius-control); background: var(--ds-bg2); color: var(--ds-text-primary); font-size: 13px; line-height: 1.65; resize: vertical; }
 
 /* ─── AIO Zen mode (T07) ───────────────────────────────
  * AIO is a presentation branch: the topbar is not rendered at all and the

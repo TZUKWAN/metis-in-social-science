@@ -99,9 +99,9 @@ export default function SettingsDiagnosticSection() {
           <div style={{ marginBottom: 16 }}>
             {mcpServers.map((srv) => (
               <div key={srv.id} style={{
-                display: 'flex', alignItems: 'center', gap: 12, padding: '8px 12px',
-                border: '1px solid var(--border)', borderRadius: 6, marginBottom: 8,
-                background: 'var(--bg-secondary)',
+                display: 'flex', alignItems: 'center', gap: 12, padding: 'var(--ds-space-2) var(--ds-space-3)',
+                border: 'none', borderRadius: 'var(--ds-radius-control)', marginBottom: 8,
+                background: 'var(--ds-bg2)',
               }}>
                 <span style={{
                   width: 10, height: 10, borderRadius: '50%',
@@ -142,8 +142,8 @@ export default function SettingsDiagnosticSection() {
         <div
           className="mcp-managed-notice"
           style={{
-            border: '1px solid var(--border)', borderRadius: 8, padding: 12,
-            background: 'var(--bg-secondary)', marginTop: 12, fontSize: 13,
+            border: 'none', borderLeft: '2px solid var(--ds-border-strong)', padding: 'var(--ds-space-3)',
+            background: 'var(--bg-hover)', marginTop: 'var(--ds-space-3)', fontSize: 13,
             color: 'var(--text-secondary)', lineHeight: 1.6,
           }}
         >
@@ -173,9 +173,9 @@ export default function SettingsDiagnosticSection() {
               <div
                 key={rule.id}
                 style={{
-                  display: 'flex', alignItems: 'center', gap: 12, padding: '8px 12px',
-                  border: '1px solid var(--border)', borderRadius: 6,
-                  background: 'var(--bg-secondary)',
+                  display: 'flex', alignItems: 'center', gap: 12, padding: 'var(--ds-space-2) var(--ds-space-3)',
+                  border: 'none', borderRadius: 'var(--ds-radius-control)',
+                  background: 'var(--ds-bg2)',
                 }}
               >
                 <span style={{

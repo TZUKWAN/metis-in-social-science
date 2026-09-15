@@ -166,3 +166,14 @@
     animation: none !important;
   }
 }
+
+/* ── T05.07 bridge：模态遮罩统一 scrim（OnboardingOverlay / SettingsAdvancedDialog 等
+ *    L4 遮罩层共用；只新增，不改既有 token）──────────────── */
+:root {
+  --ds-overlay-scrim: rgba(5, 8, 13, 0.62);
+}
+
+:root[data-theme='light'],
+:root.theme-light {
+  --ds-overlay-scrim: rgba(15, 23, 42, 0.42);
+}

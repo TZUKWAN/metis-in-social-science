@@ -171,10 +171,10 @@ export default function SettingsBackupSection({ uiMode }: { uiMode: UIMode }) {
       <div
         style={{
           display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap',
-          padding: 16,
-          border: `2px dashed ${isDraggingBackup ? 'var(--status-completed)' : 'var(--border)'}`,
-          borderRadius: 8,
-          background: isDraggingBackup ? 'var(--status-completed-bg, rgba(16,185,129,0.05))' : 'var(--bg-secondary)',
+          padding: 'var(--ds-space-4)',
+          border: `2px dashed ${isDraggingBackup ? 'var(--ds-accent)' : 'var(--ds-border)'}`,
+          borderRadius: 'var(--ds-radius-control)',
+          background: isDraggingBackup ? 'var(--status-completed-bg)' : 'var(--bg-secondary)',
         }}
         data-testid="backup-drop-zone"
       >
@@ -212,11 +212,11 @@ export default function SettingsBackupSection({ uiMode }: { uiMode: UIMode }) {
       {backupStatus && (
         <div
           style={{
-            marginTop: 12,
-            padding: '8px 12px',
-            borderRadius: 6,
+            marginTop: 'var(--ds-space-3)',
+            padding: 'var(--ds-space-2) var(--ds-space-3)',
+            border: 'none',
+            borderLeft: `2px solid ${backupStatus.type === 'success' ? 'var(--ds-accent)' : 'var(--ds-danger)'}`,
             fontSize: 13,
-            background: backupStatus.type === 'success' ? 'var(--status-completed-bg, rgba(16,185,129,0.1))' : 'var(--status-failed-bg, rgba(239,68,68,0.1))',
             color: backupStatus.type === 'success' ? 'var(--status-completed)' : 'var(--status-failed)',
           }}
           role="status"

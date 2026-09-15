@@ -37,7 +37,7 @@ export default function SettingsAdvancedDialog({
 
   return (
     <div className="settings-advanced-overlay" role="presentation">
-      <section className="settings-advanced-dialog" role="dialog" aria-modal="true" aria-label="高级设置">
+      <section className="settings-advanced-dialog ds-glass-modal" role="dialog" aria-modal="true" aria-label="高级设置">
         <header className="settings-advanced-header">
           <h3>高级设置</h3>
           <button type="button" className="settings-advanced-close" onClick={onClose} aria-label="关闭" data-testid="advanced-settings-close">×</button>
