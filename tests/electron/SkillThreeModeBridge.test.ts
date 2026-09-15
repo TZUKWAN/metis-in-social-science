@@ -162,9 +162,11 @@ describe('Skill three-mode preload boundary', () => {
 
 describe('Skill three-mode main-process source wiring attestation', () => {
   it('binds live-frame evidence and consumes a scoped single-use file capability before the real service', () => {
-    const source = fs.readFileSync(path.resolve('electron/main.ts'), 'utf8');
-    const handlerStart = source.indexOf("ipcMain.handle('personalization:extension:apply'");
-    const handlerEnd = source.indexOf("ipcMain.handle('personalization:mcp:activate'", handlerStart);
+    // personalization 域已迁出到独立 registrar（2026-09-15 拆分）：
+    // extension:apply 接线断言以 registrar 源为宿主。
+    const source = fs.readFileSync(path.resolve('electron/ipc/registerPersonalizationIpc.ts'), 'utf8');
+    const handlerStart = source.indexOf("dom.handle('personalization:extension:apply'");
+    const handlerEnd = source.indexOf("dom.handle('personalization:mcp:activate'", handlerStart);
     expect(handlerStart).toBeGreaterThanOrEqual(0);
     expect(handlerEnd).toBeGreaterThan(handlerStart);
     const handler = source.slice(handlerStart, handlerEnd);
@@ -175,8 +177,8 @@ describe('Skill three-mode main-process source wiring attestation', () => {
     expect(handler).toContain("'personalization-skill-directory'");
     expect(handler).toContain("kind: 'file'");
     expect(handler).toContain("kind: 'folder'");
-    expect(handler).toContain('fileCapabilities.consumeMatching(');
-    expect(handler).not.toContain('fileCapabilities.consume(');
+    expect(handler).toContain('fileCapabilities().consumeMatching(');
+    expect(handler).not.toContain('fileCapabilities().consume(');
     expect(handler).not.toContain('rawRequest.sourcePath');
     expect(handler).not.toContain('rawRequest.evidenceContext');
   });

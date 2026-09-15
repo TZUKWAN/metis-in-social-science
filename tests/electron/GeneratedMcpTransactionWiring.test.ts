@@ -4,21 +4,24 @@ import { describe, expect, it } from 'vitest';
 import { McpActivationRequestSchema } from '../../engine/runtime/McpActivationContract.js';
 
 const MAIN_SOURCE = fs.readFileSync(path.resolve('electron/main.ts'), 'utf8');
+// personalization 域已迁出到独立 registrar（2026-09-15 拆分）：
+// extension:apply / mcp:activate 的接线断言以 registrar 源为宿主。
+const PERSONALIZATION_SOURCE = fs.readFileSync(path.resolve('electron/ipc/registerPersonalizationIpc.ts'), 'utf8');
 const EXTENSION_SOURCE = fs.readFileSync(path.resolve('electron/PersonalizationExtensionService.ts'), 'utf8');
 
 function handlerSource(channel: string, nextChannel: string): string {
-  const start = MAIN_SOURCE.indexOf(`ipcMain.handle('${channel}'`);
-  const end = MAIN_SOURCE.indexOf(`ipcMain.handle('${nextChannel}'`, start + 1);
+  const start = PERSONALIZATION_SOURCE.indexOf(`dom.handle('${channel}'`);
+  const end = PERSONALIZATION_SOURCE.indexOf(`dom.handle('${nextChannel}'`, start + 1);
   if (start < 0 || end < 0) throw new Error(`IPC handler ${channel} is unavailable`);
-  return MAIN_SOURCE.slice(start, end);
+  return PERSONALIZATION_SOURCE.slice(start, end);
 }
 
 describe('generated MCP transaction production wiring', () => {
   it('prepares without enabling, journals activation, and only then returns the enabled result', () => {
     const handler = handlerSource('personalization:extension:apply', 'personalization:mcp:activate');
-    const prepare = handler.indexOf('personalizationExtensions.prepareGeneratedMcp(request)');
-    const activate = handler.indexOf('personalizationGeneratedMcpActivation.activate({');
-    const genericApply = handler.indexOf('personalizationExtensions.apply(request');
+    const prepare = handler.indexOf('prepareGeneratedMcp(request)');
+    const activate = handler.indexOf('.activate({');
+    const genericApply = handler.indexOf('.apply(request');
     expect(prepare).toBeGreaterThan(0);
     expect(activate).toBeGreaterThan(prepare);
     expect(genericApply).toBeGreaterThan(activate);

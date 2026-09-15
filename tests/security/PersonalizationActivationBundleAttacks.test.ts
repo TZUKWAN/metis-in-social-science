@@ -33,7 +33,10 @@ import { PersonalizationSkillInstaller } from '../../electron/PersonalizationSki
 
 const NOW = 1_901_000_000_000;
 const OPERATION = '00000000-0000-4000-8000-000000009901';
-const MAIN_SOURCE = fs.readFileSync(path.resolve('electron/main.ts'), 'utf8');
+// personalization 域已迁出到独立 registrar（2026-09-15 拆分）：
+// handler 接线断言以 registrar 源为宿主，binder 断言以 binding 模块为宿主。
+const PERSONALIZATION_SOURCE = fs.readFileSync(path.resolve('electron/ipc/registerPersonalizationIpc.ts'), 'utf8');
+const BINDING_SOURCE = fs.readFileSync(path.resolve('electron/ipc/personalizationIpcBinding.ts'), 'utf8');
 // preload 拆分（2026-09-15）：聚合 preload.ts 与 electron/preload/** 保持等价扫描强度。
 const PRELOAD_SOURCE = ['electron/preload.ts', ...fs.readdirSync('electron/preload').filter((f) => f.endsWith('.ts')).map((f) => `electron/preload/${f}`)]
   .map((f) => fs.readFileSync(path.resolve(f), 'utf8')).join('\n');
@@ -333,18 +336,20 @@ describe('MCP activation IPC, owner, operation, and recovery attacks', () => {
   });
 
   it('attests main-frame authorization, main-derived owner generation, strict preload, and UI replay bindings', () => {
-    const handler = MAIN_SOURCE.slice(
-      MAIN_SOURCE.indexOf("ipcMain.handle('personalization:mcp:activate'"),
-      MAIN_SOURCE.indexOf("ipcMain.handle('personalization:bundle:export'"),
+    const handler = PERSONALIZATION_SOURCE.slice(
+      PERSONALIZATION_SOURCE.indexOf("dom.handle('personalization:mcp:activate'"),
+      PERSONALIZATION_SOURCE.indexOf("dom.handle('personalization:bundle:export'"),
     );
-    const binder = MAIN_SOURCE.slice(
-      MAIN_SOURCE.indexOf('function bindMcpActivationRequest'),
-      MAIN_SOURCE.indexOf('function writePersonalizationBundleFile'),
+    const binder = BINDING_SOURCE.slice(
+      BINDING_SOURCE.indexOf('export function bindMcpActivationRequest'),
+      BINDING_SOURCE.indexOf('export function writePersonalizationBundleFile'),
     );
     expect(handler).toContain('requireRendererMainFrame(event)');
     expect(handler).toContain('McpActivationIpcRequestSchema.safeParse(rawRequest)');
-    expect(handler).toContain('bindMcpActivationRequest(publicRequest.data, event)');
-    expect(binder).toContain('const owner = managedMcpOwnerFor(event)');
+    expect(handler).toContain('bindMcpActivationRequest(publicRequest.data, event,');
+    // binder 安全属性：owner 必须来自活主帧校验 + 注入的 webContents 代数。
+    expect(binder).toContain('frame !== event.sender.mainFrame');
+    expect(binder).toContain('generation: generationOf(event.sender.id)');
     expect(binder).toContain('owner.generation');
     expect(binder).toContain('canonicalPersonalizationJson({ owner, request })');
     expect(PRELOAD_SOURCE).toMatch(/activatePersonalizationMcp:[\s\S]*McpActivationIpcRequestSchema\.safeParse[\s\S]*decodeMcpActivationResponse/u);
@@ -576,18 +581,18 @@ describe('portable Skill asset and bundle import attacks', () => {
   });
 
   it('keeps main on include_files + coordinator-only import and blocks generic provenance re-entry', () => {
-    const exportHandler = MAIN_SOURCE.slice(
-      MAIN_SOURCE.indexOf("ipcMain.handle('personalization:bundle:export'"),
-      MAIN_SOURCE.indexOf("ipcMain.handle('personalization:bundle:import'"),
+    const exportHandler = PERSONALIZATION_SOURCE.slice(
+      PERSONALIZATION_SOURCE.indexOf("dom.handle('personalization:bundle:export'"),
+      PERSONALIZATION_SOURCE.indexOf("dom.handle('personalization:bundle:import'"),
     );
-    const importHandler = MAIN_SOURCE.slice(
-      MAIN_SOURCE.indexOf("ipcMain.handle('personalization:bundle:import'"),
-      MAIN_SOURCE.indexOf("ipcMain.handle('personalization:secrets:list'"),
+    const importHandler = PERSONALIZATION_SOURCE.slice(
+      PERSONALIZATION_SOURCE.indexOf("dom.handle('personalization:bundle:import'"),
+      PERSONALIZATION_SOURCE.indexOf("dom.handle('personalization:secrets:list'"),
     );
     expect(exportHandler).toContain("assetMode: 'include_files'");
     expect(exportHandler).not.toContain("assetMode: 'none'");
-    expect(importHandler).toContain('personalizationBundleCoordinator.importBundle(bytes)');
-    expect(importHandler).not.toContain('personalizationBundles.importBundle(bytes');
+    expect(importHandler).toContain('personalizationBundleCoordinator()!.importBundle(bytes)');
+    expect(importHandler).not.toContain('personalizationBundles().importBundle(bytes');
     expect(RUNTIME_SOURCE).toContain("if (definition.kind === 'mcp') {");
     expect(RUNTIME_SOURCE).toContain("definition.sourceMode === 'generated'");
     expect(RUNTIME_SOURCE).toContain("definition.sourceMode === 'markdown' && definition.packageEntry === null");

@@ -3,10 +3,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const mainSource = fs.readFileSync(path.resolve(process.cwd(), 'electron/main.ts'), 'utf8');
-// goal 域已迁出到独立 registrar（2026-09-13 拆分）：goal 相关 needle 在两个
-// 源文件中查找，先命中的作为该断言的宿主，保持与迁移前的等价强度。
+// goal / personalization 域已迁出到独立 registrar（2026-09-13 / 2026-09-15 拆分）：
+// 相关 needle 按注册顺序在源文件列表中查找，先命中的作为该断言的宿主，
+// 保持与迁移前的等价强度。
 const goalRegistrarSource = fs.readFileSync(path.resolve(process.cwd(), 'electron/ipc/registerGoalIpc.ts'), 'utf8');
-const registrarAwareSource = (needle: string): string => (mainSource.includes(needle) ? mainSource : goalRegistrarSource);
+const personalizationRegistrarSource = fs.readFileSync(path.resolve(process.cwd(), 'electron/ipc/registerPersonalizationIpc.ts'), 'utf8');
+const registrarAwareSource = (needle: string): string => {
+  const sources = [mainSource, goalRegistrarSource, personalizationRegistrarSource];
+  const host = sources.find((source) => source.includes(needle));
+  expect(host, `needle not found in main.ts or any domain registrar: ${needle}`).toBeDefined();
+  return host as string;
+};
 
 function sectionBetween(startNeedle: string, endNeedle: string): string {
   const source = registrarAwareSource(startNeedle);
@@ -63,12 +70,12 @@ describe('runtime shutdown admission wiring', () => {
       ["ipcMain.handle('papers:aiExplain'", "ipcMain.handle('papers:aiSynthesis'"],
       ["ipcMain.handle('papers:aiSynthesis'", "ipcMain.handle('latex:aiPolish'"],
       ["ipcMain.handle('latex:aiPolish'", "ipcMain.handle('memory:getProject'"],
-      ["ipcMain.handle('personalization:aiGenerateScenario'", 'function parseAiAgentGeneration('],
-      ["ipcMain.handle('personalization:aiGenerateAgent'", "ipcMain.handle('market:search'"],
+      ["dom.handle('personalization:aiGenerateScenario'", "dom.handle('personalization:aiGenerateAgent'"],
+      ["dom.handle('personalization:aiGenerateAgent'", "dom.handle('personalization:parsePaperTemplate'"],
       ["ipcMain.handle('scenario:analyzeMaterials'", "ipcMain.handle('scenario:compileHarness'"],
       ["ipcMain.handle('scenario:compileHarness'", "ipcMain.handle('scenario:aiRefine'"],
-      ["ipcMain.handle('scenario:aiRefine'", "ipcMain.handle('personalization:parsePaperTemplate'"],
-      ["ipcMain.handle('personalization:parsePaperTemplate'", "ipcMain.handle('personalization:extension:apply'"],
+      ["ipcMain.handle('scenario:aiRefine'", "ipcMain.handle('mcp:list'"],
+      ["dom.handle('personalization:parsePaperTemplate'", "dom.handle('personalization:extension:apply'"],
     ];
     for (const [start, end] of cases) {
       const section = sectionBetween(start, end);

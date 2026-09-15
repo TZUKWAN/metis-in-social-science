@@ -123,4 +123,21 @@ export interface DomainIpcContext {
   browserService(): BrowserService | null;
   collabService(): CollabService | null;
   ensureCollabService(): CollabService | null;
+
+  // ── Personalization domain ────────────────────────────────
+  personalizationRepository(): import('../../engine/personalization/PersonalizationRepository.js').PersonalizationRepository | null;
+  personalizationRuntime(): import('../PersonalizationRuntimeService.js').PersonalizationRuntimeService | null;
+  personalizationExtensions(): import('../PersonalizationExtensionService.js').PersonalizationExtensionService | null;
+  personalizationGeneratedMcpActivation(): import('../GeneratedMcpActivationCoordinator.js').GeneratedMcpActivationCoordinator | null;
+  personalizationMcpActivation(): import('../PersonalizationMcpActivationService.js').PersonalizationMcpActivationService | null;
+  personalizationBundles(): import('../PersonalizationBundleService.js').PersonalizationBundleService | null;
+  personalizationBundleSkillAssets(): import('../PersonalizationBundleSkillAssetSource.js').PersonalizationBundleSkillAssetSource | null;
+  personalizationBundleCoordinator(): import('../PersonalizationBundleImportCoordinator.js').PersonalizationBundleImportCoordinator | null;
+  personalizationSecretVault(): import('../PersonalizationSecretVault.js').PersonalizationSecretVault | null;
+  /** 卸载定义关联的技能资产（删除/回收站清理时由 runtime 回调）。 */
+  uninstallSkillAssetsForDefinition(
+    definition: import('../../engine/runtime/PersonalizationRuntimeContract.js').PersonalizationDefinition,
+  ): void;
+  /** webContents 生命周期代数（受管 MCP 激活证据用）。 */
+  webContentsGeneration(webContentsId: number): number;
 }
