@@ -138,7 +138,6 @@ import { TopicService, TOPIC_SEARCH_TOOLS } from './TopicService.js';
 import { SubmissionRepository } from './SubmissionRepository.js';
 
 
-import { SUBMISSION_GAP_STATUSES } from '../engine/submission/JournalProfileContract.js';
 import { JournalProfileRepository } from './JournalProfileRepository.js';
 
 
@@ -169,7 +168,6 @@ import { OutcomeProjectContextService, readOutcomeProjectMetisFromWorkspace, typ
 import { OutcomeWordDocxService, GENOFFICE_ENABLED } from './OutcomeWordDocxService.js';
 import { parseWordTemplateStyle } from './WordTemplateStyleParser.js';
 import { createSubmissionBrowserTools } from './SubmissionBrowserTools.js';
-import { SubmissionAssistantService } from './SubmissionAssistantService.js';
 import { parseGuidelineFormatting, type MutableFormattingDraft, type MutableFormattingSlot } from '../engine/outcomes/GuidelineFormatting.js';
 import { buildFundingTemplateSeed } from '../engine/personalization/FundingTemplateSeed.js';
 import { buildFindSkillsSeed } from '../engine/personalization/FindSkillsBuiltinDraft.js';
@@ -3652,22 +3650,6 @@ function setupIPC(): void {
   // ── Submission domain: 投稿事务（Series / Case / Events / 状态机） ──
 
 
-  ipcMain.handle('submission:gap:update', (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.object({
-        projectId: z.string().min(1),
-        caseId: z.string().min(1),
-        itemId: z.string().min(1),
-        // patch 只放行 status 字段（UI 侧用于确认/忽略/重开差距项）。
-        patch: z.strictObject({ status: z.enum(SUBMISSION_GAP_STATUSES) }),
-      }).safeParse(raw);
-      if (!p.success || !journalProfileRepository || !submissionRepository) return null;
-      if (!submissionRepository.getCase(p.data.projectId, p.data.caseId)) return null;
-      return journalProfileRepository.updateGapItem(p.data.caseId, p.data.itemId, { status: p.data.patch.status }) ?? null;
-    } catch { return null; }
-  });
-
   // ── Submission P2: 投稿预检 / 投稿包 / Cover Letter ──
   // 归属校验分层：case 级操作由服务内 getCase(projectId, caseId) 把关；
 
@@ -3680,28 +3662,6 @@ function setupIPC(): void {
 
 
 
-
-  ipcMain.handle('submission:coverLetter:generate', async (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      const p = z.object({ projectId: z.string().min(1), caseId: z.string().min(1) }).safeParse(raw);
-      if (!p.success || !submissionCoverLetterService || !submissionRepository || !journalProfileRepository || !outcomeRepository) return null;
-      // provider 就绪时按当前项目运行时解析 agentLoop 走 LLM 成稿（照 P1 fetchGuidelines 写法）；
-      // 未配置时用无 agentLoop 的基础实例，服务内如实降级为模板骨架（extraction: 'template'）。
-      const runtime = resolveProjectOutcomeProvider(p.data.projectId);
-      const service = runtime.status === 'ready'
-        ? new CoverLetterService({
-            submissionRepository,
-            journalRepository: journalProfileRepository,
-            outcomeRepository,
-            ...(submissionPackageRepository ? { packageRepository: submissionPackageRepository } : {}),
-            agentLoop: runtime.agentLoop,
-            providerProfileBinding: runtime.binding,
-          })
-        : submissionCoverLetterService;
-      return await service.generate(p.data);
-    } catch { return null; }
-  });
 
   // ── Submission P4: Decision Letter 拆解 / 返修工作台 / Response Letter ──
 
@@ -8549,59 +8509,6 @@ function buildFundingTemplateDigest(pkg: { source?: { sourceFormat?: string; pag
       return { ok: true as const, templateId, summary };
     } catch (error) {
       return { ok: false as const, message: `模板分析失败：${error instanceof Error ? error.message : String(error)}` };
-    }
-  });
-  // 投稿参谋（2026-09-01 刘总规格）：Artifact+Browser+Intent 三上下文编排对话。
-  // ── 投稿短名单持久化（任务6 补齐 2026-09-08）：schema/桥已在，handler 此前缺失 ──
-  ipcMain.handle('submission:assistant:chat', async (event, raw: unknown) => {
-    try {
-      requireRendererMainFrame(event);
-      if (!agentLoop) return { ok: false as const, answer: '', error: '模型连接尚未配置或尚未就绪。请先在「设置 → 模型连接」完成配置，再使用投稿参谋。' };
-      if (!outcomeRepository) return { ok: false as const, answer: '', error: '成果服务尚未就绪，请稍后重试。' };
-      const parsedInput = z.object({
-        projectId: z.string().min(1),
-        outcomeId: z.string().min(1),
-        instruction: z.string().min(1).max(20_000),
-        thinkingLevel: z.string().optional(),
-        intent: z.record(z.string(), z.unknown()).optional(),
-        shortlist: z.array(z.object({ name: z.string(), source: z.string().optional() })).max(24).optional(),
-        // 任务6(2026-09-05):参谋对话记忆——前端回传最近对话,避免每轮失忆。
-        history: z.array(z.object({
-          role: z.enum(['user', 'assistant']),
-          content: z.string().max(20_000),
-        })).max(16).optional(),
-      }).safeParse(raw);
-      if (!parsedInput.success) return { ok: false as const, answer: '', error: '请求无效。' };
-      const service = new SubmissionAssistantService({
-        agentLoop,
-        browser: {
-          navigate: async (url) => {
-            const service = ensureBrowserService();
-            if (!service) return { ok: false, error: 'browser_unavailable' };
-            return service.navigate(url);
-          },
-          extract: async () => {
-            const service = ensureBrowserService();
-            if (!service) return { ok: false, error: 'browser_unavailable' };
-            return service.extract();
-          },
-          // 任务2 上下文隔离：参谋注入浏览器上下文前按项目归属校验。
-          extractScoped: async (projectId) => {
-            const service = ensureBrowserService();
-            if (!service) return { ok: false, error: 'browser_unavailable' };
-            return service.extractScoped(projectId ?? null);
-          },
-        },
-        loadOutcome: (projectId, outcomeId) => {
-          const repository = outcomeRepository;
-          if (!repository) return null;
-          const detail = repository.get(projectId, outcomeId);
-          return detail ? { title: detail.outcome.title, content: detail.version.content } : null;
-        },
-      });
-      return await service.chat({ ...parsedInput.data, thinkingLevel: parsedInput.data.thinkingLevel });
-    } catch (error) {
-      return { ok: false as const, answer: '', error: error instanceof Error ? error.message : String(error) };
     }
   });
   ipcMain.handle('personalization:list', (event, rawRequest: unknown) => {

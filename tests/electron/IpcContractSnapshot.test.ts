@@ -87,6 +87,13 @@ describe('IPC contract snapshot', () => {
     expect(current.contractVersions, UPDATE_HINT).toEqual(golden.contractVersions);
   });
 
+  it('no invoke channel is registered more than once across main + registrars', () => {
+    // ipcMain.handle throws "Attempted to register a second handler" on the
+    // second registration, crashing the main process at startup — this bit us
+    // when a registrar was wired while the original main.ts handler survived.
+    expect(current.duplicateInvoke, 'duplicate handler registration for the same channel').toEqual([]);
+  });
+
   it('every preload-invoked channel has a main handler, except known reported orphans', () => {
     const handlers = new Set(current.invoke);
     const orphans = current.rendererInvoke.filter((ch) => !handlers.has(ch));

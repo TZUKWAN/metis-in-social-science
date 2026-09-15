@@ -41,17 +41,22 @@ function listElectronSources() {
   return sources;
 }
 
-function extractQuotedCall(text, callPattern) {
+function extractQuotedCall(text, callPattern, onChannel) {
   const found = new Set();
+  const record = (ch) => {
+    if (!ch) return;
+    found.add(ch);
+    if (onChannel) onChannel(ch);
+  };
   const re = new RegExp(`${callPattern}\\(\\s*(${QUOTE})([^'"\`]+)\\1`, 'g');
   let m;
-  while ((m = re.exec(text))) found.add(m[2]);
+  while ((m = re.exec(text))) record(m[2]);
   // multi-line registration form: handle(\n  'channel',
   const openRe = new RegExp(`${callPattern}\\(\\s*$`, 'gm');
   while ((m = openRe.exec(text))) {
     const rest = text.slice(m.index + m[0].length, m.index + m[0].length + 200);
     const simple = rest.match(new RegExp(`^\\s*(${QUOTE})([^'"\`]+)\\1`));
-    if (simple) found.add(simple[2]);
+    if (simple) record(simple[2]);
   }
   return found;
 }
@@ -60,22 +65,35 @@ export function scanIpcContract() {
   const invoke = new Set();
   const send = new Set();
   const contractVersions = {};
+  // invoke 通道 → 注册点列表（"相对路径"重复出现即该文件注册多次）。
+  // Electron 的 ipcMain.handle 对同通道二次注册会直接抛错（主进程启动即崩），
+  // 2026-09-15 曾因 registrar 已迁入而 main.ts 残留旧 handler 踩过坑，这里守门。
+  const invokeSites = new Map();
   for (const file of listElectronSources()) {
     const rel = path.relative(ROOT, file).split('\\').join('/');
     const text = fs.readFileSync(file, 'utf8');
     if (!rel.endsWith('preload.ts')) {
-      for (const ch of extractQuotedCall(text, 'ipcMain\\.handle')) invoke.add(ch);
+      const onInvoke = (ch) => {
+        const sites = invokeSites.get(ch) ?? [];
+        sites.push(rel);
+        invokeSites.set(ch, sites);
+      };
+      for (const ch of extractQuotedCall(text, 'ipcMain\\.handle', onInvoke)) invoke.add(ch);
       for (const ch of extractQuotedCall(text, 'webContents\\.send')) send.add(ch);
       // Domain registrars (electron/ipc/**) route through IpcRegistry:
       // `registry.handle('channel', …)` / `topic.handle('channel', …)`.
       if (rel.startsWith('electron/ipc/')) {
-        for (const ch of extractQuotedCall(text, '[A-Za-z_$][\\w$]*\\.handle')) invoke.add(ch);
+        for (const ch of extractQuotedCall(text, '[A-Za-z_$][\\w$]*\\.handle', onInvoke)) invoke.add(ch);
       }
     }
     for (const m of text.matchAll(/([A-Z0-9_]+_CONTRACT_VERSION)\s*=\s*(\d+)/g)) {
       contractVersions[m[1]] = Number(m[2]);
     }
   }
+  const duplicateInvoke = [...invokeSites.entries()]
+    .filter(([, sites]) => sites.length > 1)
+    .map(([channel, sites]) => ({ channel, sites }))
+    .sort((a, b) => a.channel.localeCompare(b.channel));
 
   // Contract version constants live next to the zod contracts in engine/runtime.
   const runtimeDir = path.join(ROOT, 'engine/runtime');
@@ -108,6 +126,7 @@ export function scanIpcContract() {
     rendererInvoke: [...renderer].sort(),
     send: [...send].sort(),
     contractVersions: Object.fromEntries(Object.entries(contractVersions).sort(([a], [b]) => a.localeCompare(b))),
+    duplicateInvoke,
   };
 }
 
@@ -136,8 +155,12 @@ export function main(argv) {
   }
   const golden = JSON.parse(fs.readFileSync(SNAPSHOT_PATH, 'utf8'));
   const { added, removed } = diffChannels(golden, scan);
-  console.log(JSON.stringify({ counts: scan.counts, goldenCounts: golden.counts, added, removed }, null, 2));
-  return added.length === 0 && removed.length === 0 ? 0 : 1;
+  const duplicatesOk = scan.duplicateInvoke.length === 0;
+  console.log(JSON.stringify({ counts: scan.counts, goldenCounts: golden.counts, added, removed, duplicateInvoke: scan.duplicateInvoke }, null, 2));
+  if (!duplicatesOk) {
+    console.error('duplicate invoke registration detected — ipcMain.handle throws on the second handler for a channel (main process crashes at startup)');
+  }
+  return added.length === 0 && removed.length === 0 && duplicatesOk ? 0 : 1;
 }
 
 if (process.argv[1] && process.argv[1].endsWith('ipc-contract-scan.mjs')) {
