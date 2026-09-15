@@ -106,3 +106,7 @@ scripts/tmp-*.py
 
 /release6b/
 .metis-remote-port
+
+/release5/
+/release6/
+/release7/

@@ -46,6 +46,17 @@ MutationObserver 异步生效，capturePage 合成时原生层尚未退场。修
   token（10 文件；`--ds-overlay-scrim` bridge token 只增未删）。
 - 新增多分辨率矩阵 harness（本报告工具）。
 
+## 打包应用验收（2026-09-15）
+
+- `npx electron-builder --dir -c.directories.output=release7`：打包成功（含
+  signtool 对 node-pty 随附 exe 的签名）。注意 `release6` 目录存在系统句柄
+  锁死的 `win-unpacked.tmp`（EBUSY），与产物无关，未影响本验收。
+- 打包冒烟（`scripts/packaged-smoke.mjs`，证据
+  `logs/packaged-smoke-20260915.json`）：`Metis Research Workbench.exe` 以
+  隔离 `METIS_USER_DATA_DIR` 启动 → `DevToolsActivePort` 出现 → CDP
+  `/json/list` 见真实渲染页 `metis-app://renderer/index.html` → 进程 30 秒
+  存活 → 按记录 PID 树清理。**PASS**。
+
 ## 工程门（合并后全量，真实输出）
 
 - vitest：6048 passed / 0 failed（9 skipped，既有）
